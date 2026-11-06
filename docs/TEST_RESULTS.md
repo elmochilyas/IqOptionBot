@@ -5,12 +5,12 @@
 - **Date of Execution**: November 2026
 - **Test Environment**: Windows, Python 3.12.10
 - **Test Framework**: `pytest 8.4.2`, `pytest-asyncio 0.26.0`, `pytest-mock 3.17.0`
-- **Total Tests Executed**: 115
-- **Passed**: 115
+- **Total Tests Executed**: 128
+- **Passed**: 128
 - **Failed**: 0
 - **Skipped**: 0
 - **Untested / Out-of-Scope Scenarios**: Live broker endpoint I/O, live 2FA OTP submission, live order execution (strictly omitted during test runs by design).
-- **Total Execution Time**: ~10.77 seconds
+- **Total Execution Time**: ~10.74 seconds
 
 ---
 
@@ -18,22 +18,23 @@
 
 | Requirement Area | Test Module | Tests | Status |
 | :--- | :--- | :---: | :---: |
-| **1. Explicit Read-Only Account Data Requests & Correlation** | `tests/integration/test_account_data_requests.py` | 9 | ✅ Passed |
-| **2. Connection Monitoring Lifecycle & Protocol Diagnostics** | `tests/integration/test_connection_lifecycle.py` | 7 | ✅ Passed |
-| **3. Secure auth request construction & redirect protection** | `tests/unit/test_http_auth.py` | 15 | ✅ Passed |
-| **4. TLS & endpoint policy enforcement** | `tests/unit/test_tls_policy.py` | 7 | ✅ Passed |
-| **5. Incorrect credentials & expired sessions** | `tests/unit/test_http_auth.py`, `test_ws_auth.py` | 4 | ✅ Passed |
-| **6. Redaction of sensitive information** | `tests/unit/test_credentials.py` | 9 | ✅ Passed |
-| **7. Strict WS auth & message validation** | `tests/unit/test_ws_auth.py` | 10 | ✅ Passed |
-| **8. Connection timeouts & disconnects** | `tests/unit/test_http_auth.py`, `test_reconnection.py` | 5 | ✅ Passed |
-| **9. Reconnection with backoff, heartbeat & dedup** | `tests/unit/test_reconnection.py` | 7 | ✅ Passed |
-| **10. Malformed market data handling** | `tests/unit/test_malformed_data.py` | 4 | ✅ Passed |
-| **11. Candle timestamp & OHLC validation** | `tests/unit/test_candles.py`, `test_validation.py` | 10 | ✅ Passed |
-| **12. Rejection of trading operations & strict schemas** | `tests/unit/test_trading_rejection.py` | 8 | ✅ Passed |
-| **13. Ambiguous practice-account status** | `tests/unit/test_practice_status.py` | 5 | ✅ Passed |
-| **14. Clean shutdown, resource management & session cleanup** | `tests/unit/test_shutdown.py`, `test_ws_auth.py` | 6 | ✅ Passed |
-| **15. Auditor Regression Hardening Suite** | `tests/unit/test_auditor_regressions.py` | 8 | ✅ Passed |
-| **16. Followup Auditor Regression Suite (v3)** | `tests/unit/test_followup_regressions.py` | 5 | ✅ Passed |
+| **1. PRACTICE Account Safety & Correlation Isolation** | `tests/unit/test_phase2_practice_and_correlation_regressions.py` | 13 | ✅ Passed |
+| **2. Explicit Read-Only Account Data Requests & Correlation** | `tests/integration/test_account_data_requests.py` | 9 | ✅ Passed |
+| **3. Connection Monitoring Lifecycle & Protocol Diagnostics** | `tests/integration/test_connection_lifecycle.py` | 7 | ✅ Passed |
+| **4. Secure auth request construction & redirect protection** | `tests/unit/test_http_auth.py` | 15 | ✅ Passed |
+| **5. TLS & endpoint policy enforcement** | `tests/unit/test_tls_policy.py` | 7 | ✅ Passed |
+| **6. Incorrect credentials & expired sessions** | `tests/unit/test_http_auth.py`, `test_ws_auth.py` | 4 | ✅ Passed |
+| **7. Redaction of sensitive information** | `tests/unit/test_credentials.py` | 9 | ✅ Passed |
+| **8. Strict WS auth & message validation** | `tests/unit/test_ws_auth.py` | 10 | ✅ Passed |
+| **9. Connection timeouts & disconnects** | `tests/unit/test_http_auth.py`, `test_reconnection.py` | 5 | ✅ Passed |
+| **10. Reconnection with backoff, heartbeat & dedup** | `tests/unit/test_reconnection.py` | 7 | ✅ Passed |
+| **11. Malformed market data handling** | `tests/unit/test_malformed_data.py` | 4 | ✅ Passed |
+| **12. Candle timestamp & OHLC validation** | `tests/unit/test_candles.py`, `test_validation.py` | 10 | ✅ Passed |
+| **13. Rejection of trading operations & strict schemas** | `tests/unit/test_trading_rejection.py` | 8 | ✅ Passed |
+| **14. Ambiguous practice-account status** | `tests/unit/test_practice_status.py` | 5 | ✅ Passed |
+| **15. Clean shutdown, resource management & session cleanup** | `tests/unit/test_shutdown.py`, `test_ws_auth.py` | 6 | ✅ Passed |
+| **16. Auditor Regression Hardening Suite** | `tests/unit/test_auditor_regressions.py` | 8 | ✅ Passed |
+| **17. Followup Auditor Regression Suite (v3)** | `tests/unit/test_followup_regressions.py` | 5 | ✅ Passed |
 | **End-to-End Simulation & CLI Execution** | `tests/integration/test_offline_flow.py` | 6 | ✅ Passed |
 
 ---

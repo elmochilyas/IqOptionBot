@@ -21,6 +21,7 @@ from typing import Any
 
 from iqoption_research.config.settings import Settings
 from iqoption_research.connectors.iqoption.exceptions import (
+    AccountDataMissingError,
     ConnectionError,
     InvalidCandleError,
     LoginError,
@@ -43,6 +44,7 @@ from iqoption_research.connectors.iqoption.protocol import (
 )
 from iqoption_research.connectors.iqoption.ws_client import (
     DEFAULT_WSS_URL,
+    ConnectFactory,
     IQOptionWebSocketClient,
 )
 from iqoption_research.market_data.candles import normalize_candle, normalize_candles
@@ -63,6 +65,7 @@ from iqoption_research.models.connection import (
     DisconnectReason,
 )
 from iqoption_research.models.market import Candle, CandleSize
+from iqoption_research.monitoring.diagnostics import ProtocolDiagnostics
 from iqoption_research.monitoring.status import ConnectionMonitor
 from iqoption_research.security import validate_https_endpoint, validate_wss_endpoint
 from iqoption_research.security.credentials import Credentials, redact_email
@@ -113,6 +116,8 @@ class AsyncIQOption:
         offline: bool | None = None,
         login_url: str = DEFAULT_LOGIN_URL,
         wss_url: str = DEFAULT_WSS_URL,
+        diagnostics: bool | None = None,
+        connect_factory: ConnectFactory | None = None,
     ) -> None:
         self.assert_read_only()
 
@@ -121,6 +126,15 @@ class AsyncIQOption:
         self._offline = self._settings.offline if offline is None else offline
         self._login_url = login_url
         self._wss_url = wss_url
+        self._connect_factory = connect_factory
+
+        is_diag = (
+            diagnostics
+            if diagnostics is not None
+            else (self._settings.diagnostics or self._config.diagnostics)
+        )
+        self._diagnostics = ProtocolDiagnostics(enabled=is_diag)
+
         validate_https_endpoint(self._login_url)
         validate_wss_endpoint(self._wss_url)
 
@@ -152,6 +166,11 @@ class AsyncIQOption:
     # ----- properties -----
 
     @property
+    def diagnostics(self) -> ProtocolDiagnostics:
+        """Safe metadata-only protocol diagnostics recorder."""
+        return self._diagnostics
+
+    @property
     def state(self) -> ConnectionState:
         if self._ws is not None:
             return self._ws.state
@@ -166,18 +185,29 @@ class AsyncIQOption:
         return self._ws is not None and self._ws.is_ready
 
     @property
+    def is_authenticated(self) -> bool:
+        return self._ws is not None and self._ws.is_authenticated
+
+    @property
     def ws(self) -> IQOptionWebSocketClient | None:
         """Low-level transport (read-only). Intended for diagnostics."""
         return self._ws
 
     # ----- lifecycle -----
 
-    async def connect(self) -> None:
+    async def connect(self, *, raise_if_incomplete: bool = True) -> None:
         """Authenticate over HTTPS, then connect and authenticate the socket.
+
+        Lifecycle transitions:
+            DISCONNECTED -> CONNECTING (HTTPS login)
+            CONNECTING -> AUTHENTICATING (WebSocket handshake & authenticate)
+            AUTHENTICATING -> AUTHENTICATED (WebSocket auth success)
+            AUTHENTICATED -> READY (Only after profile & balances received)
 
         Raises:
             OfflineModeError: If offline-only mode is enabled.
             LoginError: If HTTPS or WebSocket authentication fails.
+            AccountDataMissingError: If authenticated but profile/balances are missing.
             ConnectionError: On transport failure.
         """
         if self._offline:
@@ -206,19 +236,27 @@ class AsyncIQOption:
             raise
 
         self._ssid = ssid
+        self.monitor.transition(ConnectionState.AUTHENTICATING, reason="ws_authenticating")
+
         ws = IQOptionWebSocketClient(
             ssid,
             wss_url=self._wss_url,
             config=self._config,
+            connect_factory=self._connect_factory,
+            monitor=self.monitor,
+            diagnostics=self._diagnostics,
         )
+        self._ws = ws
 
         try:
             await ws.connect()
         except Exception as exc:
-            self.monitor.transition(ConnectionState.FAILED, reason="ws_failed")
+            self._ws = None
+            if self.monitor.state != ConnectionState.FAILED:
+                with contextlib.suppress(ValueError):
+                    self.monitor.transition(ConnectionState.FAILED, reason="ws_failed")
             self.monitor.record_error(str(exc))
             # Session cleanup: HTTP login succeeded but WebSocket connection/auth failed.
-            # Perform best-effort logout with the valid ssid before clearing references.
             if self._ssid is not None and not self._offline:
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(
@@ -228,18 +266,21 @@ class AsyncIQOption:
             self._ssid = None
             raise
 
-        self._ws = ws
-        # Clear reference to allow GC; note that CPython immutable strings
-        # cannot be deterministically zeroized from process memory.
         self._credentials = None
-        self.monitor.transition(ConnectionState.AUTHENTICATED, reason="authenticated")
+
         if ws.is_ready:
-            self.monitor.transition(ConnectionState.READY, reason="ready")
+            logger.info("WebSocket connected and fully ready (account verified)")
         else:
             logger.warning(
-                "WebSocket authenticated, but account data is incomplete; "
+                "WebSocket authenticated, but required account data is incomplete; "
                 "client state remains AUTHENTICATED (not READY)."
             )
+            if raise_if_incomplete:
+                raise AccountDataMissingError(
+                    "WebSocket authenticated, but required account data was missing or timed out "
+                    f"(profile={'present' if ws.profile else 'missing'}, "
+                    f"balances={len(ws.balances)}). Connection state is AUTHENTICATED (not READY)."
+                )
 
     async def close(
         self, reason: DisconnectReason = DisconnectReason.USER_REQUESTED
@@ -248,6 +289,10 @@ class AsyncIQOption:
         if self._closed:
             return
         self._closed = True
+
+        if self.monitor.state in (ConnectionState.AUTHENTICATED, ConnectionState.READY):
+            with contextlib.suppress(ValueError):
+                self.monitor.transition(ConnectionState.CLOSING, reason=reason)
 
         if self._ws is not None:
             await self._ws.close(reason)
@@ -261,8 +306,10 @@ class AsyncIQOption:
                 )
         self._ssid = None
         self._credentials = None
-        with contextlib.suppress(ValueError):
-            self.monitor.transition(ConnectionState.DISCONNECTED, reason=reason)
+
+        if self.monitor.state != ConnectionState.DISCONNECTED:
+            with contextlib.suppress(ValueError):
+                self.monitor.transition(ConnectionState.DISCONNECTED, reason=reason)
 
     async def __aenter__(self) -> AsyncIQOption:
         await self.connect()
@@ -274,8 +321,13 @@ class AsyncIQOption:
     # ----- account -----
 
     def _require_ready(self) -> IQOptionWebSocketClient:
-        if self._ws is None or not self._ws.is_ready:
+        if self._ws is None:
             raise ConnectionError("Not connected: call connect() first")
+        if not self._ws.is_ready:
+            raise AccountDataMissingError(
+                "Connection is authenticated, but required account data is incomplete: "
+                "profile and balances must both be received before market data calls."
+            )
         return self._ws
 
     async def get_account_status(self) -> AccountStatus:

@@ -13,6 +13,10 @@ class ConnectionError(IQOptionError):
     """WebSocket or HTTP transport failure."""
 
 
+class AccountDataMissingError(ConnectionError):
+    """Authentication succeeded, but required profile or balances were missing/timed out."""
+
+
 class LoginError(IQOptionError):
     """Authentication failed (HTTP login or WebSocket authenticate)."""
 

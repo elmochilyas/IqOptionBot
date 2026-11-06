@@ -139,6 +139,8 @@ class IQOptionWebSocketClient:
         self._request_counter = itertools.count(1)
         self._profile_request_id: str | None = None
         self._balances_request_id: str | None = None
+        self._outstanding_profile_request_id: str | None = None
+        self._outstanding_balances_request_id: str | None = None
 
         self._authenticated_event = asyncio.Event()
         self._authenticated_ok = False
@@ -206,6 +208,26 @@ class IQOptionWebSocketClient:
             and self._authenticated_ok
             and self._profile is not None
             and len(self._balances) > 0
+        )
+
+    @property
+    def active_balance(self) -> Balance | None:
+        """Return server-confirmed active balance, if any."""
+        if self._active_balance_id is None:
+            return None
+        for b in self._balances:
+            if b.id == self._active_balance_id:
+                return b
+        return None
+
+    @property
+    def is_practice_verified(self) -> bool:
+        """True only if active balance is confirmed as PRACTICE (type 4)."""
+        active = self.active_balance
+        return (
+            active is not None
+            and active.is_practice
+            and active.type == AccountType.PRACTICE
         )
 
     @property
@@ -303,6 +325,8 @@ class IQOptionWebSocketClient:
         self._active_balance_id = None
         self._profile_request_id = f"profile-{next(self._request_counter)}"
         self._balances_request_id = f"balances-{next(self._request_counter)}"
+        self._outstanding_profile_request_id = self._profile_request_id
+        self._outstanding_balances_request_id = self._balances_request_id
 
         async with self._state_lock:
             self._state = ConnectionState.CONNECTING
@@ -447,6 +471,8 @@ class IQOptionWebSocketClient:
         self._active_balance_id = None
         self._profile_request_id = None
         self._balances_request_id = None
+        self._outstanding_profile_request_id = None
+        self._outstanding_balances_request_id = None
         self._authenticated_ok = False
         self._authenticated_event.clear()
         self._profile_event.clear()
@@ -593,6 +619,10 @@ class IQOptionWebSocketClient:
                 self._profile = None
                 self._balances = []
                 self._active_balance_id = None
+                self._profile_request_id = None
+                self._balances_request_id = None
+                self._outstanding_profile_request_id = None
+                self._outstanding_balances_request_id = None
                 for pending in list(self._pending.values()):
                     if not pending.future.done():
                         pending.future.set_exception(
@@ -619,16 +649,26 @@ class IQOptionWebSocketClient:
             self._server_time_ns = _to_epoch_ns(message.get("msg"))
             return
 
-        # Correlated response for explicit get-profile request
-        if req_id and (req_id == self._profile_request_id or req_id.startswith("profile-")):
+        # Correlated response for explicit get-profile request (exact outstanding ID only)
+        if (
+            req_id
+            and self._outstanding_profile_request_id is not None
+            and req_id == self._outstanding_profile_request_id
+        ):
             handled = True
+            self._outstanding_profile_request_id = None
             self._diagnostics.record_incoming(name or "get-profile", msg, handled=True)
             self._handle_profile_message(message)
             return
 
-        # Correlated response for explicit get-balances request
-        if req_id and (req_id == self._balances_request_id or req_id.startswith("balances-")):
+        # Correlated response for explicit get-balances request (exact outstanding ID only)
+        if (
+            req_id
+            and self._outstanding_balances_request_id is not None
+            and req_id == self._outstanding_balances_request_id
+        ):
             handled = True
+            self._outstanding_balances_request_id = None
             self._diagnostics.record_incoming(name or "get-balances", msg, handled=True)
             self._handle_balances_message(message)
             return
@@ -803,18 +843,20 @@ class IQOptionWebSocketClient:
                 continue
             try:
                 parsed.append(
-                    Balance(
-                        id=str(item.get("id", "")),
-                        type=AccountType(int(item.get("type", 0))),
-                        amount=float(item.get("amount", 0)),
-                        currency=str(item.get("currency", "USD")),
-                        is_active=False,
-                    )
+                    Balance.from_raw(item, active_balance_id=self._active_balance_id)
                 )
             except (ValueError, TypeError, KeyError):
                 continue
 
         if not parsed:
+            if raw_balances:
+                self.errors += 1
+                if self._monitor is not None:
+                    self._monitor.record_error("malformed_balances")
+                self._diagnostics.record_parsing_failure(
+                    "balances", "AllBalanceEntriesMalformed"
+                )
+                logger.warning("All balance entries in payload were malformed")
             return
 
         # We DO NOT guess which balance is active. A practice balance being

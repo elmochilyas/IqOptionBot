@@ -189,6 +189,11 @@ class AsyncIQOption:
         return self._ws is not None and self._ws.is_authenticated
 
     @property
+    def is_practice_verified(self) -> bool:
+        """True only if active balance is verified as PRACTICE (type 4)."""
+        return self._ws is not None and self._ws.is_practice_verified
+
+    @property
     def ws(self) -> IQOptionWebSocketClient | None:
         """Low-level transport (read-only). Intended for diagnostics."""
         return self._ws

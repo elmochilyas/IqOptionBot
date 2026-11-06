@@ -48,6 +48,8 @@ from iqoption_research.models.connection import (
     ConnectionState,
     DisconnectReason,
 )
+from iqoption_research.monitoring.diagnostics import ProtocolDiagnostics
+from iqoption_research.monitoring.status import ConnectionMonitor
 from iqoption_research.security import create_tls_context, validate_wss_endpoint
 
 logger = logging.getLogger(__name__)
@@ -104,6 +106,8 @@ class IQOptionWebSocketClient:
         wss_url: str = DEFAULT_WSS_URL,
         config: ConnectionConfig | None = None,
         connect_factory: ConnectFactory | None = None,
+        monitor: ConnectionMonitor | None = None,
+        diagnostics: ProtocolDiagnostics | None = None,
     ) -> None:
         validate_wss_endpoint(wss_url)
         if not ssid:
@@ -112,6 +116,10 @@ class IQOptionWebSocketClient:
         self._wss_url = wss_url
         self._config = config or ConnectionConfig()
         self._connect_factory = connect_factory
+        self._monitor = monitor
+        self._diagnostics = diagnostics or ProtocolDiagnostics(
+            enabled=self._config.diagnostics
+        )
 
         self._ws: ClientConnection | None = None
         self._receive_task: asyncio.Task[None] | None = None
@@ -147,7 +155,18 @@ class IQOptionWebSocketClient:
         self.last_message_at: float | None = None
         self.last_heartbeat_at: float | None = None
 
+    def _transition_monitor(
+        self, to_state: ConnectionState, reason: str | DisconnectReason = ""
+    ) -> None:
+        if self._monitor is not None and self._monitor.state != to_state:
+            with contextlib.suppress(ValueError):
+                self._monitor.transition(to_state, reason=reason)
+
     # ----- properties -----
+
+    @property
+    def diagnostics(self) -> ProtocolDiagnostics:
+        return self._diagnostics
 
     @property
     def state(self) -> ConnectionState:
@@ -201,11 +220,13 @@ class IQOptionWebSocketClient:
             if self._state in (ConnectionState.CONNECTING, ConnectionState.AUTHENTICATING):
                 return
             self._state = ConnectionState.CONNECTING
+        self._transition_monitor(ConnectionState.CONNECTING, reason="ws_connecting")
         try:
             await self._connect_and_authenticate()
         except Exception:
             async with self._state_lock:
                 self._state = ConnectionState.FAILED
+            self._transition_monitor(ConnectionState.FAILED, reason="ws_connect_failed")
             raise
 
     async def _cancel_heartbeat(self) -> None:
@@ -266,15 +287,19 @@ class IQOptionWebSocketClient:
 
         async with self._state_lock:
             self._state = ConnectionState.CONNECTING
+        self._transition_monitor(ConnectionState.CONNECTING, reason="ws_connecting")
 
         logger.info("Connecting WebSocket to allowlisted endpoint")
         try:
             self._ws = await self._open_socket()
         except (TimeoutError, OSError, WebSocketException) as exc:
+            self._transition_monitor(ConnectionState.FAILED, reason="ws_connect_failed")
+            self._diagnostics.record_failure("WS_CONNECT_FAILED", type(exc).__name__)
             raise ConnectionError(f"WebSocket connect failed: {type(exc).__name__}") from exc
 
         async with self._state_lock:
             self._state = ConnectionState.AUTHENTICATING
+        self._transition_monitor(ConnectionState.AUTHENTICATING, reason="ws_authenticating")
 
         self._receive_task = asyncio.create_task(
             self._receive_loop(), name="iqoption-ws-receive"
@@ -298,6 +323,11 @@ class IQOptionWebSocketClient:
                 if isinstance(exc, TimeoutError)
                 else DisconnectReason.AUTH_FAILED
             )
+            self._transition_monitor(ConnectionState.FAILED, reason=reason.value)
+            self._diagnostics.record_failure(
+                "AUTH_TIMEOUT" if isinstance(exc, TimeoutError) else "AUTH_REJECTED",
+                type(exc).__name__,
+            )
             await self._shutdown_transport(reason)
             if isinstance(exc, TimeoutError):
                 raise LoginError("Authentication timeout: no 'authenticated' response") from exc
@@ -305,6 +335,7 @@ class IQOptionWebSocketClient:
 
         async with self._state_lock:
             self._state = ConnectionState.AUTHENTICATED
+        self._transition_monitor(ConnectionState.AUTHENTICATED, reason="ws_authenticated")
 
         # Prevent overlapping heartbeat tasks across reconnects
         await self._cancel_heartbeat()
@@ -323,14 +354,23 @@ class IQOptionWebSocketClient:
             await asyncio.wait_for(self._balances_event.wait(), timeout=account_data_timeout)
             balances_received = len(self._balances) > 0
 
+        self._diagnostics.record_profile_status(profile_received)
+        self._diagnostics.record_balances_status(balances_received)
+
         async with self._state_lock:
             if profile_received and balances_received:
                 self._state = ConnectionState.READY
+                self._transition_monitor(ConnectionState.READY, reason="ready")
                 logger.info(
                     "WebSocket authenticated and fully ready (profile and balances verified)"
                 )
             else:
                 self._state = ConnectionState.AUTHENTICATED
+                self._diagnostics.record_failure(
+                    "ACCOUNT_DATA_MISSING",
+                    f"profile={'present' if profile_received else 'missing'}, "
+                    f"balances={len(self._balances)}",
+                )
                 logger.warning(
                     "WebSocket authenticated, but required account data missing or timed out "
                     "(profile=%s, balances=%d). State remains AUTHENTICATED (not READY).",
@@ -361,6 +401,7 @@ class IQOptionWebSocketClient:
         await self._shutdown_transport(reason)
         async with self._state_lock:
             self._state = ConnectionState.DISCONNECTED
+        self._transition_monitor(ConnectionState.DISCONNECTED, reason=reason.value)
 
     async def _shutdown_transport(self, reason: DisconnectReason) -> None:
         """Close the socket and fail pending work without touching tasks."""
@@ -473,6 +514,8 @@ class IQOptionWebSocketClient:
                     self._dispatch(message)
                 except Exception as exc:  # noqa: BLE001 - one bad frame must not kill loop
                     self.errors += 1
+                    err_name = str(message.get("name") if isinstance(message, dict) else "unknown")
+                    self._diagnostics.record_parsing_failure(err_name, type(exc).__name__)
                     logger.warning("Error dispatching frame: %s", type(exc).__name__)
         except ConnectionClosed as exc:
             logger.info("WebSocket closed by peer (code=%s)", exc.code)
@@ -487,8 +530,11 @@ class IQOptionWebSocketClient:
     def _dispatch(self, message: dict[str, Any]) -> None:
         name = message.get("name")
         req_id = message.get("request_id") or ""
+        msg = message.get("msg")
+        handled = False
 
         if name == MSG_AUTHENTICATED:
+            handled = True
             try:
                 auth_res = parse_authenticated(message)
                 self._authenticated_ok = (auth_res is True)
@@ -498,9 +544,12 @@ class IQOptionWebSocketClient:
                     type(exc).__name__,
                 )
                 self._authenticated_ok = False
+            self._diagnostics.record_incoming(name, msg, handled=True)
+            self._diagnostics.record_auth_status(self._authenticated_ok)
             if not self._authenticated_ok:
                 self._state = ConnectionState.FAILED
                 self._fail_reason = DisconnectReason.AUTH_FAILED
+                self._transition_monitor(ConnectionState.FAILED, reason="auth_failed")
                 self._profile = None
                 self._balances = []
                 self._active_balance_id = None
@@ -514,6 +563,8 @@ class IQOptionWebSocketClient:
             return
 
         if name == MSG_HEARTBEAT:
+            handled = True
+            self._diagnostics.record_incoming(name, msg, handled=True)
             self.last_heartbeat_at = time.monotonic()
             task = asyncio.create_task(
                 self._send_raw(build_heartbeat_frame(message.get("msg")))
@@ -523,43 +574,70 @@ class IQOptionWebSocketClient:
             return
 
         if name == "timeSync":
+            handled = True
+            self._diagnostics.record_incoming(name, msg, handled=True)
             self._server_time_ns = _to_epoch_ns(message.get("msg"))
             return
 
         if req_id and req_id in self._pending:
+            handled = True
+            self._diagnostics.record_incoming(name, msg, handled=True)
             pending = self._pending[req_id]
             if not pending.future.done():
                 pending.future.set_result(message)
 
-        if name == MSG_PROFILE:
+        if name in (MSG_PROFILE, "profile", "get-profile", "user-profile"):
+            handled = True
             raw_profile = message.get("msg")
             if isinstance(raw_profile, dict):
                 self._profile = Profile.from_raw(raw_profile)
-                balance_id = raw_profile.get("balance_id")
+                balance_id = (
+                    raw_profile.get("balance_id")
+                    or raw_profile.get("balanceId")
+                    or raw_profile.get("active_balance_id")
+                )
                 if isinstance(balance_id, (int, str)) and str(balance_id).strip():
                     self._active_balance_id = str(balance_id).strip()
                 else:
                     self._active_balance_id = None
                 self._mark_active_balance()
                 self._profile_event.set()
+                self._diagnostics.record_profile_status(True)
+
+                # Check for nested balances array within profile
+                nested_balances = raw_profile.get("balances")
+                if isinstance(nested_balances, list):
+                    self._apply_balances(nested_balances)
+                    self._diagnostics.record_balances_status(len(self._balances) > 0)
+            self._diagnostics.record_incoming(name, msg, handled=True)
             return
 
         if name == "balance-changed":
-            msg = message.get("msg")
-            if isinstance(msg, dict):
-                current = msg.get("current_balance")
+            handled = True
+            self._diagnostics.record_incoming(name, msg, handled=True)
+            msg_payload = message.get("msg")
+            if isinstance(msg_payload, dict):
+                current = msg_payload.get("current_balance")
                 if isinstance(current, dict) and current.get("id") is not None:
                     self._active_balance_id = str(current["id"])
                     self._mark_active_balance()
             return
 
-        if name == MSG_BALANCES:
+        if name in (MSG_BALANCES, "balances", "get-balances", "balance"):
+            handled = True
             raw_balances = message.get("msg")
-            if isinstance(raw_balances, list):
+            if isinstance(raw_balances, dict) and isinstance(raw_balances.get("balances"), list):
+                self._apply_balances(raw_balances["balances"])
+                self._diagnostics.record_balances_status(len(self._balances) > 0)
+            elif isinstance(raw_balances, list):
                 self._apply_balances(raw_balances)
+                self._diagnostics.record_balances_status(len(self._balances) > 0)
+            self._diagnostics.record_incoming(name, msg, handled=True)
             return
 
         if name == MSG_CANDLE_GENERATED:
+            handled = True
+            self._diagnostics.record_incoming(name, msg, handled=True)
             payload = message.get("msg")
             if isinstance(payload, dict):
                 active_id = payload.get("active_id")
@@ -576,6 +654,9 @@ class IQOptionWebSocketClient:
                                 "Candle queue full (active_id=%s size=%s)", active_id, size
                             )
             return
+
+        if not handled:
+            self._diagnostics.record_incoming(name, msg, handled=False)
 
     def _apply_balances(self, raw_balances: list[dict[str, Any]]) -> None:
         parsed: list[Balance] = []
@@ -661,6 +742,7 @@ class IQOptionWebSocketClient:
 
         async with self._reconnect_lock:
             self._fail_reason = reason
+            self._transition_monitor(ConnectionState.RECONNECTING, reason=reason.value)
             await self._cancel_heartbeat()
             if self._receive_task is not None and self._receive_task is not asyncio.current_task():
                 await self._cancel_receive_task()
@@ -702,6 +784,7 @@ class IQOptionWebSocketClient:
             self._closed = True
             async with self._state_lock:
                 self._state = ConnectionState.FAILED
+            self._transition_monitor(ConnectionState.FAILED, reason="reconnect_exhausted")
             logger.error(
                 "Reconnection exhausted after %d attempts",
                 self._config.max_reconnect_attempts,

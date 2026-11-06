@@ -141,15 +141,27 @@ class Profile:
             else _EPOCH_UTC
         )
 
+        user_id = data.get("user_id") or data.get("id") or 0
+        first_name = data.get("first_name") or data.get("name") or ""
+        last_name = data.get("last_name") or ""
+        country = str(data.get("country") or data.get("country_id") or "")
+        currency = str(data.get("currency") or "USD")
+
+        parsed_user_id = (
+            int(user_id)
+            if isinstance(user_id, (int, str)) and str(user_id).isdigit()
+            else 0
+        )
+
         return cls(
-            user_id=data.get("user_id", 0),
-            email=data.get("email", ""),
-            first_name=data.get("first_name", ""),
-            last_name=data.get("last_name", ""),
+            user_id=parsed_user_id,
+            email=str(data.get("email", "")),
+            first_name=str(first_name),
+            last_name=str(last_name),
             created_at=created_at,
             is_verified=bool(data.get("is_verified")),
-            country=data.get("country", ""),
-            currency=data.get("currency", "USD"),
+            country=country,
+            currency=currency,
             raw=data,
         )
 

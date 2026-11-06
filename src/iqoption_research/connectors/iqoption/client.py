@@ -68,7 +68,7 @@ from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.monitoring.diagnostics import ProtocolDiagnostics
 from iqoption_research.monitoring.status import ConnectionMonitor
 from iqoption_research.security import validate_https_endpoint, validate_wss_endpoint
-from iqoption_research.security.credentials import Credentials, redact_email
+from iqoption_research.security.credentials import Credentials
 
 logger = logging.getLogger(__name__)
 
@@ -530,6 +530,8 @@ class AsyncIQOption:
             "endpoint": DEFAULT_WSS_URL,
             "authenticated": bool(ws and ws.is_authenticated),
             "ready": bool(ws and ws.is_ready),
+            "practice_verified": bool(ws and ws.is_practice_verified),
+            "trade_permission": "NEVER (Strictly Read-Only Research Architecture)",
             "reconnect_attempts": ws.reconnect_attempts if ws else 0,
             "messages_received": ws.messages_rx if ws else health.messages_received,
             "messages_sent": ws.messages_tx if ws else health.messages_sent,
@@ -539,23 +541,26 @@ class AsyncIQOption:
         return payload
 
     def describe_account(self, status: AccountStatus) -> dict[str, object]:
-        """Return sanitized account information (no raw email or tokens)."""
+        """Return sanitized account information with zero personal identifiers.
+
+        Excludes user IDs, emails, country, full/partial balance IDs, and balance
+        amounts from normal output to ensure privacy and security.
+        """
         verification = status.practice_verification()
         return {
-            "user_id": status.profile.user_id,
-            "email": redact_email(status.profile.email),
-            "country": status.profile.country,
             "balances": [
                 {
-                    "id_last4": b.id[-4:] if len(b.id) > 4 else "****",
                     "type": b.type.name,
-                    "amount": b.amount,
                     "currency": b.currency,
                     "is_active": b.is_active,
                 }
                 for b in status.balances
             ],
-            "practice_verification": verification.to_dict(),
+            "practice_verification": {
+                "status": verification.status.value,
+                "is_verified": verification.is_verified,
+                "message": verification.message,
+            },
             "warning": (
                 "An authenticated session may retain REAL-account privileges "
                 "even though this client only calls read-only methods."

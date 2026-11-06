@@ -23,9 +23,13 @@ class PracticeStatus(Enum):
     as the active trading account being PRACTICE.
     """
     VERIFIED_ACTIVE_PRACTICE = "verified_active_practice"
-    PRACTICE_PRESENT_ACTIVE_UNVERIFIED = "practice_present_active_unverified"
+    ACTIVE_REAL = "active_real"
+    ACTIVE_UNKNOWN = "active_unknown"
     NO_PRACTICE_BALANCE = "no_practice_balance"
     NO_BALANCES = "no_balances"
+
+    # Backward compatibility alias
+    PRACTICE_PRESENT_ACTIVE_UNVERIFIED = "practice_present_active_unverified"
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,8 +350,19 @@ class AccountStatus:
                 active_balance_id=active.id,
                 practice_balance_ids=practice_ids,
             )
+        if self.active_balance is not None and self.active_balance.is_real:
+            return PracticeVerification(
+                status=PracticeStatus.ACTIVE_REAL,
+                message=(
+                    "A PRACTICE balance exists, but the server-reported active "
+                    "account is REAL. Halting research operations; real trading account "
+                    "is active."
+                ),
+                active_balance_id=self.active_balance.id,
+                practice_balance_ids=practice_ids,
+            )
         return PracticeVerification(
-            status=PracticeStatus.PRACTICE_PRESENT_ACTIVE_UNVERIFIED,
+            status=PracticeStatus.ACTIVE_UNKNOWN,
             message=(
                 "A PRACTICE balance exists, but the active trading account "
                 "could not be established as PRACTICE. Treat as UNVERIFIED; "

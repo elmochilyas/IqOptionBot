@@ -1,5 +1,9 @@
 """Monitoring package — state machine, health checks, metrics."""
 
+from iqoption_research.monitoring.diagnostics import (
+    FrameShape,
+    ProtocolDiagnostics,
+)
 from iqoption_research.monitoring.health import (
     HealthCheck,
     check_connection_health,
@@ -19,9 +23,11 @@ from iqoption_research.monitoring.status import (
 __all__ = [
     "ALLOWED_TRANSITIONS",
     "ConnectionMonitor",
+    "FrameShape",
     "HealthCheck",
     "LatencySummary",
     "LatencyTracker",
+    "ProtocolDiagnostics",
     "StateTransition",
     "ThroughputCounter",
     "check_connection_health",

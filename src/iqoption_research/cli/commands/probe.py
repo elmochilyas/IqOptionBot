@@ -39,19 +39,42 @@ async def run_probe(
     count: int,
     save: bool,
     output_dir: str | Path,
+    diagnostics: bool = False,
 ) -> dict[str, object]:
     """Perform one explicit, read-only live probe. Caller supplies consent."""
     credentials = get_credentials()
-    settings = Settings(offline=False)
-    client = AsyncIQOption(credentials, settings=settings, offline=False)
+    settings = Settings(offline=False, diagnostics=diagnostics)
+    client = AsyncIQOption(
+        credentials, settings=settings, offline=False, diagnostics=diagnostics
+    )
 
     try:
-        await client.connect()
+        await client.connect(raise_if_incomplete=False)
+
+        if not client.is_ready:
+            # Authenticated over WS, but profile or balances were missing/timed out
+            summary: dict[str, object] = {
+                "mode": "real_read_only_probe",
+                "connection": client.describe_connection(),
+                "account_data_missing": True,
+                "practice_verified": False,
+                "note": (
+                    "WebSocket authenticated successfully, but required account data "
+                    "(profile/balances) was not received within timeout. "
+                    "PRACTICE status remains explicitly UNVERIFIED."
+                ),
+            }
+            if diagnostics:
+                summary["diagnostics"] = client.diagnostics.summary(
+                    connection_state=client.state
+                )
+            return summary
+
         status = await client.get_account_status()
         verification = status.practice_verification()
         result = await client.get_candles(symbol, size, count)
 
-        summary: dict[str, object] = {
+        summary = {
             "mode": "real_read_only_probe",
             "connection": client.describe_connection(),
             "account": client.describe_account(status),
@@ -62,6 +85,10 @@ async def run_probe(
                 "switched, and no credentials were displayed."
             ),
         }
+        if diagnostics:
+            summary["diagnostics"] = client.diagnostics.summary(
+                connection_state=client.state
+            )
 
         if save:
             saved = save_candles(
@@ -91,6 +118,11 @@ def probe_command(
         False,
         "--yes-i-understand",
         help="Skip the interactive confirmation (still requires --live).",
+    ),
+    diagnostics: bool = typer.Option(
+        False,
+        "--diagnostics",
+        help="Enable safe metadata-only protocol diagnostics (no secrets/personal data logged).",
     ),
     symbol: str = typer.Option("EURUSD", help="Instrument (Phase 1: EURUSD)."),
     size: int = typer.Option(60, help="Candle size in seconds."),
@@ -138,6 +170,7 @@ def probe_command(
                 count=count,
                 save=save,
                 output_dir=output_dir,
+                diagnostics=diagnostics,
             )
         )
     except IQOptionError as exc:
@@ -151,11 +184,20 @@ def probe_command(
         print_json(summary)
     else:
         print_json(summary, title="Probe summary")
-        if not summary.get("practice_verified", False):
+        if summary.get("account_data_missing"):
+            print_warning(
+                "WebSocket authenticated, but required account profile/balances "
+                "were missing or timed out."
+            )
+            print_warning("PRACTICE status remains explicitly UNVERIFIED.")
+            if diagnostics and "diagnostics" in summary:
+                print_json(summary["diagnostics"], title="Safe Protocol Diagnostics")
+        elif not summary.get("practice_verified", False):
             print_warning(
                 "PRACTICE status UNVERIFIED: the active account may be REAL. "
                 "No account switching was performed."
             )
-        print_success(
-            "Read-only probe completed. No orders placed, no balances switched."
-        )
+        else:
+            print_success(
+                "Read-only probe completed. No orders placed, no balances switched."
+            )

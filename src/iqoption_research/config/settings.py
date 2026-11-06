@@ -35,6 +35,10 @@ class Settings(BaseSettings):
         default=True,
         description="When true, all network I/O is refused.",
     )
+    diagnostics: bool = Field(
+        default=False,
+        description="When true, records safe metadata-only protocol diagnostics.",
+    )
     log_level: str = Field(default="INFO")
     data_dir: Path = Field(default=Path("data"))
     max_candles: int = Field(default=500, ge=1, le=1000)

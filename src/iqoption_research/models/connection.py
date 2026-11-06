@@ -106,6 +106,9 @@ class ConnectionConfig:
     # Session
     protocol_version: int = 3
 
+    # Diagnostics
+    diagnostics: bool = False
+
     def __post_init__(self) -> None:
         # Validate timeouts are positive
         for field_name in ("connect_timeout", "auth_timeout", "request_timeout",

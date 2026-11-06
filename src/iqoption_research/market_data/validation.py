@@ -65,6 +65,7 @@ class DataQualityReport:
     incomplete_count: int = 0
     stale: bool = False
     stale_age_seconds: float | None = None
+    newest_candle_end_ts: int | None = None
     clock_drift_ms: float | None = None
     issues: tuple[ValidationIssue, ...] = ()
     score: float = 100.0
@@ -89,7 +90,22 @@ class DataQualityReport:
             "out_of_order_indices": list(self.out_of_order_indices),
             "incomplete_count": self.incomplete_count,
             "stale": self.stale,
-            "stale_age_seconds": self.stale_age_seconds,
+            "stale_age_seconds": (
+                round(self.stale_age_seconds, 1)
+                if self.stale_age_seconds is not None
+                else None
+            ),
+            "newest_candle_utc": (
+                utc_from_seconds(self.newest_candle_end_ts).isoformat()
+                if self.newest_candle_end_ts is not None
+                else None
+            ),
+            "staleness_warning": (
+                "Market data is stale. Verify instrument-specific trading schedule "
+                "before inferring whether market is closed."
+                if self.stale
+                else None
+            ),
             "clock_drift_ms": self.clock_drift_ms,
             "issues": [i.to_dict() for i in self.issues],
             "score": round(self.score, 2),
@@ -250,9 +266,11 @@ def assess_data_quality(
             ValidationIssue(
                 code="stale_data",
                 message=(
-                    f"Newest candle ended {age_seconds:.0f}s ago "
-                    f"(threshold {max_staleness_seconds:.0f}s)"
+                    f"Newest candle ended at {utc_from_seconds(newest_end).isoformat()} "
+                    f"({age_seconds:.0f}s ago; threshold {max_staleness_seconds:.0f}s). "
+                    "Data is stale; verify trading schedule rather than assuming market closed."
                 ),
+                from_ts=newest_end,
             )
         )
         score -= 25.0
@@ -289,6 +307,7 @@ def assess_data_quality(
         incomplete_count=incomplete_count,
         stale=stale,
         stale_age_seconds=age_seconds,
+        newest_candle_end_ts=newest_end,
         clock_drift_ms=clock_drift_ms,
         issues=tuple(issues),
         score=score,

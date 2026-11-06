@@ -1,4 +1,6 @@
-"""Market data package — instruments, sessions, candles, validation, storage."""
+"""Market data package — instruments, sessions, candles,
+validation, storage, parquet, catalog, sufficiency.
+"""
 
 from iqoption_research.market_data.candles import (
     CandleError,
@@ -13,6 +15,11 @@ from iqoption_research.market_data.candles import (
     utc_from_ns,
     utc_from_seconds,
     validate_ohlc,
+)
+from iqoption_research.market_data.catalog import (
+    CURRENT_CATALOG_SCHEMA_VERSION,
+    CatalogEntry,
+    DatasetCatalog,
 )
 from iqoption_research.market_data.fetch import CandleFetchResult
 from iqoption_research.market_data.instruments import (
@@ -31,6 +38,18 @@ from iqoption_research.market_data.instruments import (
     normalize_symbol,
     resolve_active_id,
 )
+from iqoption_research.market_data.parquet_storage import (
+    PARQUET_STORAGE_SCHEMA_VERSION,
+    DataIntegrityError,
+    ImmutableDatasetError,
+    ParquetWriteResult,
+    StorageError,
+    UnsafePathError,
+    cleanup_staging_files,
+    read_candles_parquet,
+    read_filtered_candles,
+    write_candles_parquet,
+)
 from iqoption_research.market_data.sessions import (
     DEFAULT_FOREX_TZ,
     EURUSD_FOREX_SCHEDULE,
@@ -44,6 +63,17 @@ from iqoption_research.market_data.storage import (
     build_metadata,
     load_candles_jsonl,
     save_candles,
+)
+from iqoption_research.market_data.sufficiency import (
+    DEFAULT_RESEARCH_POLICY,
+    POLICY_EXPLORATORY,
+    POLICY_ML_TRAINING,
+    POLICY_SMOKE_TEST,
+    POLICY_STATISTICAL_BACKTEST,
+    ResearchSufficiencyPolicy,
+    SufficiencyEvaluation,
+    SufficiencyStatus,
+    assess_research_sufficiency,
 )
 from iqoption_research.market_data.validation import (
     CandleGap,
@@ -63,29 +93,48 @@ __all__ = [
     "ACTIVES",
     "ACTIVES_TO_INSTRUMENTS",
     "BROKER_QUOTE_DISCLAIMER",
+    "CURRENT_CATALOG_SCHEMA_VERSION",
     "DEFAULT_FOREX_TZ",
+    "DEFAULT_RESEARCH_POLICY",
     "EURUSD",
     "EURUSD_FOREX_SCHEDULE",
     "EURUSD_OTC",
     "EURUSD_OTC_SCHEDULE",
     "MAPPING_PROVENANCE_REF",
+    "PARQUET_STORAGE_SCHEMA_VERSION",
+    "POLICY_EXPLORATORY",
+    "POLICY_ML_TRAINING",
+    "POLICY_SMOKE_TEST",
+    "POLICY_STATISTICAL_BACKTEST",
     "REGISTRY_VERSION",
     "SUPPORTED_INSTRUMENTS",
     "CandleError",
     "CandleFetchResult",
     "CandleGap",
+    "CatalogEntry",
+    "DataIntegrityError",
     "DataQualityReport",
+    "DatasetCatalog",
     "GapClassification",
+    "ImmutableDatasetError",
     "Instrument",
     "InstrumentRegistry",
     "MarketSchedule",
+    "ParquetWriteResult",
+    "ResearchSufficiencyPolicy",
     "SavedDataset",
+    "StorageError",
+    "SufficiencyEvaluation",
+    "SufficiencyStatus",
     "TimestampUnit",
+    "UnsafePathError",
     "ValidationIssue",
     "analyze_flat_candles",
     "assess_data_quality",
+    "assess_research_sufficiency",
     "build_metadata",
     "candle_window_start",
+    "cleanup_staging_files",
     "detect_timestamp_unit",
     "find_duplicate_timestamps",
     "find_gaps",
@@ -100,6 +149,8 @@ __all__ = [
     "normalize_symbol",
     "normalize_timestamp_ns",
     "normalize_timestamp_seconds",
+    "read_candles_parquet",
+    "read_filtered_candles",
     "resolve_active_id",
     "sanitize_raw_candle",
     "save_candles",
@@ -108,4 +159,5 @@ __all__ = [
     "utc_from_seconds",
     "validate_candle_ohlc_integrity",
     "validate_ohlc",
+    "write_candles_parquet",
 ]

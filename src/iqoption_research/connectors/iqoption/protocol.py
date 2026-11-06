@@ -21,6 +21,8 @@ MSG_AUTHENTICATED = "authenticated"
 MSG_HEARTBEAT = "heartbeat"
 MSG_PROFILE = "profile"
 MSG_BALANCES = "balances"
+MSG_GET_PROFILE = "get-profile"
+MSG_GET_BALANCES = "get-balances"
 MSG_GET_CANDLES = "get-candles"
 MSG_SUBSCRIBE = "subscribeMessage"
 MSG_UNSUBSCRIBE = "unsubscribeMessage"
@@ -35,12 +37,16 @@ ALLOWED_OUTGOING_FRAME_NAMES: frozenset[str] = frozenset(
         "sendMessage",
         MSG_SUBSCRIBE,
         MSG_UNSUBSCRIBE,
+        MSG_GET_PROFILE,
+        MSG_GET_BALANCES,
     }
 )
 
 ALLOWED_OUTGOING_SEND_MESSAGES: frozenset[str] = frozenset(
     {
         MSG_GET_CANDLES,
+        MSG_GET_PROFILE,
+        MSG_GET_BALANCES,
     }
 )
 
@@ -109,6 +115,50 @@ class OutgoingCandlesRequestFrame(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Literal["sendMessage"]
     msg: OutgoingCandlesRequestMsg
+    request_id: str | None = None
+
+
+class OutgoingGetProfileRequestMsg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Literal["get-profile"]
+    version: str = Field(default="1.0", pattern=r"^[0-9]+(\.[0-9]+)*$")
+    body: dict[str, Any] = Field(default_factory=dict)
+
+
+class OutgoingGetProfileRequestFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Literal["sendMessage"]
+    msg: OutgoingGetProfileRequestMsg
+    request_id: str | None = None
+
+
+class OutgoingGetBalancesRequestMsg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Literal["get-balances"]
+    version: str = Field(default="1.0", pattern=r"^[0-9]+(\.[0-9]+)*$")
+    body: dict[str, Any] = Field(default_factory=dict)
+
+
+class OutgoingGetBalancesRequestFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Literal["sendMessage"]
+    msg: OutgoingGetBalancesRequestMsg
+    request_id: str | None = None
+
+
+class OutgoingDirectGetProfileFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Literal["get-profile"]
+    version: str = Field(default="1.0", pattern=r"^[0-9]+(\.[0-9]+)*$")
+    body: dict[str, Any] = Field(default_factory=dict)
+    request_id: str | None = None
+
+
+class OutgoingDirectGetBalancesFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Literal["get-balances"]
+    version: str = Field(default="1.0", pattern=r"^[0-9]+(\.[0-9]+)*$")
+    body: dict[str, Any] = Field(default_factory=dict)
     request_id: str | None = None
 
 
@@ -204,6 +254,50 @@ def build_get_candles_frame(
             "count": int(count),
         },
     }
+
+
+def build_get_profile_frame(*, version: str = "1.0") -> dict[str, Any]:
+    """Build a get-profile inner message payload."""
+    return {
+        "name": MSG_GET_PROFILE,
+        "version": version,
+        "body": {},
+    }
+
+
+def build_get_balances_frame(*, version: str = "1.0") -> dict[str, Any]:
+    """Build a get-balances inner message payload."""
+    return {
+        "name": MSG_GET_BALANCES,
+        "version": version,
+        "body": {},
+    }
+
+
+def build_get_profile_request_frame(
+    *, version: str = "1.0", request_id: str | None = None
+) -> dict[str, Any]:
+    """Build a complete sendMessage get-profile request frame."""
+    frame: dict[str, Any] = {
+        "name": "sendMessage",
+        "msg": build_get_profile_frame(version=version),
+    }
+    if request_id is not None:
+        frame["request_id"] = str(request_id)
+    return frame
+
+
+def build_get_balances_request_frame(
+    *, version: str = "1.0", request_id: str | None = None
+) -> dict[str, Any]:
+    """Build a complete sendMessage get-balances request frame."""
+    frame: dict[str, Any] = {
+        "name": "sendMessage",
+        "msg": build_get_balances_frame(version=version),
+    }
+    if request_id is not None:
+        frame["request_id"] = str(request_id)
+    return frame
 
 
 def build_candle_subscription_frame(active_id: int, size: int) -> dict[str, Any]:
@@ -346,7 +440,27 @@ def validate_outgoing_frame(frame: dict[str, Any]) -> None:
         elif name == MSG_HEARTBEAT:
             OutgoingHeartbeatFrame.model_validate(frame)
         elif name == "sendMessage":
-            OutgoingCandlesRequestFrame.model_validate(frame)
+            msg_obj = frame.get("msg")
+            if not isinstance(msg_obj, dict):
+                raise TradingNotAllowedError("sendMessage 'msg' must be a dictionary")
+            inner_name = msg_obj.get("name")
+            if inner_name not in ALLOWED_OUTGOING_SEND_MESSAGES:
+                raise TradingNotAllowedError(
+                    f"sendMessage inner operation {inner_name!r} is not allowed: "
+                    f"{sorted(ALLOWED_OUTGOING_SEND_MESSAGES)}"
+                )
+            if inner_name == MSG_GET_CANDLES:
+                OutgoingCandlesRequestFrame.model_validate(frame)
+            elif inner_name == MSG_GET_PROFILE:
+                OutgoingGetProfileRequestFrame.model_validate(frame)
+            elif inner_name == MSG_GET_BALANCES:
+                OutgoingGetBalancesRequestFrame.model_validate(frame)
+            else:
+                raise TradingNotAllowedError(f"Unhandled sendMessage operation: {inner_name!r}")
+        elif name == MSG_GET_PROFILE:
+            OutgoingDirectGetProfileFrame.model_validate(frame)
+        elif name == MSG_GET_BALANCES:
+            OutgoingDirectGetBalancesFrame.model_validate(frame)
         elif name in (MSG_SUBSCRIBE, MSG_UNSUBSCRIBE):
             OutgoingSubscriptionFrame.model_validate(frame)
         else:

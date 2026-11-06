@@ -5,6 +5,7 @@ balance endpoints. The practice account verification is explicit —
 we NEVER assume a balance is practice without verification.
 """
 
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum, IntEnum
@@ -113,25 +114,45 @@ class Balance:
             4 -> AccountType.PRACTICE (demo practice account; is_practice is True)
             5 -> AccountType.TOURNAMENT (tournament account; is_practice is False)
 
-        Type 1 is REAL and is NEVER identified as PRACTICE.
+        Accepts only exact integer types (1, 4, 5) or their exact decimal string
+        representations ("1", "4", "5"). Rejects booleans, floats, fractional
+        coercions, malformed strings, and unknown values.
+        Sensitive/raw input values are NEVER included in validation error messages.
         """
         raw_type = data.get("type")
         if raw_type is None:
             raise ValueError("Balance payload missing required 'type' field")
+        if isinstance(raw_type, bool):
+            raise ValueError("Invalid account type: boolean not permitted")
+
+        parsed_type: int
+        if isinstance(raw_type, int):
+            parsed_type = raw_type
+        elif isinstance(raw_type, str) and raw_type.strip() in {"1", "4", "5"}:
+            parsed_type = int(raw_type.strip())
+        else:
+            raise ValueError("Invalid or unknown account type")
+
         try:
-            account_type = AccountType(int(raw_type))
-        except (ValueError, TypeError) as exc:
-            raise ValueError(f"Unknown account type: {raw_type!r}") from exc
+            account_type = AccountType(parsed_type)
+        except ValueError as exc:
+            raise ValueError("Invalid or unknown account type") from exc
 
         balance_id = str(data.get("id", "")).strip()
         if not balance_id:
             raise ValueError("Balance payload missing or empty 'id' field")
 
         raw_amount = data.get("amount", 0.0)
+        if isinstance(raw_amount, bool):
+            raise ValueError("Invalid balance amount: boolean not permitted")
+
         try:
             amount = float(raw_amount)
         except (ValueError, TypeError) as exc:
-            raise ValueError(f"Invalid balance amount: {raw_amount!r}") from exc
+            raise ValueError("Invalid balance amount") from exc
+
+        if not math.isfinite(amount):
+            raise ValueError("Invalid balance amount: non-finite value")
 
         currency = str(data.get("currency") or "USD").strip()
         is_active = (

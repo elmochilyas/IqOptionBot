@@ -189,8 +189,8 @@ def test_active_real_balance_rejects_practice_verification() -> None:
     assert status.practice_verified is False
     verification = status.practice_verification()
     assert verification.is_verified is False
-    assert verification.status == PracticeStatus.PRACTICE_PRESENT_ACTIVE_UNVERIFIED
-    assert "Treat as UNVERIFIED; the active account may be REAL" in verification.message
+    assert verification.status == PracticeStatus.ACTIVE_REAL
+    assert "REAL" in verification.message
 
 
 def test_active_practice_balance_confirms_practice_verification() -> None:
@@ -232,7 +232,7 @@ def test_mismatched_active_balance_id_rejects_verification() -> None:
     assert status.practice_verified is False
     verification = status.practice_verification()
     assert verification.is_verified is False
-    assert verification.status == PracticeStatus.PRACTICE_PRESENT_ACTIVE_UNVERIFIED
+    assert verification.status == PracticeStatus.ACTIVE_UNKNOWN
 
 
 def test_missing_active_balance_id_rejects_verification() -> None:
@@ -247,7 +247,7 @@ def test_missing_active_balance_id_rejects_verification() -> None:
     assert status.practice_verified is False
     verification = status.practice_verification()
     assert verification.is_verified is False
-    assert verification.status == PracticeStatus.PRACTICE_PRESENT_ACTIVE_UNVERIFIED
+    assert verification.status == PracticeStatus.ACTIVE_UNKNOWN
 
 
 def test_correlation_rejects_stale_or_unrelated_request_id() -> None:

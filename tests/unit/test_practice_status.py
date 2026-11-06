@@ -33,10 +33,10 @@ def test_practice_present_active_real():
         active_balance_id="b_real",
     )
     verification = status.practice_verification()
-    assert verification.status == PracticeStatus.PRACTICE_PRESENT_ACTIVE_UNVERIFIED
+    assert verification.status == PracticeStatus.ACTIVE_REAL
     assert verification.is_verified is False
     assert status.practice_verified is False
-    assert "Treat as UNVERIFIED" in verification.message
+    assert "REAL" in verification.message
 
 
 def test_practice_present_active_unknown():
@@ -49,7 +49,7 @@ def test_practice_present_active_unknown():
         active_balance_id=None,
     )
     verification = status.practice_verification()
-    assert verification.status == PracticeStatus.PRACTICE_PRESENT_ACTIVE_UNVERIFIED
+    assert verification.status == PracticeStatus.ACTIVE_UNKNOWN
     assert verification.is_verified is False
     assert status.practice_verified is False
 

@@ -99,6 +99,54 @@ class Balance:
     def is_real(self) -> bool:
         return self.type.is_real
 
+    @classmethod
+    def from_raw(
+        cls,
+        data: dict[str, Any],
+        *,
+        active_balance_id: str | None = None,
+    ) -> "Balance":
+        """Create a Balance from raw server dictionary.
+
+        Explicitly validates account type mapping:
+            1 -> AccountType.REAL (real trading account; is_practice is False)
+            4 -> AccountType.PRACTICE (demo practice account; is_practice is True)
+            5 -> AccountType.TOURNAMENT (tournament account; is_practice is False)
+
+        Type 1 is REAL and is NEVER identified as PRACTICE.
+        """
+        raw_type = data.get("type")
+        if raw_type is None:
+            raise ValueError("Balance payload missing required 'type' field")
+        try:
+            account_type = AccountType(int(raw_type))
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Unknown account type: {raw_type!r}") from exc
+
+        balance_id = str(data.get("id", "")).strip()
+        if not balance_id:
+            raise ValueError("Balance payload missing or empty 'id' field")
+
+        raw_amount = data.get("amount", 0.0)
+        try:
+            amount = float(raw_amount)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Invalid balance amount: {raw_amount!r}") from exc
+
+        currency = str(data.get("currency") or "USD").strip()
+        is_active = (
+            active_balance_id is not None
+            and str(active_balance_id).strip() == balance_id
+        )
+
+        return cls(
+            id=balance_id,
+            type=account_type,
+            amount=amount,
+            currency=currency,
+            is_active=is_active,
+        )
+
     def __repr__(self) -> str:
         active_marker = " (ACTIVE)" if self.is_active else ""
         return (
@@ -203,17 +251,10 @@ class AccountStatus:
         real_balance = None
 
         for b in balances_data:
+            if not isinstance(b, dict):
+                continue
             try:
-                balance = Balance(
-                    id=str(b.get("id", "")),
-                    type=AccountType(int(b.get("type", 0))),
-                    amount=float(b.get("amount", 0)),
-                    currency=b.get("currency", "USD"),
-                    is_active=(
-                        active_balance_id is not None
-                        and str(b.get("id", "")) == str(active_balance_id)
-                    ),
-                )
+                balance = Balance.from_raw(b, active_balance_id=active_balance_id)
             except (ValueError, TypeError, KeyError):
                 # Skip malformed balance entries
                 continue
@@ -245,12 +286,19 @@ class AccountStatus:
 
     @property
     def practice_verified(self) -> bool:
-        """True only if active balance IS the practice balance."""
-        return self.active_balance is not None and self.active_balance.is_practice
+        """True only if active balance IS confirmed as PRACTICE (type 4)."""
+        return (
+            self.active_balance is not None
+            and self.active_balance.is_practice
+            and self.active_balance.type == AccountType.PRACTICE
+        )
 
     def practice_verification(self) -> PracticeVerification:
         """Classify practice status without ever assuming/ switching."""
-        practice_ids = tuple(b.id for b in self.balances if b.is_practice)
+        practice_ids = tuple(
+            b.id for b in self.balances
+            if b.is_practice and b.type == AccountType.PRACTICE
+        )
         if not self.balances:
             return PracticeVerification(
                 status=PracticeStatus.NO_BALANCES,

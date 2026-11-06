@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any, Final
 
 from iqoption_research.connectors.iqoption.exceptions import InvalidCandleError
@@ -58,26 +59,70 @@ class CandleError:
     detail: str
 
 
-def normalize_timestamp_ns(value: int | float) -> int:
-    """Normalize a timestamp to nanoseconds since the Unix epoch.
+class TimestampUnit(StrEnum):
+    """Recognized epoch timestamp units based on magnitude."""
 
-    Accepts seconds, milliseconds, microseconds, or nanoseconds based on
-    magnitude. Returns 0 for 0. Raises InvalidCandleError on negatives.
+    SECONDS = "seconds"
+    MILLISECONDS = "milliseconds"
+    MICROSECONDS = "microseconds"
+    NANOSECONDS = "nanoseconds"
+    UNKNOWN = "unknown"
+
+
+def detect_timestamp_unit(value: int | float) -> TimestampUnit:
+    """Detect established timestamp unit based on magnitude for epoch dates.
+
+    Accepts integer or whole-number float representations. Rejects fractional floats,
+    booleans, negative values, and ambiguous magnitudes.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise InvalidCandleError("Timestamp must be numeric")
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise InvalidCandleError("Timestamp must be finite")
+        if not value.is_integer():
+            raise InvalidCandleError("Timestamp must not contain fractional seconds")
     if value < 0:
         raise InvalidCandleError("Timestamp must be non-negative")
     if value == 0:
-        return 0
+        return TimestampUnit.SECONDS
+
     magnitude = abs(value)
-    if magnitude >= 1e17:
+    # Reasonable epoch ranges:
+    # Seconds: ~1e8 to ~5e10 (1973 to 2286)
+    if 1e8 <= magnitude < 1e11:
+        return TimestampUnit.SECONDS
+    # Milliseconds: ~1e11 to ~5e13
+    if 1e11 <= magnitude < 1e14:
+        return TimestampUnit.MILLISECONDS
+    # Microseconds: ~1e14 to ~5e16
+    if 1e14 <= magnitude < 1e17:
+        return TimestampUnit.MICROSECONDS
+    # Nanoseconds: ~1e17 to ~5e19
+    if 1e17 <= magnitude < 1e20:
+        return TimestampUnit.NANOSECONDS
+
+    return TimestampUnit.UNKNOWN
+
+
+def normalize_timestamp_ns(value: int | float) -> int:
+    """Normalize a timestamp to nanoseconds since the Unix epoch.
+
+    Normalizes only when the timestamp unit has been established.
+    Raises InvalidCandleError on ambiguous or unestablished magnitudes.
+    """
+    if value == 0:
+        return 0
+    unit = detect_timestamp_unit(value)
+    if unit == TimestampUnit.NANOSECONDS:
         return int(value)
-    if magnitude >= 1e14:
+    if unit == TimestampUnit.MICROSECONDS:
         return int(value * 1_000)
-    if magnitude >= 1e11:
+    if unit == TimestampUnit.MILLISECONDS:
         return int(value * 1_000_000)
-    return int(value * 1_000_000_000)
+    if unit == TimestampUnit.SECONDS:
+        return int(value * 1_000_000_000)
+    raise InvalidCandleError(f"Ambiguous or unestablished timestamp magnitude: {value}")
 
 
 def normalize_timestamp_seconds(value: int | float) -> int:

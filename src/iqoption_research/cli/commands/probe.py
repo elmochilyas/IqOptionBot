@@ -29,6 +29,7 @@ from iqoption_research.config.settings import Settings
 from iqoption_research.connectors.iqoption.client import AsyncIQOption
 from iqoption_research.connectors.iqoption.exceptions import IQOptionError
 from iqoption_research.market_data.storage import save_candles
+from iqoption_research.models.account import PracticeStatus
 from iqoption_research.security.credentials import get_credentials, redact_secrets
 
 
@@ -72,13 +73,40 @@ async def run_probe(
 
         status = await client.get_account_status()
         verification = status.practice_verification()
+
+        # Gate: Require fresh server-confirmed active PRACTICE verification
+        # before proceeding beyond account discovery. If REAL is active or unverified,
+        # halt before market-data retrieval to protect real account.
+        if not verification.is_verified:
+            summary = {
+                "mode": "real_read_only_probe",
+                "connection": client.describe_connection(),
+                "account": client.describe_account(status),
+                "practice_verified": False,
+                "practice_status": verification.status.value,
+                "warning": (
+                    "PROBE HALTED: Server-reported active balance is not verified as PRACTICE. "
+                    f"Status: {verification.status.value.upper()}. "
+                    "Market-data retrieval stopped to ensure account safety."
+                ),
+                "note": (
+                    "Read-only probe halted before market-data retrieval. "
+                    "No orders placed, no balances switched."
+                ),
+            }
+            if diagnostics:
+                summary["diagnostics"] = client.diagnostics.summary(
+                    connection_state=client.state
+                )
+            return summary
+
         result = await client.get_candles(symbol, size, count)
 
         summary = {
             "mode": "real_read_only_probe",
             "connection": client.describe_connection(),
             "account": client.describe_account(status),
-            "practice_verified": verification.is_verified,
+            "practice_verified": True,
             "candles": result.to_dict(),
             "note": (
                 "Read-only probe. No orders were placed, no balances were "
@@ -193,11 +221,32 @@ def probe_command(
             if diagnostics and "diagnostics" in summary:
                 print_json(summary["diagnostics"], title="Safe Protocol Diagnostics")
         elif not summary.get("practice_verified", False):
-            print_warning(
-                "PRACTICE status UNVERIFIED: the active account may be REAL. "
-                "No account switching was performed."
-            )
+            practice_status = summary.get("practice_status")
+            if practice_status == PracticeStatus.ACTIVE_REAL.value:
+                print_warning(
+                    "CRITICAL WARNING: Server-reported active account is REAL. "
+                    "Probe halted before market-data retrieval to protect real account. "
+                    "No account switching was performed."
+                )
+            else:
+                print_warning(
+                    f"PRACTICE status UNVERIFIED ({practice_status}): active account is not "
+                    "verified as PRACTICE. Probe halted before market-data retrieval. "
+                    "No account switching was performed."
+                )
+            if diagnostics and "diagnostics" in summary:
+                print_json(summary["diagnostics"], title="Safe Protocol Diagnostics")
         else:
+            candles_info = summary.get("candles")
+            if isinstance(candles_info, dict):
+                quality = candles_info.get("quality", {})
+                if isinstance(quality, dict) and quality.get("stale"):
+                    print_warning(
+                        f"DATA QUALITY WARNING: Retrieved candles are stale. "
+                        f"Newest candle ended at {quality.get('newest_candle_utc')} "
+                        f"({quality.get('stale_age_seconds', 0):.0f}s ago). "
+                        "Do not assume market is closed without verified trading schedule."
+                    )
             print_success(
                 "Read-only probe completed. No orders placed, no balances switched."
             )

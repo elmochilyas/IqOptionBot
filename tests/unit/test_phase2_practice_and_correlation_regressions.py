@@ -94,14 +94,16 @@ def test_balance_from_raw_real_type_1_never_practice() -> None:
 
 
 def test_balance_from_raw_invalid_types_raise() -> None:
-    """Verifies unknown or missing types raise ValueError."""
+    """Verifies unknown or missing types raise ValueError without leaking inputs."""
     # Unknown numeric type
-    with pytest.raises(ValueError, match="Unknown account type"):
+    with pytest.raises(ValueError, match="account type") as exc:
         Balance.from_raw({"id": "b1", "type": 999, "amount": 10.0})
+    assert "999" not in str(exc.value)
 
     # Type 0 (undefined in IQ Option)
-    with pytest.raises(ValueError, match="Unknown account type"):
+    with pytest.raises(ValueError, match="account type") as exc:
         Balance.from_raw({"id": "b1", "type": 0, "amount": 10.0})
+    assert "0" not in str(exc.value)
 
     # Missing type field
     with pytest.raises(ValueError, match="missing required 'type' field"):
@@ -110,6 +112,61 @@ def test_balance_from_raw_invalid_types_raise() -> None:
     # Missing id field
     with pytest.raises(ValueError, match="missing or empty 'id' field"):
         Balance.from_raw({"type": 4, "amount": 10.0})
+
+
+def test_balance_from_raw_rejects_floats_and_fractional_coercion() -> None:
+    """Verifies floats such as 4.9 are strictly rejected and never coerced to 4."""
+    for invalid_float in (4.9, 4.0, 1.1, 1.0, 5.0, 0.9):
+        with pytest.raises(ValueError, match="account type") as exc:
+            Balance.from_raw({"id": "b1", "type": invalid_float, "amount": 10.0})
+        # Raw float value must NOT leak into the exception message
+        assert str(invalid_float) not in str(exc.value)
+
+
+def test_balance_from_raw_rejects_booleans() -> None:
+    """Verifies booleans for type or amount are strictly rejected."""
+    with pytest.raises(ValueError, match="boolean not permitted"):
+        Balance.from_raw({"id": "b1", "type": True, "amount": 10.0})
+
+    with pytest.raises(ValueError, match="boolean not permitted"):
+        Balance.from_raw({"id": "b1", "type": False, "amount": 10.0})
+
+    with pytest.raises(ValueError, match="boolean not permitted"):
+        Balance.from_raw({"id": "b1", "type": 4, "amount": True})
+
+
+def test_balance_from_raw_string_representation() -> None:
+    """Verifies exact string representations '1', '4', '5' work while malformed fail."""
+    # Valid decimal strings
+    b_real = Balance.from_raw({"id": "b1", "type": "1", "amount": "50.5"})
+    assert b_real.type == AccountType.REAL
+    assert b_real.amount == 50.5
+
+    b_prac = Balance.from_raw({"id": "b2", "type": "4", "amount": 1000.0})
+    assert b_prac.type == AccountType.PRACTICE
+
+    b_tour = Balance.from_raw({"id": "b3", "type": "5", "amount": 0.0})
+    assert b_tour.type == AccountType.TOURNAMENT
+
+    # Malformed string representations
+    for malformed in ("4.9", "4.0", "1.0", "four", "practice", "", "  "):
+        with pytest.raises(ValueError, match="account type") as exc:
+            Balance.from_raw({"id": "b1", "type": malformed, "amount": 10.0})
+        if malformed.strip():
+            assert malformed not in str(exc.value)
+
+
+def test_balance_from_raw_rejects_malformed_amount_without_leak() -> None:
+    """Verifies invalid or non-finite amounts raise ValueError without leaking inputs."""
+    sensitive_token = "malformed_amount_val_SECRET"
+    with pytest.raises(ValueError, match="Invalid balance amount") as exc:
+        Balance.from_raw({"id": "b1", "type": 4, "amount": sensitive_token})
+    assert sensitive_token not in str(exc.value)
+
+    # Non-finite values
+    for non_finite in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="non-finite value"):
+            Balance.from_raw({"id": "b1", "type": 4, "amount": non_finite})
 
 
 def test_active_real_balance_rejects_practice_verification() -> None:

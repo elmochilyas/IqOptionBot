@@ -5,12 +5,12 @@
 - **Date of Execution**: November 2026
 - **Test Environment**: Windows, Python 3.12.10
 - **Test Framework**: `pytest 8.4.2`, `pytest-asyncio 0.26.0`, `pytest-mock 3.17.0`
-- **Total Tests Executed**: 128
-- **Passed**: 128
+- **Total Tests Executed**: 132
+- **Passed**: 132
 - **Failed**: 0
 - **Skipped**: 0
 - **Untested / Out-of-Scope Scenarios**: Live broker endpoint I/O, live 2FA OTP submission, live order execution (strictly omitted during test runs by design).
-- **Total Execution Time**: ~10.74 seconds
+- **Total Execution Time**: ~10.27 seconds
 
 ---
 
@@ -18,7 +18,7 @@
 
 | Requirement Area | Test Module | Tests | Status |
 | :--- | :--- | :---: | :---: |
-| **1. PRACTICE Account Safety & Correlation Isolation** | `tests/unit/test_phase2_practice_and_correlation_regressions.py` | 13 | ✅ Passed |
+| **1. PRACTICE Account Safety & Correlation Isolation** | `tests/unit/test_phase2_practice_and_correlation_regressions.py` | 17 | ✅ Passed |
 | **2. Explicit Read-Only Account Data Requests & Correlation** | `tests/integration/test_account_data_requests.py` | 9 | ✅ Passed |
 | **3. Connection Monitoring Lifecycle & Protocol Diagnostics** | `tests/integration/test_connection_lifecycle.py` | 7 | ✅ Passed |
 | **4. Secure auth request construction & redirect protection** | `tests/unit/test_http_auth.py` | 15 | ✅ Passed |

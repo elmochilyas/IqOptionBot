@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import logging
 import random
 import time
@@ -36,6 +37,8 @@ from iqoption_research.connectors.iqoption.protocol import (
     MSG_HEARTBEAT,
     MSG_PROFILE,
     build_authenticate_frame,
+    build_get_balances_request_frame,
+    build_get_profile_request_frame,
     build_heartbeat_frame,
     decode_frame,
     encode_frame,
@@ -133,6 +136,10 @@ class IQOptionWebSocketClient:
         self._balances: list[Balance] = []
         self._active_balance_id: str | None = None
 
+        self._request_counter = itertools.count(1)
+        self._profile_request_id: str | None = None
+        self._balances_request_id: str | None = None
+
         self._authenticated_event = asyncio.Event()
         self._authenticated_ok = False
         self._profile_event = asyncio.Event()
@@ -210,6 +217,16 @@ class IQOptionWebSocketClient:
         """Last server time observed via the ``timeSync`` message."""
         return self._server_time_ns
 
+    @property
+    def profile_request_id(self) -> str | None:
+        """Request identifier used for explicit get-profile request."""
+        return self._profile_request_id
+
+    @property
+    def balances_request_id(self) -> str | None:
+        """Request identifier used for explicit get-balances request."""
+        return self._balances_request_id
+
     # ----- lifecycle -----
 
     async def connect(self) -> None:
@@ -284,6 +301,8 @@ class IQOptionWebSocketClient:
         self._profile = None
         self._balances = []
         self._active_balance_id = None
+        self._profile_request_id = f"profile-{next(self._request_counter)}"
+        self._balances_request_id = f"balances-{next(self._request_counter)}"
 
         async with self._state_lock:
             self._state = ConnectionState.CONNECTING
@@ -343,6 +362,19 @@ class IQOptionWebSocketClient:
         self._heartbeat_task = asyncio.create_task(
             self._heartbeat_loop(), name="iqoption-ws-heartbeat"
         )
+
+        # Explicit read-only account data requests sent after WebSocket authentication
+        profile_req_id = self._profile_request_id
+        balances_req_id = self._balances_request_id
+
+        try:
+            await self._send_raw(build_get_profile_request_frame(request_id=profile_req_id))
+            await self._send_raw(build_get_balances_request_frame(request_id=balances_req_id))
+        except Exception as exc:  # noqa: BLE001 - transport boundary
+            self.errors += 1
+            if self._monitor is not None:
+                self._monitor.record_error(type(exc).__name__)
+            logger.warning("Failed to transmit account data requests: %s", type(exc).__name__)
 
         profile_received = False
         balances_received = False
@@ -413,6 +445,8 @@ class IQOptionWebSocketClient:
         self._profile = None
         self._balances = []
         self._active_balance_id = None
+        self._profile_request_id = None
+        self._balances_request_id = None
         self._authenticated_ok = False
         self._authenticated_event.clear()
         self._profile_event.clear()
@@ -493,6 +527,8 @@ class IQOptionWebSocketClient:
             except WebSocketException as exc:
                 raise ConnectionError(f"Send failed: {type(exc).__name__}") from exc
         self.messages_tx += 1
+        if self._monitor is not None:
+            self._monitor.record_message_sent()
         logger.debug("WS -> %s", payload.get("name"))
 
     async def _receive_loop(self) -> None:
@@ -506,8 +542,12 @@ class IQOptionWebSocketClient:
                 except ValueError:
                     logger.warning("Ignoring malformed WebSocket frame")
                     self.errors += 1
+                    if self._monitor is not None:
+                        self._monitor.record_error("malformed_frame")
                     continue
                 self.messages_rx += 1
+                if self._monitor is not None:
+                    self._monitor.record_message_received()
                 self.last_message_at = time.monotonic()
                 logger.debug("WS <- %s", message.get("name"))
                 try:
@@ -579,37 +619,32 @@ class IQOptionWebSocketClient:
             self._server_time_ns = _to_epoch_ns(message.get("msg"))
             return
 
+        # Correlated response for explicit get-profile request
+        if req_id and (req_id == self._profile_request_id or req_id.startswith("profile-")):
+            handled = True
+            self._diagnostics.record_incoming(name or "get-profile", msg, handled=True)
+            self._handle_profile_message(message)
+            return
+
+        # Correlated response for explicit get-balances request
+        if req_id and (req_id == self._balances_request_id or req_id.startswith("balances-")):
+            handled = True
+            self._diagnostics.record_incoming(name or "get-balances", msg, handled=True)
+            self._handle_balances_message(message)
+            return
+
         if req_id and req_id in self._pending:
             handled = True
-            self._diagnostics.record_incoming(name, msg, handled=True)
+            self._diagnostics.record_incoming(name or "correlated", msg, handled=True)
             pending = self._pending[req_id]
             if not pending.future.done():
                 pending.future.set_result(message)
+            return
 
         if name in (MSG_PROFILE, "profile", "get-profile", "user-profile"):
             handled = True
-            raw_profile = message.get("msg")
-            if isinstance(raw_profile, dict):
-                self._profile = Profile.from_raw(raw_profile)
-                balance_id = (
-                    raw_profile.get("balance_id")
-                    or raw_profile.get("balanceId")
-                    or raw_profile.get("active_balance_id")
-                )
-                if isinstance(balance_id, (int, str)) and str(balance_id).strip():
-                    self._active_balance_id = str(balance_id).strip()
-                else:
-                    self._active_balance_id = None
-                self._mark_active_balance()
-                self._profile_event.set()
-                self._diagnostics.record_profile_status(True)
-
-                # Check for nested balances array within profile
-                nested_balances = raw_profile.get("balances")
-                if isinstance(nested_balances, list):
-                    self._apply_balances(nested_balances)
-                    self._diagnostics.record_balances_status(len(self._balances) > 0)
             self._diagnostics.record_incoming(name, msg, handled=True)
+            self._handle_profile_message(message)
             return
 
         if name == "balance-changed":
@@ -619,20 +654,14 @@ class IQOptionWebSocketClient:
             if isinstance(msg_payload, dict):
                 current = msg_payload.get("current_balance")
                 if isinstance(current, dict) and current.get("id") is not None:
-                    self._active_balance_id = str(current["id"])
+                    self._active_balance_id = str(current["id"]).strip()
                     self._mark_active_balance()
             return
 
         if name in (MSG_BALANCES, "balances", "get-balances", "balance"):
             handled = True
-            raw_balances = message.get("msg")
-            if isinstance(raw_balances, dict) and isinstance(raw_balances.get("balances"), list):
-                self._apply_balances(raw_balances["balances"])
-                self._diagnostics.record_balances_status(len(self._balances) > 0)
-            elif isinstance(raw_balances, list):
-                self._apply_balances(raw_balances)
-                self._diagnostics.record_balances_status(len(self._balances) > 0)
             self._diagnostics.record_incoming(name, msg, handled=True)
+            self._handle_balances_message(message)
             return
 
         if name == MSG_CANDLE_GENERATED:
@@ -658,9 +687,120 @@ class IQOptionWebSocketClient:
         if not handled:
             self._diagnostics.record_incoming(name, msg, handled=False)
 
+    def _handle_profile_message(self, message: dict[str, Any]) -> None:
+        raw_profile = self._extract_profile_payload(message)
+        if raw_profile is None or not isinstance(raw_profile, dict):
+            self.errors += 1
+            if self._monitor is not None:
+                self._monitor.record_error("malformed_profile")
+            self._diagnostics.record_parsing_failure(
+                str(message.get("name") or "profile"), "MalformedProfilePayload"
+            )
+            logger.warning("Rejected malformed or non-dict profile response")
+            return
+
+        try:
+            self._profile = Profile.from_raw(raw_profile)
+        except Exception as exc:  # noqa: BLE001 - malformed data handling
+            self.errors += 1
+            if self._monitor is not None:
+                self._monitor.record_error(type(exc).__name__)
+            self._diagnostics.record_parsing_failure(
+                str(message.get("name") or "profile"), type(exc).__name__
+            )
+            logger.warning("Failed to parse profile payload: %s", type(exc).__name__)
+            return
+
+        balance_id = (
+            raw_profile.get("balance_id")
+            or raw_profile.get("balanceId")
+            or raw_profile.get("active_balance_id")
+        )
+        if isinstance(balance_id, (int, str)) and str(balance_id).strip():
+            self._active_balance_id = str(balance_id).strip()
+        else:
+            self._active_balance_id = None
+
+        current = raw_profile.get("current_balance")
+        if isinstance(current, dict) and current.get("id") is not None:
+            self._active_balance_id = str(current["id"]).strip()
+
+        self._mark_active_balance()
+        self._profile_event.set()
+        self._diagnostics.record_profile_status(True)
+
+        # Check for nested balances array within profile
+        nested_balances = raw_profile.get("balances")
+        if isinstance(nested_balances, list):
+            self._apply_balances(nested_balances)
+        elif (
+            isinstance(nested_balances, dict)
+            and isinstance(nested_balances.get("balances"), list)
+        ):
+            self._apply_balances(nested_balances["balances"])
+
+    def _extract_profile_payload(
+        self, message: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        msg = message.get("msg")
+        if isinstance(msg, dict):
+            if "profile" in msg and isinstance(msg["profile"], dict):
+                return msg["profile"]
+            if "result" in msg and isinstance(msg["result"], dict):
+                return msg["result"]
+            return msg
+        body = message.get("body")
+        if isinstance(body, dict):
+            if "profile" in body and isinstance(body["profile"], dict):
+                return body["profile"]
+            return body
+        result = message.get("result")
+        if isinstance(result, dict):
+            return result
+        return None
+
+    def _handle_balances_message(self, message: dict[str, Any]) -> None:
+        raw_balances = self._extract_balances_payload(message)
+        if raw_balances is None or not isinstance(raw_balances, list):
+            self.errors += 1
+            if self._monitor is not None:
+                self._monitor.record_error("malformed_balances")
+            self._diagnostics.record_parsing_failure(
+                str(message.get("name") or "balances"), "MalformedBalancesPayload"
+            )
+            logger.warning("Rejected malformed balances response")
+            return
+
+        self._apply_balances(raw_balances)
+        self._diagnostics.record_balances_status(len(self._balances) > 0)
+
+    def _extract_balances_payload(
+        self, message: dict[str, Any]
+    ) -> list[dict[str, Any]] | None:
+        raw = message.get("msg")
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, dict):
+            if isinstance(raw.get("balances"), list):
+                return raw["balances"]
+            if isinstance(raw.get("msg"), list):
+                return raw["msg"]
+            if isinstance(raw.get("result"), list):
+                return raw["result"]
+        body = message.get("body")
+        if isinstance(body, list):
+            return body
+        if isinstance(body, dict) and isinstance(body.get("balances"), list):
+            return body["balances"]
+        return None
+
     def _apply_balances(self, raw_balances: list[dict[str, Any]]) -> None:
+        if not isinstance(raw_balances, list):
+            return
         parsed: list[Balance] = []
         for item in raw_balances:
+            if not isinstance(item, dict):
+                continue
             try:
                 parsed.append(
                     Balance(
@@ -673,6 +813,9 @@ class IQOptionWebSocketClient:
                 )
             except (ValueError, TypeError, KeyError):
                 continue
+
+        if not parsed:
+            return
 
         # We DO NOT guess which balance is active. A practice balance being
         # present is not proof that it is the active trading account.

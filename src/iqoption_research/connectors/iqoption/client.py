@@ -526,8 +526,8 @@ class AsyncIQOption:
             "authenticated": bool(ws and ws.is_authenticated),
             "ready": bool(ws and ws.is_ready),
             "reconnect_attempts": ws.reconnect_attempts if ws else 0,
-            "messages_received": health.messages_received,
-            "messages_sent": health.messages_sent,
+            "messages_received": ws.messages_rx if ws else health.messages_received,
+            "messages_sent": ws.messages_tx if ws else health.messages_sent,
             "errors": health.errors,
             "uptime_seconds": health.uptime_seconds,
         }

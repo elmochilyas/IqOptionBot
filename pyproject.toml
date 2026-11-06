@@ -1,0 +1,142 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iqoption-research"
+version = "0.1.0"
+description = "Secure, read-only IQ Option connectivity for research (Phase 1)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+authors = [{ name = "IQ Option Research Project" }]
+keywords = ["iqoption", "trading", "research", "websocket", "asyncio", "security"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Security",
+]
+dependencies = [
+    "aiohttp>=3.9.5,<4.0",
+    "websockets>=13.0,<16.0",
+    "certifi>=2024.2.2,<2027.0",
+    "pydantic>=2.8,<3.0",
+    "pydantic-settings>=2.3,<3.0",
+    "typer>=0.12,<1.0",
+    "rich>=13.7,<14.0",
+    "python-dotenv>=1.0,<2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.23,<1.0",
+    "pytest-mock>=3.12,<4.0",
+    "ruff>=0.5,<1.0",
+    "mypy>=1.11,<2.0",
+]
+
+[project.scripts]
+iqresearch = "iqoption_research.cli.main:main"
+
+[project.urls]
+Repository = "https://github.com/your-org/iqoption-research"
+Issues = "https://github.com/your-org/iqoption-research/issues"
+Documentation = "https://github.com/your-org/iqoption-research/tree/main/docs"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["iqoption_research*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+preview = true
+
+[tool.ruff.lint]
+# Practical, high-signal rule set. Security (S) and bugbear (B) are kept;
+# purely stylistic rules (PL, TRY) are intentionally not enabled because
+# they conflict with the explicit, defensive style used here.
+select = [
+    "E", "F", "W", "I", "B", "UP", "BLE", "ASYNC", "PTH", "ERA",
+    "SIM", "C4", "DTZ", "S", "RET", "ARG", "SLF", "RUF",
+]
+ignore = [
+    # Jitter uses the non-cryptographic PRNG by design; it is not a secret.
+    "S311",
+    # Explicit timeout parameters on async methods are intentional API design.
+    "ASYNC109",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101",     # asserts are the point of tests
+    "S105",     # fake credentials in fixtures
+    "S106",     # fake hardcoded passwords in fixtures
+    "ARG001",   # unused fixture parameters
+    "ARG002",
+    "SLF001",   # testing private internal cleanup state
+    "ASYNC240", # synchronous Path methods in async tests
+    "RUF029",   # mock async callbacks without await
+    "RUF069",   # exact float comparison in deterministic mocks
+    "ERA001",   # comments in test cases
+    "B017",     # generic exception assertions
+]
+"src/iqoption_research/cli/*" = [
+    "B008",   # Typer CLI options in default arguments
+]
+"src/iqoption_research/cli/commands/security_check.py" = [
+    "S105",   # the scanner itself contains the literal patterns it searches for
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-v",
+]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.coverage.run]
+source = ["src/iqoption_research"]
+omit = ["tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

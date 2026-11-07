@@ -273,10 +273,27 @@ def write_candles_parquet(
     target_meta = target_dir / f"{filename_stem}.meta.json"
 
     # Check existing dataset
-    if target_parquet.exists() and on_duplicate == "raise":
-        raise ImmutableDatasetError(
-            f"Dataset file {target_parquet} already exists and on_duplicate='raise'"
-        )
+    if target_parquet.exists():
+        if on_duplicate == "raise":
+            raise ImmutableDatasetError(
+                f"Dataset file {target_parquet} already exists and on_duplicate='raise'"
+            )
+        if on_duplicate == "ignore":
+            existing_parquet_checksum = _compute_file_sha256(target_parquet)
+            existing_meta_checksum = (
+                _compute_file_sha256(target_meta) if target_meta.is_file() else ""
+            )
+            cat_entry = catalog.get_dataset(dataset_id) if catalog is not None else None
+            return ParquetWriteResult(
+                dataset_id=dataset_id,
+                parquet_path=target_parquet,
+                metadata_path=target_meta,
+                sha256_checksum=existing_parquet_checksum,
+                metadata_sha256=existing_meta_checksum,
+                candle_count=len(candles),
+                quality_report=quality,
+                catalog_entry=cat_entry,
+            )
 
     # 5. Write to temporary staging
     try:
@@ -318,7 +335,11 @@ def write_candles_parquet(
 
         # 6. Atomic publication via os.replace
         Path(tmp_parquet).replace(target_parquet)
-        Path(tmp_meta).replace(target_meta)
+        try:
+            Path(tmp_meta).replace(target_meta)
+        except Exception:
+            target_parquet.unlink(missing_ok=True)
+            raise
 
     except Exception as exc:
         # Cleanup temporary files on failure
@@ -390,10 +411,14 @@ def read_candles_parquet(
     *,
     expected_symbol: str | None = None,
     verify_checksum: bool = True,
+    expected_checksum: str | None = None,
+    expected_metadata_checksum: str | None = None,
+    catalog_entry: CatalogEntry | None = None,
 ) -> list[Candle]:
     """Read normalized Candle objects from a Parquet file.
 
-    Optionally verifies cryptographic SHA-256 sidecar checksums.
+    Optionally verifies cryptographic SHA-256 sidecar checksums and cross-checks
+    against trusted SQLite catalog entries.
 
     Raises:
         FileNotFoundError: If Parquet file does not exist.
@@ -403,20 +428,50 @@ def read_candles_parquet(
     if not path.is_file():
         raise FileNotFoundError(f"Parquet file not found: {path}")
 
-    # Checksum verification against sidecar
+    target_checksum = (
+        catalog_entry.sha256_checksum if catalog_entry is not None else expected_checksum
+    )
+    target_meta_checksum = (
+        catalog_entry.metadata_sha256
+        if catalog_entry is not None
+        else expected_metadata_checksum
+    )
+    if catalog_entry is not None and expected_symbol is None:
+        expected_symbol = catalog_entry.symbol
+
+    meta_dict: dict[str, Any] = {}
+    meta_path = path.with_suffix(".meta.json")
+
+    # Checksum verification against trusted catalog and sidecar
     if verify_checksum:
-        meta_path = path.with_suffix(".meta.json")
+        actual_sha = _compute_file_sha256(path)
+        if target_checksum and actual_sha != target_checksum:
+            raise DataIntegrityError(
+                f"Parquet checksum mismatch against trusted catalog for {path}: "
+                f"expected {target_checksum}, got {actual_sha}"
+            )
+
+        if target_meta_checksum:
+            if not meta_path.is_file():
+                raise DataIntegrityError(
+                    f"Missing sidecar metadata file required by catalog: {meta_path}"
+                )
+            actual_meta_sha = _compute_file_sha256(meta_path)
+            if actual_meta_sha != target_meta_checksum:
+                raise DataIntegrityError(
+                    f"Sidecar metadata checksum mismatch against trusted catalog for {meta_path}: "
+                    f"expected {target_meta_checksum}, got {actual_meta_sha}"
+                )
+
         if meta_path.is_file():
             try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                expected_sha = meta.get("sha256_checksum")
-                if expected_sha:
-                    actual_sha = _compute_file_sha256(path)
-                    if actual_sha != expected_sha:
-                        raise DataIntegrityError(
-                            f"Checksum mismatch for {path}: "
-                            f"expected {expected_sha}, got {actual_sha}"
-                        )
+                meta_dict = json.loads(meta_path.read_text(encoding="utf-8"))
+                meta_expected_sha = meta_dict.get("sha256_checksum")
+                if meta_expected_sha and actual_sha != meta_expected_sha:
+                    raise DataIntegrityError(
+                        f"Checksum mismatch for {path}: "
+                        f"expected {meta_expected_sha}, got {actual_sha}"
+                    )
             except json.JSONDecodeError as exc:
                 raise DataIntegrityError(f"Corrupt metadata sidecar: {meta_path}") from exc
 
@@ -432,6 +487,14 @@ def read_candles_parquet(
     target_symbol = (
         InstrumentRegistry.normalize_symbol(expected_symbol) if expected_symbol else None
     )
+
+    is_synth = False
+    if catalog_entry is not None:
+        is_synth = catalog_entry.is_synthetic
+    elif meta_dict:
+        is_synth = bool(meta_dict.get("is_synthetic", False))
+
+    candle_provenance = "synthetic" if is_synth else "historical"
 
     for i in range(num_rows):
         row_symbol = pydict["symbol"][i]
@@ -455,7 +518,7 @@ def read_candles_parquet(
             bid=pydict["bid"][i],
             ask=pydict["ask"][i],
             is_complete=pydict["is_complete"][i],
-            provenance="historical",
+            provenance=candle_provenance,
         )
         candles.append(c)
 

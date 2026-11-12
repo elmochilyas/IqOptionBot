@@ -107,3 +107,30 @@ class ModelIntegrityValidator:
             return False, f"Feature row missing {len(missing)} required features: {missing[:3]}..."
 
         return True, None
+
+    def check_stream_compatibility(
+        self,
+        bundle: ModelBundle,
+        *,
+        has_quotes: bool = False,
+        has_volume: bool = True,
+    ) -> tuple[bool, str | None]:
+        """Verify whether an incoming stream supplies all feature types required by bundle."""
+        expected = set(bundle.feature_names)
+        missing_types: list[str] = []
+        if any(f in expected for f in ("spread_pips", "spread_ratio")) and not has_quotes:
+            missing_types.append(
+                "Quote/Spread features ('spread_pips', 'spread_ratio') required by model "
+                "but not provided by incoming candle stream. Train with include_quotes=False "
+                "or enable impute_missing_quotes."
+            )
+        if (
+            any(f in expected for f in ("log_volume", "volume_sma_10", "volume_ratio_10"))
+            and not has_volume
+        ):
+            missing_types.append(
+                "Volume features required by model but volume is absent from incoming candle stream"
+            )
+        if missing_types:
+            return False, "; ".join(missing_types)
+        return True, None

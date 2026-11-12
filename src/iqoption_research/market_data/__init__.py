@@ -21,6 +21,11 @@ from iqoption_research.market_data.catalog import (
     CatalogEntry,
     DatasetCatalog,
 )
+from iqoption_research.market_data.collector import (
+    CoverageReport,
+    DataAcquisitionError,
+    HistoricalDataCollector,
+)
 from iqoption_research.market_data.fetch import CandleFetchResult
 from iqoption_research.market_data.instruments import (
     ACTIVES,
@@ -112,10 +117,13 @@ __all__ = [
     "CandleFetchResult",
     "CandleGap",
     "CatalogEntry",
+    "CoverageReport",
+    "DataAcquisitionError",
     "DataIntegrityError",
     "DataQualityReport",
     "DatasetCatalog",
     "GapClassification",
+    "HistoricalDataCollector",
     "ImmutableDatasetError",
     "Instrument",
     "InstrumentRegistry",

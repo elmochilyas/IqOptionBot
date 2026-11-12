@@ -21,8 +21,19 @@ Security and Research Principles:
 4. Non-Execution Boundary: Research signals only; no live trading authority.
 """
 
+from iqoption_research.ml.authentic_training import (
+    AuthenticModelTrainer,
+    AuthenticTrainingConfig,
+    AuthenticTrainingResult,
+    EdgeEvaluationMetrics,
+)
+
 __version__ = "0.1.0"
 
 __all__ = [
+    "AuthenticModelTrainer",
+    "AuthenticTrainingConfig",
+    "AuthenticTrainingResult",
+    "EdgeEvaluationMetrics",
     "__version__",
 ]

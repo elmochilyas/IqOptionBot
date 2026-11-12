@@ -107,8 +107,9 @@ class AsyncIQOption:
 
     def __init__(
         self,
-        credentials: Credentials | None,
+        credentials: Credentials | None = None,
         *,
+        ssid: str | None = None,
         config: ConnectionConfig | None = None,
         settings: Settings | None = None,
         offline: bool | None = None,
@@ -138,7 +139,7 @@ class AsyncIQOption:
 
         # Credentials are held only until the first successful login.
         self._credentials = credentials
-        self._ssid: str | None = None
+        self._ssid: str | None = ssid
         self._ws: IQOptionWebSocketClient | None = None
 
         self._request_counter = itertools.count(1)
@@ -222,23 +223,26 @@ class AsyncIQOption:
             raise ConnectionError("Client has been closed")
         if self._ws is not None and self._ws.is_ready:
             return
-        if self._credentials is None:
-            raise LoginError("No credentials available; create a new client")
+        if self._ssid is None:
+            if self._credentials is None:
+                raise LoginError("No credentials or session SSID available; create a new client")
 
-        self.monitor.transition(ConnectionState.CONNECTING, reason="login")
+            self.monitor.transition(ConnectionState.CONNECTING, reason="login")
 
-        try:
-            ssid = await async_login(
-                self._credentials,
-                login_url=self._login_url,
-                config=self._config,
-            )
-        except Exception as exc:
-            self.monitor.transition(ConnectionState.FAILED, reason="login_failed")
-            self.monitor.record_error(str(exc))
-            raise
+            try:
+                ssid = await async_login(
+                    self._credentials,
+                    login_url=self._login_url,
+                    config=self._config,
+                )
+            except Exception as exc:
+                self.monitor.transition(ConnectionState.FAILED, reason="login_failed")
+                self.monitor.record_error(str(exc))
+                raise
 
-        self._ssid = ssid
+            self._ssid = ssid
+        else:
+            ssid = self._ssid
         self.monitor.transition(ConnectionState.AUTHENTICATING, reason="ws_authenticating")
 
         ws = IQOptionWebSocketClient(

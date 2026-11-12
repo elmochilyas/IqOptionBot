@@ -12,6 +12,11 @@ from iqoption_research.bot.controller import (
     InvalidBotStateTransitionError,
 )
 from iqoption_research.bot.monitor import BotStatusMonitor, BotStatusSnapshot
+from iqoption_research.bot.runtime import (
+    ContinuousBotRuntime,
+    RuntimeConfig,
+    RuntimeState,
+)
 from iqoption_research.bot.session import SessionSummary, TradingSession
 
 __all__ = [
@@ -21,7 +26,10 @@ __all__ = [
     "BotState",
     "BotStatusMonitor",
     "BotStatusSnapshot",
+    "ContinuousBotRuntime",
     "InvalidBotStateTransitionError",
+    "RuntimeConfig",
+    "RuntimeState",
     "SessionSummary",
     "TradingSession",
 ]

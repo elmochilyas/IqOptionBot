@@ -18,12 +18,16 @@ from rich.table import Table
 
 from iqoption_research.bot.controller import BotConfig, BotController, BotMode
 from iqoption_research.bot.monitor import BotStatusSnapshot
+from iqoption_research.bot.runtime import ContinuousBotRuntime, RuntimeConfig
 from iqoption_research.cli.commands.auth_cmd import auth_app
 from iqoption_research.execution.account_diagnostics import (
     AccountReadinessResult,
     BrokerAccountDiagnostic,
 )
 from iqoption_research.execution.risk import RiskConfig
+from iqoption_research.market_data.collector import HistoricalDataCollector
+from iqoption_research.market_data.instruments import UnsupportedInstrumentError
+from iqoption_research.ml.authentic_training import AuthenticModelTrainer, AuthenticTrainingConfig
 from iqoption_research.ml.calibration.calibrator import ProbabilityCalibrator
 from iqoption_research.ml.fixtures import SyntheticMarketConfig, generate_synthetic_candles
 from iqoption_research.ml.models.baselines import LogisticRegressionModel
@@ -398,3 +402,219 @@ def observe_command(
     except ObservationSecurityError as exc:
         console.print(f"[red]Authorization error: {exc}[/red]")
         raise typer.Exit(code=1) from None
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: Data Sub-Application
+# ---------------------------------------------------------------------------
+
+data_app = typer.Typer(
+    name="data",
+    help="Authentic market data collection, ingestion, and catalog management.",
+    no_args_is_help=True,
+)
+bot_app.add_typer(data_app, name="data")
+
+
+@data_app.command("coverage", help="Display coverage and quality report for a dataset.")
+def data_coverage_cmd(
+    symbol: str = typer.Option("EURUSD", "--symbol", "-s", help="Instrument symbol"),
+    candle_size: int = typer.Option(60, "--size", help="Candle size in seconds"),
+) -> None:
+    """Generate and display data coverage and quality statistics for a stored dataset."""
+    collector = HistoricalDataCollector()
+    try:
+        report = collector.generate_coverage_report(symbol, candle_size)
+    except UnsupportedInstrumentError:
+        report = None
+
+    if report is None:
+        console.print(f"[yellow]No stored dataset found for {symbol} ({candle_size}s).[/yellow]")
+        return
+
+    table = Table(title=f"Dataset Coverage Report — {symbol}", show_lines=True)
+    table.add_column("Property", style="bold cyan")
+    table.add_column("Value", style="bold white")
+    for k, v in report.to_dict().items():
+        table.add_row(k, str(v))
+    console.print(table)
+
+
+@data_app.command("import-csv", help="Import authentic candles from an external CSV file.")
+def data_import_csv_cmd(
+    csv_file: str = typer.Option(..., "--file", "-f", help="Path to CSV file"),
+    symbol: str = typer.Option("EURUSD", "--symbol", "-s", help="Instrument symbol"),
+    candle_size: int = typer.Option(60, "--size", help="Candle size in seconds"),
+    source_label: str = typer.Option("EXTERNAL_AUTHENTIC", "--source", help="Provenance label"),
+) -> None:
+    """Ingest, validate, and catalog authentic market candles from a local CSV file."""
+    path = Path(csv_file)
+    if not path.is_file():
+        console.print(f"[bold red]Error: CSV file not found: {csv_file}[/bold red]")
+        raise typer.Exit(code=1)
+
+    collector = HistoricalDataCollector()
+    try:
+        candles = collector.import_external_csv(
+            path, symbol=symbol, candle_size_seconds=candle_size, source_label=source_label
+        )
+        saved_path = collector.persist_dataset(
+            candles,
+            symbol=symbol,
+            candle_size_seconds=candle_size,
+            provenance=source_label,
+        )
+        console.print(
+            Panel(
+                f"[bold green]Imported {len(candles)} authentic candles![/bold green]\n"
+                f"Symbol: {symbol} | Timeframe: {candle_size}s\n"
+                f"Storage: {saved_path}\n"
+                f"Catalog registered in SQLite catalog.db",
+                border_style="green",
+            )
+        )
+    except Exception as exc:
+        console.print(f"[bold red]Import failed: {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+
+
+@bot_app.command("train-authentic", help="Train AI models on authentic historical data.")
+def train_authentic_cmd(
+    symbol: str = typer.Option("EURUSD", "--symbol", "-s", help="Instrument symbol"),
+    candle_size: int = typer.Option(60, "--size", help="Candle size in seconds"),
+    payout: float = typer.Option(0.85, "--payout", "-p", help="Binary option payout rate"),
+    save: bool = typer.Option(True, "--save/--no-save", help="Persist best model bundle to disk"),
+) -> None:
+    """Train candidate models on stored authentic candles and evaluate payout asymmetry."""
+    collector = HistoricalDataCollector()
+    try:
+        candles = collector.load_dataset(symbol, candle_size)
+    except UnsupportedInstrumentError:
+        candles = []
+
+    if not candles or len(candles) < 100:
+        console.print(
+            f"[yellow]Insufficient authentic dataset for {symbol} "
+            f"({len(candles)} bars found, 100 required).\n"
+            "Import an authentic CSV dataset first using:\n"
+            "  [bold green]bot data import-csv --file <path> --symbol EURUSD[/bold green][/yellow]"
+        )
+        raise typer.Exit(code=1)
+
+    trainer = AuthenticModelTrainer(
+        AuthenticTrainingConfig(
+            symbol=symbol,
+            candle_size_seconds=candle_size,
+            payout_rate=payout,
+        )
+    )
+    console.print(
+        f"[cyan]Training and evaluating candidate models on {len(candles)} bars...[/cyan]"
+    )
+    res = trainer.train_and_evaluate(candles, provenance_label="AUTHENTIC_MARKET_DATA")
+    console.print(Panel(res.summary_report, border_style="cyan"))
+
+    if save and res.best_model_name in res.bundles:
+        best_bundle = res.bundles[res.best_model_name]
+        saved_path = trainer.save_trained_bundle(best_bundle, model_name=res.best_model_name)
+        console.print(f"[bold green]Saved best model bundle to: {saved_path}[/bold green]")
+
+
+@bot_app.command("run", help="Start continuous owner-controlled bot runtime.")
+def run_cmd(
+    symbol: str = typer.Option("EURUSD", "--symbol", "-s", help="Instrument symbol"),
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help="Connect to live observation feed (default: offline replay)",
+    ),
+    saved_creds: bool = typer.Option(
+        False,
+        "--saved",
+        "-s",
+        help="Load saved credentials from Windows vault",
+    ),
+    bars: int = typer.Option(60, "--bars", "-n", help="Bars to replay in offline mode"),
+    max_seconds: float = typer.Option(0.0, "--timeout", help="Optional max runtime in seconds"),
+    impute_quotes: bool = typer.Option(
+        False,
+        "--impute-quotes",
+        help="Impute missing quotes if model expects quotes",
+    ),
+) -> None:
+    """Run continuous bot loop with streaming inference and paper trading."""
+    import asyncio
+
+    mode_badge = (
+        "[bold green][LIVE OBSERVATION + PAPER TRADING][/bold green]"
+        if live
+        else "[bold yellow][OFFLINE REPLAY][/bold yellow]"
+    )
+    safety_badge = "[bold red][BROKER EXECUTION DISABLED][/bold red]"
+
+    console.print(
+        Panel(
+            f"[bold cyan]IQ Option Autonomous AI Bot — Continuous Runtime[/bold cyan]\n"
+            f"Mode: {mode_badge} | Safety: {safety_badge}\n"
+            f"Symbol: {symbol} | Paper Stake: $100.00 | Payout: 85%\n"
+            f"[dim]Continuous event-driven execution with in-memory session lifetime.[/dim]",
+            border_style="cyan",
+        )
+    )
+
+    auth_token = None
+    if live:
+        token_str = os.environ.get("IQOPTION_OBSERVE_TOKEN", "").strip()
+        if not token_str:
+            console.print(
+                "[bold red]Live observation requires an explicit authorization token.[/bold red]\n"
+                "Set environment variable: IQOPTION_OBSERVE_TOKEN='<token>'."
+            )
+            raise typer.Exit(code=1)
+        auth_token = ObservationAuthorizationToken(
+            token_hash=token_str,
+            authorized_by="LeadSystemsEngineer",
+        )
+
+    runtime_cfg = RuntimeConfig(
+        symbol=symbol,
+        mode=BotMode.OBSERVE_ONLY if live else BotMode.OFFLINE_REPLAY,
+        use_saved_credentials=saved_creds,
+        dev_mock=not live,
+        observation_token=auth_token,
+        max_runtime_seconds=max_seconds if max_seconds > 0 else None,
+        impute_missing_quotes=impute_quotes,
+    )
+
+    runtime = ContinuousBotRuntime(config=runtime_cfg)
+
+    # In replay mode, load authentic or generate synthetic candles
+    replay_candles = None
+    if not live:
+        collector = HistoricalDataCollector()
+        try:
+            replay_candles = collector.load_dataset(symbol)
+        except UnsupportedInstrumentError:
+            replay_candles = None
+        if not replay_candles:
+            console.print(
+                f"[dim]No stored dataset for {symbol}; generating {bars} "
+                "synthetic bars for demonstration.[/dim]"
+            )
+            replay_candles = list(
+                generate_synthetic_candles(
+                    SyntheticMarketConfig(symbol=symbol, n_bars=bars, seed=42)
+                ).candles
+            )
+        else:
+            replay_candles = replay_candles[:bars]
+
+    try:
+        snapshot = asyncio.run(runtime.run(candles_iterable=replay_candles))
+        _render_snapshot_table(snapshot, f"Continuous Session Concluded — {symbol}")
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Shutdown requested by user (Ctrl+C).[/yellow]")
+        runtime.request_stop()
+    except Exception as exc:
+        console.print(f"[bold red]Runtime stopped with error: {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc

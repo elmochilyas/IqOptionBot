@@ -140,11 +140,15 @@ class CausalFeaturePipeline:
         include_quotes: bool = False,
         drop_warmup: bool = False,
         custom_specs: list[FeatureSpec] | None = None,
+        impute_missing_quotes: bool = False,
+        default_spread_pips: float = 1.0,
     ) -> None:
         self.drop_warmup = drop_warmup
         specs: list[FeatureSpec] = list(custom_specs or DEFAULT_FEATURE_SPECS)
         self.include_volume = include_volume
         self.include_quotes = include_quotes
+        self.impute_missing_quotes = impute_missing_quotes
+        self.default_spread_pips = default_spread_pips
 
         if include_volume:
             specs.extend(VOLUME_FEATURE_SPECS)
@@ -180,7 +184,8 @@ class CausalFeaturePipeline:
 
         # Check volume and quote data availability
         can_use_volume = self.include_volume and has_genuine_volume(candles)
-        can_use_quotes = self.include_quotes and has_verified_quotes(candles)
+        has_real_quotes = has_verified_quotes(candles)
+        can_use_quotes = self.include_quotes and (has_real_quotes or self.impute_missing_quotes)
 
         # Active feature specs excluding unverified fields
         active_specs: list[FeatureSpec] = []
@@ -263,12 +268,17 @@ class CausalFeaturePipeline:
                     feats["volume_sma_10"] = v
                     feats["volume_ratio_10"] = 1.0
 
-            # Quote features if available
+            # Quote features if available or imputed
             if can_use_quotes:
-                spread = curr.ask - curr.bid
-                midpoint = (curr.ask + curr.bid) / 2.0
-                feats["spread_pips"] = round(spread * 10000.0, 1)
-                feats["spread_ratio"] = spread / max(midpoint, 1e-8)
+                if has_real_quotes:
+                    spread = curr.ask - curr.bid
+                    midpoint = (curr.ask + curr.bid) / 2.0
+                    feats["spread_pips"] = round(spread * 10000.0, 1)
+                    feats["spread_ratio"] = spread / max(midpoint, 1e-8)
+                else:
+                    spread_val = self.default_spread_pips * 0.0001
+                    feats["spread_pips"] = float(self.default_spread_pips)
+                    feats["spread_ratio"] = spread_val / max(cl, 1e-8)
 
             row = FeatureRow(
                 index=t,

@@ -389,7 +389,7 @@ statistics/hybrid behaviour.
 |:---|:---|
 | Previous committed baseline (Phases 1–3) | `ec03536` |
 | Phase 4 implementation | `627cae4` — `feat(ml): add offline Phase 4 research stack with calibrated evaluation` |
-| Phase 4 report/documentation follow-up | recorded in the repository history immediately after this report |
+| Phase 4 report/documentation follow-up | `dc3e8ea` — `docs: record Phase 4 implementation commit in completion report` |
 | Branch | `main` |
 | Remote | `origin` → `https://github.com/elmochilyas/IqOptionBot.git` |
 

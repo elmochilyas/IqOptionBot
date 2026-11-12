@@ -275,9 +275,7 @@ class ExecutionStateMachine:
                 OrderState.VALIDATED, reason="Approved by operational risk manager"
             )
         else:
-            rej_reason = (
-                risk_decision.reason.value if risk_decision.reason else "unspecified"
-            )
+            rej_reason = risk_decision.reason.value if risk_decision.reason else "unspecified"
             event = order.transition_to(
                 OrderState.REJECTED,
                 reason=f"Risk controller rejection: {rej_reason}",

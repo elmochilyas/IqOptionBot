@@ -117,10 +117,7 @@ def validate_streaming_candle(
     # 4. Sequential continuity against previous candle
     if previous_candle is not None:
         if candle.symbol != previous_candle.symbol:
-            msg = (
-                f"Symbol mismatch: incoming {candle.symbol} != "
-                f"previous {previous_candle.symbol}"
-            )
+            msg = f"Symbol mismatch: incoming {candle.symbol} != previous {previous_candle.symbol}"
             return StreamValidationResult(
                 verdict=StreamValidationVerdict.SYMBOL_MISMATCH,
                 is_valid=False,

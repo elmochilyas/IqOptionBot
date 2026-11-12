@@ -159,8 +159,7 @@ class PracticeExecutionReadinessGate:
                 idempotency_key=idempotency_key,
                 risk_decision=None,
                 message=(
-                    f"Payout rate {rate_str} below required "
-                    f"minimum {self.min_payout_rate:.2f}."
+                    f"Payout rate {rate_str} below required minimum {self.min_payout_rate:.2f}."
                 ),
             )
 

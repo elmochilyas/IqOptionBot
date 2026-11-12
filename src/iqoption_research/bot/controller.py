@@ -6,10 +6,13 @@ and paper-trading engine into a unified event-driven trading system.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
+from typing import Final
 
 from iqoption_research.bot.monitor import BotStatusMonitor, BotStatusSnapshot
 from iqoption_research.bot.session import TradingSession
@@ -35,6 +38,8 @@ from iqoption_research.research.backtest.models import SignalDirection
 from iqoption_research.research.features.pipeline import FeatureRow
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_BOT_SNAPSHOT_PATH: Final[Path] = Path("data/bot_sessions/latest_snapshot.json")
 
 
 class BotState(StrEnum):
@@ -200,15 +205,19 @@ class BotController:
         self._state = BotState.RUNNING
 
     def stop(self) -> None:
-        """Gracefully stop the bot."""
+        """Gracefully stop the bot and persist state snapshot."""
         self._state = BotState.STOPPING
         self._state = BotState.STOPPED
+        self.persist_snapshot()
+        self.session.save_to_disk()
 
     def emergency_stop(self, reason: str = "Emergency kill switch activated by operator") -> None:
         """Immediately trigger emergency kill switch, latch circuit breaker, and halt."""
         self.risk_manager.trigger_kill_switch(reason=reason)
         self._state = BotState.STOPPED
         self.monitor.record_error(f"EMERGENCY_STOP: {reason}")
+        self.persist_snapshot()
+        self.session.save_to_disk()
 
     def process_candle(
         self,
@@ -239,6 +248,8 @@ class BotController:
         for settled in step_result.settled_orders:
             self.session.record_settled_order(settled)
 
+        # Periodically persist snapshot to maintain live telemetry
+        self.persist_snapshot()
         return step_result
 
     def get_status_snapshot(self) -> BotStatusSnapshot:
@@ -249,6 +260,14 @@ class BotController:
             if self.inference_pipeline is not None
             else "BuiltinDecisionEngine"
         )
+        conf = latest_pred.confidence if latest_pred is not None else 0.0
+
+        risk_limits: dict[str, float] = {
+            "max_stake_per_trade": self.config.risk_config.max_stake_per_trade,
+            "max_daily_loss": self.config.risk_config.max_daily_loss,
+            "max_daily_drawdown_pct": self.config.risk_config.max_daily_drawdown_pct * 100.0,
+            "max_consecutive_losses": float(self.config.risk_config.max_consecutive_losses),
+        }
 
         return self.monitor.build_snapshot(
             state=self._state.value,
@@ -262,7 +281,7 @@ class BotController:
             last_prediction_prob=(
                 latest_pred.calibrated_probability if latest_pred is not None else 0.5
             ),
-            confidence=latest_pred.confidence if latest_pred is not None else 0.0,
+            confidence=conf,
             abstention_reason=latest_pred.abstention_reason if latest_pred is not None else None,
             virtual_balance=self.engine.portfolio.current_balance,
             open_positions_count=len(self.engine.open_orders),
@@ -276,4 +295,34 @@ class BotController:
             ).status.value,
             feed_gaps_count=self.observation_adapter.gaps_count,
             rejected_candles_count=self.observation_adapter.rejected_count,
+            data_source=(
+                "offline_replay"
+                if self.config.mode == BotMode.OFFLINE_REPLAY
+                else "live_observation"
+            ),
+            provenance="SYNTHETIC_ENGINEERING_ONLY",
+            uncertainty=max(0.0, min(1.0, 1.0 - (conf * 2.0))),
+            settled_trades_count=len(self.session.settled_orders),
+            risk_limits=risk_limits,
         )
+
+    def persist_snapshot(self, path: Path | str | None = None) -> Path:
+        """Write current operational snapshot to disk."""
+        target = Path(path) if path is not None else DEFAULT_BOT_SNAPSHOT_PATH
+        target.parent.mkdir(parents=True, exist_ok=True)
+        snapshot = self.get_status_snapshot()
+        target.write_text(json.dumps(snapshot.to_dict(), indent=2), encoding="utf-8")
+        return target
+
+    @classmethod
+    def load_latest_snapshot(cls, path: Path | str | None = None) -> BotStatusSnapshot | None:
+        """Load the most recent persisted snapshot from disk."""
+        target = Path(path) if path is not None else DEFAULT_BOT_SNAPSHOT_PATH
+        if not target.is_file():
+            return None
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+            return BotStatusSnapshot.from_dict(data)
+        except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError) as exc:
+            logger.warning("Failed to load snapshot from %s: %s", target, exc)
+            return None

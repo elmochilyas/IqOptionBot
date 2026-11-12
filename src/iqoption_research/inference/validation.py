@@ -65,10 +65,7 @@ class ModelIntegrityValidator:
                 )
 
         # 4. Check calibrator
-        if (
-            bundle.calibrator is not None
-            and not getattr(bundle.calibrator, "is_fitted", False)
-        ):
+        if bundle.calibrator is not None and not getattr(bundle.calibrator, "is_fitted", False):
             errors.append("ProbabilityCalibrator in bundle is not marked as fitted.")
 
         # 5. Check model age from metadata

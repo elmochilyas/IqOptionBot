@@ -6,6 +6,11 @@ and gated observe-only market observation controls.
 
 from __future__ import annotations
 
+import json
+import os
+import time
+from pathlib import Path
+
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -13,11 +18,17 @@ from rich.table import Table
 
 from iqoption_research.bot.controller import BotConfig, BotController, BotMode
 from iqoption_research.bot.monitor import BotStatusSnapshot
+from iqoption_research.cli.commands.auth_cmd import auth_app
+from iqoption_research.execution.account_diagnostics import (
+    AccountReadinessResult,
+    BrokerAccountDiagnostic,
+)
 from iqoption_research.execution.risk import RiskConfig
 from iqoption_research.ml.calibration.calibrator import ProbabilityCalibrator
 from iqoption_research.ml.fixtures import SyntheticMarketConfig, generate_synthetic_candles
 from iqoption_research.ml.models.baselines import LogisticRegressionModel
 from iqoption_research.ml.tracking.artifacts import ModelBundle
+from iqoption_research.models.account import AccountType, Balance, Profile
 from iqoption_research.observation.adapter import (
     ObservationAuthorizationToken,
     ObservationSecurityError,
@@ -31,6 +42,7 @@ bot_app = typer.Typer(
     help="Phase 6 autonomous AI trading bot operations and monitoring.",
     no_args_is_help=True,
 )
+bot_app.add_typer(auth_app, name="auth")
 
 
 def _train_quick_model_bundle() -> ModelBundle:
@@ -77,35 +89,145 @@ def _render_snapshot_table(snapshot: BotStatusSnapshot, title: str) -> None:
     table.add_row("Bot State", snapshot.state.upper())
     table.add_row("Operational Mode", snapshot.mode)
     table.add_row("Active Instrument", snapshot.symbol)
-    pred_str = (
-        f"{snapshot.last_prediction_direction} ({snapshot.last_prediction_prob:.1%})"
-    )
+    table.add_row("Data Source", snapshot.data_source)
+    table.add_row("Model Provenance", snapshot.provenance)
+    pred_str = f"{snapshot.last_prediction_direction} ({snapshot.last_prediction_prob:.1%})"
     table.add_row("Connection Status", snapshot.connection_status)
     table.add_row("Trained Model", snapshot.model_name)
     table.add_row("Latest Prediction", pred_str)
     table.add_row("Model Confidence", f"{snapshot.confidence:.3f}")
-    table.add_row("Abstention Reason", str(snapshot.abstention_reason or "None"))
+    table.add_row("Prediction Uncertainty", f"{snapshot.uncertainty:.3f}")
+    table.add_row("Reason for HOLD", str(snapshot.abstention_reason or "None"))
     table.add_row("Virtual Balance", f"${snapshot.virtual_balance:,.2f}")
-    table.add_row("Open Paper Positions", str(snapshot.open_positions_count))
-    table.add_row("Total Paper Trades", str(snapshot.trade_count))
+    table.add_row("Open Simulated Positions", str(snapshot.open_positions_count))
+    table.add_row("Settled Simulated Trades", str(snapshot.settled_trades_count))
+    table.add_row("Total Simulated Trades", str(snapshot.trade_count))
     table.add_row("Win Rate", f"{snapshot.win_rate_pct:.1f}%")
     table.add_row("Session Net PnL", f"${snapshot.session_pnl:+,.2f}")
     table.add_row("Peak Drawdown", f"{snapshot.max_drawdown_pct:.2f}%")
+    if snapshot.risk_limits:
+        limits_str = ", ".join(f"{k}={v}" for k, v in snapshot.risk_limits.items())
+        table.add_row("Operational Risk Limits", limits_str)
     table.add_row("Circuit Breaker State", snapshot.circuit_breaker_state)
     table.add_row("Feed Health Status", snapshot.feed_health)
     table.add_row("Feed Gaps Detected", str(snapshot.feed_gaps_count))
     table.add_row("Rejected Candles", str(snapshot.rejected_candles_count))
     table.add_row("Last Error", str(snapshot.last_error or "None"))
+    if snapshot.error_history:
+        table.add_row("Error History Count", str(len(snapshot.error_history)))
 
     console.print(table)
 
 
 @bot_app.command("status", help="Display current bot operational status.")
 def status_command() -> None:
-    """Display current operational snapshot."""
-    bot = BotController(BotConfig(symbol="EURUSD", initial_balance=10000.0))
-    snapshot = bot.get_status_snapshot()
-    _render_snapshot_table(snapshot, "IQ Option AI Bot — Operational Status Snapshot")
+    """Display current operational snapshot from running/persisted session."""
+    snapshot = BotController.load_latest_snapshot()
+    if snapshot is not None:
+        title = (
+            f"IQ Option AI Bot — Operational Status Snapshot "
+            f"({snapshot.symbol} | Uptime: {snapshot.uptime_seconds:.1f}s)"
+        )
+        _render_snapshot_table(snapshot, title)
+    else:
+        console.print(
+            Panel(
+                "[yellow]No active or persisted bot session found on disk.[/yellow]\n"
+                "To start a new session or run offline paper replay:\n"
+                "  [green]python -m iqoption_research.cli.main bot replay --bars 100[/green]\n"
+                "  [green]python -m iqoption_research.cli.main bot demo[/green]",
+                title="IQ Option Bot Status",
+                border_style="yellow",
+            )
+        )
+
+
+@bot_app.command("account-check", help="Investigate REAL vs PRACTICE balance state and routing.")
+def account_check_command(
+    fixture_path: str = typer.Option(
+        "", "--fixture", "-f", help="Optional path to recorded JSON balance fixture"
+    ),
+    browser_balance_id: str = typer.Option(
+        "", "--browser-balance-id", help="Observed balance ID in browser UI"
+    ),
+) -> None:
+    """Run comprehensive read-only diagnostic tooling on broker account profile & balances."""
+    console.print(
+        Panel(
+            "[bold cyan]IQ Option — Account Diagnostics & Discrepancy Investigation[/bold cyan]\n"
+            "Analyzing 6-layer balance identity, active session status, and execution safety.\n"
+            "Strict read-only analysis: zero broker balance switching or trade frames.",
+            border_style="cyan",
+        )
+    )
+
+    diag = BrokerAccountDiagnostic()
+
+    if fixture_path and Path(fixture_path).is_file():
+        raw_data = json.loads(Path(fixture_path).read_text(encoding="utf-8"))
+        profile_data = raw_data.get("profile", {})
+        balances_data = raw_data.get("balances", [])
+        profile = Profile.from_raw(profile_data)
+        bals = [Balance.from_raw(b) for b in balances_data if isinstance(b, dict)]
+        report = diag.evaluate(
+            profile=profile,
+            balances=bals,
+            active_balance_id=str(profile_data.get("balance_id", "")),
+            browser_ui_balance_id=browser_balance_id or None,
+            last_verification_ts=time.time(),
+        )
+    else:
+        # Default regression audit demonstrating the known discrepancy scenario:
+        # Browser shows PRACTICE (id 100), but WebSocket defaults to REAL (id 200).
+        profile_data = {
+            "user_id": 424242,
+            "email": "researcher@example.com",
+            "balance_id": 200,
+            "balances": [
+                {"id": 100, "type": 4, "amount": 10000.0, "currency": "USD"},
+                {"id": 200, "type": 1, "amount": 250.0, "currency": "USD"},
+            ],
+        }
+        profile = Profile.from_raw(profile_data)
+        bals = [
+            Balance(id="100", type=AccountType.PRACTICE, amount=10000.0, currency="USD"),
+            Balance(id="200", type=AccountType.REAL, amount=250.0, currency="USD", is_active=True),
+        ]
+        report = diag.evaluate(
+            profile=profile,
+            balances=bals,
+            active_balance_id="200",
+            browser_ui_balance_id=browser_balance_id or "100",
+            last_verification_ts=time.time(),
+        )
+
+    # Render diagnostic report
+    table = Table(title="Account Diagnostic & Readiness Audit Report", show_lines=True)
+    table.add_column("Diagnostic Field", style="bold cyan")
+    table.add_column("Audit Result", style="bold white")
+
+    res_color = "green" if report.readiness == AccountReadinessResult.VERIFIED_PRACTICE else "red"
+    table.add_row("Readiness Result", f"[{res_color}]{report.readiness.value}[/{res_color}]")
+    table.add_row("Broker Ledger Status", f"[bold red]{report.ledger_status.value}[/bold red]")
+    table.add_row("PRACTICE Verified", str(report.is_practice_verified))
+    table.add_row("Safe for Broker Orders", str(report.is_safe_for_practice_execution))
+    table.add_row("Discrepancy Detected", str(report.discrepancy_detected))
+    table.add_row(
+        "Server-Reported Active Balance",
+        str(report.balance_identity.server_reported_active_balance_id),
+    )
+    table.add_row("Browser UI Balance ID", str(report.balance_identity.browser_ui_balance_id))
+    table.add_row(
+        "Existing Balances",
+        ", ".join(
+            f"id={b.id}({b.type.name}, {b.amount} {b.currency})"
+            for b in report.balance_identity.existing_balances
+        ),
+    )
+    table.add_row("Explanation", report.explanation)
+    table.add_row("Recommended Action", report.recommended_action)
+
+    console.print(table)
 
 
 @bot_app.command("replay", help="Run automated paper trading on historical/synthetic candles.")
@@ -231,24 +353,38 @@ def demo_command() -> None:
 def observe_command(
     symbol: str = typer.Option("EURUSD", "--symbol", "-s", help="Instrument symbol"),
     auth_token: str = typer.Option(
-        "", "--auth-token", help="Cryptographic authorization signature required for observe-only"
+        "",
+        "--auth-token",
+        help="Optional explicit token (recommended: set IQOPTION_OBSERVE_TOKEN env var)",
     ),
 ) -> None:
-    """Gated observe-only market monitoring mode."""
-    if not auth_token or not auth_token.strip():
+    """Gated observe-only market monitoring mode.
+
+    Safe secret handling: Checks IQOPTION_OBSERVE_TOKEN environment variable first
+    to avoid exposing authorization secrets in shell command history or process listings.
+    """
+    token_str = auth_token.strip() or os.environ.get("IQOPTION_OBSERVE_TOKEN", "").strip()
+
+    if not token_str:
         console.print(
             Panel(
-                "[bold red]ACCESS DENIED — OBSERVE-ONLY MODE IS STRICTLY GATED[/bold red]\n"
-                "Live market data observation requires an explicit authorization token.\n"
-                "To run without live network connection, use offline replay:\n"
-                "  [green]python -m iqoption_research.cli.main bot replay --bars 100[/green]",
+                "[bold red]OBSERVE-ONLY MARKET OBSERVATION: NOT AUTHORIZED[/bold red]\n\n"
+                "Live market data observation requires an explicit human authorization token.\n"
+                "The existence of local credentials, configuration files, or automated test\n"
+                "scripts does NOT constitute authorization.\n\n"
+                "Safe secret handling:\n"
+                "  Set env var: [cyan]export IQOPTION_OBSERVE_TOKEN='<token>'[/cyan]\n\n"
+                "To execute offline paper trading without live network access:\n"
+                "  [green]python -m iqoption_research.cli.main bot replay --bars 100[/green]\n"
+                "  [green]python -m iqoption_research.cli.main bot demo[/green]",
+                title="Authorization Gate",
                 border_style="red",
             )
         )
         raise typer.Exit(code=1)
 
     token = ObservationAuthorizationToken(
-        token_hash=auth_token,
+        token_hash=token_str,
         authorized_by="LeadSystemsEngineer",
     )
     bot = BotController(

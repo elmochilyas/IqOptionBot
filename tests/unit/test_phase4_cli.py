@@ -311,5 +311,9 @@ def test_cli_phase4_commands_do_not_open_sockets(
         str(prepared_dir),
         "--bundle",
         str(bundle_dir),
+        "--report",
+        str(workspace / "reports" / "backtest.md"),
+        "--db",
+        str(workspace / "experiments.db"),
     )
     assert backtest.exit_code == 0, backtest.output

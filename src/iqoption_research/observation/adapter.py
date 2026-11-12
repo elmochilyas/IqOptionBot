@@ -108,10 +108,7 @@ class MarketObservationAdapter:
     @property
     def is_observe_only_authorized(self) -> bool:
         """Returns True only if an explicit non-empty authorization token is present."""
-        return (
-            self.authorization_token is not None
-            and self.authorization_token.is_valid()
-        )
+        return self.authorization_token is not None and self.authorization_token.is_valid()
 
     @property
     def accepted_count(self) -> int:
@@ -172,7 +169,7 @@ class MarketObservationAdapter:
             )
             health = self.heartbeat_monitor.evaluate_health(current_ts=now, is_replay=is_replay)
             self._rejected_candles_count += 1
-            return ObservationEvent(
+            event = ObservationEvent(
                 candle=candle,
                 is_valid=False,
                 validation=val_res,
@@ -180,6 +177,8 @@ class MarketObservationAdapter:
                 feed_health=health,
                 observed_at_ts=now,
             )
+            self._history.append(event)
+            return event
 
         # 2. Clock drift check
         drift_res = self.clock_validator.evaluate(

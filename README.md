@@ -1,22 +1,26 @@
-# IQ Option Research & Secure Connection — Phase 1
+# IQ Option AI Trading Research System (Phases 1–4)
 
-Secure, strictly typed, read-only connectivity framework for quantitative market research.
+Quantitative market research, historical data cataloging, causal feature engineering, offline backtesting, and offline machine learning research platform. Phase 4 adds directional forecasting, validation-only probability calibration, chronological walk-forward evaluation, ensembles, experiment tracking, and a strictly offline decision engine — with an explicit refusal to claim profitability from synthetic data.
 
 > [!WARNING]
 > **UNOFFICIAL BROKER INTERFACE**: This research tooling interacts with an unofficial, reverse-engineered WebSocket interface (`wss://iqoption.com/echo/websocket`). Its compatibility, platform authorization, and terms of service compliance have not been established by IQ Option.
 
 > [!IMPORTANT]
-> **READ-ONLY POSTURE**: Phase 1 contains **zero trade placement or closing methods**. It discovers account profiles, identifies PRACTICE balances, streams EUR/USD market data, performs rigorous data-quality assessments, and enforces fail-safe security policies.
+> **STRICT OFFLINE RESEARCH & READ-ONLY POSTURE**:
+> The system contains **zero trade placement, order execution, or account modification capabilities**. All research, feature computation, model training, and strategy evaluations operate **100% offline** on local historical data or deterministic synthetic fixtures. Real broker interaction is restricted to an optional, manually authorized read-only connection diagnostic tool (`--live`).
 
 ---
 
-## 1. Environment & Prerequisites
+## 1. System Baseline & Verification Status
 
 - **Operating System**: Windows (PowerShell)
 - **Python Version**: 3.12.10
-- **Git Version**: 2.54.0.windows.1
-- **Target Account**: IQ Option PRACTICE only
-- **Initial Market**: EUR/USD (`active_id=1`)
+- **Test Suite**: 958 passing tests (`pytest`, 100% pass rate, 0 failures, 0 skips — 46 test modules)
+- **Type Checking**: Clean MyPy verification across 104 source files (`mypy src`)
+- **Linting & Style**: Clean Ruff compliance (`ruff check src tests`)
+- **Security Audit**: 7/7 automated offline security checks passed (`iqresearch security-check`)
+- **Evidence Status**: Phase 4 engineering is complete. **No real-market edge has been established.** Synthetic fixtures are engineering demonstrations only; authentic evidence requires independent historical data and replication.
+- **Target Market**: EUR/USD (`active_id=1`), standard Forex and OTC market hours
 
 ---
 
@@ -25,7 +29,7 @@ Secure, strictly typed, read-only connectivity framework for quantitative market
 Open Windows PowerShell in the repository root directory (`c:\Users\Pc\Desktop\iqoption-research`):
 
 ### 2.1. Verify Dependencies
-Dependencies are pinned in `requirements.txt`:
+Dependencies are declared in `pyproject.toml` and pinned in `requirements.txt`:
 ```powershell
 pip install -r requirements.txt
 pip install -e .
@@ -41,34 +45,51 @@ mypy src/ tests/
 ```
 
 ### 2.3. Run Automated Offline Tests
-All tests run 100% offline using deterministic mocks and fixtures. **No real credentials required.**
+All tests run 100% offline using deterministic mocks and fixtures. **No network access or credentials required.**
 ```powershell
 pytest tests/ -v
 ```
 
----
-
-## 3. CLI Diagnostic Commands
-
-The CLI tool is accessible via `iqresearch` (or `python -m iqoption_research.cli.main`):
-
-### 3.1. Offline Security Audit
-Validates TLS settings, endpoint allowlists, absence of insecure patterns (`verify=False`, `CERT_NONE`), and dependency pinning:
+### 2.4. Run Offline Security Audit
 ```powershell
 python -m iqoption_research.cli.main security-check
 ```
 
-### 3.2. Offline Connection Simulation
-Runs the entire read-only connection, account discovery, and candle retrieval against a synthetic offline connector:
+### 2.5. Run End-to-End Research Demonstrations
+Phase 3 pipeline (synthetic CSV import -> data audit -> Parquet storage -> SQLite catalog -> causal features -> chronological split -> leak-free scaler -> offline backtest):
+```powershell
+python -m iqoption_research.cli.main research demo
+```
+
+Phase 4 engineering demonstration (causal features -> forward labels -> train-only scaling -> validation-only calibration -> untouched holdout -> walk-forward -> model comparison -> payoff backtest -> Markdown report):
+```powershell
+python -m iqoption_research.cli.main ml demo
+```
+> Both demos use deterministic synthetic fixtures. They validate software engineering and methodology; they do **not** establish a market edge.
+
+---
+
+## 3. CLI Command Reference
+
+The CLI tool is accessible via `iqresearch` (or `python -m iqoption_research.cli.main`). All commands default to strictly offline behavior.
+
+### 3.1. Diagnostic & Transport Commands
+
+#### Offline Security Audit
+Validates TLS settings, endpoint allowlists, absence of insecure patterns (`verify=False`, `CERT_NONE`), read-only posture, and dependency pinning:
+```powershell
+python -m iqoption_research.cli.main security-check
+python -m iqoption_research.cli.main security-check --json
+```
+
+#### Offline Connection Simulation
+Runs read-only connection, account discovery, and candle retrieval against a synthetic offline connector:
 ```powershell
 python -m iqoption_research.cli.main simulate --count 50
-```
-To persist the synthetic candles with a provenance metadata sidecar:
-```powershell
 python -m iqoption_research.cli.main simulate --count 100 --save --output-dir data/simulated
 ```
 
-### 3.3. Offline Market-Data Quality Validation
+#### Offline Market-Data Quality Validation
 Assesses candle structure, OHLC ordering, timestamps, gaps, duplicates, and clock drift:
 ```powershell
 # Validate synthetic/simulated candles
@@ -78,36 +99,116 @@ python -m iqoption_research.cli.main validate-data --simulate --count 100
 python -m iqoption_research.cli.main validate-data --file data/simulated/EURUSD_60s_20261106.jsonl
 ```
 
-### 3.4. Optional Real Read-Only Probe
+#### Optional Real Read-Only Probe
 > [!CAUTION]
 > The real probe **never** executes automatically during installation, testing, or startup. It requires an explicit user command (`--live`) and a manual interactive confirmation prompt:
-
 ```powershell
-# Fails safely with warning if --live is not passed:
+# Fails safely with warning if --live is omitted:
 python -m iqoption_research.cli.main probe
 
-# Separately authorized read-only probe (prompts for email/password securely via getpass):
+# Separately authorized read-only probe:
 python -m iqoption_research.cli.main probe --live --symbol EURUSD --size 60 --count 10
 ```
 
 ---
 
-## 4. Key Security Controls
+### 3.2. Phase 3 Research Commands (`iqresearch research`)
 
-1. **Strict TLS Enforcement**: HTTPS and WebSocket connections enforce certificate verification using `certifi` CA bundle and hostname checking (`ssl.CERT_REQUIRED`, TLS 1.2+ minimum).
-2. **Hardcoded Endpoint Allowlist**: Only `https://auth.iqoption.com/api/v2/login`, `https://auth.iqoption.com/api/v1.0/logout`, and `wss://iqoption.com/echo/websocket` are accepted. Any other URI raises `ValueError`.
-3. **No Credential Persistence**: Passwords are collected via `getpass.getpass()`, dropped from memory after login, and never written to disk, `.env` files, or log streams.
-4. **Secret Redaction**: Automated logging filters redact session tokens, passwords, cookies, and email addresses from console and file outputs.
-5. **Practice Account Verification**: The presence of a demo balance is never assumed to be the active trading account. If server confirmation is missing or points to a real balance, status is reported as `PRACTICE_PRESENT_ACTIVE_UNVERIFIED`.
-6. **Bounded Reconnection**: Disconnects trigger exponential backoff with randomized jitter, capping at 3 retries before cleanly terminating (`ReconnectExhaustedError`).
+#### Historical Dataset Import
+Audits and imports historical CSV or Parquet candles into partitioned Parquet storage and indexes metadata in the SQLite catalog:
+```powershell
+python -m iqoption_research.cli.main research import path/to/candles.csv --symbol EURUSD --timeframe 60
+```
+
+#### Dataset Catalog Inspection
+Inspects registered datasets, candle counts, timeframes, and SHA-256 checksums recorded in the local catalog:
+```powershell
+python -m iqoption_research.cli.main research list
+```
+
+#### Offline Backtesting
+Runs offline simulation of trading strategies against cataloged historical datasets with explicit binary options or Forex payoff models:
+```powershell
+# Backtest Momentum strategy with binary payoff (85% payout)
+python -m iqoption_research.cli.main research backtest --symbol EURUSD --timeframe 60 --strategy momentum --payoff binary --payout-rate 0.85
+
+# Backtest Moving Average Crossover with Forex spread/slippage model
+python -m iqoption_research.cli.main research backtest --symbol EURUSD --timeframe 60 --strategy ma_crossover --payoff forex --export-json data/report.json
+```
+
+#### Bundled End-to-End Demo
+Executes complete automated research pipeline using bundled synthetic fixtures:
+```powershell
+python -m iqoption_research.cli.main research demo
+```
+
+---
+
+### 3.3. Phase 4 Machine Learning Commands (`iqresearch ml`)
+
+All Phase 4 commands are strictly offline. Artifacts are SHA-256 manifested and verified before loading. Synthetic data is always labelled `SYNTHETIC_ENGINEERING_ONLY`.
+
+```powershell
+# Prepare a causal dataset (synthetic by default, deterministic fixture)
+python -m iqoption_research.cli.main ml prepare --output data/ml/prepared --symbol EURUSD --timeframe 60 --n-bars 1400
+
+# Prepare authentic local CSV data (nothing is downloaded; --authentic only labels provenance)
+python -m iqoption_research.cli.main ml prepare --csv data/authentic/EURUSD_60s.csv --authentic --symbol EURUSD --timeframe 60
+
+# Train a calibrated holdout bundle; scaler fits on train, calibrator on validation
+python -m iqoption_research.cli.main ml train --prepared data/ml/prepared --model logistic_regression --calibrator platt
+
+# Re-verify and evaluate a saved bundle on the untouched holdout
+python -m iqoption_research.cli.main ml evaluate --prepared data/ml/prepared --bundle data/ml/bundle
+
+# Chronological walk-forward with purge/embargo and pooled out-of-fold metrics
+python -m iqoption_research.cli.main ml walk-forward --prepared data/ml/prepared --folds 4 --model logistic_regression
+
+# Benchmark baselines, linear, nonlinear, and ensemble models under identical settings
+python -m iqoption_research.cli.main ml compare --prepared data/ml/prepared --models majority_class,seeded_random,logistic_regression,random_forest,hist_gradient_boosting
+
+# Simulated payoff settlements on the holdout window through the Phase 3 engine
+python -m iqoption_research.cli.main ml backtest --prepared data/ml/prepared --bundle data/ml/bundle --payoff binary --payout-rate 0.85
+
+# Inspect tracked experiments, verified bundle metadata, and render Markdown reports
+python -m iqoption_research.cli.main ml list
+python -m iqoption_research.cli.main ml inspect --run-id <RUN_ID>
+python -m iqoption_research.cli.main ml inspect --bundle data/ml/bundle
+python -m iqoption_research.cli.main ml report --run-id <RUN_ID>
+
+# Full offline engineering demonstration and tracked experiment
+python -m iqoption_research.cli.main ml demo
+```
+
+**Evidence policy.** Synthetic runs can never be promoted to an edge verdict. Authentic-data runs must have at least 200 untouched out-of-sample observations, one-sided binomial `p < 0.05` versus chance, ROC-AUC >= 0.55, and a Brier score not materially worse (> 0.02) than the base-rate baseline before the most optimistic label, `CANDIDATE_EDGE_REQUIRES_REPLICATION`. Anything weaker is reported as `NO_RELIABLE_EDGE_DETECTED` or `INSUFFICIENT_OUT_OF_SAMPLE_DATA`. Even a candidate is explicitly *not* a profitability claim.
+
+---
+
+## 4. Key Security & Research Controls
+
+1. **Strict Offline Safety**: The research and ML subsystems never initiate network connections. All data is loaded from local Parquet storage or offline fixtures.
+2. **Fail-Closed Read-Only Protection**: The `AsyncIQOption.assert_read_only()` guard halts initialization if any trading or order routing attributes are detected.
+3. **Causal Data Integrity**:
+   - Features rely exclusively on completed past bars ($t' \le t$).
+   - Prediction targets strictly evaluate forward-looking windows ($t+1$ to $t+H$).
+   - Scalers are fitted strictly on the training partition; calibrators are fitted strictly on the validation partition. Both are frozen and persisted in the bundle.
+   - The final holdout is evaluated once and never used for fitting, calibration, model selection, or threshold tuning.
+4. **Cryptographic Provenance**: SQLite catalog (`data/catalog.db`) and Parquet storage verify file integrity using SHA-256 checksums and sidecar metadata.
+5. **Strict TLS Enforcement**: HTTPS and WebSocket connections enforce certificate verification via the `certifi` CA bundle and hostname checking (`ssl.CERT_REQUIRED`, TLS 1.2 minimum).
+6. **Hardcoded Endpoint Allowlist**: Only `https://auth.iqoption.com/api/v2/login`, `https://auth.iqoption.com/api/v1.0/logout`, and `wss://iqoption.com/echo/websocket` are accepted by the network layer.
+7. **No Credential Persistence**: Passwords are collected via `getpass.getpass()`, dropped from memory after login, and never written to disk, `.env` files, or log streams.
+8. **Tamper-Evident Phase 4 Artifacts**: Prepared datasets and model bundles are written with a SHA-256 manifest that is verified before load; fingerprint mismatches are refused.
+9. **Conservative Evidence Gate**: Synthetic results are permanently labelled engineering-only. Authentic results must clear predefined out-of-sample statistical gates and are still capped at "candidate edge requires replication".
+10. **No LLM Authority**: The optional research assistant is provider-neutral, offline by default, and has no order, configuration, or decision authority.
 
 ---
 
 ## 5. Documentation Map
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — System architecture, module design, and Mermaid sequence diagrams.
+- [PHASE4_COMPLETION_REPORT.md](PHASE4_COMPLETION_REPORT.md) — Phase 4 completion report: architecture, methodology, results, evidence status, risks, and Phase 5 readiness.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — System architecture, module design, and Mermaid workflow diagrams.
+- [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) — Automated test run results across all 46 test modules (958 tests).
 - [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md) — Threat model, past repo vulnerability review, and mitigation inventory.
 - [docs/CONNECTION_RESEARCH.md](docs/CONNECTION_RESEARCH.md) — Comparative inspection of evaluated repositories (`victalejo`, `iqair`, `Lu-Yi-Hsun`, `trader-skill`).
-- [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) — Automated test run results across all 12 requirement areas.
-- [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — Platform risks, rate limits, 2FA considerations, and Phase 1 scope limits.
+- [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — Platform risks, rate limits, 2FA considerations, and research scope boundaries.
 - [LICENSE](LICENSE) — MIT License with upstream attribution notices preserved.

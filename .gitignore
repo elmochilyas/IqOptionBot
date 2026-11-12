@@ -41,6 +41,11 @@ htmlcov/
 *.log
 *.sqlite3
 
+# Generated research workspaces, agent state, and archives
+data/
+.agents/
+*.zip
+
 # IDEs & OS files
 .vscode/
 .idea/

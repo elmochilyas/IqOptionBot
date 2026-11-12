@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import typer
 
+from iqoption_research.cli.commands.ml_cmd import ml_app
 from iqoption_research.cli.commands.probe import probe_command
 from iqoption_research.cli.commands.research_cmd import research_app
 from iqoption_research.cli.commands.security_check_cmd import security_check_command
@@ -35,6 +36,7 @@ app.command("probe", help="Explicit read-only live probe (requires --live).")(
     probe_command
 )
 app.add_typer(research_app, name="research")
+app.add_typer(ml_app, name="ml")
 
 
 @app.callback()

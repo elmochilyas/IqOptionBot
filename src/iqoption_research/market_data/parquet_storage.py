@@ -583,7 +583,9 @@ def cleanup_staging_files(root_dir: Path | str, max_age_seconds: float = 3600.0)
         if item.is_file():
             try:
                 mtime = item.stat().st_mtime
-                if (now - mtime) > max_age_seconds:
+                # A non-positive max age explicitly requests removal of every
+                # orphaned staging file (used by tests and manual recovery).
+                if max_age_seconds <= 0.0 or (now - mtime) >= max_age_seconds:
                     item.unlink(missing_ok=True)
                     removed += 1
             except OSError:

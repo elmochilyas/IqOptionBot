@@ -179,3 +179,12 @@ def test_cli_bot_train_authentic_insufficient_data() -> None:
     assert result.exit_code == 1
     assert "Insufficient authentic dataset" in result.output
     assert "bot data import-csv" in result.output
+
+
+def test_cli_bot_data_collect_mock() -> None:
+    """CLI 'bot data collect --mock' runs cleanly in dry-run offline verification."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["bot", "data", "collect", "--mock", "--symbol", "EURUSD"])
+    assert result.exit_code == 0
+    assert "Offline Mock Fixture" in result.output
+    assert "BROKER ORDERS DISABLED" in result.output

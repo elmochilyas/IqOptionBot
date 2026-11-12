@@ -478,6 +478,115 @@ def data_import_csv_cmd(
         raise typer.Exit(code=1) from exc
 
 
+@data_app.command(
+    "collect", help="Collect authentic candles from IQ Option using read-only session."
+)
+def data_collect_cmd(
+    symbol: str = typer.Option(
+        "EURUSD", "--symbol", "-s", help="Instrument symbol (e.g. EURUSD, EURUSD-OTC)"
+    ),
+    candle_size: int = typer.Option(60, "--size", help="Candle size in seconds"),
+    count: int = typer.Option(1000, "--count", "-n", help="Number of candles to request"),
+    saved_creds: bool = typer.Option(
+        False, "--saved", help="Load saved credentials from Windows vault"
+    ),
+    dev_mock: bool = typer.Option(
+        False, "--mock", help="Use offline mock provider for dry-run verification"
+    ),
+) -> None:
+    """Collect authentic historical candles from IQ Option via read-only session."""
+    import asyncio
+
+    from iqoption_research.auth.manager import AuthenticationManager
+    from iqoption_research.auth.provider import IQOptionAuthProvider, MockAuthProvider
+    from iqoption_research.connectors.iqoption.client import AsyncIQOption
+
+    console.print(
+        Panel(
+            f"[bold cyan]IQ Option Authentic Historical Data Collection[/bold cyan]\n"
+            f"Symbol: {symbol} | Candle Size: {candle_size}s | Requested: {count}\n"
+            f"Provider: {'Offline Mock Fixture' if dev_mock else 'IQ Option Live Read-Only'}\n"
+            f"[bold red][STRICTLY READ-ONLY OBSERVATION — BROKER ORDERS DISABLED][/bold red]",
+            border_style="cyan",
+        )
+    )
+
+    provider = MockAuthProvider() if dev_mock else IQOptionAuthProvider()
+    auth_manager = AuthenticationManager(provider=provider)
+
+    async def _async_collect() -> None:
+        if saved_creds:
+            console.print("[dim]Loading credentials from Windows Credential Vault...[/dim]")
+            logged_in = await auth_manager.login_saved()
+        else:
+            if dev_mock:
+                logged_in = await auth_manager.login_interactive(
+                    email="trader@example.com",
+                    password="mock_secret_123",  # noqa: S106
+                )
+            else:
+                console.print(
+                    "[dim]Initiating owner-controlled login for read-only collection...[/dim]"
+                )
+                logged_in = await auth_manager.login_interactive()
+
+        if not logged_in:
+            console.print(f"[bold red]Authentication failed: {auth_manager.last_error}[/bold red]")
+            raise typer.Exit(code=1)
+
+        session = auth_manager.session
+        if session is None or not session.is_active:
+            console.print("[bold red]No active session available.[/bold red]")
+            raise typer.Exit(code=1)
+
+        if dev_mock:
+            console.print("[yellow]Mock provider: skipping genuine broker network I/O.[/yellow]")
+            return
+
+        client = AsyncIQOption(ssid=session.ssid)
+        client.assert_read_only()
+        console.print("[dim]Connecting read-only WebSocket session...[/dim]")
+        await client.connect()
+
+        try:
+            collector = HistoricalDataCollector()
+            console.print(f"[cyan]Requesting {count} historical candles for {symbol}...[/cyan]")
+            candles = await collector.collect_from_broker(
+                client,
+                symbol=symbol,
+                candle_size_seconds=candle_size,
+                count=count,
+            )
+            if not candles:
+                console.print(f"[yellow]No candles returned from broker for {symbol}.[/yellow]")
+                return
+
+            saved_path = collector.persist_dataset(
+                candles,
+                symbol=symbol,
+                candle_size_seconds=candle_size,
+                provenance="BROKER_AUTHENTIC_COLLECTION",
+            )
+            msg = (
+                f"[bold green]Collected {len(candles)} authentic candles![/bold green]\n"
+                f"Symbol: {symbol} | Timeframe: {candle_size}s\n"
+                f"Storage: {saved_path}\n"
+                f"Catalog registered in SQLite catalog.db"
+            )
+            console.print(Panel(msg, border_style="green"))
+        finally:
+            await client.close()
+            await auth_manager.logout()
+
+    try:
+        asyncio.run(_async_collect())
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        console.print(f"[bold red]Collection error: {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+
+
 @bot_app.command("train-authentic", help="Train AI models on authentic historical data.")
 def train_authentic_cmd(
     symbol: str = typer.Option("EURUSD", "--symbol", "-s", help="Instrument symbol"),

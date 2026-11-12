@@ -86,12 +86,15 @@ async def test_explicit_account_requests_sent_after_auth(fake_credentials: Crede
         connect_factory=fake_factory,
     )
 
-    with patch(
-        "iqoption_research.connectors.iqoption.client.async_login",
-        new=AsyncMock(return_value="mock_valid_ssid"),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.async_logout",
-        new=AsyncMock(return_value=True),
+    with (
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_login",
+            new=AsyncMock(return_value="mock_valid_ssid"),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_logout",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         await client.connect()
 
@@ -105,8 +108,11 @@ async def test_explicit_account_requests_sent_after_auth(fake_credentials: Crede
 
         # 2. get-profile
         profile_req = next(
-            f for f in sent_frames if f.get("name") == "sendMessage"
-            and isinstance(f.get("msg"), dict) and f["msg"].get("name") == MSG_GET_PROFILE
+            f
+            for f in sent_frames
+            if f.get("name") == "sendMessage"
+            and isinstance(f.get("msg"), dict)
+            and f["msg"].get("name") == MSG_GET_PROFILE
         )
         assert profile_req["msg"]["version"] == "1.0"
         assert profile_req["msg"]["body"] == {}
@@ -114,8 +120,11 @@ async def test_explicit_account_requests_sent_after_auth(fake_credentials: Crede
 
         # 3. get-balances
         balances_req = next(
-            f for f in sent_frames if f.get("name") == "sendMessage"
-            and isinstance(f.get("msg"), dict) and f["msg"].get("name") == MSG_GET_BALANCES
+            f
+            for f in sent_frames
+            if f.get("name") == "sendMessage"
+            and isinstance(f.get("msg"), dict)
+            and f["msg"].get("name") == MSG_GET_BALANCES
         )
         assert balances_req["msg"]["version"] == "1.0"
         assert balances_req["msg"]["body"] == {}
@@ -161,12 +170,15 @@ async def test_correlated_request_responses_accepted_and_verified(
         connect_factory=fake_factory,
     )
 
-    with patch(
-        "iqoption_research.connectors.iqoption.client.async_login",
-        new=AsyncMock(return_value="mock_valid_ssid"),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.async_logout",
-        new=AsyncMock(return_value=True),
+    with (
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_login",
+            new=AsyncMock(return_value="mock_valid_ssid"),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_logout",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         await client.connect()
 
@@ -224,12 +236,15 @@ async def test_reversed_response_order_handled_correctly(
         connect_factory=fake_factory,
     )
 
-    with patch(
-        "iqoption_research.connectors.iqoption.client.async_login",
-        new=AsyncMock(return_value="mock_valid_ssid"),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.async_logout",
-        new=AsyncMock(return_value=True),
+    with (
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_login",
+            new=AsyncMock(return_value="mock_valid_ssid"),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_logout",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         await client.connect()
 
@@ -274,12 +289,15 @@ async def test_malformed_profile_and_balances_rejected(
         connect_factory=fake_factory,
     )
 
-    with patch(
-        "iqoption_research.connectors.iqoption.client.async_login",
-        new=AsyncMock(return_value="mock_valid_ssid"),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.async_logout",
-        new=AsyncMock(return_value=True),
+    with (
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_login",
+            new=AsyncMock(return_value="mock_valid_ssid"),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_logout",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         try:
             with pytest.raises(AccountDataMissingError):
@@ -323,12 +341,15 @@ async def test_auth_failure_never_sends_account_requests(
         connect_factory=fake_factory,
     )
 
-    with patch(
-        "iqoption_research.connectors.iqoption.client.async_login",
-        new=AsyncMock(return_value="mock_valid_ssid"),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.async_logout",
-        new=AsyncMock(return_value=True),
+    with (
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_login",
+            new=AsyncMock(return_value="mock_valid_ssid"),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_logout",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         with pytest.raises(Exception):
             await client.connect()
@@ -369,12 +390,15 @@ async def test_missing_account_data_times_out_gracefully(
         connect_factory=fake_factory,
     )
 
-    with patch(
-        "iqoption_research.connectors.iqoption.client.async_login",
-        new=AsyncMock(return_value="mock_valid_ssid"),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.async_logout",
-        new=AsyncMock(return_value=True),
+    with (
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_login",
+            new=AsyncMock(return_value="mock_valid_ssid"),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_logout",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         try:
             with pytest.raises(AccountDataMissingError):
@@ -463,12 +487,15 @@ async def test_message_counters_consistency_across_transport_and_diagnostics(
         connect_factory=fake_factory,
     )
 
-    with patch(
-        "iqoption_research.connectors.iqoption.client.async_login",
-        new=AsyncMock(return_value="mock_valid_ssid"),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.async_logout",
-        new=AsyncMock(return_value=True),
+    with (
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_login",
+            new=AsyncMock(return_value="mock_valid_ssid"),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_logout",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         await client.connect()
 
@@ -497,11 +524,15 @@ async def test_duplicate_request_id_rejected() -> None:
     ws._ws = AsyncMock()
 
     loop = asyncio.get_running_loop()
-    ws._pending["dup-1"] = type("_Pending", (), {
-        "future": loop.create_future(),
-        "name": "test",
-        "created_at": 0.0,
-    })()
+    ws._pending["dup-1"] = type(
+        "_Pending",
+        (),
+        {
+            "future": loop.create_future(),
+            "name": "test",
+            "created_at": 0.0,
+        },
+    )()
 
     with pytest.raises(ValueError, match="Duplicate request_id"):
         await ws.send_and_wait("sendMessage", {"test": 1}, request_id="dup-1")

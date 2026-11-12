@@ -229,12 +229,8 @@ class TestAdversarialLookaheadBiasProbes:
         assert sig_clean.direction == sig_mut.direction == SignalDirection.CALL
         assert sig_clean.stake == sig_mut.stake
         assert sig_clean.horizon_bars == sig_mut.horizon_bars
-        assert (
-            sig_clean.metadata["calibrated_prob_up"] == sig_mut.metadata["calibrated_prob_up"]
-        )
-        assert (
-            sig_clean.metadata["decision_timestamp"] == sig_mut.metadata["decision_timestamp"]
-        )
+        assert sig_clean.metadata["calibrated_prob_up"] == sig_mut.metadata["calibrated_prob_up"]
+        assert sig_clean.metadata["decision_timestamp"] == sig_mut.metadata["decision_timestamp"]
         assert sig_clean.metadata["current_price"] == sig_mut.metadata["current_price"]
 
     def test_backtest_engine_future_candles_do_not_alter_past_trade_entries(self) -> None:
@@ -252,8 +248,7 @@ class TestAdversarialLookaheadBiasProbes:
 
         # Series B: Identical up to split_bar, then crashes
         candles_b = list(candles_a[:split_bar]) + [
-            _make_synth_candle(base_ts + i * 60, 0.5000, 0.4900)
-            for i in range(split_bar, n_bars)
+            _make_synth_candle(base_ts + i * 60, 0.5000, 0.4900) for i in range(split_bar, n_bars)
         ]
         feat_b = CausalFeaturePipeline(drop_warmup=False).transform(candles_b)
 
@@ -324,9 +319,7 @@ class TestAdversarialCorruptedFeatures:
             feature_columns=["f1", "f2"],
         )
 
-        corrupted_row = _make_synth_row(
-            features={"f1": float("nan"), "f2": 1.005, "close": 1.085}
-        )
+        corrupted_row = _make_synth_row(features={"f1": float("nan"), "f2": 1.005, "close": 1.085})
         sig = strategy.on_bar(corrupted_row, [corrupted_row])
 
         assert sig.direction == SignalDirection.HOLD
@@ -356,9 +349,7 @@ class TestAdversarialCorruptedFeatures:
                 bad_feats = dict(r.features)
                 bad_feats["return_1"] = float("nan")
                 patched_rows.append(
-                    _make_synth_row(
-                        index=i, features=bad_feats, candle_from_ts=r.candle_from_ts
-                    )
+                    _make_synth_row(index=i, features=bad_feats, candle_from_ts=r.candle_from_ts)
                 )
             else:
                 patched_rows.append(r)
@@ -387,13 +378,13 @@ class TestAdversarialZeroEdgeAbstention:
     @pytest.mark.parametrize(
         ("payout_rate", "prob_up"),
         [
-            (0.10, 0.90),    # p_be = 1/1.10 = 0.9091 > 0.90 -> E[PnL] = -0.01 < 0
-            (0.50, 0.65),    # p_be = 1/1.50 = 0.6667 > 0.65 -> E[PnL] = -0.025 < 0
-            (0.70, 0.58),    # p_be = 1/1.70 = 0.5882 > 0.58 -> E[PnL] = -0.014 < 0
-            (0.85, 0.54),    # p_be = 1/1.85 = 0.5405 > 0.54 -> E[PnL] = -0.001 < 0
-            (0.85, 0.50),    # pure 50/50 tie -> E[PnL] = -0.075 < 0
-            (1.00, 0.50),    # p_be = 0.50, pure tie has 0 expectancy -> HOLD
-            (1.50, 0.50),    # p_be = 0.40, pure tie has 0 directional expectancy -> HOLD
+            (0.10, 0.90),  # p_be = 1/1.10 = 0.9091 > 0.90 -> E[PnL] = -0.01 < 0
+            (0.50, 0.65),  # p_be = 1/1.50 = 0.6667 > 0.65 -> E[PnL] = -0.025 < 0
+            (0.70, 0.58),  # p_be = 1/1.70 = 0.5882 > 0.58 -> E[PnL] = -0.014 < 0
+            (0.85, 0.54),  # p_be = 1/1.85 = 0.5405 > 0.54 -> E[PnL] = -0.001 < 0
+            (0.85, 0.50),  # pure 50/50 tie -> E[PnL] = -0.075 < 0
+            (1.00, 0.50),  # p_be = 0.50, pure tie has 0 expectancy -> HOLD
+            (1.50, 0.50),  # p_be = 0.40, pure tie has 0 directional expectancy -> HOLD
         ],
     )
     def test_zero_edge_binary_payoff_sweep_100_percent_abstention(
@@ -531,9 +522,7 @@ class TestAdversarialForexSpreadsAndSlippageSpikes:
             )
 
         model = ControlledProbabilityModel(prob_up=0.80)
-        gate = ForexPayoffGate(
-            spread_pips=1.0, slippage_pips=0.5, default_expected_move_pips=10.0
-        )
+        gate = ForexPayoffGate(spread_pips=1.0, slippage_pips=0.5, default_expected_move_pips=10.0)
         engine = AIDecisionEngine(abstention_gate=gate)
         strategy = MLStrategy(
             model=model,
@@ -633,9 +622,7 @@ class TestAdversarialMultiHundredBarRuns:
             assert math.isfinite(state.cash)
 
         # Invariant: final capital == initial + total net pnl
-        assert res.final_capital == pytest.approx(
-            res.initial_capital + res.total_net_pnl, abs=1e-9
-        )
+        assert res.final_capital == pytest.approx(res.initial_capital + res.total_net_pnl, abs=1e-9)
 
 
 # ==============================================================================
@@ -659,10 +646,7 @@ class TestAdversarialCapitalAccounting:
         """Verify exact cash conservation under tie settlement actions (REFUND, LOSS)."""
         base_ts = 1_700_000_000
         # Construct bars producing exact flat close (TIE outcome)
-        candles = [
-            _make_synth_candle(base_ts + i * 60, 1.08500, 1.08500)
-            for i in range(25)
-        ]
+        candles = [_make_synth_candle(base_ts + i * 60, 1.08500, 1.08500) for i in range(25)]
         feat_ds = CausalFeaturePipeline(drop_warmup=False).transform(candles)
 
         model = ControlledProbabilityModel(prob_up=0.80)
@@ -673,9 +657,7 @@ class TestAdversarialCapitalAccounting:
         res = BacktestEngine(strategy, payoff, cfg).run(feat_ds.rows, candles)
 
         assert res.trade_count > 0
-        expected_outcome = (
-            TradeOutcome.TIE if tie_action == TieAction.REFUND else TradeOutcome.LOSS
-        )
+        expected_outcome = TradeOutcome.TIE if tie_action == TieAction.REFUND else TradeOutcome.LOSS
         for t in res.trades:
             assert t.settlement.outcome == expected_outcome
             assert t.settlement.net_pnl == pytest.approx(expected_tie_pnl)
@@ -739,9 +721,7 @@ class TestAdversarialHoldoutBoundaries:
 
     def test_holdout_excessive_purge_raises_cleanly(self) -> None:
         """Verify purge_bars exceeding train partition size raises HoldoutSplitError."""
-        cfg = HoldoutSplitConfig(
-            train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, purge_bars=100
-        )
+        cfg = HoldoutSplitConfig(train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, purge_bars=100)
         evaluator = HoldoutEvaluator(cfg)
 
         with pytest.raises(HoldoutSplitError, match="Train split is empty"):

@@ -178,9 +178,7 @@ class DataQualityReport:
             "is_historical": self.is_historical,
             "stale": self.stale,
             "stale_age_seconds": (
-                round(self.stale_age_seconds, 1)
-                if self.stale_age_seconds is not None
-                else None
+                round(self.stale_age_seconds, 1) if self.stale_age_seconds is not None else None
             ),
             "newest_candle_utc": (
                 utc_from_seconds(self.newest_candle_end_ts).isoformat()
@@ -524,14 +522,10 @@ def assess_data_quality(
     )
     missing_intervals = sum(g.missing_count for g in gaps)
     scheduled_closures = sum(
-        1
-        for g in gaps
-        if g.classification == GapClassification.SCHEDULED_WEEKEND_CLOSURE.value
+        1 for g in gaps if g.classification == GapClassification.SCHEDULED_WEEKEND_CLOSURE.value
     )
     unscheduled_gaps = sum(
-        1
-        for g in gaps
-        if g.classification == GapClassification.UNSCHEDULED_INTRADAY_GAP.value
+        1 for g in gaps if g.classification == GapClassification.UNSCHEDULED_INTRADAY_GAP.value
     )
     unverified_gaps = sum(
         1 for g in gaps if g.classification == GapClassification.UNVERIFIED_GAP.value
@@ -720,11 +714,7 @@ def assess_data_quality(
     ):
         acceptance = "rejected"
     elif (
-        score < 90.0
-        or unscheduled_gaps > 0
-        or unverified_gaps > 0
-        or incomplete_count > 1
-        or stale
+        score < 90.0 or unscheduled_gaps > 0 or unverified_gaps > 0 or incomplete_count > 1 or stale
     ):
         acceptance = "conditional"
     else:

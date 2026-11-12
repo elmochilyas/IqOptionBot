@@ -45,9 +45,7 @@ async def run_probe(
     """Perform one explicit, read-only live probe. Caller supplies consent."""
     credentials = get_credentials()
     settings = Settings(offline=False, diagnostics=diagnostics)
-    client = AsyncIQOption(
-        credentials, settings=settings, offline=False, diagnostics=diagnostics
-    )
+    client = AsyncIQOption(credentials, settings=settings, offline=False, diagnostics=diagnostics)
 
     try:
         await client.connect(raise_if_incomplete=False)
@@ -66,9 +64,7 @@ async def run_probe(
                 ),
             }
             if diagnostics:
-                summary["diagnostics"] = client.diagnostics.summary(
-                    connection_state=client.state
-                )
+                summary["diagnostics"] = client.diagnostics.summary(connection_state=client.state)
             return summary
 
         status = await client.get_account_status()
@@ -95,9 +91,7 @@ async def run_probe(
                 ),
             }
             if diagnostics:
-                summary["diagnostics"] = client.diagnostics.summary(
-                    connection_state=client.state
-                )
+                summary["diagnostics"] = client.diagnostics.summary(connection_state=client.state)
             return summary
 
         result = await client.get_candles(symbol, size, count)
@@ -114,9 +108,7 @@ async def run_probe(
             ),
         }
         if diagnostics:
-            summary["diagnostics"] = client.diagnostics.summary(
-                connection_state=client.state
-            )
+            summary["diagnostics"] = client.diagnostics.summary(connection_state=client.state)
 
         if save:
             saved = save_candles(
@@ -247,6 +239,4 @@ def probe_command(
                         f"({quality.get('stale_age_seconds', 0):.0f}s ago). "
                         "Do not assume market is closed without verified trading schedule."
                     )
-            print_success(
-                "Read-only probe completed. No orders placed, no balances switched."
-            )
+            print_success("Read-only probe completed. No orders placed, no balances switched.")

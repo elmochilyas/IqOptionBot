@@ -89,8 +89,7 @@ class SyntheticMarketConfig:
             )
         if not (-1.0 < self.momentum_strength < 1.0):
             raise SyntheticFixtureError(
-                "momentum_strength must be in (-1.0, 1.0), "
-                f"got {self.momentum_strength}"
+                f"momentum_strength must be in (-1.0, 1.0), got {self.momentum_strength}"
             )
         if not math.isfinite(self.volatility) or self.volatility <= 0.0:
             raise SyntheticFixtureError(
@@ -164,9 +163,10 @@ def generate_synthetic_candles(config: SyntheticMarketConfig | None = None) -> S
     for i in range(n):
         close_price = float(closes[i])
         # A small deterministic intrabar excursion beyond the open/close body.
-        half_range = abs(close_price - open_price) * 0.35 + float(
-            rng.uniform(0.1, 0.9)
-        ) * cfg.volatility * open_price
+        half_range = (
+            abs(close_price - open_price) * 0.35
+            + float(rng.uniform(0.1, 0.9)) * cfg.volatility * open_price
+        )
         high = max(open_price, close_price) + half_range
         low = min(open_price, close_price) - half_range
         low = max(low, 1e-9)

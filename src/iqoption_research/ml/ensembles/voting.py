@@ -168,9 +168,7 @@ class AveragingEnsemble(BaseEnsembleModel):
 
         submodel_dirs = meta.get("submodel_dirs", [])
         if not submodel_dirs:
-            raise ModelPersistenceError(
-                f"No submodels found in ensemble metadata at {dir_path}"
-            )
+            raise ModelPersistenceError(f"No submodels found in ensemble metadata at {dir_path}")
 
         loaded_models = cls._load_submodels(dir_path, submodel_dirs)
 

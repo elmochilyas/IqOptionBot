@@ -120,9 +120,7 @@ class IQOptionWebSocketClient:
         self._config = config or ConnectionConfig()
         self._connect_factory = connect_factory
         self._monitor = monitor
-        self._diagnostics = diagnostics or ProtocolDiagnostics(
-            enabled=self._config.diagnostics
-        )
+        self._diagnostics = diagnostics or ProtocolDiagnostics(enabled=self._config.diagnostics)
 
         self._ws: ClientConnection | None = None
         self._receive_task: asyncio.Task[None] | None = None
@@ -224,11 +222,7 @@ class IQOptionWebSocketClient:
     def is_practice_verified(self) -> bool:
         """True only if active balance is confirmed as PRACTICE (type 4)."""
         active = self.active_balance
-        return (
-            active is not None
-            and active.is_practice
-            and active.type == AccountType.PRACTICE
-        )
+        return active is not None and active.is_practice and active.type == AccountType.PRACTICE
 
     @property
     def reconnect_attempts(self) -> int:
@@ -344,9 +338,7 @@ class IQOptionWebSocketClient:
             self._state = ConnectionState.AUTHENTICATING
         self._transition_monitor(ConnectionState.AUTHENTICATING, reason="ws_authenticating")
 
-        self._receive_task = asyncio.create_task(
-            self._receive_loop(), name="iqoption-ws-receive"
-        )
+        self._receive_task = asyncio.create_task(self._receive_loop(), name="iqoption-ws-receive")
 
         try:
             await self._send_raw(build_authenticate_frame(self._ssid))
@@ -603,7 +595,7 @@ class IQOptionWebSocketClient:
             handled = True
             try:
                 auth_res = parse_authenticated(message)
-                self._authenticated_ok = (auth_res is True)
+                self._authenticated_ok = auth_res is True
             except (ValueError, TypeError, KeyError) as exc:
                 logger.warning(
                     "Rejected invalid/malformed authenticated response (%s)",
@@ -636,9 +628,7 @@ class IQOptionWebSocketClient:
             handled = True
             self._diagnostics.record_incoming(name, msg, handled=True)
             self.last_heartbeat_at = time.monotonic()
-            task = asyncio.create_task(
-                self._send_raw(build_heartbeat_frame(message.get("msg")))
-            )
+            task = asyncio.create_task(self._send_raw(build_heartbeat_frame(message.get("msg"))))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
             return
@@ -712,9 +702,7 @@ class IQOptionWebSocketClient:
                 active_id = payload.get("active_id")
                 size = payload.get("size")
                 if isinstance(active_id, int) and isinstance(size, int):
-                    queue = self._subscriptions.get(
-                        (MSG_CANDLE_GENERATED, active_id, size)
-                    )
+                    queue = self._subscriptions.get((MSG_CANDLE_GENERATED, active_id, size))
                     if queue is not None:
                         try:
                             queue.put_nowait(payload)
@@ -773,15 +761,12 @@ class IQOptionWebSocketClient:
         nested_balances = raw_profile.get("balances")
         if isinstance(nested_balances, list):
             self._apply_balances(nested_balances)
-        elif (
-            isinstance(nested_balances, dict)
-            and isinstance(nested_balances.get("balances"), list)
+        elif isinstance(nested_balances, dict) and isinstance(
+            nested_balances.get("balances"), list
         ):
             self._apply_balances(nested_balances["balances"])
 
-    def _extract_profile_payload(
-        self, message: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    def _extract_profile_payload(self, message: dict[str, Any]) -> dict[str, Any] | None:
         msg = message.get("msg")
         if isinstance(msg, dict):
             if "profile" in msg and isinstance(msg["profile"], dict):
@@ -814,9 +799,7 @@ class IQOptionWebSocketClient:
         self._apply_balances(raw_balances)
         self._diagnostics.record_balances_status(len(self._balances) > 0)
 
-    def _extract_balances_payload(
-        self, message: dict[str, Any]
-    ) -> list[dict[str, Any]] | None:
+    def _extract_balances_payload(self, message: dict[str, Any]) -> list[dict[str, Any]] | None:
         raw = message.get("msg")
         if isinstance(raw, list):
             return raw
@@ -842,9 +825,7 @@ class IQOptionWebSocketClient:
             if not isinstance(item, dict):
                 continue
             try:
-                parsed.append(
-                    Balance.from_raw(item, active_balance_id=self._active_balance_id)
-                )
+                parsed.append(Balance.from_raw(item, active_balance_id=self._active_balance_id))
             except (ValueError, TypeError, KeyError):
                 continue
 
@@ -853,9 +834,7 @@ class IQOptionWebSocketClient:
                 self.errors += 1
                 if self._monitor is not None:
                     self._monitor.record_error("malformed_balances")
-                self._diagnostics.record_parsing_failure(
-                    "balances", "AllBalanceEntriesMalformed"
-                )
+                self._diagnostics.record_parsing_failure("balances", "AllBalanceEntriesMalformed")
                 logger.warning("All balance entries in payload were malformed")
             return
 
@@ -935,8 +914,7 @@ class IQOptionWebSocketClient:
             await self._shutdown_transport(reason)
 
             while (
-                self._reconnect_attempts < self._config.max_reconnect_attempts
-                and not self._closed
+                self._reconnect_attempts < self._config.max_reconnect_attempts and not self._closed
             ):
                 self._reconnect_attempts += 1
                 delay = compute_backoff(

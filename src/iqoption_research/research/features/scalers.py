@@ -146,11 +146,7 @@ class StandardScaler:
 
             count = len(vals)
             mean_val = sum(vals) / count
-            var_val = (
-                sum((x - mean_val) ** 2 for x in vals) / (count - 1)
-                if count > 1
-                else 0.0
-            )
+            var_val = sum((x - mean_val) ** 2 for x in vals) / (count - 1) if count > 1 else 0.0
 
             std_val = math.sqrt(var_val)
             # Avoid division by zero on constant features
@@ -255,9 +251,7 @@ class StandardScaler:
             if np.any(np.isinf(X)):
                 raise PreprocessingError("Inf detected in transform data")
 
-        mean_vec = np.array(
-            [params.mean[name] for name in params.feature_names], dtype=np.float64
-        )
+        mean_vec = np.array([params.mean[name] for name in params.feature_names], dtype=np.float64)
         scale_vec = np.array(
             [params.scale[name] for name in params.feature_names], dtype=np.float64
         )

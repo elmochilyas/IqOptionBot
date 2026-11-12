@@ -269,9 +269,7 @@ class MockGPTProvider(BaseLLMProvider):
         lines.append(
             "2. Confirm that trade abstention filters out low-conviction signals near break-even."
         )
-        lines.append(
-            "3. Verify that feature importances do not exhibit single-predictor leakage."
-        )
+        lines.append("3. Verify that feature importances do not exhibit single-predictor leakage.")
 
         return "\n".join(lines)
 

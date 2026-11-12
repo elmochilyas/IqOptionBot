@@ -312,12 +312,7 @@ class ForexPayoffGate(BaseAbstentionGate):
         name: str = "ForexPayoffGate",
     ) -> None:
         super().__init__(name=name)
-        if (
-            spread_pips < 0.0
-            or slippage_pips < 0.0
-            or commission_pips < 0.0
-            or hurdle_pips < 0.0
-        ):
+        if spread_pips < 0.0 or slippage_pips < 0.0 or commission_pips < 0.0 or hurdle_pips < 0.0:
             raise ValueError("All pip cost parameters and hurdle must be non-negative >= 0.0")
         if pip_size <= 0.0:
             raise ValueError("pip_size must be positive > 0.0")
@@ -358,9 +353,7 @@ class ForexPayoffGate(BaseAbstentionGate):
             if expected_move_pips is not None
             else self.default_expected_move_pips
         )
-        effective_spread = (
-            float(quote_spread_pips) if quote_spread_pips > 0.0 else self.spread_pips
-        )
+        effective_spread = float(quote_spread_pips) if quote_spread_pips > 0.0 else self.spread_pips
         cost_pips = effective_spread + 2.0 * self.slippage_pips + self.commission_pips
         required_edge = cost_pips + self.hurdle_pips
 

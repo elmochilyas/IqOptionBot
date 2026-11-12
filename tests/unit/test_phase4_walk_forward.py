@@ -536,9 +536,7 @@ class TestWalkForwardValidationErrors:
     def test_error_insufficient_samples_for_single_split(self) -> None:
         """Case 26: Total dataset length smaller than single split requirement raises error."""
         dataset_len = 45
-        config = WalkForwardConfig(
-            n_splits=1, train_size=30, test_size=20, purge_bars=2
-        )
+        config = WalkForwardConfig(n_splits=1, train_size=30, test_size=20, purge_bars=2)
         engine = WalkForwardEngine(config)
         with pytest.raises(ValueError, match=r"Dataset length .* insufficient"):
             list(engine.split(dataset_len))
@@ -546,9 +544,7 @@ class TestWalkForwardValidationErrors:
     def test_error_insufficient_samples_for_requested_n_splits(self) -> None:
         """Case 27: Dataset length insufficient for requested n_splits raises error."""
         dataset_len = 100
-        config = WalkForwardConfig(
-            n_splits=5, train_size=60, test_size=20, step_size=20
-        )
+        config = WalkForwardConfig(n_splits=5, train_size=60, test_size=20, step_size=20)
         engine = WalkForwardEngine(config)
         with pytest.raises(ValueError, match=r"Cannot generate 5 splits"):
             list(engine.split(dataset_len))
@@ -556,9 +552,7 @@ class TestWalkForwardValidationErrors:
     def test_boundary_exact_minimum_sample_fit(self) -> None:
         """Case 28: Exact minimum sample fit generates 1 split ending at the last index."""
         dataset_len = 65
-        config = WalkForwardConfig(
-            n_splits=1, train_size=40, test_size=20, purge_bars=5
-        )
+        config = WalkForwardConfig(n_splits=1, train_size=40, test_size=20, purge_bars=5)
         engine = WalkForwardEngine(config)
         splits = list(engine.split(dataset_len))
 
@@ -688,9 +682,7 @@ class TestWalkForwardEvaluationLoop:
     def test_evaluate_walk_forward_execution_with_baseline(self) -> None:
         """Case 29: Walk-forward evaluation runs with MajorityClassModel across 3 folds."""
         ds = _make_synth_dataset(n=150)
-        config = WalkForwardConfig(
-            n_splits=3, train_size=60, test_size=30, mode="expanding"
-        )
+        config = WalkForwardConfig(n_splits=3, train_size=60, test_size=30, mode="expanding")
         wf_result = evaluate_walk_forward(
             model_factory=lambda: MajorityClassModel(),
             dataset=ds,
@@ -707,9 +699,7 @@ class TestWalkForwardEvaluationLoop:
     def test_evaluate_walk_forward_metrics_aggregation_math(self) -> None:
         """Case 30: Mean and standard deviation aggregations are mathematically exact."""
         ds = _make_synth_dataset(n=150)
-        config = WalkForwardConfig(
-            n_splits=3, train_size=60, test_size=30, mode="expanding"
-        )
+        config = WalkForwardConfig(n_splits=3, train_size=60, test_size=30, mode="expanding")
         wf_result = evaluate_walk_forward(
             model_factory=lambda: MajorityClassModel(),
             dataset=ds,
@@ -748,9 +738,7 @@ class TestWalkForwardEvaluationLoop:
     def test_evaluate_walk_forward_reproducibility(self) -> None:
         """Case 32: Evaluation is 100% numerically reproducible across runs."""
         ds = _make_synth_dataset(n=150)
-        config = WalkForwardConfig(
-            n_splits=2, train_size=60, test_size=30, mode="expanding"
-        )
+        config = WalkForwardConfig(n_splits=2, train_size=60, test_size=30, mode="expanding")
         res1 = evaluate_walk_forward(
             model_factory=lambda: LogisticRegressionModel(),
             dataset=ds,

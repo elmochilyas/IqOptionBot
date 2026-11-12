@@ -55,9 +55,7 @@ def _detect_csv_columns(headers: list[str]) -> CSVColumnMapping:
             ts_col = norm_headers[cand]
             break
     if ts_col is None:
-        raise ImportDataError(
-            f"Could not identify timestamp column in CSV headers: {headers}"
-        )
+        raise ImportDataError(f"Could not identify timestamp column in CSV headers: {headers}")
 
     # OHLC candidates
     def find_col(aliases: tuple[str, ...], name: str) -> str:

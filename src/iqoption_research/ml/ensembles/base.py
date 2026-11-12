@@ -67,7 +67,6 @@ def clone_base_model(model: BaseMLModel) -> BaseMLModel:
 
 
 class BaseEnsembleModel(BaseMLModel, ABC):
-
     """Abstract base class managing constituent submodels, lifecycle, and persistence."""
 
     def __init__(
@@ -165,9 +164,7 @@ class BaseEnsembleModel(BaseMLModel, ABC):
         return sub_dirs
 
     @classmethod
-    def _load_submodels(
-        cls, directory: Path, submodel_dirs: Sequence[str]
-    ) -> list[BaseMLModel]:
+    def _load_submodels(cls, directory: Path, submodel_dirs: Sequence[str]) -> list[BaseMLModel]:
         """Restore all submodels from numbered subdirectories.
 
         Args:

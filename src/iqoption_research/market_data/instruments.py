@@ -120,14 +120,12 @@ class InstrumentRegistry:
         raw = symbol.strip().upper()
         # Check OTC variants first before stripping separators
         is_otc_variant = (
-            "OTC" in raw
-            or raw.endswith("-OTC")
-            or raw.endswith("_OTC")
-            or "(OTC)" in raw
+            "OTC" in raw or raw.endswith("-OTC") or raw.endswith("_OTC") or "(OTC)" in raw
         )
 
         cleaned = (
-            raw.replace("/", "")
+            raw
+            .replace("/", "")
             .replace("-", "")
             .replace("_", "")
             .replace(" ", "")
@@ -164,9 +162,7 @@ class InstrumentRegistry:
         if not isinstance(active_id, int) or isinstance(active_id, bool):
             raise UnsupportedInstrumentError("active_id must be an integer")
         if active_id not in ACTIVES_TO_INSTRUMENTS:
-            raise UnsupportedInstrumentError(
-                f"Unknown or unsupported active_id: {active_id}"
-            )
+            raise UnsupportedInstrumentError(f"Unknown or unsupported active_id: {active_id}")
         return ACTIVES_TO_INSTRUMENTS[active_id]
 
     @classmethod
@@ -223,8 +219,7 @@ class InstrumentRegistry:
                 )
             if candle.symbol != target.symbol:
                 raise ValueError(
-                    f"Symbol mismatch at index {idx}: "
-                    f"expected {target.symbol}, got {candle.symbol}"
+                    f"Symbol mismatch at index {idx}: expected {target.symbol}, got {candle.symbol}"
                 )
 
         return target

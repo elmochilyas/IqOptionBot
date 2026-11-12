@@ -236,9 +236,7 @@ class HistGradientBoostingModel(BaseMLModel):
                 "l2_regularization": float(l2_regularization),
                 "early_stopping": early_stopping,
                 "monotonic_cst": (
-                    list(monotonic_cst)
-                    if isinstance(monotonic_cst, Sequence)
-                    else monotonic_cst
+                    list(monotonic_cst) if isinstance(monotonic_cst, Sequence) else monotonic_cst
                 ),
                 "random_state": int(random_state),
                 "class_weight": class_weight,

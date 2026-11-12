@@ -49,26 +49,24 @@ if TYPE_CHECKING:
 PARQUET_STORAGE_SCHEMA_VERSION: Final[str] = "2.0"
 
 # Explicit Arrow Schema with fixed types
-CANDLE_ARROW_SCHEMA: Final[pa.Schema] = pa.schema(
-    [
-        ("symbol", pa.string()),
-        ("active_id", pa.int32()),
-        ("is_otc", pa.bool_()),
-        ("size_seconds", pa.int32()),
-        ("from_ts", pa.int64()),
-        ("to_ts", pa.int64()),
-        ("at_ts", pa.int64()),
-        ("open", pa.float64()),
-        ("high", pa.float64()),
-        ("low", pa.float64()),
-        ("close", pa.float64()),
-        ("volume", pa.int64()),
-        ("bid", pa.float64()),
-        ("ask", pa.float64()),
-        ("is_complete", pa.bool_()),
-        ("original_index", pa.int32()),
-    ]
-)
+CANDLE_ARROW_SCHEMA: Final[pa.Schema] = pa.schema([
+    ("symbol", pa.string()),
+    ("active_id", pa.int32()),
+    ("is_otc", pa.bool_()),
+    ("size_seconds", pa.int32()),
+    ("from_ts", pa.int64()),
+    ("to_ts", pa.int64()),
+    ("at_ts", pa.int64()),
+    ("open", pa.float64()),
+    ("high", pa.float64()),
+    ("low", pa.float64()),
+    ("close", pa.float64()),
+    ("volume", pa.int64()),
+    ("bid", pa.float64()),
+    ("ask", pa.float64()),
+    ("is_complete", pa.bool_()),
+    ("original_index", pa.int32()),
+])
 
 
 class StorageError(Exception):
@@ -432,9 +430,7 @@ def read_candles_parquet(
         catalog_entry.sha256_checksum if catalog_entry is not None else expected_checksum
     )
     target_meta_checksum = (
-        catalog_entry.metadata_sha256
-        if catalog_entry is not None
-        else expected_metadata_checksum
+        catalog_entry.metadata_sha256 if catalog_entry is not None else expected_metadata_checksum
     )
     if catalog_entry is not None and expected_symbol is None:
         expected_symbol = catalog_entry.symbol

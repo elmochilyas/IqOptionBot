@@ -126,9 +126,7 @@ class TestMockGPTProviderOfflineDeterminism:
         provider = MockGPTProvider()
         prompt = "Analyze strategy with win_rate 0.58 and brier 0.21"
 
-        responses = [
-            provider.complete(prompt, win_rate=0.58, brier_score=0.21) for _ in range(10)
-        ]
+        responses = [provider.complete(prompt, win_rate=0.58, brier_score=0.21) for _ in range(10)]
 
         first_content = responses[0].content
         first_tokens = responses[0].tokens_used

@@ -441,9 +441,7 @@ class BaseMLModel(ABC):
             ModelValidationError: If inputs are invalid or empty.
         """
         if not self.is_fitted:
-            raise NotFittedError(
-                f"Model '{self.name}' must be fitted before calling evaluate()."
-            )
+            raise NotFittedError(f"Model '{self.name}' must be fitted before calling evaluate().")
 
         X_arr = self._validate_inference_input(X)
         y_arr = self._validate_y(y, expected_n=len(X_arr))

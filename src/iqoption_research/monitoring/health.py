@@ -13,6 +13,7 @@ from iqoption_research.monitoring.status import ConnectionMonitor
 @dataclass(frozen=True, slots=True)
 class HealthCheck:
     """Result of a composite health check."""
+
     healthy: bool
     state: ConnectionState
     issues: tuple[str, ...] = ()

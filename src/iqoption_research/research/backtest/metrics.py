@@ -71,9 +71,7 @@ class BacktestMetrics:
             "net_pnl": round(self.net_pnl, 2),
             "return_on_capital": round(self.return_on_capital, 4),
             "profit_factor": (
-                round(self.profit_factor, 2)
-                if not math.isinf(self.profit_factor)
-                else "inf"
+                round(self.profit_factor, 2) if not math.isinf(self.profit_factor) else "inf"
             ),
             "expectancy_per_trade": round(self.expectancy_per_trade, 4),
             "average_trade_pnl": round(self.average_trade_pnl, 2),

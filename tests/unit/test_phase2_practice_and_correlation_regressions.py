@@ -16,7 +16,7 @@ Verifies:
 
 from __future__ import annotations
 
-import asyncio
+import contextlib
 from datetime import UTC, datetime
 from typing import Any
 
@@ -176,9 +176,7 @@ def test_active_real_balance_rejects_practice_verification() -> None:
         {"id": "real_1", "type": 1, "amount": 500.0, "currency": "USD"},
         {"id": "prac_4", "type": 4, "amount": 10000.0, "currency": "USD"},
     ]
-    status = AccountStatus.from_raw(
-        profile_data, balances_data, active_balance_id="real_1"
-    )
+    status = AccountStatus.from_raw(profile_data, balances_data, active_balance_id="real_1")
 
     assert status.active_balance is not None
     assert status.active_balance.id == "real_1"
@@ -200,9 +198,7 @@ def test_active_practice_balance_confirms_practice_verification() -> None:
         {"id": "real_1", "type": 1, "amount": 500.0, "currency": "USD"},
         {"id": "prac_4", "type": 4, "amount": 10000.0, "currency": "USD"},
     ]
-    status = AccountStatus.from_raw(
-        profile_data, balances_data, active_balance_id="prac_4"
-    )
+    status = AccountStatus.from_raw(profile_data, balances_data, active_balance_id="prac_4")
 
     assert status.active_balance is not None
     assert status.active_balance.id == "prac_4"
@@ -338,9 +334,7 @@ def test_reconnect_clears_account_and_correlation_state() -> None:
     ws._authenticated_ok = True
     ws._profile = _make_dummy_profile()
     ws._active_balance_id = "prac_4"
-    ws._balances = [
-        Balance("prac_4", AccountType.PRACTICE, 10000.0, "USD", is_active=True)
-    ]
+    ws._balances = [Balance("prac_4", AccountType.PRACTICE, 10000.0, "USD", is_active=True)]
     ws._profile_request_id = "profile-1"
     ws._balances_request_id = "balances-2"
     ws._outstanding_profile_request_id = "profile-1"
@@ -350,7 +344,9 @@ def test_reconnect_clears_account_and_correlation_state() -> None:
     assert ws.is_practice_verified is True
 
     # Simulate shutdown/disconnect (as occurs at start of reconnect)
-    asyncio.run(ws._shutdown_transport(DisconnectReason.NETWORK_ERROR))
+    coro = ws._shutdown_transport(DisconnectReason.NETWORK_ERROR)
+    with contextlib.suppress(StopIteration):
+        coro.send(None)
 
     assert ws.active_balance_id is None
     assert ws.active_balance is None

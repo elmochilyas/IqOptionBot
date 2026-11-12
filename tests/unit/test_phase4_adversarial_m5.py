@@ -431,9 +431,7 @@ class TestFuzzRandomConfigurations:
             test_size = int(rng.integers(5, 40))
             train_size = int(rng.integers(15, 150))
             step_size = (
-                int(rng.integers(test_size, test_size + 20))
-                if rng.choice([True, False])
-                else None
+                int(rng.integers(test_size, test_size + 20)) if rng.choice([True, False]) else None
             )
             anchor = str(rng.choice(["start", "end"]))
 

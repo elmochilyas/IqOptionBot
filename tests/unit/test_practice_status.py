@@ -1,6 +1,5 @@
 """Tests for practice account identification and ambiguous status handling."""
 
-
 from iqoption_research.models.account import (
     AccountStatus,
     PracticeStatus,

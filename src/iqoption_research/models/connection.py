@@ -7,11 +7,12 @@ from enum import Enum
 
 class ConnectionState(Enum):
     """WebSocket connection lifecycle states."""
+
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
     AUTHENTICATING = "authenticating"
     AUTHENTICATED = "authenticated"
-    READY = "ready"          # Profile + balances received
+    READY = "ready"  # Profile + balances received
     RECONNECTING = "reconnecting"
     CLOSING = "closing"
     FAILED = "failed"
@@ -31,6 +32,7 @@ class ConnectionState(Enum):
 
 class DisconnectReason(Enum):
     """Reason for connection termination."""
+
     USER_REQUESTED = "user_requested"
     AUTH_FAILED = "auth_failed"
     NETWORK_ERROR = "network_error"
@@ -44,6 +46,7 @@ class DisconnectReason(Enum):
 @dataclass(frozen=True, slots=True)
 class ConnectionHealth:
     """Connection health snapshot for monitoring."""
+
     state: ConnectionState
     connected_at: datetime | None = None
     last_message_at: datetime | None = None
@@ -74,6 +77,7 @@ class ConnectionHealth:
 @dataclass(frozen=True, slots=True)
 class ConnectionMetrics:
     """Aggregated connection metrics for reporting."""
+
     total_connections: int = 0
     successful_connections: int = 0
     failed_connections: int = 0
@@ -90,6 +94,7 @@ class ConnectionMetrics:
 @dataclass(frozen=True, slots=True)
 class ConnectionConfig:
     """Immutable connection configuration."""
+
     # Timeout durations in seconds
     connect_timeout: float = 15.0
     auth_timeout: float = 15.0
@@ -111,9 +116,15 @@ class ConnectionConfig:
 
     def __post_init__(self) -> None:
         # Validate timeouts are positive
-        for field_name in ("connect_timeout", "auth_timeout", "request_timeout",
-                           "heartbeat_interval", "heartbeat_timeout",
-                           "reconnect_base_delay", "reconnect_max_delay"):
+        for field_name in (
+            "connect_timeout",
+            "auth_timeout",
+            "request_timeout",
+            "heartbeat_interval",
+            "heartbeat_timeout",
+            "reconnect_base_delay",
+            "reconnect_max_delay",
+        ):
             value = getattr(self, field_name)
             if value <= 0:
                 raise ValueError(f"{field_name} must be positive")

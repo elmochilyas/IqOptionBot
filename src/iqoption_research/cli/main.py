@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import typer
 
+from iqoption_research.cli.commands.bot_cmd import bot_app
 from iqoption_research.cli.commands.ml_cmd import ml_app
+from iqoption_research.cli.commands.paper_cmd import paper_app
 from iqoption_research.cli.commands.probe import probe_command
 from iqoption_research.cli.commands.research_cmd import research_app
 from iqoption_research.cli.commands.security_check_cmd import security_check_command
@@ -28,15 +30,13 @@ app = typer.Typer(
 )
 
 app.command("simulate", help="Offline connection simulation (no network).")(simulate_command)
-app.command("security-check", help="Offline TLS/endpoint/read-only checks.")(
-    security_check_command
-)
+app.command("security-check", help="Offline TLS/endpoint/read-only checks.")(security_check_command)
 app.command("validate-data", help="Offline candle validation.")(validate_command)
-app.command("probe", help="Explicit read-only live probe (requires --live).")(
-    probe_command
-)
+app.command("probe", help="Explicit read-only live probe (requires --live).")(probe_command)
 app.add_typer(research_app, name="research")
 app.add_typer(ml_app, name="ml")
+app.add_typer(paper_app, name="paper")
+app.add_typer(bot_app, name="bot")
 
 
 @app.callback()

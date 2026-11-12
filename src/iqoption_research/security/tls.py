@@ -68,9 +68,7 @@ def validate_https_endpoint(url: str) -> None:
     """
     if url not in ALLOWED_HTTPS_ENDPOINTS:
         allowed = ", ".join(sorted(ALLOWED_HTTPS_ENDPOINTS))
-        raise ValueError(
-            f"HTTPS endpoint not allowed: {url}. Allowed: {allowed}"
-        )
+        raise ValueError(f"HTTPS endpoint not allowed: {url}. Allowed: {allowed}")
 
 
 def validate_wss_endpoint(url: str) -> None:
@@ -84,9 +82,7 @@ def validate_wss_endpoint(url: str) -> None:
     """
     if url not in ALLOWED_WSS_ENDPOINTS:
         allowed = ", ".join(sorted(ALLOWED_WSS_ENDPOINTS))
-        raise ValueError(
-            f"WSS endpoint not allowed: {url}. Allowed: {allowed}"
-        )
+        raise ValueError(f"WSS endpoint not allowed: {url}. Allowed: {allowed}")
 
 
 def verify_certificate_cn(cert: dict | None, expected_cn: str = EXPECTED_CERT_CN) -> bool:

@@ -188,8 +188,7 @@ def test_drawdown_stop_circuit_breaker() -> None:
     """Trading stops when max drawdown limit is breached."""
     # Series of continuous falling bars
     candles = [
-        _make_candle(100 + i * 60, 1.0850 - i * 0.0010, 1.0840 - i * 0.0010)
-        for i in range(10)
+        _make_candle(100 + i * 60, 1.0850 - i * 0.0010, 1.0840 - i * 0.0010) for i in range(10)
     ]
     feat_ds = CausalFeaturePipeline(drop_warmup=False).transform(candles)
 

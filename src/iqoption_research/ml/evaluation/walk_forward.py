@@ -226,9 +226,7 @@ class WalkForwardConfig:
                 f"embargo_bars cannot be negative, got {self.embargo_bars}"
             )
         if self.min_train_size < 1:
-            raise InvalidSplitConfigError(
-                f"min_train_size must be >= 1, got {self.min_train_size}"
-            )
+            raise InvalidSplitConfigError(f"min_train_size must be >= 1, got {self.min_train_size}")
         if self.min_test_size < 1:
             raise InvalidSplitConfigError(f"min_test_size must be >= 1, got {self.min_test_size}")
         if self.min_val_size < 1:
@@ -569,13 +567,7 @@ class WalkForwardEngine:
         e = cfg.embargo_bars
 
         # Check single split requirement
-        single_split_required = (
-            train_bars
-            + val_bars
-            + test_bars
-            + p
-            + (e if val_bars > 0 else 0)
-        )
+        single_split_required = train_bars + val_bars + test_bars + p + (e if val_bars > 0 else 0)
         if n < single_split_required:
             msg = (
                 f"Dataset length ({n}) is insufficient for single split: "
@@ -586,11 +578,7 @@ class WalkForwardEngine:
 
         # Check total splits requirement
         multi_split_required = (
-            train_bars
-            + val_bars
-            + test_bars
-            + (k - 1) * step
-            + (e if val_bars > 0 else 0)
+            train_bars + val_bars + test_bars + (k - 1) * step + (e if val_bars > 0 else 0)
         )
         if n < multi_split_required:
             raise InsufficientDataError(
@@ -691,9 +679,7 @@ class WalkForwardEngine:
 
             # Timestamp extraction if MLDataset provided
             t_start_ts = (
-                int(timestamps[train_idx[0]])
-                if timestamps is not None and len(train_idx)
-                else None
+                int(timestamps[train_idx[0]]) if timestamps is not None and len(train_idx) else None
             )
             t_end_ts = (
                 int(timestamps[train_idx[-1]])
@@ -711,14 +697,10 @@ class WalkForwardEngine:
                 else None
             )
             te_start_ts = (
-                int(timestamps[test_idx[0]])
-                if timestamps is not None and len(test_idx)
-                else None
+                int(timestamps[test_idx[0]]) if timestamps is not None and len(test_idx) else None
             )
             te_end_ts = (
-                int(timestamps[test_idx[-1]])
-                if timestamps is not None and len(test_idx)
-                else None
+                int(timestamps[test_idx[-1]]) if timestamps is not None and len(test_idx) else None
             )
 
             yield WalkForwardSplit(
@@ -744,9 +726,7 @@ class WalkForwardEngine:
                 embargo_test_count=embargo_test_count,
             )
 
-    def generate_splits(
-        self, dataset: MLDataset | int | Sequence[Any]
-    ) -> list[WalkForwardSplit]:
+    def generate_splits(self, dataset: MLDataset | int | Sequence[Any]) -> list[WalkForwardSplit]:
         """Convenience method returning concrete list of all splits."""
         return list(self.split(dataset))
 
@@ -831,9 +811,7 @@ def evaluate_walk_forward(
         acc = float(accuracy_score(test_ds.y, test_preds))
         unique_y = np.unique(test_ds.y)
         bal_acc = (
-            acc
-            if len(unique_y) < 2
-            else float(balanced_accuracy_score(test_ds.y, test_preds))
+            acc if len(unique_y) < 2 else float(balanced_accuracy_score(test_ds.y, test_preds))
         )
         ll = float(log_loss_sklearn(test_ds.y, test_probs, labels=target_labels))
         bs = float(np.mean((test_probs[:, 1] - test_ds.y) ** 2))
@@ -939,15 +917,11 @@ def evaluate_walk_forward(
     p_acc = float(accuracy_score(oof_y_true, oof_y_pred))
     p_unique_y = np.unique(oof_y_true)
     p_bal_acc = (
-        p_acc
-        if len(p_unique_y) < 2
-        else float(balanced_accuracy_score(oof_y_true, oof_y_pred))
+        p_acc if len(p_unique_y) < 2 else float(balanced_accuracy_score(oof_y_true, oof_y_pred))
     )
     p_ll = float(log_loss_sklearn(oof_y_true, oof_y_prob, labels=target_labels))
     p_bs = float(np.mean((oof_y_prob[:, 1] - oof_y_true) ** 2))
-    p_roc = (
-        float(roc_auc_score(oof_y_true, oof_y_prob[:, 1])) if len(p_unique_y) >= 2 else None
-    )
+    p_roc = float(roc_auc_score(oof_y_true, oof_y_prob[:, 1])) if len(p_unique_y) >= 2 else None
     p_f1 = float(f1_score(oof_y_true, oof_y_pred, average="macro", zero_division=0.0))
     p_cm = confusion_matrix(oof_y_true, oof_y_pred, labels=target_labels).tolist()
 

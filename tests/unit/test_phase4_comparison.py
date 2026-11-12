@@ -302,9 +302,7 @@ class TestPayoffSimulationEngine:
         # Both confident: CALL on 1, PUT on 0
         y_prob = np.array([[0.2, 0.8], [0.8, 0.2]])
 
-        t_count, win_rate, ret, pf, _, _, _ = simulate_model_payoffs(
-            y_true, y_prob, config
-        )
+        t_count, win_rate, ret, pf, _, _, _ = simulate_model_payoffs(y_true, y_prob, config)
         assert t_count == 2
         assert win_rate == 1.0
         assert ret > 0.0
@@ -371,12 +369,8 @@ class TestEndToEndComparativeBenchmark:
 
     def test_walk_forward_benchmark_multiple_models(self) -> None:
         dataset = _make_benchmark_dataset(n=150, d=3)
-        wf_cfg = WalkForwardConfig(
-            n_splits=3, train_size=60, test_size=20, step_size=20
-        )
+        wf_cfg = WalkForwardConfig(n_splits=3, train_size=60, test_size=20, step_size=20)
         comp_cfg = ComparisonConfig(
-
-
             split_type=EvaluationSplitType.WALK_FORWARD,
             walk_forward_config=wf_cfg,
         )

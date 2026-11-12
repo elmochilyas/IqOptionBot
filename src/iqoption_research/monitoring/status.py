@@ -20,47 +20,39 @@ from iqoption_research.models.connection import (
 from iqoption_research.security.credentials import redact_secrets
 
 ALLOWED_TRANSITIONS: dict[ConnectionState, frozenset[ConnectionState]] = {
-    ConnectionState.DISCONNECTED: frozenset(
-        {ConnectionState.CONNECTING, ConnectionState.FAILED}
-    ),
-    ConnectionState.CONNECTING: frozenset(
-        {ConnectionState.AUTHENTICATING, ConnectionState.FAILED, ConnectionState.DISCONNECTED}
-    ),
-    ConnectionState.AUTHENTICATING: frozenset(
-        {ConnectionState.AUTHENTICATED, ConnectionState.FAILED, ConnectionState.DISCONNECTED}
-    ),
-    ConnectionState.AUTHENTICATED: frozenset(
-        {
-            ConnectionState.READY,
-            ConnectionState.RECONNECTING,
-            ConnectionState.CLOSING,
-            ConnectionState.DISCONNECTED,
-            ConnectionState.FAILED,
-        }
-    ),
-    ConnectionState.READY: frozenset(
-        {
-            ConnectionState.RECONNECTING,
-            ConnectionState.CLOSING,
-            ConnectionState.DISCONNECTED,
-            ConnectionState.FAILED,
-        }
-    ),
-    ConnectionState.RECONNECTING: frozenset(
-        {
-            ConnectionState.CONNECTING,
-            ConnectionState.AUTHENTICATING,
-            ConnectionState.AUTHENTICATED,
-            ConnectionState.FAILED,
-            ConnectionState.DISCONNECTED,
-        }
-    ),
-    ConnectionState.CLOSING: frozenset(
-        {ConnectionState.DISCONNECTED, ConnectionState.FAILED}
-    ),
-    ConnectionState.FAILED: frozenset(
-        {ConnectionState.CONNECTING, ConnectionState.DISCONNECTED}
-    ),
+    ConnectionState.DISCONNECTED: frozenset({ConnectionState.CONNECTING, ConnectionState.FAILED}),
+    ConnectionState.CONNECTING: frozenset({
+        ConnectionState.AUTHENTICATING,
+        ConnectionState.FAILED,
+        ConnectionState.DISCONNECTED,
+    }),
+    ConnectionState.AUTHENTICATING: frozenset({
+        ConnectionState.AUTHENTICATED,
+        ConnectionState.FAILED,
+        ConnectionState.DISCONNECTED,
+    }),
+    ConnectionState.AUTHENTICATED: frozenset({
+        ConnectionState.READY,
+        ConnectionState.RECONNECTING,
+        ConnectionState.CLOSING,
+        ConnectionState.DISCONNECTED,
+        ConnectionState.FAILED,
+    }),
+    ConnectionState.READY: frozenset({
+        ConnectionState.RECONNECTING,
+        ConnectionState.CLOSING,
+        ConnectionState.DISCONNECTED,
+        ConnectionState.FAILED,
+    }),
+    ConnectionState.RECONNECTING: frozenset({
+        ConnectionState.CONNECTING,
+        ConnectionState.AUTHENTICATING,
+        ConnectionState.AUTHENTICATED,
+        ConnectionState.FAILED,
+        ConnectionState.DISCONNECTED,
+    }),
+    ConnectionState.CLOSING: frozenset({ConnectionState.DISCONNECTED, ConnectionState.FAILED}),
+    ConnectionState.FAILED: frozenset({ConnectionState.CONNECTING, ConnectionState.DISCONNECTED}),
 }
 
 
@@ -122,9 +114,7 @@ class ConnectionMonitor:
         """
         allowed = ALLOWED_TRANSITIONS.get(self._state, frozenset())
         if to_state not in allowed and to_state != self._state:
-            raise ValueError(
-                f"Illegal transition {self._state.value} -> {to_state.value}"
-            )
+            raise ValueError(f"Illegal transition {self._state.value} -> {to_state.value}")
 
         timestamp = now or datetime.now(UTC)
         reason_text = reason.value if isinstance(reason, DisconnectReason) else str(reason)

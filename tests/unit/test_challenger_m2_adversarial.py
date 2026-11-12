@@ -180,9 +180,9 @@ class TestCausalityPerturbationProbe:
             past_x_pert = ds_perturbed.X[mask_pert]
 
             # Bit-for-bit numpy array equality
-            assert np.array_equal(
-                past_x_base, past_x_pert
-            ), f"MLDataset.X for tau <= t leaked future information at k={k}!"
+            assert np.array_equal(past_x_base, past_x_pert), (
+                f"MLDataset.X for tau <= t leaked future information at k={k}!"
+            )
 
     def test_past_candle_mutation_preserves_independent_target_outcomes(self) -> None:
         """Mutating candle at t-5 modifies features at t, but leaves target at t unchanged."""
@@ -631,23 +631,67 @@ class TestConstantFeatureAndDeadbandEdges:
         # c3: 1.08490 (-1 pip = -0.0001)
         candles = [
             Candle(
-                1, "EURUSD", CandleSize(60), base_ts + 0, base_ts + 60,
-                (base_ts + 60) * 10**9, 1.085, 1.085, 1.085, 1.085, 1, 1.08495, 1.08505,
+                1,
+                "EURUSD",
+                CandleSize(60),
+                base_ts + 0,
+                base_ts + 60,
+                (base_ts + 60) * 10**9,
+                1.085,
+                1.085,
+                1.085,
+                1.085,
+                1,
+                1.08495,
+                1.08505,
                 is_complete=True,
             ),
             Candle(
-                1, "EURUSD", CandleSize(60), base_ts + 60, base_ts + 120,
-                (base_ts + 120) * 10**9, 1.085, 1.085, 1.085, 1.085, 1, 1.08495, 1.08505,
+                1,
+                "EURUSD",
+                CandleSize(60),
+                base_ts + 60,
+                base_ts + 120,
+                (base_ts + 120) * 10**9,
+                1.085,
+                1.085,
+                1.085,
+                1.085,
+                1,
+                1.08495,
+                1.08505,
                 is_complete=True,
             ),
             Candle(
-                1, "EURUSD", CandleSize(60), base_ts + 120, base_ts + 180,
-                (base_ts + 180) * 10**9, 1.0851, 1.0851, 1.0851, 1.0851, 1, 1.08505, 1.08515,
+                1,
+                "EURUSD",
+                CandleSize(60),
+                base_ts + 120,
+                base_ts + 180,
+                (base_ts + 180) * 10**9,
+                1.0851,
+                1.0851,
+                1.0851,
+                1.0851,
+                1,
+                1.08505,
+                1.08515,
                 is_complete=True,
             ),
             Candle(
-                1, "EURUSD", CandleSize(60), base_ts + 180, base_ts + 240,
-                (base_ts + 240) * 10**9, 1.0849, 1.0849, 1.0849, 1.0849, 1, 1.08485, 1.08495,
+                1,
+                "EURUSD",
+                CandleSize(60),
+                base_ts + 180,
+                base_ts + 240,
+                (base_ts + 240) * 10**9,
+                1.0849,
+                1.0849,
+                1.0849,
+                1.0849,
+                1,
+                1.08485,
+                1.08495,
                 is_complete=True,
             ),
         ]

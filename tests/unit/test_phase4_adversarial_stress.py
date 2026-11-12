@@ -318,9 +318,9 @@ def test_adversarial_dataset_slicing_and_chronology_preservation() -> None:
     assert len(sub1) == 100
     assert sub1.timestamps[0] == timestamps[50]
     assert sub1.timestamps[-1] == timestamps[149]
-    assert np.all(
-        sub1.timestamps[1:] > sub1.timestamps[:-1]
-    ), "Timestamps must be strictly increasing"
+    assert np.all(sub1.timestamps[1:] > sub1.timestamps[:-1]), (
+        "Timestamps must be strictly increasing"
+    )
     assert np.array_equal(sub1.X, X[50:150])
     assert np.array_equal(sub1.y, y[50:150])
 

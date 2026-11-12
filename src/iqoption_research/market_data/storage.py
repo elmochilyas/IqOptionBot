@@ -50,6 +50,7 @@ CSV_COLUMNS = [
 @dataclass(frozen=True, slots=True)
 class SavedDataset:
     """Paths written for one dataset."""
+
     data_path: Path
     metadata_path: Path
     candle_count: int
@@ -109,9 +110,7 @@ def build_metadata(
         # Only merge non-secret research metadata; callers are trusted
         # internal code, but we still refuse obvious secret keys.
         forbidden = {"password", "ssid", "token", "cookie", "email", "authorization"}
-        meta["extra"] = {
-            k: v for k, v in extra.items() if k.lower() not in forbidden
-        }
+        meta["extra"] = {k: v for k, v in extra.items() if k.lower() not in forbidden}
     return meta
 
 
@@ -170,9 +169,7 @@ def save_candles(
                 writer.writerow(_candle_record(candle))
 
     metadata = build_metadata(candle_list, fetched_at=now, extra=extra)
-    metadata_path.write_text(
-        json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
     return SavedDataset(
         data_path=data_path,

@@ -5,6 +5,7 @@ Run from a copy of the project with:
   PYTHONPATH=src pytest -q /path/to/iqoption_phase1_extra_regression_tests.py
 On the 2026-11-06 archive these are EXPECTED to fail until fixed.
 """
+
 from datetime import UTC, datetime
 
 import pytest
@@ -21,7 +22,8 @@ def test_token_never_appears_in_validation_exception() -> None:
     sample_token = "syntheticbuySESSIONVALUE123456789ABC"
     with pytest.raises(Exception) as caught:
         validate_outgoing_frame({
-            "name": "authenticate", "msg": {"ssid": sample_token, "protocol": 3}
+            "name": "authenticate",
+            "msg": {"ssid": sample_token, "protocol": 3},
         })
     assert sample_token not in str(caught.value)
 
@@ -40,10 +42,13 @@ def test_rejected_authentication_clears_ready() -> None:
 def test_reconnect_does_not_reuse_old_active_balance_id() -> None:
     ws = IQOptionWebSocketClient("synthetic-ssid")
     ws._dispatch({"name": "profile", "msg": {"user_id": 1, "balance_id": 42}})
-    ws._dispatch({"name": "balances", "msg": [
-        {"id": 42, "type": 4, "amount": 10000},
-        {"id": 99, "type": 1, "amount": 5},
-    ]})
+    ws._dispatch({
+        "name": "balances",
+        "msg": [
+            {"id": 42, "type": 4, "amount": 10000},
+            {"id": 99, "type": 1, "amount": 5},
+        ],
+    })
     assert ws.active_balance_id == "42"
 
     # Simulate the start of a fresh connection: the current production code
@@ -51,10 +56,13 @@ def test_reconnect_does_not_reuse_old_active_balance_id() -> None:
     ws._profile_event.clear()
     ws._balances_event.clear()
     ws._dispatch({"name": "profile", "msg": {"user_id": 1}})
-    ws._dispatch({"name": "balances", "msg": [
-        {"id": 42, "type": 4, "amount": 10000},
-        {"id": 99, "type": 1, "amount": 5},
-    ]})
+    ws._dispatch({
+        "name": "balances",
+        "msg": [
+            {"id": 42, "type": 4, "amount": 10000},
+            {"id": 99, "type": 1, "amount": 5},
+        ],
+    })
     assert ws.active_balance_id is None, "new connection lacking active-id must not reuse an old id"
     assert not any(b.is_active for b in ws.balances)
 
@@ -89,10 +97,13 @@ def test_malformed_authentication_payload_invalidates_readiness() -> None:
 def test_reconnect_reordered_messages_and_balance_change() -> None:
     ws = IQOptionWebSocketClient("synthetic-ssid")
     # 1. Balances arrive before profile
-    ws._dispatch({"name": "balances", "msg": [
-        {"id": 101, "type": 4, "amount": 10000},
-        {"id": 102, "type": 1, "amount": 500},
-    ]})
+    ws._dispatch({
+        "name": "balances",
+        "msg": [
+            {"id": 101, "type": 4, "amount": 10000},
+            {"id": 102, "type": 1, "amount": 500},
+        ],
+    })
     assert ws.active_balance_id is None
     assert not any(b.is_active for b in ws.balances)
 
@@ -117,9 +128,10 @@ def test_candles_distinguishes_valid_empty_and_corrupt_data() -> None:
     assert empty_res == []
 
     # Valid populated candles
-    populated = AsyncIQOption._extract_candles(
-        {"name": "candles", "msg": {"candles": [{"from": 100, "close": 1.05}]}}
-    )
+    populated = AsyncIQOption._extract_candles({
+        "name": "candles",
+        "msg": {"candles": [{"from": 100, "close": 1.05}]},
+    })
     assert len(populated) == 1
     assert populated[0]["from"] == 100
 

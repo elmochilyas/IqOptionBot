@@ -205,16 +205,12 @@ class HoldoutResult:
             "train_calibration": (
                 self.train_calibration.to_dict() if self.train_calibration else None
             ),
-            "val_calibration": (
-                self.val_calibration.to_dict() if self.val_calibration else None
-            ),
+            "val_calibration": (self.val_calibration.to_dict() if self.val_calibration else None),
             "test_calibration": (
                 self.test_calibration.to_dict() if self.test_calibration else None
             ),
             "test_reliability_curve": (
-                self.test_reliability_curve.to_dict()
-                if self.test_reliability_curve
-                else None
+                self.test_reliability_curve.to_dict() if self.test_reliability_curve else None
             ),
             "counts": {
                 "train_count": self.train_count,

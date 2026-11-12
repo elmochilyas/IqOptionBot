@@ -61,9 +61,7 @@ def _get_strategy(name: str) -> BaseStrategy:
     )
 
 
-@research_app.command(
-    "import", help="Import a local CSV or Parquet file into partitioned storage."
-)
+@research_app.command("import", help="Import a local CSV or Parquet file into partitioned storage.")
 def import_dataset(
     file_path: Path = typer.Argument(..., help="Path to local candle file"),
     symbol: str = typer.Option("EURUSD", "--symbol", "-s", help="Instrument symbol"),
@@ -75,9 +73,7 @@ def import_dataset(
         Path("data/catalog.db"), "--catalog-db", help="Catalog DB path"
     ),
     source: str = typer.Option("local_import", "--source", help="Data source tag"),
-    synthetic: bool = typer.Option(
-        True, "--synthetic/--authentic", help="Mark dataset synthetic"
-    ),
+    synthetic: bool = typer.Option(True, "--synthetic/--authentic", help="Mark dataset synthetic"),
 ) -> None:
     """Import and audit a historical candle file into Parquet storage and SQLite catalog."""
     if not file_path.is_file():

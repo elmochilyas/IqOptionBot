@@ -275,15 +275,12 @@ def verify_manifest(
         actual_digest = sha256_file(target)
         if actual_digest != entry.sha256:
             raise ArtifactIntegrityError(
-                f"Checksum mismatch for {entry.path}: expected {entry.sha256}, "
-                f"got {actual_digest}"
+                f"Checksum mismatch for {entry.path}: expected {entry.sha256}, got {actual_digest}"
             )
         expected_paths.add(entry.path)
 
     if not allow_extra_files:
-        actual_paths = {
-            path.relative_to(root).as_posix() for path in _iter_artifact_files(root)
-        }
+        actual_paths = {path.relative_to(root).as_posix() for path in _iter_artifact_files(root)}
         extras = sorted(actual_paths - expected_paths)
         if extras:
             raise ArtifactIntegrityError(
@@ -384,9 +381,7 @@ def load_model_bundle(
     )
 
     calibrator_path = _safe_path(root, CALIBRATOR_FILENAME)
-    calibrator = (
-        ProbabilityCalibrator.load(calibrator_path) if calibrator_path.is_file() else None
-    )
+    calibrator = ProbabilityCalibrator.load(calibrator_path) if calibrator_path.is_file() else None
 
     if (
         scaler is not None

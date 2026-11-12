@@ -258,9 +258,7 @@ def test_holdout_training_keeps_scaler_and_calibrator(tmp_path: Path) -> None:
 
 def test_saved_bundle_refuses_foreign_dataset(tmp_path: Path) -> None:
     _prepared, _, bundle_dir, config = _trained_bundle(tmp_path, fixture_seed=41)
-    foreign = prepare_from_fixture(
-        generate_momentum_fixture(n_bars=SMALL_FIXTURE_BARS, seed=99)
-    )
+    foreign = prepare_from_fixture(generate_momentum_fixture(n_bars=SMALL_FIXTURE_BARS, seed=99))
     with pytest.raises(DatasetFingerprintMismatchError):
         load_and_evaluate_bundle(bundle_dir, foreign, config=config)
 

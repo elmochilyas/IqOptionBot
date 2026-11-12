@@ -57,16 +57,20 @@ async def test_async_iqoption_connect_ws_failure_triggers_session_logout(
 
     client = AsyncIQOption(mock_credentials, offline=False)
 
-    with patch(
-        "iqoption_research.connectors.iqoption.client.async_login",
-        new=AsyncMock(return_value="valid_authenticated_ssid"),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.IQOptionWebSocketClient.connect",
-        new=AsyncMock(side_effect=ConnectionError("WS simulated connect failure")),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.async_logout",
-        new=AsyncMock(return_value=True),
-    ) as mock_logout:
+    with (
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_login",
+            new=AsyncMock(return_value="valid_authenticated_ssid"),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.IQOptionWebSocketClient.connect",
+            new=AsyncMock(side_effect=ConnectionError("WS simulated connect failure")),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_logout",
+            new=AsyncMock(return_value=True),
+        ) as mock_logout,
+    ):
         with pytest.raises(ConnectionError, match="WS simulated connect failure"):
             await client.connect()
 

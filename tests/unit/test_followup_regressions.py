@@ -32,9 +32,7 @@ def test_unexpected_frame_name_cannot_masquerade_as_candle_reply() -> None:
 def test_broker_supplied_error_reason_is_not_reflected_verbatim() -> None:
     marker = "SYNTHETIC_OPAQUE_SECRET_VALUE_987XYZ"
     with pytest.raises(InvalidCandleError) as excinfo:
-        AsyncIQOption._extract_candles(
-            {"name": "error", "msg": {"reason": marker}}
-        )
+        AsyncIQOption._extract_candles({"name": "error", "msg": {"reason": marker}})
     assert marker not in str(excinfo.value)
 
 

@@ -30,49 +30,41 @@ MSG_CANDLE_GENERATED = "candle-generated"
 MSG_CANDLES = "candles"
 
 # Outgoing protocol operation allowlists for strict read-only enforcement
-ALLOWED_OUTGOING_FRAME_NAMES: frozenset[str] = frozenset(
-    {
-        MSG_AUTHENTICATE,
-        MSG_HEARTBEAT,
-        "sendMessage",
-        MSG_SUBSCRIBE,
-        MSG_UNSUBSCRIBE,
-        MSG_GET_PROFILE,
-        MSG_GET_BALANCES,
-    }
-)
+ALLOWED_OUTGOING_FRAME_NAMES: frozenset[str] = frozenset({
+    MSG_AUTHENTICATE,
+    MSG_HEARTBEAT,
+    "sendMessage",
+    MSG_SUBSCRIBE,
+    MSG_UNSUBSCRIBE,
+    MSG_GET_PROFILE,
+    MSG_GET_BALANCES,
+})
 
-ALLOWED_OUTGOING_SEND_MESSAGES: frozenset[str] = frozenset(
-    {
-        MSG_GET_CANDLES,
-        MSG_GET_PROFILE,
-        MSG_GET_BALANCES,
-    }
-)
+ALLOWED_OUTGOING_SEND_MESSAGES: frozenset[str] = frozenset({
+    MSG_GET_CANDLES,
+    MSG_GET_PROFILE,
+    MSG_GET_BALANCES,
+})
 
-ALLOWED_OUTGOING_SUBSCRIPTION_NAMES: frozenset[str] = frozenset(
-    {
-        MSG_CANDLE_GENERATED,
-    }
-)
+ALLOWED_OUTGOING_SUBSCRIPTION_NAMES: frozenset[str] = frozenset({
+    MSG_CANDLE_GENERATED,
+})
 
-FORBIDDEN_PROTOCOL_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "buy",
-        "sell",
-        "order",
-        "trade",
-        "position",
-        "change_balance",
-        "switch_balance",
-        "binary-options",
-        "digital-options",
-        "forex-order",
-        "open-option",
-        "close-option",
-        "option",
-    }
-)
+FORBIDDEN_PROTOCOL_KEYWORDS: frozenset[str] = frozenset({
+    "buy",
+    "sell",
+    "order",
+    "trade",
+    "position",
+    "change_balance",
+    "switch_balance",
+    "binary-options",
+    "digital-options",
+    "forex-order",
+    "open-option",
+    "close-option",
+    "option",
+})
 
 
 # ----- Outgoing Per-Operation Schemas (extra="forbid") -----

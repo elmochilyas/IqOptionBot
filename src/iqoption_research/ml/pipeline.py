@@ -243,10 +243,7 @@ def default_model_factories(
 ) -> dict[str, Callable[[], BaseMLModel]]:
     """Build a mapping of model name -> zero-argument factory for comparison runs."""
     names = AVAILABLE_MODEL_NAMES if include_ensembles else _QUICK_MODELS
-    return {
-        name: partial(create_model, name, seed=seed, quick=quick)
-        for name in names
-    }
+    return {name: partial(create_model, name, seed=seed, quick=quick) for name in names}
 
 
 # ---------------------------------------------------------------------------
@@ -639,11 +636,7 @@ def _classification_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> ModelEval
     y_pred = np.argmax(y_prob, axis=1).astype(np.int64)
     accuracy = float(accuracy_score(y_true, y_pred))
     unique = np.unique(y_true)
-    balanced = (
-        accuracy
-        if len(unique) < 2
-        else float(balanced_accuracy_score(y_true, y_pred))
-    )
+    balanced = accuracy if len(unique) < 2 else float(balanced_accuracy_score(y_true, y_pred))
     ll = float(log_loss(y_true, y_prob, labels=[0, 1]))
     brier = float(np.mean((y_prob[:, 1] - y_true) ** 2))
     roc: float | None

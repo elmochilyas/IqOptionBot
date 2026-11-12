@@ -89,6 +89,7 @@ class _MockWebSocket:
         for msg in messages:
             self._queue.put_nowait(msg)
         from unittest.mock import AsyncMock
+
         self.send = AsyncMock()
 
     async def close(self, *args, **kwargs):

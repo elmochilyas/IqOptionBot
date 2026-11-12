@@ -292,8 +292,9 @@ def prepare_command(
         0.0, "--momentum-strength", help="Planted synthetic momentum coefficient"
     ),
     target_type: str = typer.Option(
-        "direction_binary", "--target-type", help="direction_binary | direction_ternary | "
-        "return_continuous"
+        "direction_binary",
+        "--target-type",
+        help="direction_binary | direction_ternary | return_continuous",
     ),
     horizon: int = typer.Option(1, "--horizon", help="Forward label horizon in bars"),
     flat_threshold_pips: float = typer.Option(
@@ -355,9 +356,7 @@ def train_command(
         DEFAULT_WORKSPACE / "reports", "--report", help="Output Markdown report path"
     ),
     db_path: Path = typer.Option(DEFAULT_DB, "--db", help="Experiment SQLite database"),
-    calibrator_method: str = typer.Option(
-        "platt", "--calibrator", help="platt | isotonic | none"
-    ),
+    calibrator_method: str = typer.Option("platt", "--calibrator", help="platt | isotonic | none"),
     train_ratio: float = typer.Option(0.70, "--train-ratio"),
     val_ratio: float = typer.Option(0.15, "--val-ratio"),
     test_ratio: float = typer.Option(0.15, "--test-ratio"),
@@ -369,20 +368,14 @@ def train_command(
 ) -> None:
     """Fit on the training split, calibrate on validation, test once on holdout."""
     prepared = load_prepared_dataset(prepared_dir)
-    config = _holdout_config(
-        train_ratio, val_ratio, test_ratio, purge_bars, embargo_bars
-    )
+    config = _holdout_config(train_ratio, val_ratio, test_ratio, purge_bars, embargo_bars)
     model = create_model(model_name, seed=seed, quick=quick)
     calibrator = _make_calibrator(calibrator_method)
 
     training = train_holdout(prepared, model, config=config, calibrator=calibrator)
-    manifest = save_training_bundle(
-        bundle_dir, training, prepared, overwrite=overwrite
-    )
+    manifest = save_training_bundle(bundle_dir, training, prepared, overwrite=overwrite)
 
-    _bundle, evaluation = load_and_evaluate_bundle(
-        bundle_dir, prepared, config=config
-    )
+    _bundle, evaluation = load_and_evaluate_bundle(bundle_dir, prepared, config=config)
     assessment = assess_bundle_evaluation(
         evaluation,
         is_synthetic=prepared.is_synthetic,
@@ -651,14 +644,11 @@ def compare_command(
         ),
         calibrator_method=calibrator_method,
         payoff_type=(
-            PayoffAssumptionType.BINARY
-            if payoff_norm == "binary"
-            else PayoffAssumptionType.FOREX
+            PayoffAssumptionType.BINARY if payoff_norm == "binary" else PayoffAssumptionType.FOREX
         ),
     )
     factories = {
-        name: (lambda n=name: create_model(n, seed=seed, quick=quick))
-        for name in requested
+        name: (lambda n=name: create_model(n, seed=seed, quick=quick)) for name in requested
     }
     result = run_comparison(prepared, factories, config=comparison_config)
     best = result.best_model("brier_score")
@@ -672,9 +662,9 @@ def compare_command(
         roc_auc=best.roc_auc,
         brier_score=best.brier_score,
         ece=best.ece,
-        n_folds=result.metadata.get("folds", 1) if isinstance(
-            result.metadata.get("folds", 1), int
-        ) else 1,
+        n_folds=result.metadata.get("folds", 1)
+        if isinstance(result.metadata.get("folds", 1), int)
+        else 1,
         trade_count=best.trade_count,
         win_rate=best.win_rate,
         payout_rate=comparison_config.binary_payout_rate,
@@ -889,9 +879,7 @@ def inspect_command(
 def report_command(
     run_id: str = typer.Option(..., "--run-id", help="Experiment run ID"),
     db_path: Path = typer.Option(DEFAULT_DB, "--db"),
-    output: Path = typer.Option(
-        DEFAULT_WORKSPACE / "reports" / "experiment.md", "--output", "-o"
-    ),
+    output: Path = typer.Option(DEFAULT_WORKSPACE / "reports" / "experiment.md", "--output", "-o"),
 ) -> None:
     """Write a compact, honest report from stored experiment metadata."""
     tracker = ExperimentTracker(db_path)
@@ -981,9 +969,7 @@ def demo_command(
         calibrator=ProbabilityCalibrator(method="platt"),
     )
     manifest = save_training_bundle(bundle_dir, training, prepared, overwrite=True)
-    bundle, evaluation = load_and_evaluate_bundle(
-        bundle_dir, prepared, config=config
-    )
+    bundle, evaluation = load_and_evaluate_bundle(bundle_dir, prepared, config=config)
     holdout_assessment = assess_bundle_evaluation(
         evaluation, is_synthetic=True, split_type="holdout"
     )

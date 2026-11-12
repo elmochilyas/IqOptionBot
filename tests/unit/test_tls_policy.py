@@ -30,7 +30,7 @@ def test_endpoint_allowlist_valid():
     for url in ALLOWED_HTTPS_ENDPOINTS:
         validate_https_endpoint(url)  # raises if invalid
     for url in ALLOWED_WSS_ENDPOINTS:
-        validate_wss_endpoint(url)    # raises if invalid
+        validate_wss_endpoint(url)  # raises if invalid
 
 
 def test_endpoint_allowlist_rejects_arbitrary_urls():

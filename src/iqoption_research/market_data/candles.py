@@ -25,23 +25,21 @@ from iqoption_research.models.market import Candle, CandleSize
 
 # Only these raw keys are retained for offline research. Anything else
 # (e.g. an accidental auth field) is dropped before persistence.
-RAW_CANDLE_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "active_id",
-        "size",
-        "from",
-        "to",
-        "at",
-        "open",
-        "close",
-        "min",
-        "max",
-        "volume",
-        "bid",
-        "ask",
-        "phase",
-    }
-)
+RAW_CANDLE_KEYS: Final[frozenset[str]] = frozenset({
+    "active_id",
+    "size",
+    "from",
+    "to",
+    "at",
+    "open",
+    "close",
+    "min",
+    "max",
+    "volume",
+    "bid",
+    "ask",
+    "phase",
+})
 
 # Price sanity bounds for EUR/USD-like FX pairs. Deliberately wide; this
 # catches unit errors and zero/negative values, not market moves.
@@ -54,6 +52,7 @@ OHLC_TOLERANCE: Final[float] = 1e-9
 @dataclass(frozen=True, slots=True)
 class CandleError:
     """A single candle that failed normalization."""
+
     index: int
     reason: str
     detail: str
@@ -186,13 +185,9 @@ def validate_ohlc(open_: float, high: float, low: float, close: float) -> None:
         if not MIN_PRICE < price < MAX_PRICE:
             raise InvalidCandleError(f"OHLC {label} price out of sane bounds: {price!r}")
     if high + OHLC_TOLERANCE < max(open_, close):
-        raise InvalidCandleError(
-            f"High {high!r} is below max(open, close)={max(open_, close)!r}"
-        )
+        raise InvalidCandleError(f"High {high!r} is below max(open, close)={max(open_, close)!r}")
     if low - OHLC_TOLERANCE > min(open_, close):
-        raise InvalidCandleError(
-            f"Low {low!r} is above min(open, close)={min(open_, close)!r}"
-        )
+        raise InvalidCandleError(f"Low {low!r} is above min(open, close)={min(open_, close)!r}")
     if high + OHLC_TOLERANCE < low:
         raise InvalidCandleError(f"High {high!r} is below low {low!r}")
 

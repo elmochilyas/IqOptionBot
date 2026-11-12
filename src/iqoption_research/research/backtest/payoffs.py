@@ -186,9 +186,7 @@ class ForexPayoffModel(BasePayoffModel):
         # Half-spread cost plus slippage at entry and exit
         total_costs = (spread + 2 * slippage) * (stake / entry_price)
 
-        price_change = (
-            exit_price - entry_price if is_long else entry_price - exit_price
-        )
+        price_change = exit_price - entry_price if is_long else entry_price - exit_price
 
         # Gross return ratio
         raw_ratio = (price_change / entry_price) * self.leverage

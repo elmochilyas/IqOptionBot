@@ -74,26 +74,24 @@ logger = logging.getLogger(__name__)
 
 # Names that must never appear on the read-only facade. Used by the
 # fail-closed read-only guard below.
-FORBIDDEN_TRADING_ATTRIBUTES: frozenset[str] = frozenset(
-    {
-        "buy",
-        "sell",
-        "place_order",
-        "place_trade",
-        "open_position",
-        "close_position",
-        "close_trade",
-        "trade",
-        "execute_order",
-        "execute_trade",
-        "buy_digital_spot",
-        "close_digital_option",
-        "buy_forex_market",
-        "close_margin_position",
-        "change_balance",
-        "switch_balance",
-    }
-)
+FORBIDDEN_TRADING_ATTRIBUTES: frozenset[str] = frozenset({
+    "buy",
+    "sell",
+    "place_order",
+    "place_trade",
+    "open_position",
+    "close_position",
+    "close_trade",
+    "trade",
+    "execute_order",
+    "execute_trade",
+    "buy_digital_spot",
+    "close_digital_option",
+    "buy_forex_market",
+    "close_margin_position",
+    "change_balance",
+    "switch_balance",
+})
 
 
 class AsyncIQOption:
@@ -287,9 +285,7 @@ class AsyncIQOption:
                     f"balances={len(ws.balances)}). Connection state is AUTHENTICATED (not READY)."
                 )
 
-    async def close(
-        self, reason: DisconnectReason = DisconnectReason.USER_REQUESTED
-    ) -> None:
+    async def close(self, reason: DisconnectReason = DisconnectReason.USER_REQUESTED) -> None:
         """Gracefully close the socket and best-effort revoke the session."""
         if self._closed:
             return
@@ -403,11 +399,7 @@ class AsyncIQOption:
             raise ValueError(f"count must be within 1..{max_allowed}")
         if endtime is None:
             server_ns = ws.server_time_ns
-            endtime = (
-                server_ns // 1_000_000_000
-                if server_ns is not None
-                else int(time.time())
-            )
+            endtime = server_ns // 1_000_000_000 if server_ns is not None else int(time.time())
         if endtime <= 0:
             raise ValueError("endtime must be a positive unix timestamp")
 

@@ -41,16 +41,20 @@ def test_get_credentials_explicit():
 
 
 def test_get_credentials_prompt():
-    with patch("builtins.input", return_value="prompted@test.com"), \
-         patch("getpass.getpass", return_value="prompted_pass"):
+    with (
+        patch("builtins.input", return_value="prompted@test.com"),
+        patch("getpass.getpass", return_value="prompted_pass"),
+    ):
         creds = get_credentials()
         assert creds.email == "prompted@test.com"
         assert creds.password == "prompted_pass"
 
 
 def test_get_credentials_non_interactive_raises():
-    with patch("builtins.input", side_effect=EOFError), \
-         pytest.raises(RuntimeError, match="Non-interactive terminal"):
+    with (
+        patch("builtins.input", side_effect=EOFError),
+        pytest.raises(RuntimeError, match="Non-interactive terminal"),
+    ):
         get_credentials()
 
 

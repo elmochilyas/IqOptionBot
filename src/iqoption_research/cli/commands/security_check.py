@@ -83,9 +83,7 @@ def check_endpoint_allowlist() -> CheckResult:
         except ValueError:
             rejected += 1
     if rejected != 2:
-        return CheckResult(
-            "endpoint_allowlist", False, "Non-allowlisted endpoint was accepted"
-        )
+        return CheckResult("endpoint_allowlist", False, "Non-allowlisted endpoint was accepted")
     return CheckResult(
         "endpoint_allowlist",
         True,
@@ -135,9 +133,7 @@ def check_read_only_posture() -> CheckResult:
 def check_dependency_pinning() -> CheckResult:
     requirements = _project_root().parent / "requirements.txt"
     if not requirements.exists():
-        return CheckResult(
-            "dependency_pinning", False, f"Missing {requirements.name}"
-        )
+        return CheckResult("dependency_pinning", False, f"Missing {requirements.name}")
     unpinned: list[str] = []
     for line in requirements.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
@@ -151,9 +147,7 @@ def check_dependency_pinning() -> CheckResult:
             False,
             "Unpinned requirements: " + ", ".join(unpinned),
         )
-    return CheckResult(
-        "dependency_pinning", True, "all runtime dependencies pinned with =="
-    )
+    return CheckResult("dependency_pinning", True, "all runtime dependencies pinned with ==")
 
 
 def check_no_credential_settings() -> CheckResult:
@@ -181,9 +175,7 @@ def check_offline_default() -> CheckResult:
             False,
             "offline mode is not the default (IQOPTION_OFFLINE must default true)",
         )
-    return CheckResult(
-        "offline_default", True, "network I/O disabled by default"
-    )
+    return CheckResult("offline_default", True, "network I/O disabled by default")
 
 
 def run_security_checks() -> list[CheckResult]:

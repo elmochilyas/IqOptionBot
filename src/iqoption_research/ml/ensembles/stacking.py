@@ -96,9 +96,7 @@ class StackingEnsemble(BaseEnsembleModel):
         cv_str = str(cv_type).lower()
         valid_cvs = [s.value for s in StackingSplitMethod]
         if cv_str not in valid_cvs:
-            raise ModelValidationError(
-                f"Unsupported cv_type '{cv_type}'. Supported: {valid_cvs}"
-            )
+            raise ModelValidationError(f"Unsupported cv_type '{cv_type}'. Supported: {valid_cvs}")
 
         super().__init__(
             models=models,
@@ -257,9 +255,7 @@ class StackingEnsemble(BaseEnsembleModel):
 
         # 3. Fit Level-1 meta-model
         if isinstance(self._meta_model, BaseMLModel):
-            self._meta_model.fit(
-                oof_train_Z, oof_train_y, feature_names=self._meta_feature_names
-            )
+            self._meta_model.fit(oof_train_Z, oof_train_y, feature_names=self._meta_feature_names)
         else:
             self._meta_model.fit(oof_train_Z, oof_train_y)
 

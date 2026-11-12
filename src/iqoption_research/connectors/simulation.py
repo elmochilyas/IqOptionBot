@@ -74,13 +74,9 @@ class SimulatedReadOnlyConnector:
                 "currency": "USD",
             }
         ]
-        return AccountStatus.from_raw(
-            profile_data, balances_data, active_balance_id=balance_id
-        )
+        return AccountStatus.from_raw(profile_data, balances_data, active_balance_id=balance_id)
 
-    def _build_raw_candles(
-        self, size: int, count: int, endtime: int
-    ) -> list[dict[str, object]]:
+    def _build_raw_candles(self, size: int, count: int, endtime: int) -> list[dict[str, object]]:
         rng = random.Random(self._seed)
         start = endtime - count * size
         price = SIMULATED_PRICE_START
@@ -93,22 +89,20 @@ class SimulatedReadOnlyConnector:
             high = round(max(open_, close) + rng.uniform(0.0, 0.0002), 5)
             low = round(min(open_, close) - rng.uniform(0.0, 0.0002), 5)
             spread = 0.00012
-            raw.append(
-                {
-                    "active_id": 1,
-                    "size": size,
-                    "from": window_start,
-                    "to": window_start + size,
-                    "at": (window_start + size) * 1_000_000_000,
-                    "open": open_,
-                    "close": close,
-                    "min": low,
-                    "max": high,
-                    "volume": rng.randint(1, 100),
-                    "bid": round(close - spread / 2, 5),
-                    "ask": round(close + spread / 2, 5),
-                }
-            )
+            raw.append({
+                "active_id": 1,
+                "size": size,
+                "from": window_start,
+                "to": window_start + size,
+                "at": (window_start + size) * 1_000_000_000,
+                "open": open_,
+                "close": close,
+                "min": low,
+                "max": high,
+                "volume": rng.randint(1, 100),
+                "bid": round(close - spread / 2, 5),
+                "ask": round(close + spread / 2, 5),
+            })
             price = close
         return raw
 
@@ -152,14 +146,13 @@ class SimulatedReadOnlyConnector:
             source="simulated",
         )
 
-    async def stream_candles(
-        self, symbol: str, size: int | CandleSize
-    ) -> AsyncIterator[Candle]:
+    async def stream_candles(self, symbol: str, size: int | CandleSize) -> AsyncIterator[Candle]:
         canonical = normalize_symbol(symbol)
         resolved_size = CandleSize(int(size))
         # Reuse the most recent synthetic series if available.
-        candles = self._fabricated_candles or (
-            await self.get_candles(canonical, resolved_size, 5)
-        ).candle_list
+        candles = (
+            self._fabricated_candles
+            or (await self.get_candles(canonical, resolved_size, 5)).candle_list
+        )
         for candle in candles:
             yield candle

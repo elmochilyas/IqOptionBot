@@ -463,9 +463,7 @@ def compute_paired_difference_test(
     lb = np.asarray(loss_b, dtype=np.float64)
 
     if len(la) != len(lb):
-        raise ModelEvaluationMismatchError(
-            f"Loss array length mismatch: {len(la)} vs {len(lb)}"
-        )
+        raise ModelEvaluationMismatchError(f"Loss array length mismatch: {len(la)} vs {len(lb)}")
     if len(la) < 2:
         raise ComparisonError("Need at least 2 samples for paired difference test.")
 
@@ -713,9 +711,10 @@ class ComparisonResult:
         model_b: str,
     ) -> PairedTestResult | None:
         """Retrieve paired statistical test result for pair (model_a, model_b)."""
-        return self.paired_tests.get((model_a, model_b)) or self.paired_tests.get(
-            (model_b, model_a)
-        )
+        return self.paired_tests.get((model_a, model_b)) or self.paired_tests.get((
+            model_b,
+            model_a,
+        ))
 
     def to_dataframe(self) -> Any:
         """Convert leaderboard rows to pandas DataFrame if pandas is installed."""
@@ -829,9 +828,7 @@ class ModelComparisonRunner:
                 elif isinstance(m, BaseMLModel):
                     norm_models[m.name] = _make_factory(m)
                 else:
-                    raise ComparisonError(
-                        f"Item {idx} must be a BaseMLModel or callable factory."
-                    )
+                    raise ComparisonError(f"Item {idx} must be a BaseMLModel or callable factory.")
 
         if not norm_models:
             raise ComparisonError("No valid models provided to benchmark.")
@@ -965,7 +962,6 @@ class ModelComparisonRunner:
 
                 (
                     t_count,
-
                     w_rate,
                     tot_ret,
                     prof_fac,
@@ -1103,9 +1099,7 @@ def generate_comparison_markdown_report(
     else:
         payoff_detail = f"Spread: {result.config.forex_spread_pips} pips"
 
-    scale_detail = (
-        "Train-only StandardScaler" if result.config.scale_features else "Raw"
-    )
+    scale_detail = "Train-only StandardScaler" if result.config.scale_features else "Raw"
 
     # 1. Header
     sections = [
@@ -1116,7 +1110,6 @@ def generate_comparison_markdown_report(
         f"- **Sample Count**: `{result.metadata.get('dataset_rows', 'N/A')}`",
         f"- **Split Strategy**: `{result.config.split_type}`",
         f"- **Payoff Model**: `{result.config.payoff_type}` ({payoff_detail})",
-
         f"- **Feature Scaling**: `{scale_detail}`",
         f"- **Probability Calibration**: `{result.config.calibrator_method or 'None'}`",
         "",
@@ -1157,18 +1150,15 @@ def generate_comparison_markdown_report(
 
     # 2. Pairwise Statistical Significance Table
     if result.paired_tests:
-        sections.extend(
-            [
-                "",
-                "## Statistical Significance Matrix (McNemar's Paired Error Test)",
-                "",
-                "| Model A | Model B | McNemar $\\chi^2$ | p-value | "
-                "Significant ($\\alpha=0.05$) | "
-                "Discordant Table $[[n_{00}, n_{01}], [n_{10}, n_{11}]]$ |",
-                "|:---|:---|:---:|:---:|:---:|:---|",
-
-            ]
-        )
+        sections.extend([
+            "",
+            "## Statistical Significance Matrix (McNemar's Paired Error Test)",
+            "",
+            "| Model A | Model B | McNemar $\\chi^2$ | p-value | "
+            "Significant ($\\alpha=0.05$) | "
+            "Discordant Table $[[n_{00}, n_{01}], [n_{10}, n_{11}]]$ |",
+            "|:---|:---|:---:|:---:|:---:|:---|",
+        ])
         for (m_a, m_b), test in result.paired_tests.items():
             stars = (
                 "***"
@@ -1183,12 +1173,10 @@ def generate_comparison_markdown_report(
             )
 
     # 3. Best Model Highlights
-    sections.extend(
-        [
-            "",
-            "## Key Findings",
-            result.summary(),
-        ]
-    )
+    sections.extend([
+        "",
+        "## Key Findings",
+        result.summary(),
+    ])
 
     return "\n".join(sections)

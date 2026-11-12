@@ -58,8 +58,10 @@ async def test_async_login_invalid_credentials(mock_credentials):
     mock_session.post = AsyncMock(return_value=mock_response)
     mock_session.close = AsyncMock()
 
-    with patch("aiohttp.ClientSession", return_value=mock_session), \
-         pytest.raises(LoginError, match="HTTP 401"):
+    with (
+        patch("aiohttp.ClientSession", return_value=mock_session),
+        pytest.raises(LoginError, match="HTTP 401"),
+    ):
         await async_login(mock_credentials)
 
 
@@ -76,8 +78,10 @@ async def test_async_login_2fa_challenge_rejected(mock_credentials):
     mock_session.post = AsyncMock(return_value=mock_response)
     mock_session.close = AsyncMock()
 
-    with patch("aiohttp.ClientSession", return_value=mock_session), \
-         pytest.raises(TwoFactorRequiredError) as exc_info:
+    with (
+        patch("aiohttp.ClientSession", return_value=mock_session),
+        pytest.raises(TwoFactorRequiredError) as exc_info,
+    ):
         await async_login(mock_credentials)
     # Must fail safely and must NEVER instruct user to disable 2FA
     assert "Two-factor authentication" in str(exc_info.value)
@@ -96,8 +100,10 @@ async def test_async_login_timeout(mock_credentials):
     mock_session.post = AsyncMock(side_effect=TimeoutError("Request timed out"))
     mock_session.close = AsyncMock()
 
-    with patch("aiohttp.ClientSession", return_value=mock_session), \
-         pytest.raises(RequestTimeoutError, match="timed out"):
+    with (
+        patch("aiohttp.ClientSession", return_value=mock_session),
+        pytest.raises(RequestTimeoutError, match="timed out"),
+    ):
         await async_login(mock_credentials)
 
 
@@ -107,8 +113,10 @@ async def test_async_login_client_error(mock_credentials):
     mock_session.post = AsyncMock(side_effect=aiohttp.ClientConnectionError("DNS failure"))
     mock_session.close = AsyncMock()
 
-    with patch("aiohttp.ClientSession", return_value=mock_session), \
-         pytest.raises(IQConnectionError, match="request failed"):
+    with (
+        patch("aiohttp.ClientSession", return_value=mock_session),
+        pytest.raises(IQConnectionError, match="request failed"),
+    ):
         await async_login(mock_credentials)
 
 
@@ -142,8 +150,10 @@ async def test_async_login_rejects_redirects(mock_credentials: Any, status_code:
     mock_session.post = AsyncMock(return_value=mock_response)
     mock_session.close = AsyncMock()
 
-    with patch("aiohttp.ClientSession", return_value=mock_session), \
-         pytest.raises(LoginError, match="redirect rejected"):
+    with (
+        patch("aiohttp.ClientSession", return_value=mock_session),
+        pytest.raises(LoginError, match="redirect rejected"),
+    ):
         await async_login(mock_credentials)
 
     assert mock_session.post.call_args[1]["allow_redirects"] is False

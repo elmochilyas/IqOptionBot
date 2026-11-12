@@ -16,6 +16,7 @@ from iqoption_research.security.tls import (
 
 class EndpointType(Enum):
     """Type of IQ Option endpoint."""
+
     HTTPS_LOGIN = "https_login"
     HTTPS_LOGOUT = "https_logout"
     WSS_WEBSOCKET = "wss_websocket"
@@ -35,6 +36,7 @@ class EndpointConfig:
 
     All URLs are validated against the allowlist at construction time.
     """
+
     login_url: str
     logout_url: str
     wss_url: str

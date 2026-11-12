@@ -19,6 +19,7 @@ class CandleFetchResult:
     simulation ("simulated"). Simulated data must never be presented as
     IQ Option market data.
     """
+
     symbol: str
     size: CandleSize
     candles: tuple[Candle, ...]
@@ -42,8 +43,7 @@ class CandleFetchResult:
             "valid_count": len(self.candles),
             "error_count": len(self.errors),
             "errors": [
-                {"index": e.index, "reason": e.reason, "detail": e.detail}
-                for e in self.errors
+                {"index": e.index, "reason": e.reason, "detail": e.detail} for e in self.errors
             ],
             "quality": self.quality.to_dict(),
         }

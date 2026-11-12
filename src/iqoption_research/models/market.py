@@ -12,6 +12,7 @@ class CandleSize(IntEnum):
     IQ Option supports these sizes. We focus on EUR/USD with
     60s (1min) as the primary research timeframe.
     """
+
     SEC_1 = 1
     SEC_5 = 5
     SEC_10 = 10
@@ -48,6 +49,7 @@ class Candle:
 
     All timestamps are UTC. OHLC values are validated for consistency.
     """
+
     # Identification
     active_id: int
     symbol: str  # e.g., "EURUSD"
@@ -55,8 +57,8 @@ class Candle:
 
     # Time window (UTC)
     from_ts: int  # Window start, epoch seconds
-    to_ts: int    # Window end, epoch seconds
-    at_ts: int    # Server timestamp (nanoseconds)
+    to_ts: int  # Window end, epoch seconds
+    at_ts: int  # Server timestamp (nanoseconds)
 
     # OHLC + volume
     open: float
@@ -118,6 +120,7 @@ class PriceTick:
     IQ Option does not provide a dedicated tick-level quote push.
     This is synthesized from candle-generated events.
     """
+
     symbol: str
     bid: float
     ask: float
@@ -136,6 +139,7 @@ class PriceTick:
 @dataclass(frozen=True, slots=True)
 class Subscription:
     """Active market data subscription."""
+
     symbol: str
     size: CandleSize
     active_id: int

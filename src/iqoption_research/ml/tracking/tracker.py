@@ -285,9 +285,7 @@ class ExperimentTracker:
             raise TrackerError("run_id must be non-empty.")
         try:
             with self._connect() as connection:
-                row = connection.execute(
-                    f"{_SELECT_BASE} WHERE run_id = ?", (run_id,)
-                ).fetchone()
+                row = connection.execute(f"{_SELECT_BASE} WHERE run_id = ?", (run_id,)).fetchone()
         except sqlite3.Error as exc:
             raise TrackerError(f"Failed to read experiment: {exc}") from exc
         if row is None:
@@ -317,8 +315,7 @@ class ExperimentTracker:
         try:
             with self._connect() as connection:
                 rows = connection.execute(
-                    f"{_SELECT_BASE}{where} "
-                    "ORDER BY created_at_utc DESC, rowid DESC LIMIT ?",
+                    f"{_SELECT_BASE}{where} ORDER BY created_at_utc DESC, rowid DESC LIMIT ?",
                     tuple(params),
                 ).fetchall()
         except sqlite3.Error as exc:
@@ -338,9 +335,7 @@ class ExperimentTracker:
         """Delete one experiment record. Returns True when a row was removed."""
         try:
             with self._connect() as connection:
-                cursor = connection.execute(
-                    "DELETE FROM experiments WHERE run_id = ?", (run_id,)
-                )
+                cursor = connection.execute("DELETE FROM experiments WHERE run_id = ?", (run_id,))
         except sqlite3.Error as exc:
             raise TrackerError(f"Failed to delete experiment: {exc}") from exc
         return cursor.rowcount > 0

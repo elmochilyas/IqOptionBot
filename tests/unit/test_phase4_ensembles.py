@@ -131,9 +131,7 @@ class TestAveragingEnsembleMathematicalAxioms:
 
     def test_probabilities_sum_to_one_and_in_range(self) -> None:
         X, y = _make_data(n=60, d=2)
-        ensemble = AveragingEnsemble(
-            models=[LogisticRegressionModel(), MajorityClassModel()]
-        )
+        ensemble = AveragingEnsemble(models=[LogisticRegressionModel(), MajorityClassModel()])
         ensemble.fit(X, y)
 
         X_eval, _ = _make_data(n=30, d=2, seed=1234)
@@ -481,9 +479,7 @@ class TestEnsembleAdversarialAndBoundary:
 
         single = LogisticRegressionModel(random_state=42).fit(X, y)
 
-        np.testing.assert_allclose(
-            ensemble.predict_proba(X), single.predict_proba(X), atol=1e-12
-        )
+        np.testing.assert_allclose(ensemble.predict_proba(X), single.predict_proba(X), atol=1e-12)
 
     def test_nan_or_inf_inference_raises_validation_error(self) -> None:
         X, y = _make_data(n=50, d=2)

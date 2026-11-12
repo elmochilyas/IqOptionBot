@@ -39,6 +39,7 @@ class Credentials:
     Instances should be created via `get_credentials()` and discarded
     after use. Never serialize, log, or persist instances.
     """
+
     email: str
     password: str
 
@@ -139,9 +140,7 @@ def redact_secrets(text: str) -> str:
     return result
 
 
-def redact_dict(
-    data: dict[str, Any], keys_to_redact: set[str] | None = None
-) -> dict[str, Any]:
+def redact_dict(data: dict[str, Any], keys_to_redact: set[str] | None = None) -> dict[str, Any]:
     """Return a copy of dict with sensitive keys redacted.
 
     Args:
@@ -152,9 +151,21 @@ def redact_dict(
         New dictionary with sensitive values replaced.
     """
     default_keys = {
-        "password", "passwd", "pwd", "ssid", "session_id", "token",
-        "authorization", "cookie", "set-cookie", "email", "identifier",
-        "secret", "key", "auth", "credential",
+        "password",
+        "passwd",
+        "pwd",
+        "ssid",
+        "session_id",
+        "token",
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "email",
+        "identifier",
+        "secret",
+        "key",
+        "auth",
+        "credential",
     }
     if keys_to_redact:
         default_keys.update(k.lower() for k in keys_to_redact)

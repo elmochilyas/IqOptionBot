@@ -363,12 +363,10 @@ class TestFinancialPayoffInvariants:
 
         # 1. P(UP) = hurdle: condition is p_up >= break_even and p_up > p_down. MUST TRADE.
         y_true = np.array([1, 0], dtype=np.int64)
-        y_prob_at_hurdle = np.array(
-            [
-                [1.0 - hurdle, hurdle],
-                [1.0 - hurdle, hurdle],
-            ]
-        )
+        y_prob_at_hurdle = np.array([
+            [1.0 - hurdle, hurdle],
+            [1.0 - hurdle, hurdle],
+        ])
         t_count, _, tot_ret, _, _, abs_rate, _ = simulate_model_payoffs(
             y_true, y_prob_at_hurdle, cfg
         )
@@ -379,12 +377,10 @@ class TestFinancialPayoffInvariants:
 
         # 2. P(UP) = hurdle - 1e-6: slightly below hurdle. MUST ABSTAIN.
         sub_hurdle = hurdle - 1e-6
-        y_prob_sub = np.array(
-            [
-                [1.0 - sub_hurdle, sub_hurdle],
-                [1.0 - sub_hurdle, sub_hurdle],
-            ]
-        )
+        y_prob_sub = np.array([
+            [1.0 - sub_hurdle, sub_hurdle],
+            [1.0 - sub_hurdle, sub_hurdle],
+        ])
         t_count_sub, _, _, _, _, abs_rate_sub, _ = simulate_model_payoffs(y_true, y_prob_sub, cfg)
         assert t_count_sub == 0
         assert abs_rate_sub == 1.0

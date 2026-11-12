@@ -44,9 +44,7 @@ class TargetSpec:
 
     def __post_init__(self) -> None:
         """Validate target specification parameters."""
-        if isinstance(self.target_type, str) and not isinstance(
-            self.target_type, TargetType
-        ):
+        if isinstance(self.target_type, str) and not isinstance(self.target_type, TargetType):
             try:
                 object.__setattr__(self, "target_type", TargetType(self.target_type))
             except ValueError as e:
@@ -59,9 +57,7 @@ class TargetSpec:
             or isinstance(self.horizon_bars, bool)
             or self.horizon_bars < 1
         ):
-            raise ValueError(
-                f"horizon_bars must be an integer >= 1, got {self.horizon_bars!r}"
-            )
+            raise ValueError(f"horizon_bars must be an integer >= 1, got {self.horizon_bars!r}")
 
         if (
             not isinstance(self.flat_threshold_pips, (int, float))
@@ -78,9 +74,7 @@ class TargetSpec:
             or isinstance(self.pip_size, bool)
             or self.pip_size <= 0.0
         ):
-            raise ValueError(
-                f"pip_size must be a positive float > 0.0, got {self.pip_size!r}"
-            )
+            raise ValueError(f"pip_size must be a positive float > 0.0, got {self.pip_size!r}")
 
     @property
     def threshold_price(self) -> float:

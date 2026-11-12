@@ -78,9 +78,7 @@ class StakeConfig:
         if self.payout_rate <= 0.0:
             raise ValueError(f"payout_rate must be positive > 0.0, got {self.payout_rate}")
         if self.default_horizon_bars < 1:
-            raise ValueError(
-                f"default_horizon_bars must be >= 1, got {self.default_horizon_bars}"
-            )
+            raise ValueError(f"default_horizon_bars must be >= 1, got {self.default_horizon_bars}")
 
 
 # Public alias for DecisionEngineConfig
@@ -139,9 +137,7 @@ class AIDecisionEngine:
             )
             self.payout_rate = float(payout_rate)
             self.default_horizon_bars = int(default_horizon_bars)
-        self.abstention_gate = abstention_gate or BinaryPayoffGate(
-            payout_rate=self.payout_rate
-        )
+        self.abstention_gate = abstention_gate or BinaryPayoffGate(payout_rate=self.payout_rate)
 
     def _calibrate_prob_up(self, raw_prob_up: float) -> float:
         """Calibrate scalar raw probability if calibrator is fitted, else pass-through."""

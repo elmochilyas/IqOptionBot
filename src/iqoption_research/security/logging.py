@@ -78,7 +78,9 @@ def configure_logging(
                 "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
                 "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
                 "timestamp": "true",
-            } if json_format else {
+            }
+            if json_format
+            else {
                 "()": SanitizedFormatter,
                 "format": fmt_str,
                 "datefmt": "%Y-%m-%dT%H:%M:%S",

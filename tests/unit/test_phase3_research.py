@@ -237,7 +237,7 @@ def test_loader_surfaces_unresolved_gaps(tmp_path: Path) -> None:
 
     # Regular forex Wednesday session with a 10-minute gap
     candles = [
-        _make_synth_candle(1714560000),       # 2024-05-01 10:40 UTC
+        _make_synth_candle(1714560000),  # 2024-05-01 10:40 UTC
         _make_synth_candle(1714560000 + 600),  # 10:50 UTC (9-minute missing interval)
     ]
     write_candles_parquet(candles, storage_root, catalog=catalog, is_synthetic=True)
@@ -299,11 +299,11 @@ def test_point_in_time_record_causal_sequencing() -> None:
 
     assert pit.candle_from_ts == 100
     assert pit.candle_to_ts == 160
-    assert pit.available_at_ts == 161   # 160 + 1
-    assert pit.decision_ts == 163       # 161 + 2
+    assert pit.available_at_ts == 161  # 160 + 1
+    assert pit.decision_ts == 163  # 161 + 2
     assert pit.execution_earliest_ts == 166  # 163 + 3
     assert pit.outcome_start_ts == 166
-    assert pit.outcome_end_ts == 226    # 166 + 60
+    assert pit.outcome_end_ts == 226  # 166 + 60
     assert not validate_point_in_time_record(pit)
 
 
@@ -342,9 +342,7 @@ def test_features_strictly_causal_future_modification_leaves_past_identical() ->
     # Create mutated series with modified future bars (from index 10 onwards)
     mutated_candles = list(base_candles[:10])
     for j in range(10, 15):
-        mutated_candles.append(
-            _make_synth_candle(100 + j * 60, close=1.2000 + j * 0.0050)
-        )
+        mutated_candles.append(_make_synth_candle(100 + j * 60, close=1.2000 + j * 0.0050))
 
     ds_mutated = pipeline.transform(mutated_candles)
 
@@ -355,8 +353,7 @@ def test_features_strictly_causal_future_modification_leaves_past_identical() ->
         for feat_name, val_orig in row_orig.items():
             val_mut = row_mut[feat_name]
             assert val_orig == pytest.approx(val_mut, abs=1e-12), (
-                f"Leakage detected in feature '{feat_name}' at index {k}: "
-                f"{val_orig} != {val_mut}"
+                f"Leakage detected in feature '{feat_name}' at index {k}: {val_orig} != {val_mut}"
             )
 
 
@@ -397,8 +394,7 @@ def test_volume_and_quote_features_gated_by_data_availability() -> None:
     """Volume & quote features are omitted when genuine data is absent."""
     # Zero volume and flat spreads
     candles_dummy = [
-        _make_synth_candle(100 + i * 60, volume=0, bid=1.0850, ask=1.0850)
-        for i in range(15)
+        _make_synth_candle(100 + i * 60, volume=0, bid=1.0850, ask=1.0850) for i in range(15)
     ]
     pipeline = CausalFeaturePipeline(include_volume=True, include_quotes=True)
     ds = pipeline.transform(candles_dummy)
@@ -451,7 +447,7 @@ def test_chronological_splitting_with_purging_and_embargo() -> None:
         val_ratio=0.20,
         test_ratio=0.20,
         label_horizon_bars=5,  # Purge 5 rows before each boundary
-        embargo_bars=2,        # Embargo 2 rows after each boundary
+        embargo_bars=2,  # Embargo 2 rows after each boundary
     )
     splits = splitter.split(items)
 

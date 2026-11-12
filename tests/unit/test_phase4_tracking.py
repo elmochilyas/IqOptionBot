@@ -168,9 +168,7 @@ def test_manifest_rejects_path_traversal(tmp_path: Path, evil_path: str) -> None
 
     root = tmp_path / "artifact"
     root.mkdir()
-    manifest = ArtifactManifest(
-        files=(ArtifactFile(path=evil_path, sha256="0" * 64, size=1),)
-    )
+    manifest = ArtifactManifest(files=(ArtifactFile(path=evil_path, sha256="0" * 64, size=1),))
     with pytest.raises(ArtifactSecurityError):
         verify_manifest(root, manifest=manifest)
 

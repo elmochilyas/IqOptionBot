@@ -80,6 +80,8 @@ ignore = [
     "S311",
     # Explicit timeout parameters on async methods are intentional API design.
     "ASYNC109",
+    # Standard noqa comments are preferred for compatibility across tools
+    "RUF105",
 ]
 
 [tool.ruff.lint.per-file-ignores]

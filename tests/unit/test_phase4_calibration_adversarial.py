@@ -167,12 +167,12 @@ class TestAdversarialProbabilityAxioms:
         cal_sig, cal_iso = fitted_calibrators
 
         test_cases = [
-            np.array(0.42),                          # 0D scalar
-            np.array([0.42]),                        # 1D single sample
-            np.array([[0.42]]),                      # 2D single sample (1, 1)
-            np.array([[0.58, 0.42]]),                # 2D single sample (1, 2)
-            np.array([0.1, 0.5, 0.9]),               # 1D (3,)
-            np.array([[0.1], [0.5], [0.9]]),         # 2D (3, 1)
+            np.array(0.42),  # 0D scalar
+            np.array([0.42]),  # 1D single sample
+            np.array([[0.42]]),  # 2D single sample (1, 1)
+            np.array([[0.58, 0.42]]),  # 2D single sample (1, 2)
+            np.array([0.1, 0.5, 0.9]),  # 1D (3,)
+            np.array([[0.1], [0.5], [0.9]]),  # 2D (3, 1)
             np.array([[0.9, 0.1], [0.5, 0.5], [0.1, 0.9]]),  # 2D (3, 2)
         ]
 
@@ -413,9 +413,7 @@ class TestPersistenceParityAndSerialization:
         assert cal.slope_ == loaded_cal.slope_
         assert cal.intercept_ == loaded_cal.intercept_
 
-    def test_isotonic_regression_exact_bit_for_bit_parity_10000_grid(
-        self, tmp_path: Path
-    ) -> None:
+    def test_isotonic_regression_exact_bit_for_bit_parity_10000_grid(self, tmp_path: Path) -> None:
         """Isotonic regression reload parity: np.array_equal across 10,000 points."""
         rng = np.random.default_rng(789)
         p_val = np.sort(rng.uniform(0.05, 0.95, size=80))

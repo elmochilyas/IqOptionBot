@@ -87,13 +87,16 @@ async def test_successful_https_and_websocket_authentication_lifecycle(
         connect_factory=fake_factory,
     )
 
-    with patch(
-        "iqoption_research.connectors.iqoption.client.async_login",
-        new=AsyncMock(return_value="mock_valid_ssid"),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.async_logout",
-        new=AsyncMock(return_value=True),
-    ) as mock_logout:
+    with (
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_login",
+            new=AsyncMock(return_value="mock_valid_ssid"),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_logout",
+            new=AsyncMock(return_value=True),
+        ) as mock_logout,
+    ):
         # Initial state
         initial_state: ConnectionState = client.state
         assert initial_state == ConnectionState.DISCONNECTED
@@ -111,10 +114,10 @@ async def test_successful_https_and_websocket_authentication_lifecycle(
         # Verify transition audit trail
         states = [t.to_state for t in client.monitor.transitions]
         assert states == [
-            ConnectionState.CONNECTING,      # Login start
+            ConnectionState.CONNECTING,  # Login start
             ConnectionState.AUTHENTICATING,  # WS open & auth start
-            ConnectionState.AUTHENTICATED,   # WS auth ok
-            ConnectionState.READY,           # Profile & balances verified
+            ConnectionState.AUTHENTICATED,  # WS auth ok
+            ConnectionState.READY,  # Profile & balances verified
         ]
 
         # Graceful close
@@ -163,13 +166,16 @@ async def test_authenticated_but_missing_profile_balances_lifecycle(
         connect_factory=fake_factory,
     )
 
-    with patch(
-        "iqoption_research.connectors.iqoption.client.async_login",
-        new=AsyncMock(return_value="mock_valid_ssid"),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.async_logout",
-        new=AsyncMock(return_value=True),
-    ) as mock_logout:
+    with (
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_login",
+            new=AsyncMock(return_value="mock_valid_ssid"),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_logout",
+            new=AsyncMock(return_value=True),
+        ) as mock_logout,
+    ):
         # connect() must raise AccountDataMissingError when raise_if_incomplete=True
         with pytest.raises(AccountDataMissingError) as exc_info:
             await client.connect(raise_if_incomplete=True)
@@ -231,13 +237,16 @@ async def test_failed_websocket_authentication_triggers_logout_and_failed_state(
         connect_factory=fake_factory,
     )
 
-    with patch(
-        "iqoption_research.connectors.iqoption.client.async_login",
-        new=AsyncMock(return_value="mock_valid_ssid"),
-    ), patch(
-        "iqoption_research.connectors.iqoption.client.async_logout",
-        new=AsyncMock(return_value=True),
-    ) as mock_logout:
+    with (
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_login",
+            new=AsyncMock(return_value="mock_valid_ssid"),
+        ),
+        patch(
+            "iqoption_research.connectors.iqoption.client.async_logout",
+            new=AsyncMock(return_value=True),
+        ) as mock_logout,
+    ):
         with pytest.raises(LoginError):
             await client.connect()
 
@@ -325,12 +334,15 @@ async def test_safe_protocol_diagnostics_records_metadata_without_secrets() -> N
 
     # Simulate incoming frames
     diag.record_incoming("authenticate", {"ssid": opaque_token, "protocol": 3})
-    diag.record_incoming("profile", {
-        "id": 12345,
-        "email": "user@example.com",
-        "balance": balance_amount,
-        "token": secret_pass,
-    })
+    diag.record_incoming(
+        "profile",
+        {
+            "id": 12345,
+            "email": "user@example.com",
+            "balance": balance_amount,
+            "token": secret_pass,
+        },
+    )
     diag.record_incoming("unknown_broker_event", {"code": 200, "status": "active"}, handled=False)
     diag.record_auth_status(True)
     diag.record_profile_status(True)
@@ -358,9 +370,7 @@ async def test_safe_protocol_diagnostics_records_metadata_without_secrets() -> N
     assert "user@example.com" not in serialized
 
     # 3. Keys recorded, but values omitted
-    profile_shape = next(
-        s for s in summary["recent_frame_shapes"] if s["name"] == "profile"
-    )
+    profile_shape = next(s for s in summary["recent_frame_shapes"] if s["name"] == "profile")
     assert "balance" in profile_shape["keys"]
     assert "email" in profile_shape["keys"]
     assert "id" in profile_shape["keys"]

@@ -22,6 +22,7 @@ class PracticeStatus(Enum):
     The critical distinction: a PRACTICE balance existing is NOT the same
     as the active trading account being PRACTICE.
     """
+
     VERIFIED_ACTIVE_PRACTICE = "verified_active_practice"
     ACTIVE_REAL = "active_real"
     ACTIVE_UNKNOWN = "active_unknown"
@@ -39,6 +40,7 @@ class PracticeVerification:
     ``is_verified`` is True ONLY when the transport observed the server's
     active balance id AND that balance is type PRACTICE.
     """
+
     status: PracticeStatus
     message: str
     active_balance_id: str | None = None
@@ -65,6 +67,7 @@ class AccountType(IntEnum):
     Only `PRACTICE` (4) is safe for research. REAL accounts
     require explicit, separate authorization.
     """
+
     REAL = 1
     PRACTICE = 4
     TOURNAMENT = 5  # Not used in research
@@ -90,6 +93,7 @@ class Balance:
     multiple balances simultaneously. The `is_active` field reflects
     the server's `balance_id` matching, but this can change.
     """
+
     id: str
     type: AccountType
     amount: float
@@ -159,10 +163,7 @@ class Balance:
             raise ValueError("Invalid balance amount: non-finite value")
 
         currency = str(data.get("currency") or "USD").strip()
-        is_active = (
-            active_balance_id is not None
-            and str(active_balance_id).strip() == balance_id
-        )
+        is_active = active_balance_id is not None and str(active_balance_id).strip() == balance_id
 
         return cls(
             id=balance_id,
@@ -183,6 +184,7 @@ class Balance:
 @dataclass(frozen=True, slots=True)
 class Profile:
     """User profile information from IQ Option."""
+
     user_id: int
     email: str
     first_name: str
@@ -208,11 +210,7 @@ class Profile:
         if created_ts > 1e12:  # Milliseconds
             created_ts /= 1000
 
-        created_at = (
-            datetime.fromtimestamp(created_ts, tz=UTC)
-            if created_ts
-            else _EPOCH_UTC
-        )
+        created_at = datetime.fromtimestamp(created_ts, tz=UTC) if created_ts else _EPOCH_UTC
 
         user_id = data.get("user_id") or data.get("id") or 0
         first_name = data.get("first_name") or data.get("name") or ""
@@ -221,9 +219,7 @@ class Profile:
         currency = str(data.get("currency") or "USD")
 
         parsed_user_id = (
-            int(user_id)
-            if isinstance(user_id, (int, str)) and str(user_id).isdigit()
-            else 0
+            int(user_id) if isinstance(user_id, (int, str)) and str(user_id).isdigit() else 0
         )
 
         return cls(
@@ -247,6 +243,7 @@ class AccountStatus:
     `balance_id`. This can change if the user switches modes in
     another session. We report it but do not rely on it.
     """
+
     profile: Profile
     balances: tuple[Balance, ...]
     active_balance: Balance | None
@@ -321,8 +318,7 @@ class AccountStatus:
     def practice_verification(self) -> PracticeVerification:
         """Classify practice status without ever assuming/ switching."""
         practice_ids = tuple(
-            b.id for b in self.balances
-            if b.is_practice and b.type == AccountType.PRACTICE
+            b.id for b in self.balances if b.is_practice and b.type == AccountType.PRACTICE
         )
         if not self.balances:
             return PracticeVerification(
@@ -333,9 +329,7 @@ class AccountStatus:
             return PracticeVerification(
                 status=PracticeStatus.NO_PRACTICE_BALANCE,
                 message="Account has no PRACTICE balance.",
-                active_balance_id=(
-                    self.active_balance.id if self.active_balance else None
-                ),
+                active_balance_id=(self.active_balance.id if self.active_balance else None),
             )
         if self.practice_verified:
             active = self.active_balance
@@ -344,8 +338,7 @@ class AccountStatus:
             return PracticeVerification(
                 status=PracticeStatus.VERIFIED_ACTIVE_PRACTICE,
                 message=(
-                    "Server-reported active balance is PRACTICE. Read-only "
-                    "research may proceed."
+                    "Server-reported active balance is PRACTICE. Read-only research may proceed."
                 ),
                 active_balance_id=active.id,
                 practice_balance_ids=practice_ids,

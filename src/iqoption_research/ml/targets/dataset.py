@@ -364,8 +364,7 @@ def build_ml_dataset(
 
     if candles[0].symbol != symbol:
         raise DatasetAlignmentError(
-            f"Candle symbol '{candles[0].symbol}' does not match "
-            f"FeatureDataset symbol '{symbol}'"
+            f"Candle symbol '{candles[0].symbol}' does not match FeatureDataset symbol '{symbol}'"
         )
 
     # 1. Validate candle chronology and completeness
@@ -377,8 +376,7 @@ def build_ml_dataset(
             )
         if i > 0 and c.from_ts <= prev_from:
             raise DatasetAlignmentError(
-                f"Non-chronological candles at index {i}: "
-                f"from_ts={c.from_ts} <= prev={prev_from}"
+                f"Non-chronological candles at index {i}: from_ts={c.from_ts} <= prev={prev_from}"
             )
         prev_from = c.from_ts
 
@@ -423,8 +421,7 @@ def build_ml_dataset(
             )
         if row.symbol != c.symbol:
             raise DatasetAlignmentError(
-                f"Symbol mismatch at index {t}: "
-                f"row symbol={row.symbol} != candle symbol={c.symbol}"
+                f"Symbol mismatch at index {t}: row symbol={row.symbol} != candle symbol={c.symbol}"
             )
 
         # Drop warmup rows (insufficient historical lookback)
@@ -449,9 +446,7 @@ def build_ml_dataset(
 
         target_val = targets[t]
         if not math.isfinite(target_val):
-            raise DatasetAlignmentError(
-                f"Non-finite target value ({target_val}) at index {t}"
-            )
+            raise DatasetAlignmentError(f"Non-finite target value ({target_val}) at index {t}")
 
         x_rows.append(row_feats)
         y_vals.append(target_val)

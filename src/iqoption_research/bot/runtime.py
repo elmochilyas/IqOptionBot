@@ -320,7 +320,10 @@ class ContinuousBotRuntime:
             session = self.auth_manager.session
             if session is None or not session.is_active:
                 raise RuntimeError("No active session available for live observation.")
-            self.client = AsyncIQOption(ssid=session.ssid)
+            self.client = AsyncIQOption(
+                ssid=session.ssid,
+                offline=self.config.dev_mock,
+            )
 
         self.client.assert_read_only()
         await self.client.connect()

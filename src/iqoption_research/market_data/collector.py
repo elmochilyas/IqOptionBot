@@ -115,7 +115,9 @@ class HistoricalDataCollector:
         candle_size_seconds: int = 60,
         end_time_ts: int | None = None,
         count: int = 1000,
+        chunk_size: int = 500,
         require_practice: bool = False,
+        allow_partial: bool = True,
     ) -> list[Candle]:
         """Fetch authentic historical candles from IQ Option using read-only methods.
 
@@ -123,7 +125,9 @@ class HistoricalDataCollector:
         - Strict read-only connector assertion.
         - Verification that account ledger routing is blocked.
         - Symbol normalization and OTC isolation.
-        - Clean error handling if account verification prevents collection.
+        - Automatic pagination when count exceeds chunk size.
+        - Deduplication and chronological sorting across pages.
+        - Graceful handling of network disconnects and partial collections.
         """
         client.assert_read_only()
         canonical_symbol = normalize_symbol(symbol)
@@ -146,18 +150,59 @@ class HistoricalDataCollector:
         resolved_size = CandleSize(candle_size_seconds)
         end_ts = end_time_ts if end_time_ts is not None else int(datetime.now(UTC).timestamp())
 
-        try:
-            fetch_res = await client.get_candles(
-                canonical_symbol,
-                size=resolved_size,
-                count=count,
-                endtime=end_ts,
-            )
-        except (ConnectionError, InvalidCandleError, TimeoutError, OSError) as exc:
-            logger.error("Failed to collect historical candles from broker: %s", exc)
-            raise DataAcquisitionError(f"Broker historical fetch failed: {exc}") from exc
+        # Bound chunk size by client settings max_candles (default 500, max 1000)
+        client_max = getattr(getattr(client, "_settings", None), "max_candles", 500)
+        effective_chunk = min(max(1, chunk_size), client_max, 1000)
 
-        return fetch_res.candle_list
+        collected: list[Candle] = []
+        current_endtime = end_ts
+
+        while len(collected) < count:
+            remaining = count - len(collected)
+            batch_count = min(remaining, effective_chunk)
+
+            try:
+                fetch_res = await client.get_candles(
+                    canonical_symbol,
+                    size=resolved_size,
+                    count=batch_count,
+                    endtime=current_endtime,
+                )
+            except (ConnectionError, InvalidCandleError, TimeoutError, OSError) as exc:
+                logger.warning(
+                    "Historical fetch error during pagination at endtime=%s: %s",
+                    current_endtime,
+                    exc,
+                )
+                if collected and allow_partial:
+                    logger.info(
+                        "Returning %d partial candles collected prior to error.",
+                        len(collected),
+                    )
+                    break
+                raise DataAcquisitionError(f"Broker historical fetch failed: {exc}") from exc
+
+            batch = fetch_res.candle_list
+            if not batch:
+                logger.info(
+                    "Broker returned 0 candles for endtime=%s; end of history reached.",
+                    current_endtime,
+                )
+                break
+
+            collected.extend(batch)
+
+            earliest_batch_ts = min(c.from_ts for c in batch)
+            if earliest_batch_ts >= current_endtime:
+                break
+
+            current_endtime = earliest_batch_ts
+            if len(batch) < batch_count:
+                break
+
+        # Deduplicate and sort chronologically
+        deduped = self.deduplicate_and_sort_candles(collected)
+        return deduped[-count:] if len(deduped) > count else deduped
 
     def import_external_csv(
         self,

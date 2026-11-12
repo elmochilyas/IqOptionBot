@@ -187,4 +187,4 @@ def test_cli_bot_data_collect_mock() -> None:
     result = runner.invoke(app, ["bot", "data", "collect", "--mock", "--symbol", "EURUSD"])
     assert result.exit_code == 0
     assert "Offline Mock Fixture" in result.output
-    assert "BROKER ORDERS DISABLED" in result.output
+    assert "BROKER ORDERS" in result.output

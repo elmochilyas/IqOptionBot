@@ -142,6 +142,14 @@ def test_no_network_socket_opened_during_mock_auth(monkeypatch: pytest.MonkeyPat
     assert manager.is_authenticated() is False
 
 
+@pytest.fixture(autouse=True)
+def _reset_auth_singleton() -> None:
+    """Reset module-level singleton _AUTH_MANAGER before each test to isolate CLI tests."""
+    from iqoption_research.cli.commands import auth_cmd
+
+    auth_cmd._AUTH_MANAGER = None
+
+
 def test_cli_auth_status_renders_without_secrets() -> None:
     """CLI 'bot auth status' renders successfully with zero secret leakage."""
     runner = CliRunner()
@@ -153,3 +161,71 @@ def test_cli_auth_status_renders_without_secrets() -> None:
     # Secrets must not appear
     assert "password" not in result.output.lower()
     assert "ssid" not in result.output.lower()
+
+
+def test_cli_auth_login_mock_warning_and_failure_distinction() -> None:
+    """CLI 'bot auth login' warns user and clearly reports MOCK AUTHENTICATION FAILED."""
+    runner = CliRunner()
+    # Provide credentials that do not match the mock fixture
+    result = runner.invoke(
+        app, ["bot", "auth", "login"], input="trader@realbroker.com\nmypassword\n"
+    )
+    assert result.exit_code == 1
+    assert "OFFLINE MOCK FIXTURE ACTIVE" in result.output
+    assert "DO NOT ENTER REAL PASSWORDS" in result.output
+    assert "MOCK AUTHENTICATION FAILED" in result.output
+    assert "Offline Mock Notice" in result.output
+    assert "bot auth login --live" in result.output
+
+
+def test_cli_auth_login_mock_success() -> None:
+    """CLI 'bot auth login' succeeds with valid mock fixture credentials."""
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["bot", "auth", "login"], input="trader@example.com\nmock_secret_123\n"
+    )
+    assert result.exit_code == 0
+    assert "Authentication Successful!" in result.output
+    assert "Offline Mock Fixture" in result.output
+    assert "Note on CLI Session Lifetime" in result.output
+
+
+def test_cli_auth_login_live_routes_to_live_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI 'bot auth login --live' correctly routes to IQOptionAuthProvider."""
+    from unittest.mock import AsyncMock
+
+    from iqoption_research.auth.provider import AuthResult, IQOptionAuthProvider
+
+    called_live = False
+
+    async def _mock_live_login(self: IQOptionAuthProvider, creds: object) -> AuthResult:
+        nonlocal called_live
+        called_live = True
+        return AuthResult(success=True, ssid="fake_live_ssid_12345")
+
+    monkeypatch.setattr(IQOptionAuthProvider, "login", _mock_live_login)
+    monkeypatch.setattr(
+        IQOptionAuthProvider,
+        "get_profile_and_balances",
+        AsyncMock(return_value=(None, [])),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["bot", "auth", "login", "--live"],
+        input="user@iqoption.com\nsecretpass123\n",
+    )
+    assert result.exit_code == 0
+    assert called_live is True
+    assert "LIVE IQ OPTION BROKER AUTHENTICATION" in result.output
+    assert "Live HTTPS Broker" in result.output
+
+
+def test_cli_auth_check_connection_unauthenticated_message() -> None:
+    """CLI 'bot auth check-connection' provides helpful context on memory boundaries."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["bot", "auth", "check-connection"])
+    assert result.exit_code == 1
+    assert "No active authenticated session in current process memory" in result.output
+    assert "In-memory sessions are bound to a running process" in result.output

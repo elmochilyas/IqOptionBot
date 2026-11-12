@@ -111,6 +111,16 @@ class AuthenticationManager:
             return False
 
         # 2. Enter AUTHENTICATING state
+        if self.state_machine.current_state in (
+            AuthStatus.AUTHENTICATED,
+            AuthStatus.CONNECTED_READ_ONLY,
+        ):
+            self._session = None
+            self.state_machine.transition_to(
+                AuthStatus.DISCONNECTED,
+                reason="relogin_disconnect",
+            )
+
         try:
             self.state_machine.transition_to(
                 AuthStatus.AUTHENTICATING,
@@ -172,6 +182,16 @@ class AuthenticationManager:
             return False
 
         email = creds.email
+        if self.state_machine.current_state in (
+            AuthStatus.AUTHENTICATED,
+            AuthStatus.CONNECTED_READ_ONLY,
+        ):
+            self._session = None
+            self.state_machine.transition_to(
+                AuthStatus.DISCONNECTED,
+                reason="relogin_disconnect",
+            )
+
         try:
             self.state_machine.transition_to(
                 AuthStatus.AUTHENTICATING,

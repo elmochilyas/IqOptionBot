@@ -33,12 +33,15 @@ _AUTH_MANAGER: AuthenticationManager | None = None
 def get_auth_manager(*, force_mock: bool | None = None) -> AuthenticationManager:
     """Resolve the singleton AuthenticationManager instance."""
     global _AUTH_MANAGER
+    cfg = RuntimeSecurityConfig()
+    use_mock = cfg.is_development if force_mock is None else force_mock
     if _AUTH_MANAGER is None:
-        cfg = RuntimeSecurityConfig()
-        # Default to MockAuthProvider in dev unless explicitly configured otherwise
-        use_mock = cfg.is_development if force_mock is None else force_mock
         provider = MockAuthProvider() if use_mock else IQOptionAuthProvider()
         _AUTH_MANAGER = AuthenticationManager(config=cfg, provider=provider)
+    elif force_mock is not None:
+        is_current_mock = isinstance(_AUTH_MANAGER.provider, MockAuthProvider)
+        if use_mock != is_current_mock:
+            _AUTH_MANAGER.provider = MockAuthProvider() if use_mock else IQOptionAuthProvider()
     return _AUTH_MANAGER
 
 
@@ -65,7 +68,12 @@ def status_cmd() -> None:
         "Authentication Status", f"[{auth_color}]{snapshot['auth_status']}[/{auth_color}]"
     )
     table.add_row("Connection Status", snapshot["connection_status"])
-    table.add_row("Active Session", str(snapshot["session_active"]))
+    session_val = (
+        "Active"
+        if snapshot["session_active"]
+        else "None (In-memory sessions are bound to active bot processes)"
+    )
+    table.add_row("Active Session", session_val)
 
     if snapshot["session_account"]:
         table.add_row("Authenticated Account", snapshot["session_account"])
@@ -78,7 +86,8 @@ def status_cmd() -> None:
         )
 
     table.add_row("Credential Storage Mode", snapshot["credential_storage_mode"])
-    table.add_row("Saved Account in Vault", snapshot["saved_account"] or "None")
+    saved_val = snapshot["saved_account"] or "None (Run 'bot auth save-credentials --opt-in')"
+    table.add_row("Saved Account in Vault", saved_val)
     table.add_row(
         "Windows Vault Backend",
         "Verified Secure" if snapshot["vault_backend_secure"] else "Unavailable / Insecure",
@@ -98,6 +107,14 @@ def status_cmd() -> None:
         table.add_row("Last Error", f"[red]{snapshot['last_error']}[/red]")
 
     console.print(table)
+    if not snapshot["session_active"]:
+        console.print(
+            "[dim]Note: Standalone CLI commands run in ephemeral processes;\n"
+            "in-memory sessions terminate on command exit.\n"
+            "To run the bot continuously with authenticated access, save credentials:\n"
+            "  [bold green]bot auth save-credentials --opt-in[/bold green]\n"
+            "Then launch bot workflows with saved vault credentials.[/dim]"
+        )
 
 
 @auth_app.command("login", help="Authenticate interactively or via saved Windows vault.")
@@ -119,31 +136,58 @@ def login_cmd(
 
     manager = get_auth_manager(force_mock=dev_mock)
 
-    console.print(
-        Panel(
-            f"[bold cyan]IQ Option Secure Authentication[/bold cyan]\n"
-            f"Mode: {'Windows Credential Vault' if saved else 'Interactive Terminal Prompt'}\n"
-            f"Provider: {'Offline Mock Fixture' if dev_mock else 'Live HTTPS Broker'}",
-            border_style="cyan",
+    if dev_mock:
+        console.print(
+            Panel(
+                "[bold yellow]⚠️  OFFLINE MOCK FIXTURE ACTIVE[/bold yellow]\n\n"
+                "[yellow]DO NOT ENTER REAL PASSWORDS OR REAL IQ OPTION CREDENTIALS HERE.[/yellow]\n"
+                "This offline mock fixture is strictly for offline development and testing.\n\n"
+                "Valid mock test credentials:\n"
+                "  Email: [cyan]trader@example.com[/cyan]\n"
+                "  Password: [cyan]mock_secret_123[/cyan]\n\n"
+                "[dim]To authenticate against genuine IQ Option broker endpoints, re-run with:\n"
+                "  [bold green]bot auth login --live[/bold green]\n"
+                "  (or [bold green]bot auth login --live --saved[/bold green])[/dim]",
+                border_style="yellow",
+            )
         )
-    )
+    else:
+        console.print(
+            Panel(
+                "[bold green]🔒 LIVE IQ OPTION BROKER AUTHENTICATION[/bold green]\n\n"
+                "• Target Endpoint: [cyan]https://auth.iqoption.com/api/v2/login[/cyan]\n"
+                "• Strict TLS 1.2+ validation enforced with official certificates\n"
+                "• Passwords are never echoed, never logged, and discarded immediately from RAM\n"
+                "• Interactive 2FA prompt supported\n"
+                "• Broker Order Ledger: [bold red]BLOCKED[/bold red] (Strictly Read-Only)",
+                border_style="green",
+            )
+        )
 
     if saved:
         if not manager.vault.has_saved_credentials():
             console.print(
                 "[yellow]No credentials saved in Windows Credential Vault.[/yellow]\n"
-                "Run [bold green]bot auth save-credentials[/bold green] first, "
+                "Run [bold green]bot auth save-credentials --opt-in[/bold green] first, "
                 "or log in interactively."
             )
             raise typer.Exit(code=1)
         console.print("[cyan]Loading credentials from Windows Credential Vault...[/cyan]")
         success = asyncio.run(manager.login_saved())
     else:
-        # Prompt credentials
-        console.print("Please enter your IQ Option account credentials.")
+        prompt_email = (
+            "Mock test account email [trader@example.com]: "
+            if dev_mock
+            else "Live IQ Option account email: "
+        )
+        prompt_pass = (
+            "Mock test account password: " if dev_mock else "Live IQ Option account password: "
+        )
         try:
-            email = input("IQ Option email: ").strip()
-            password = getpass.getpass("IQ Option password: ")
+            email = input(prompt_email).strip()
+            if dev_mock and not email:
+                email = "trader@example.com"
+            password = getpass.getpass(prompt_pass)
         except (KeyboardInterrupt, EOFError):
             console.print("\n[yellow]Authentication cancelled by user.[/yellow]")
             raise typer.Exit(code=1) from None
@@ -153,21 +197,46 @@ def login_cmd(
     if success:
         session = manager.session
         acct_display = redact_email(session.email) if session else "Authenticated"
+        persistence_note = (
+            "\n\n[bold yellow]Note on CLI Session Lifetime:[/bold yellow]\n"
+            "This in-memory session is active for the current process. Ephemeral CLI\n"
+            "commands terminate upon exit. To authenticate persistent bot operations\n"
+            "without manual password prompts, store credentials in Windows Vault:\n"
+            "  [bold green]bot auth save-credentials --opt-in[/bold green]\n"
+            "and run bot workflows with saved vault credentials."
+        )
         console.print(
             Panel(
-                f"[bold green]Authentication Successful![/bold green]\n"
+                f"[bold green]Authentication Successful![/bold green]\n\n"
                 f"Account: {acct_display}\n"
+                f"Provider: {'Offline Mock Fixture' if dev_mock else 'Live HTTPS Broker'}\n"
                 f"State: {manager.current_state.value}\n"
                 f"PRACTICE Verified: {session.is_practice_verified if session else False}\n"
-                f"Session held in memory only. Password discarded.",
+                f"Session Memory: Active in process (Password discarded){persistence_note}",
                 border_style="green",
             )
         )
     else:
+        failure_title = (
+            "MOCK AUTHENTICATION FAILED" if dev_mock else "IQ OPTION BROKER AUTHENTICATION FAILED"
+        )
+        hint = ""
+        if dev_mock:
+            hint = (
+                "\n\n[bold yellow]Offline Mock Notice:[/bold yellow]\n"
+                "The offline fixture rejected your credentials. It only accepts:\n"
+                "  Email: [cyan]trader@example.com[/cyan]\n"
+                "  Password: [cyan]mock_secret_123[/cyan]\n\n"
+                "If you entered real IQ Option credentials, they were NOT sent to the broker.\n"
+                "To connect to IQ Option, re-run with:\n"
+                "  [bold green]bot auth login --live[/bold green]"
+            )
         console.print(
             Panel(
-                f"[bold red]Authentication Failed[/bold red]\n"
-                f"Error: {manager.last_error or 'Unknown error'}",
+                f"[bold red]{failure_title}[/bold red]\n\n"
+                f"Provider: {'Offline Mock Fixture' if dev_mock else 'Live HTTPS Broker'}\n"
+                f"Error: {manager.last_error or 'Unknown error'}"
+                f"{hint}",
                 border_style="red",
             )
         )
@@ -240,7 +309,7 @@ def save_credentials_cmd(
                 f"Account: {redact_email(email)}\n"
                 f"Target Service: {vault.service_name}\n\n"
                 "[dim]Credentials are encrypted with Windows DPAPI tied to your user account.\n"
-                "You can now log in using: [cyan]bot auth login --saved[/cyan][/dim]",
+                "You can now log in using: [cyan]bot auth login --live --saved[/cyan][/dim]",
                 border_style="green",
             )
         )
@@ -288,13 +357,36 @@ def forget_credentials_cmd() -> None:
 @auth_app.command(
     "check-connection", help="Validate active session against read-only broker probe."
 )
-def check_connection_cmd() -> None:
+def check_connection_cmd(
+    saved: bool = typer.Option(
+        False,
+        "--saved",
+        "-s",
+        help="Use credentials from Windows Credential Vault to authenticate for this probe.",
+    ),
+    dev_mock: bool = typer.Option(
+        True,
+        "--mock/--live",
+        help="Use mock offline provider or live broker endpoints.",
+    ),
+) -> None:
     """Verify active session validity and read-only broker connection."""
-    manager = get_auth_manager()
+    import asyncio
+
+    manager = get_auth_manager(force_mock=dev_mock)
+    if not manager.is_authenticated() and saved:
+        console.print("[cyan]Connecting using saved credentials from Windows Vault...[/cyan]")
+        asyncio.run(manager.login_saved())
+
     if not manager.is_authenticated():
         console.print(
-            "[yellow]No active authenticated session.[/yellow]\n"
-            "Please run [bold green]bot auth login[/bold green] first."
+            "[yellow]No active authenticated session in current process memory.[/yellow]\n"
+            "In-memory sessions are bound to a running process and terminate on exit.\n\n"
+            "To test a connection with stored credentials, run:\n"
+            "  [bold green]bot auth check-connection --saved[/bold green]\n"
+            "  (or [bold green]bot auth check-connection --live --saved[/bold green])\n\n"
+            "To test live credentials interactively:\n"
+            "  [bold green]bot auth login --live[/bold green]"
         )
         raise typer.Exit(code=1)
 

@@ -282,10 +282,10 @@ class BackfillJob:
         # If we already have some candles persisted, load them to avoid re-collecting
         existing_candles: list[Candle] = []
         try:
-            existing_candles = self.collector.load_dataset(
-                instrument, candle_size_seconds=timeframe
-            )
-            persisted_unique = len(existing_candles)
+            load_dataset = getattr(self.collector, "load_dataset", None)
+            if load_dataset is not None:
+                existing_candles = load_dataset(instrument, candle_size_seconds=timeframe)
+                persisted_unique = len(existing_candles)
             logger.info(
                 "Resuming job %s: loaded %d existing unique candles", job_id, persisted_unique
             )

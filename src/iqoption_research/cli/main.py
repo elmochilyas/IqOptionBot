@@ -11,6 +11,7 @@ import typer
 
 from iqoption_research.cli.commands.auth_cmd import auth_app
 from iqoption_research.cli.commands.bot_cmd import bot_app
+from iqoption_research.cli.commands.data_cmd import app as data_app
 from iqoption_research.cli.commands.ml_cmd import ml_app
 from iqoption_research.cli.commands.paper_cmd import paper_app
 from iqoption_research.cli.commands.probe import probe_command
@@ -39,6 +40,7 @@ app.add_typer(ml_app, name="ml")
 app.add_typer(paper_app, name="paper")
 app.add_typer(bot_app, name="bot")
 app.add_typer(auth_app, name="auth")
+app.add_typer(data_app, name="data")
 
 
 @app.callback()

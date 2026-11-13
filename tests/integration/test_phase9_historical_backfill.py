@@ -14,6 +14,8 @@ from typer.testing import CliRunner
 from iqoption_research.cli.commands import backfill_cmd
 from iqoption_research.cli.main import app
 from iqoption_research.market_data.collector import (
+    BackfillCheckpoint,
+    BackfillJob,
     DataAcquisitionError,
     HistoricalDataCollector,
     JobState,
@@ -88,6 +90,208 @@ class OfflineHistoricalBroker:
             is_complete=True,
             provenance="historical",
         )
+
+
+class InclusiveBoundaryBroker(OfflineHistoricalBroker):
+    """Model IQ Option responses that repeat the candle at the end-time cursor."""
+
+    def __init__(self, *, resume_request: bool = False, history_available: bool = True) -> None:
+        super().__init__()
+        self.resume_request = resume_request
+        self.history_available = history_available
+        self.requested_counts: list[int] = []
+
+    async def get_candles(
+        self,
+        symbol: str,
+        size: int | CandleSize,
+        count: int,
+        *,
+        endtime: int | None = None,
+    ) -> FakeFetchResult:
+        self.calls += 1
+        self.requested_counts.append(count)
+        assert symbol == self.symbol
+        assert endtime is not None
+        seconds = int(size)
+        inclusive = self.resume_request or self.calls > 1
+        if inclusive:
+            returned_count = count if self.history_available else 1
+            start = endtime - (returned_count - 1) * seconds
+        else:
+            returned_count = count
+            start = endtime - returned_count * seconds
+        candles = [
+            self._candle(start + index * seconds, seconds) for index in range(returned_count)
+        ]
+        return FakeFetchResult(candles)
+
+
+def _write_failed_999_checkpoint(
+    collector: HistoricalDataCollector,
+    *,
+    client: OfflineHistoricalBroker,
+    job_id: str,
+    cursor: int = 1_794_547_260,
+) -> tuple[BackfillCheckpoint, tuple[bytes, bytes]]:
+    """Create the exact committed shape reported by the real failed job."""
+    older_page = [client._candle(cursor + index * 60, 60) for index in range(499)]
+    newer_start = cursor + 499 * 60
+    newer_page = [client._candle(newer_start + index * 60, 60) for index in range(500)]
+    older_result = collector.persist_batch(
+        older_page,
+        symbol="EURUSD",
+        candle_size_seconds=60,
+    )
+    newer_result = collector.persist_batch(
+        newer_page,
+        symbol="EURUSD",
+        candle_size_seconds=60,
+    )
+    checkpoint = BackfillCheckpoint(
+        job_id=job_id,
+        instrument="EURUSD",
+        active_id=1,
+        timeframe_seconds=60,
+        target_count=1000,
+        page_size=500,
+        start_ts=None,
+        end_ts=newer_page[-1].to_ts,
+        last_cursor_ts=cursor,
+        unique_candles_persisted=999,
+        last_successful_batch=499,
+        committed_dataset_ids=(older_result.dataset_id, newer_result.dataset_id),
+        state=JobState.FAILED,
+        last_error="Broker pagination cursor did not move backward.",
+    )
+    BackfillJob(collector=collector, checkpoint=checkpoint, client=client).write_checkpoint()
+    return checkpoint, (
+        older_result.parquet_path.read_bytes(),
+        newer_result.parquet_path.read_bytes(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_inclusive_boundary_pagination_completes_1000_unique_candles(
+    tmp_path: Path,
+) -> None:
+    collector = HistoricalDataCollector(storage_dir=tmp_path / "datasets")
+    broker = InclusiveBoundaryBroker()
+    job = launch_backfill(
+        collector=collector,
+        job_id="inclusive-full-run",
+        instrument="EURUSD",
+        timeframe_seconds=60,
+        target_count=1000,
+        to_date=1_800_000_000,
+        page_size=500,
+        client=broker,
+        backoff_base_seconds=0,
+    )
+
+    result = await job.run()
+    checkpoint = load_checkpoint(collector.storage_dir, "inclusive-full-run")
+    persisted = collector.load_dataset("EURUSD", 60, dataset_ids=checkpoint.committed_dataset_ids)
+
+    assert result.state == JobState.COMPLETED
+    assert result.unique_candles == 1000
+    assert result.duplicates_skipped == 2
+    assert broker.requested_counts == [500, 500, 2]
+    assert len(persisted) == 1000
+    assert len({candle.from_ts for candle in persisted}) == 1000
+    assert collector.catalog.count_datasets() == 3
+
+
+@pytest.mark.asyncio
+async def test_failed_999_checkpoint_resumes_with_only_missing_unique_candle(
+    tmp_path: Path,
+) -> None:
+    collector = HistoricalDataCollector(storage_dir=tmp_path / "datasets")
+    fixture_client = OfflineHistoricalBroker()
+    failed, original_files = _write_failed_999_checkpoint(
+        collector,
+        client=fixture_client,
+        job_id="eurusd-1000-001",
+    )
+    original_entries = [
+        collector.catalog.get_dataset(dataset_id) for dataset_id in failed.committed_dataset_ids
+    ]
+    broker = InclusiveBoundaryBroker(resume_request=True)
+    resumed = launch_backfill(
+        collector=collector,
+        job_id="eurusd-1000-001",
+        instrument="EURUSD",
+        timeframe_seconds=60,
+        target_count=1000,
+        page_size=500,
+        client=broker,
+        resume=True,
+        backoff_base_seconds=0,
+    )
+
+    result = await resumed.run()
+    completed = load_checkpoint(collector.storage_dir, "eurusd-1000-001")
+    persisted = collector.load_dataset("EURUSD", 60, dataset_ids=completed.committed_dataset_ids)
+    preserved_entries = [
+        collector.catalog.get_dataset(dataset_id) for dataset_id in failed.committed_dataset_ids
+    ]
+
+    assert result.state == JobState.COMPLETED
+    assert result.newly_persisted == 1
+    assert result.unique_candles == 1000
+    assert result.duplicates_skipped == 1
+    assert broker.requested_counts == [2]
+    assert completed.unique_candles_persisted == 1000
+    assert completed.last_successful_batch == 1
+    assert completed.committed_dataset_ids[:2] == failed.committed_dataset_ids
+    assert len(completed.committed_dataset_ids) == 3
+    assert original_entries == preserved_entries
+    assert [
+        (collector.storage_dir / entry.file_path).read_bytes()
+        for entry in preserved_entries
+        if entry is not None
+    ] == list(original_files)
+    assert len(persisted) == 1000
+    assert len({candle.from_ts for candle in persisted}) == 1000
+    assert persisted[0].from_ts == failed.last_cursor_ts - 60
+    assert collector.catalog.count_datasets() == 3
+
+
+@pytest.mark.asyncio
+async def test_boundary_only_response_stops_partial_without_repeating_requests(
+    tmp_path: Path,
+) -> None:
+    collector = HistoricalDataCollector(storage_dir=tmp_path / "datasets")
+    failed, _ = _write_failed_999_checkpoint(
+        collector,
+        client=OfflineHistoricalBroker(),
+        job_id="no-older-history",
+    )
+    broker = InclusiveBoundaryBroker(resume_request=True, history_available=False)
+    resumed = launch_backfill(
+        collector=collector,
+        job_id=failed.job_id,
+        instrument="EURUSD",
+        timeframe_seconds=60,
+        target_count=1000,
+        page_size=500,
+        client=broker,
+        resume=True,
+        backoff_base_seconds=0,
+    )
+
+    result = await resumed.run()
+    stopped = load_checkpoint(collector.storage_dir, failed.job_id)
+
+    assert result.state == JobState.PARTIAL
+    assert result.unique_candles == 999
+    assert result.newly_persisted == 0
+    assert result.duplicates_skipped == 1
+    assert broker.requested_counts == [2]
+    assert stopped.last_cursor_ts == failed.last_cursor_ts
+    assert stopped.committed_dataset_ids == failed.committed_dataset_ids
+    assert "no older history" in (stopped.last_error or "").lower()
+    assert collector.catalog.count_datasets() == 2
 
 
 @pytest.mark.asyncio

@@ -658,6 +658,22 @@ class BackfillJob:
             latest_ts=timestamps[-1] if timestamps else None,
         )
 
+    def _request_count(self, *, remaining: int, has_committed_candles: bool) -> int:
+        """Return a bounded request size with room for an inclusive boundary candle.
+
+        IQ Option may include the candle at ``endtime``. Full pages naturally absorb
+        that overlap by yielding one fewer new candle. When the target remainder is
+        smaller than the configured page, request one additional record so the overlap
+        does not consume the entire final response (notably at 999/1000).
+        """
+        requested = min(self.checkpoint.page_size, remaining)
+        needs_boundary_probe = has_committed_candles and (
+            remaining < self.checkpoint.page_size or self.checkpoint.page_size == 1
+        )
+        if needs_boundary_probe:
+            requested = min(1000, requested + 1)
+        return requested
+
     async def run(self) -> BackfillResult:
         """Collect until the target/date boundary is reached or history is exhausted."""
         if self.checkpoint.target_count <= 0:
@@ -685,7 +701,10 @@ class BackfillJob:
                     self._set_checkpoint(state=JobState.PARTIAL)
                     break
                 remaining = self.checkpoint.target_count - self.checkpoint.unique_candles_persisted
-                requested = min(self.checkpoint.page_size, remaining)
+                requested = self._request_count(
+                    remaining=remaining,
+                    has_committed_candles=bool(seen),
+                )
                 fetched = await self._fetch_page(requested, cursor)
                 pages += 1
                 raw_batch = list(getattr(fetched, "candle_list", ()))
@@ -693,8 +712,6 @@ class BackfillJob:
                     self._set_checkpoint(state=JobState.PARTIAL)
                     break
                 earliest_raw = min(candle.from_ts for candle in raw_batch)
-                if earliest_raw >= cursor:
-                    raise DataAcquisitionError("Broker pagination cursor did not move backward.")
                 page, page_duplicates, page_rejected = self._validate_page(
                     fetched,
                     seen=seen,
@@ -702,6 +719,19 @@ class BackfillJob:
                 )
                 duplicates += page_duplicates
                 rejected += page_rejected
+                if earliest_raw >= cursor:
+                    if page:
+                        raise DataAcquisitionError(
+                            "Broker returned new candles without moving the pagination cursor."
+                        )
+                    self._set_checkpoint(
+                        state=JobState.PARTIAL,
+                        last_error=(
+                            "Broker returned only the inclusive boundary candle; "
+                            "no older history was available."
+                        ),
+                    )
+                    break
                 if not page:
                     no_progress_pages += 1
                     if no_progress_pages >= 3:

@@ -243,7 +243,8 @@ class AsyncIQOption:
             self._ssid = ssid
         else:
             ssid = self._ssid
-        self.monitor.transition(ConnectionState.AUTHENTICATING, reason="ws_authenticating")
+            if self.monitor.state == ConnectionState.DISCONNECTED:
+                self.monitor.transition(ConnectionState.CONNECTING, reason="session_reuse")
 
         ws = IQOptionWebSocketClient(
             ssid,
@@ -258,6 +259,8 @@ class AsyncIQOption:
         try:
             await ws.connect()
         except Exception as exc:
+            with contextlib.suppress(Exception):
+                await ws.close()
             self._ws = None
             if self.monitor.state != ConnectionState.FAILED:
                 with contextlib.suppress(ValueError):

@@ -107,6 +107,7 @@ class ContinuousBotRuntime:
         self._started_at: float | None = None
         self._run_task: asyncio.Task[None] | None = None
         self._watchdog_task: asyncio.Task[None] | None = None
+        self._first_candle_received: bool = False
 
     def _init_auth_manager(self) -> AuthenticationManager:
         provider = MockAuthProvider() if self.config.dev_mock else IQOptionAuthProvider()
@@ -372,8 +373,12 @@ class ContinuousBotRuntime:
         # Schedule the independent watchdog task for feed health monitoring
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
-        # Bounded startup grace period: fail closed if no valid candle arrives
-        self._startup_deadline = time.monotonic() + self.config.startup_grace_seconds
+        # Bounded startup grace period supervised by an independent deadline task.
+        # The deadline fires regardless of candle arrival; once the first valid candle
+        # is accepted the task is cancelled so healthy subsequent candles are not rejected.
+        self._startup_grace_task: asyncio.Task[None] | None = asyncio.create_task(
+            self._startup_grace_period_timeout()
+        )
 
         try:
             async for raw_candle in self.client.stream_candles(
@@ -383,20 +388,18 @@ class ContinuousBotRuntime:
                 if self._shutdown_event.is_set():
                     break
 
-                # Enforce startup grace period - fail closed if no candle before deadline
-                if time.monotonic() > self._startup_deadline:
-                    logger.error(
-                        "Startup grace period exceeded; no valid candle received. "
-                        "Halting."
-                    )
-                    self.state = RuntimeState.ERROR
-                    self._last_error = "Startup grace period exceeded; no valid candle received"
-                    self._controller.emergency_stop(reason="Startup grace period exceeded")
-                    break
+                # Mark that the first valid candle was received; cancel the grace
+                # period task so later healthy candles are not incorrectly rejected.
+                if not self._first_candle_received:
+                    self._first_candle_received = True
+                    self._startup_grace_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await self._startup_grace_task
 
                 await self._pause_event.wait()
 
-                # Enforce max_runtime_seconds independently of candle arrival
+                # Enforce max_runtime_seconds independently of candle arrival.
+                # Uses monotonic elapsed time so a silent stream still times out.
                 if (
                     self.config.max_runtime_seconds is not None
                     and self._started_at is not None
@@ -407,11 +410,39 @@ class ContinuousBotRuntime:
 
                 self._controller.process_candle(raw_candle)
         finally:
+            # Cancel the grace-period supervision task first
+            if self._startup_grace_task is not None:
+                self._startup_grace_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._startup_grace_task
             # Cancel the watchdog task first, then close the client
             self._watchdog_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watchdog_task
             await self.client.close()
+
+    async def _startup_grace_period_timeout(self) -> None:
+        """Fire ERROR state if no valid candle arrives before the startup grace deadline.
+
+        This task runs independently of the candle ingestion loop, so the timeout
+        can expire even when the stream is silent (no candles received).
+        """
+        try:
+            await asyncio.sleep(self.config.startup_grace_seconds)
+            # Only act if we haven't already received a first candle or cancelled
+            if not self._first_candle_received and not self._shutdown_event.is_set():
+                logger.error(
+                    "Startup grace period exceeded; no valid candle received. Halting."
+                )
+                self.state = RuntimeState.ERROR
+                self._last_error = "Startup grace period exceeded; no valid candle received"
+                if self._controller is not None:
+                    self._controller.emergency_stop(
+                        reason="Startup grace period exceeded"
+                    )
+        except asyncio.CancelledError:
+            # Task was cancelled because a candle arrived while grace was waiting
+            pass
 
     async def _cleanup(self) -> None:
         """Orderly shutdown of controller, sessions, and persistence."""

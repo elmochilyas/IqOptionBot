@@ -1,43 +1,74 @@
-"""Authentic market data acquisition, incremental collection, and quality management.
+"""Authentic historical market-data collection and resumable backfilling.
 
-Implements Section 6 requirements:
-- Incremental historical candle retrieval from authorized broker feeds
-- Authentic external dataset ingestion with explicit provenance tracking
-- Strict separation between standard FX pairs (EURUSD) and OTC derivatives (EURUSD-OTC)
-- Dataset deduplication, timestamp consistency, and gap auditing
-- Atomic persistence into Parquet storage and SQLite catalog
-- Safety enforcement: fails closed if broker account status is unverified
+The backfill transaction order is deliberately strict: a broker page is validated,
+published through the existing immutable Parquet/catalog storage layer, and only then
+recorded in an atomic checkpoint. A process may therefore repeat the last request after
+a crash, but it can never checkpoint data that was not durably committed.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from dataclasses import dataclass
+import os
+import re
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 if TYPE_CHECKING:
     from iqoption_research.connectors.iqoption.client import AsyncIQOption
-from iqoption_research.connectors.iqoption.exceptions import ConnectionError, InvalidCandleError
+
+from iqoption_research.connectors.iqoption.exceptions import (
+    ConnectionError,
+    InvalidCandleError,
+)
 from iqoption_research.execution.account_diagnostics import BrokerAccountDiagnostic
 from iqoption_research.market_data.catalog import DatasetCatalog
 from iqoption_research.market_data.importer import import_candles_from_csv
+from iqoption_research.market_data.instruments import InstrumentRegistry, normalize_symbol
 from iqoption_research.market_data.parquet_storage import (
+    ParquetWriteResult,
     read_candles_parquet,
     write_candles_parquet,
 )
-from iqoption_research.market_data.symbols import normalize_symbol
 from iqoption_research.market_data.validation import DataQualityReport, assess_data_quality
 from iqoption_research.models.market import Candle, CandleSize
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATASET_DIR: Final[Path] = Path("data/datasets")
+BACKFILL_SOURCE: Final[str] = "broker_authentic_collection"
+JOB_ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+TRANSIENT_FETCH_ERRORS: Final[tuple[type[BaseException], ...]] = (
+    ConnectionError,
+    InvalidCandleError,
+    TimeoutError,
+    OSError,
+)
 
 
 class DataAcquisitionError(RuntimeError):
-    """Raised when data collection fails or is blocked by security policies."""
+    """Raised when collection, validation, recovery, or persistence fails."""
+
+
+class HistoricalBroker(Protocol):
+    """Small read-only broker surface used by the backfill engine."""
+
+    def assert_read_only(self) -> None: ...
+
+    async def get_candles(
+        self,
+        symbol: str,
+        size: int | CandleSize,
+        count: int,
+        *,
+        endtime: int | None = None,
+    ) -> Any: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,24 +89,11 @@ class CoverageReport:
     quality_verdict: str
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "symbol": self.symbol,
-            "candle_size_seconds": self.candle_size_seconds,
-            "source": self.source,
-            "provenance": self.provenance,
-            "is_otc": self.is_otc,
-            "total_bars": self.total_bars,
-            "start_utc": self.start_utc,
-            "end_utc": self.end_utc,
-            "duration_hours": self.duration_hours,
-            "gap_count": self.gap_count,
-            "max_gap_seconds": self.max_gap_seconds,
-            "quality_verdict": self.quality_verdict,
-        }
+        return asdict(self)
 
 
 class HistoricalDataCollector:
-    """Manages authentic market data acquisition, validation, deduplication, and cataloging."""
+    """Acquire, validate, deduplicate, and catalog authentic candle data."""
 
     def __init__(
         self,
@@ -85,27 +103,23 @@ class HistoricalDataCollector:
         account_diagnostic: BrokerAccountDiagnostic | None = None,
     ) -> None:
         self.storage_dir = Path(storage_dir) if storage_dir is not None else DEFAULT_DATASET_DIR
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.catalog = catalog or DatasetCatalog(self.storage_dir / "catalog.db")
         self.account_diagnostic = account_diagnostic or BrokerAccountDiagnostic()
 
     def is_otc_instrument(self, symbol: str) -> bool:
-        """Identify whether an instrument is an OTC synthetic market."""
+        """Return whether a symbol uses an OTC naming variant."""
         if not isinstance(symbol, str):
             return False
         raw = symbol.strip().upper()
         return "OTC" in raw or raw.endswith("-OTC") or raw.endswith("_OTC")
 
     def deduplicate_and_sort_candles(self, candles: list[Candle]) -> list[Candle]:
-        """Deduplicate candles by from_ts and sort chronologically."""
-        if not candles:
-            return []
-
-        # Keep latest or unique candle for each from_ts
-        seen: dict[int, Candle] = {}
-        for c in candles:
-            seen[c.from_ts] = c
-
-        return sorted(seen.values(), key=lambda c: c.from_ts)
+        """Deduplicate by timestamp, preferring the last catalog/input record."""
+        by_timestamp: dict[int, Candle] = {}
+        for candle in candles:
+            by_timestamp[candle.from_ts] = candle
+        return sorted(by_timestamp.values(), key=lambda candle: candle.from_ts)
 
     async def collect_from_broker(
         self,
@@ -119,90 +133,62 @@ class HistoricalDataCollector:
         require_practice: bool = False,
         allow_partial: bool = True,
     ) -> list[Candle]:
-        """Fetch authentic historical candles from IQ Option using read-only methods.
+        """Fetch paginated authentic candles through the read-only broker interface."""
+        if count <= 0:
+            raise ValueError("count must be positive")
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
 
-        Enforces:
-        - Strict read-only connector assertion.
-        - Verification that account ledger routing is blocked.
-        - Symbol normalization and OTC isolation.
-        - Automatic pagination when count exceeds chunk size.
-        - Deduplication and chronological sorting across pages.
-        - Graceful handling of network disconnects and partial collections.
-        """
         client.assert_read_only()
-        canonical_symbol = normalize_symbol(symbol)
+        canonical = normalize_symbol(symbol)
+        resolved_size = CandleSize(candle_size_seconds)
 
-        # Account safety check if ws is available
         ws = getattr(client, "_ws", None)
-        if ws is not None:
-            profile = getattr(ws, "profile", None)
-            balances = getattr(ws, "balances", [])
+        if require_practice and ws is not None:
             readiness = self.account_diagnostic.evaluate(
-                profile=profile,
-                balances=balances,
+                profile=getattr(ws, "profile", None),
+                balances=getattr(ws, "balances", []),
             )
-            if require_practice and not readiness.is_practice_verified:
+            if not readiness.is_practice_verified:
                 raise DataAcquisitionError(
-                    f"Collection blocked: account safety verification requires PRACTICE account. "
-                    f"Current state: {readiness.explanation}"
+                    "Collection blocked because a PRACTICE account could not be verified: "
+                    f"{readiness.explanation}"
                 )
 
-        resolved_size = CandleSize(candle_size_seconds)
-        end_ts = end_time_ts if end_time_ts is not None else int(datetime.now(UTC).timestamp())
-
-        # Bound chunk size by client settings max_candles (default 500, max 1000)
-        client_max = getattr(getattr(client, "_settings", None), "max_candles", 500)
-        effective_chunk = min(max(1, chunk_size), client_max, 1000)
-
+        client_max = int(getattr(getattr(client, "_settings", None), "max_candles", 500))
+        effective_chunk = min(chunk_size, client_max, 1000)
+        cursor = end_time_ts or int(datetime.now(UTC).timestamp())
         collected: list[Candle] = []
-        current_endtime = end_ts
 
         while len(collected) < count:
-            remaining = count - len(collected)
-            batch_count = min(remaining, effective_chunk)
-
+            requested = min(effective_chunk, count - len(collected))
             try:
-                fetch_res = await client.get_candles(
-                    canonical_symbol,
+                result = await client.get_candles(
+                    canonical,
                     size=resolved_size,
-                    count=batch_count,
-                    endtime=current_endtime,
+                    count=requested,
+                    endtime=cursor,
                 )
-            except (ConnectionError, InvalidCandleError, TimeoutError, OSError) as exc:
-                logger.warning(
-                    "Historical fetch error during pagination at endtime=%s: %s",
-                    current_endtime,
-                    exc,
-                )
+            except TRANSIENT_FETCH_ERRORS as exc:
                 if collected and allow_partial:
-                    logger.info(
-                        "Returning %d partial candles collected prior to error.",
-                        len(collected),
-                    )
+                    logger.warning("Returning partial historical collection after error: %s", exc)
                     break
                 raise DataAcquisitionError(f"Broker historical fetch failed: {exc}") from exc
 
-            batch = fetch_res.candle_list
+            batch = list(result.candle_list)
             if not batch:
-                logger.info(
-                    "Broker returned 0 candles for endtime=%s; end of history reached.",
-                    current_endtime,
-                )
                 break
-
             collected.extend(batch)
-
-            earliest_batch_ts = min(c.from_ts for c in batch)
-            if earliest_batch_ts >= current_endtime:
+            earliest = min(candle.from_ts for candle in batch)
+            if earliest >= cursor:
+                logger.warning("Pagination stopped because broker cursor did not move backward")
+                break
+            cursor = earliest
+            if len(batch) < requested:
                 break
 
-            current_endtime = earliest_batch_ts
-            if len(batch) < batch_count:
-                break
-
-        # Deduplicate and sort chronologically
-        deduped = self.deduplicate_and_sort_candles(collected)
-        return deduped[-count:] if len(deduped) > count else deduped
+        deduplicated = self.deduplicate_and_sort_candles(collected)
+        return deduplicated[-count:]
 
     def import_external_csv(
         self,
@@ -212,7 +198,7 @@ class HistoricalDataCollector:
         candle_size_seconds: int = 60,
         source_label: str = "EXTERNAL_AUTHENTIC",
     ) -> list[Candle]:
-        """Import candles from an authentic external CSV dataset."""
+        """Import authentic candles from a caller-provided CSV file."""
         canonical = normalize_symbol(symbol)
         imported = import_candles_from_csv(
             csv_path,
@@ -220,29 +206,66 @@ class HistoricalDataCollector:
             candle_size_seconds=candle_size_seconds,
             is_synthetic=False,
         )
-        # Update provenance
-        result: list[Candle] = []
-        for c in imported:
-            result.append(
-                Candle(
-                    active_id=c.active_id,
-                    symbol=c.symbol,
-                    size=c.size,
-                    from_ts=c.from_ts,
-                    to_ts=c.to_ts,
-                    open=c.open,
-                    high=c.high,
-                    low=c.low,
-                    close=c.close,
-                    volume=c.volume,
-                    bid=c.bid,
-                    ask=c.ask,
-                    is_complete=c.is_complete,
-                    at_ts=c.at_ts,
-                    provenance=source_label,
-                )
+        return [replace(candle, provenance=source_label) for candle in imported]
+
+    def _validate_dataset(
+        self,
+        candles: list[Candle],
+        *,
+        symbol: str,
+        candle_size_seconds: int,
+        allow_rejected: bool,
+    ) -> list[Candle]:
+        canonical = normalize_symbol(symbol)
+        clean = self.deduplicate_and_sort_candles(candles)
+        if not clean:
+            raise DataAcquisitionError("Cannot persist an empty candle dataset.")
+        try:
+            InstrumentRegistry.validate_series_consistency(clean, canonical)
+        except ValueError as exc:
+            raise DataAcquisitionError(str(exc)) from exc
+        if any(candle.size.value != candle_size_seconds for candle in clean):
+            raise DataAcquisitionError("Dataset contains a mismatched candle timeframe.")
+
+        report: DataQualityReport = assess_data_quality(
+            clean,
+            expected_size=candle_size_seconds,
+            is_historical=True,
+            expected_instrument=canonical,
+        )
+        if report.acceptance_status == "rejected" and not allow_rejected:
+            critical = [
+                issue.message for issue in report.issues if issue.severity in ("CRITICAL", "ERROR")
+            ]
+            raise DataAcquisitionError(
+                f"Dataset quality rejected (score={report.score:.1f}): "
+                f"{'; '.join(critical) or 'quality validation failed'}"
             )
-        return result
+        return clean
+
+    def persist_batch(
+        self,
+        candles: list[Candle],
+        *,
+        symbol: str,
+        candle_size_seconds: int,
+        source: str = BACKFILL_SOURCE,
+    ) -> ParquetWriteResult:
+        """Validate and atomically publish one immutable backfill page."""
+        clean = self._validate_dataset(
+            candles,
+            symbol=symbol,
+            candle_size_seconds=candle_size_seconds,
+            allow_rejected=False,
+        )
+        return write_candles_parquet(
+            clean,
+            self.storage_dir,
+            source=source,
+            is_synthetic=False,
+            catalog=self.catalog,
+            on_duplicate="ignore",
+        )
 
     def persist_dataset(
         self,
@@ -254,127 +277,574 @@ class HistoricalDataCollector:
         provenance: str = "AUTHENTIC_MARKET_DATA",
         allow_rejected: bool = False,
     ) -> Path:
-        """Deduplicate, audit, sort, and atomically persist candles to Parquet."""
-        canonical = normalize_symbol(symbol)
-        clean_candles = self.deduplicate_and_sort_candles(candles)
-
-        if not clean_candles:
-            raise DataAcquisitionError("Cannot persist an empty candle dataset.")
-
-        # If dataset already exists in catalog, load and merge
-        existing = self.load_dataset(canonical, candle_size_seconds)
-        if existing:
-            clean_candles = self.deduplicate_and_sort_candles(existing + clean_candles)
-
-        # Audit quality with expected instrument validation
-        report: DataQualityReport = assess_data_quality(
-            clean_candles,
-            expected_size=candle_size_seconds,
-            is_historical=True,
-            expected_instrument=canonical,
+        """Validate and publish a complete immutable authentic dataset."""
+        clean = self._validate_dataset(
+            candles,
+            symbol=symbol,
+            candle_size_seconds=candle_size_seconds,
+            allow_rejected=allow_rejected,
         )
-        if report.acceptance_status == "rejected" and not allow_rejected:
-            critical_msgs = [
-                i.message for i in report.issues if i.severity in ("CRITICAL", "ERROR")
-            ]
-            err_msg = (
-                f"Dataset quality rejected (score={report.score:.1f}, "
-                f"status={report.acceptance_status}): "
-                f"{'; '.join(critical_msgs) or 'Quality validation failed'}"
-            )
-            logger.error(err_msg)
-            raise DataAcquisitionError(err_msg)
-
-        if report.acceptance_status == "rejected":
-            logger.warning(
-                "Dataset quality status is rejected (score=%.1f)",
-                report.score,
-            )
-
-        # Persist to Parquet and update SQLite catalog atomically
-        write_res = write_candles_parquet(
-            clean_candles,
+        result = write_candles_parquet(
+            clean,
             self.storage_dir,
             source=provenance or source,
             is_synthetic=False,
             catalog=self.catalog,
-            on_duplicate="replace",
+            on_duplicate="ignore",
         )
-        return write_res.parquet_path
+        return result.parquet_path
 
     def load_dataset(
         self,
         symbol: str,
         candle_size_seconds: int = 60,
+        *,
+        dataset_ids: tuple[str, ...] | list[str] | None = None,
     ) -> list[Candle]:
-        """Load stored dataset from Parquet via catalog lookup."""
+        """Load and checksum-verify all matching catalog datasets."""
         canonical = normalize_symbol(symbol)
-        entries = self.catalog.find_datasets(
-            symbol=canonical,
-            candle_size_seconds=candle_size_seconds,
-        )
-        if not entries:
-            # Fallback direct path check
-            otc_flag = self.is_otc_instrument(canonical)
-            direct_dir = self.storage_dir / ("otc" if otc_flag else "regular") / canonical.lower()
-            if not direct_dir.is_dir():
-                return []
-            parquet_files = sorted(direct_dir.glob("*.parquet"))
-            if not parquet_files:
-                return []
-            return read_candles_parquet(parquet_files[-1])
+        if dataset_ids is None:
+            entries = self.catalog.find_datasets(
+                symbol=canonical,
+                candle_size_seconds=candle_size_seconds,
+            )
+        else:
+            entries = []
+            for dataset_id in dataset_ids:
+                entry = self.catalog.get_dataset(dataset_id)
+                if entry is None:
+                    raise DataAcquisitionError(
+                        f"Checkpoint references missing catalog dataset {dataset_id!r}."
+                    )
+                if entry.symbol != canonical or entry.candle_size_seconds != candle_size_seconds:
+                    raise DataAcquisitionError(
+                        f"Checkpoint dataset {dataset_id!r} has incompatible instrument/timeframe."
+                    )
+                entries.append(entry)
 
-        # Load latest entry
-        latest = entries[0]
-        file_path = self.storage_dir / latest.file_path
-        if not file_path.is_file():
-            return []
-        return read_candles_parquet(file_path)
+        loaded: list[Candle] = []
+        for entry in entries:
+            path = self.storage_dir / entry.file_path
+            if not path.is_file():
+                raise DataAcquisitionError(f"Catalog dataset file is missing: {entry.file_path}")
+            loaded.extend(
+                read_candles_parquet(
+                    path,
+                    expected_symbol=canonical,
+                    catalog_entry=entry,
+                )
+            )
+        return self.deduplicate_and_sort_candles(loaded)
 
     def generate_coverage_report(
         self,
         symbol: str,
         candle_size_seconds: int = 60,
     ) -> CoverageReport | None:
-        """Generate a thorough coverage report for a stored dataset."""
+        """Build a coverage report over every cataloged partition for a series."""
         candles = self.load_dataset(symbol, candle_size_seconds)
         if not candles:
             return None
-
         canonical = normalize_symbol(symbol)
-        otc_flag = self.is_otc_instrument(canonical)
-        start_dt = datetime.fromtimestamp(candles[0].from_ts, tz=UTC)
-        end_dt = datetime.fromtimestamp(candles[-1].to_ts, tz=UTC)
-        duration_hrs = (candles[-1].to_ts - candles[0].from_ts) / 3600.0
-
-        # Calculate gaps
-        gaps = 0
-        max_gap = 0
-        for i in range(1, len(candles)):
-            delta = candles[i].from_ts - candles[i - 1].to_ts
-            if delta > 0:
-                gaps += 1
-                if delta > max_gap:
-                    max_gap = delta
-
-        report = assess_data_quality(
+        gap_sizes = [
+            current.from_ts - previous.to_ts
+            for previous, current in pairwise(candles)
+            if current.from_ts > previous.to_ts
+        ]
+        quality = assess_data_quality(
             candles,
             expected_size=candle_size_seconds,
             is_historical=True,
+            expected_instrument=canonical,
         )
-        verdict = "PASS" if report.acceptance_status != "rejected" else "FAIL"
-
         return CoverageReport(
             symbol=canonical,
             candle_size_seconds=candle_size_seconds,
             source=candles[0].provenance or "unknown",
             provenance="AUTHENTIC_MARKET_DATA",
-            is_otc=otc_flag,
+            is_otc=InstrumentRegistry.get(canonical).is_otc,
             total_bars=len(candles),
-            start_utc=start_dt.isoformat(),
-            end_utc=end_dt.isoformat(),
-            duration_hours=round(duration_hrs, 2),
-            gap_count=gaps,
-            max_gap_seconds=max_gap,
-            quality_verdict=verdict,
+            start_utc=datetime.fromtimestamp(candles[0].from_ts, tz=UTC).isoformat(),
+            end_utc=datetime.fromtimestamp(candles[-1].to_ts, tz=UTC).isoformat(),
+            duration_hours=round((candles[-1].to_ts - candles[0].from_ts) / 3600.0, 2),
+            gap_count=len(gap_sizes),
+            max_gap_seconds=max(gap_sizes, default=0),
+            quality_verdict="PASS" if quality.acceptance_status != "rejected" else "FAIL",
         )
+
+
+class JobState:
+    """Stable serialized backfill states."""
+
+    NOT_STARTED = "not_started"
+    RUNNING = "running"
+    INTERRUPTED = "interrupted"
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class BackfillCheckpoint:
+    """Durable state containing only successfully committed page references."""
+
+    job_id: str
+    instrument: str
+    active_id: int
+    timeframe_seconds: int
+    target_count: int
+    page_size: int
+    start_ts: int | None
+    end_ts: int
+    last_cursor_ts: int
+    unique_candles_persisted: int
+    last_successful_batch: int
+    committed_dataset_ids: tuple[str, ...] = ()
+    retry_count: int = 0
+    state: str = JobState.NOT_STARTED
+    last_error: str | None = None
+    created_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    updated_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+    @property
+    def date_range(self) -> tuple[str, str] | None:
+        """Return a backwards-compatible ISO date range for display."""
+        if self.start_ts is None:
+            return None
+        return (
+            datetime.fromtimestamp(self.start_ts, tz=UTC).isoformat(),
+            datetime.fromtimestamp(self.end_ts, tz=UTC).isoformat(),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        payload = asdict(self)
+        payload["committed_dataset_ids"] = list(self.committed_dataset_ids)
+        payload["date_range"] = list(self.date_range) if self.date_range else None
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BackfillCheckpoint:
+        start_ts = data.get("start_ts")
+        end_ts = data.get("end_ts")
+        legacy_range = data.get("date_range")
+        if legacy_range:
+            start_ts = _parse_timestamp(legacy_range[0])
+            end_ts = _parse_timestamp(legacy_range[1])
+        resolved_end = int(end_ts or data.get("last_cursor_ts") or datetime.now(UTC).timestamp())
+        return cls(
+            job_id=str(data["job_id"]),
+            instrument=normalize_symbol(str(data["instrument"])),
+            active_id=int(data["active_id"]),
+            timeframe_seconds=int(data["timeframe_seconds"]),
+            target_count=int(data["target_count"]),
+            page_size=int(data.get("page_size", 500)),
+            start_ts=int(start_ts) if start_ts is not None else None,
+            end_ts=resolved_end,
+            last_cursor_ts=int(data.get("last_cursor_ts") or resolved_end),
+            unique_candles_persisted=int(data.get("unique_candles_persisted", 0)),
+            last_successful_batch=int(data.get("last_successful_batch", 0)),
+            committed_dataset_ids=tuple(data.get("committed_dataset_ids", ())),
+            retry_count=int(data.get("retry_count", 0)),
+            state=str(data.get("state", JobState.NOT_STARTED)),
+            last_error=data.get("last_error"),
+            created_at_utc=str(data.get("created_at_utc", datetime.now(UTC).isoformat())),
+            updated_at_utc=str(data.get("updated_at_utc", datetime.now(UTC).isoformat())),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BackfillResult:
+    """Final metrics for a backfill invocation."""
+
+    job_id: str
+    state: str
+    target_count: int
+    unique_candles: int
+    newly_persisted: int
+    pages_fetched: int
+    duplicates_skipped: int
+    rejected_records: int
+    earliest_ts: int | None
+    latest_ts: int | None
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+ProgressCallback = Callable[[dict[str, object]], None]
+
+
+@dataclass(slots=True)
+class BackfillJob:
+    """Run one bounded-memory, resumable historical backfill."""
+
+    collector: HistoricalDataCollector
+    checkpoint: BackfillCheckpoint
+    client: HistoricalBroker
+    max_retries: int = 5
+    backoff_base_seconds: float = 1.0
+    max_backoff_seconds: float = 30.0
+    on_progress: ProgressCallback | None = None
+
+    @property
+    def checkpoint_path(self) -> Path:
+        return self.collector.storage_dir / f"backfill_checkpoint_{self.checkpoint.job_id}.json"
+
+    def _set_checkpoint(self, **changes: Any) -> None:
+        self.checkpoint = replace(
+            self.checkpoint,
+            updated_at_utc=datetime.now(UTC).isoformat(),
+            **changes,
+        )
+
+    def write_checkpoint(self) -> None:
+        """Atomically replace the checkpoint and fail loudly on any write error."""
+        self.collector.storage_dir.mkdir(parents=True, exist_ok=True)
+        temporary = self.checkpoint_path.with_suffix(".json.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+                json.dump(self.checkpoint.to_dict(), stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(self.checkpoint_path)
+        except Exception as exc:
+            temporary.unlink(missing_ok=True)
+            raise DataAcquisitionError(f"Failed to persist checkpoint: {exc}") from exc
+
+    def _progress(self, *, pages: int, duplicates: int, rejected: int) -> None:
+        if self.on_progress is None:
+            return
+        try:
+            self.on_progress({
+                "job_id": self.checkpoint.job_id,
+                "state": self.checkpoint.state,
+                "target_count": self.checkpoint.target_count,
+                "unique_candles_persisted": self.checkpoint.unique_candles_persisted,
+                "remaining": max(
+                    0,
+                    self.checkpoint.target_count - self.checkpoint.unique_candles_persisted,
+                ),
+                "pages_fetched": pages,
+                "duplicates_skipped": duplicates,
+                "rejected_records": rejected,
+                "current_cursor": self.checkpoint.last_cursor_ts,
+            })
+        except Exception:
+            logger.warning("Backfill progress callback failed", exc_info=True)
+
+    def _load_committed(self) -> list[Candle]:
+        if not self.checkpoint.committed_dataset_ids:
+            if self.checkpoint.unique_candles_persisted:
+                raise DataAcquisitionError(
+                    "Legacy checkpoint reports committed candles without dataset references; "
+                    "safe resume is impossible."
+                )
+            return []
+        return self.collector.load_dataset(
+            self.checkpoint.instrument,
+            self.checkpoint.timeframe_seconds,
+            dataset_ids=self.checkpoint.committed_dataset_ids,
+        )
+
+    async def _fetch_page(self, count: int, cursor: int) -> Any:
+        last_error: BaseException | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return await self.client.get_candles(
+                    self.checkpoint.instrument,
+                    size=CandleSize(self.checkpoint.timeframe_seconds),
+                    count=count,
+                    endtime=cursor,
+                )
+            except TRANSIENT_FETCH_ERRORS as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    break
+                self._set_checkpoint(retry_count=self.checkpoint.retry_count + 1)
+                delay = min(
+                    self.backoff_base_seconds * (2**attempt),
+                    self.max_backoff_seconds,
+                )
+                if delay:
+                    await asyncio.sleep(delay)
+        raise DataAcquisitionError(
+            f"Broker historical fetch failed after {self.max_retries + 1} attempts: {last_error}"
+        )
+
+    def _validate_page(
+        self,
+        result: Any,
+        *,
+        seen: dict[int, Candle],
+        remaining: int,
+    ) -> tuple[list[Candle], int, int]:
+        if str(getattr(result, "source", "")).lower() != "iqoption":
+            raise DataAcquisitionError(
+                "Backfill rejected data without IQ Option broker provenance."
+            )
+        raw_batch = list(getattr(result, "candle_list", ()))
+        duplicates = 0
+        rejected = len(getattr(result, "errors", ()))
+        page: dict[int, Candle] = {}
+
+        for candle in raw_batch:
+            if candle.from_ts in seen or candle.from_ts in page:
+                existing = seen.get(candle.from_ts) or page[candle.from_ts]
+                if existing != candle:
+                    raise DataAcquisitionError(
+                        f"Broker returned conflicting data for timestamp {candle.from_ts}."
+                    )
+                duplicates += 1
+                continue
+            if (
+                not candle.is_complete
+                or candle.size.value != self.checkpoint.timeframe_seconds
+                or candle.active_id != self.checkpoint.active_id
+                or candle.symbol != self.checkpoint.instrument
+                or candle.to_ts - candle.from_ts != self.checkpoint.timeframe_seconds
+            ):
+                rejected += 1
+                continue
+            if candle.to_ts > self.checkpoint.end_ts:
+                continue
+            if self.checkpoint.start_ts is not None and candle.from_ts < self.checkpoint.start_ts:
+                continue
+            page[candle.from_ts] = candle
+
+        ordered = sorted(page.values(), key=lambda candle: candle.from_ts)
+        if len(ordered) > remaining:
+            ordered = ordered[-remaining:]
+        if ordered:
+            try:
+                InstrumentRegistry.validate_series_consistency(
+                    ordered,
+                    self.checkpoint.instrument,
+                )
+            except ValueError as exc:
+                raise DataAcquisitionError(str(exc)) from exc
+            quality = assess_data_quality(
+                ordered,
+                expected_size=self.checkpoint.timeframe_seconds,
+                is_historical=True,
+                expected_instrument=self.checkpoint.instrument,
+            )
+            if quality.acceptance_status == "rejected":
+                raise DataAcquisitionError(
+                    f"Broker page failed quality validation (score={quality.score:.1f})."
+                )
+        return ordered, duplicates, rejected
+
+    def _result(
+        self,
+        *,
+        initial_count: int,
+        pages: int,
+        duplicates: int,
+        rejected: int,
+        seen: dict[int, Candle],
+    ) -> BackfillResult:
+        timestamps = sorted(seen)
+        return BackfillResult(
+            job_id=self.checkpoint.job_id,
+            state=self.checkpoint.state,
+            target_count=self.checkpoint.target_count,
+            unique_candles=self.checkpoint.unique_candles_persisted,
+            newly_persisted=self.checkpoint.unique_candles_persisted - initial_count,
+            pages_fetched=pages,
+            duplicates_skipped=duplicates,
+            rejected_records=rejected,
+            earliest_ts=timestamps[0] if timestamps else None,
+            latest_ts=timestamps[-1] if timestamps else None,
+        )
+
+    async def run(self) -> BackfillResult:
+        """Collect until the target/date boundary is reached or history is exhausted."""
+        if self.checkpoint.target_count <= 0:
+            raise ValueError("target_count must be positive")
+        if not 1 <= self.checkpoint.page_size <= 1000:
+            raise ValueError("page_size must be within 1..1000")
+        self.client.assert_read_only()
+        committed = self._load_committed()
+        seen = {candle.from_ts: candle for candle in committed}
+        actual_count = len(seen)
+        initial_count = actual_count
+        self._set_checkpoint(
+            unique_candles_persisted=actual_count,
+            state=JobState.RUNNING,
+            last_error=None,
+        )
+        self.write_checkpoint()
+
+        pages = duplicates = rejected = 0
+        no_progress_pages = 0
+        try:
+            while self.checkpoint.unique_candles_persisted < self.checkpoint.target_count:
+                cursor = self.checkpoint.last_cursor_ts
+                if self.checkpoint.start_ts is not None and cursor <= self.checkpoint.start_ts:
+                    self._set_checkpoint(state=JobState.PARTIAL)
+                    break
+                remaining = self.checkpoint.target_count - self.checkpoint.unique_candles_persisted
+                requested = min(self.checkpoint.page_size, remaining)
+                fetched = await self._fetch_page(requested, cursor)
+                pages += 1
+                raw_batch = list(getattr(fetched, "candle_list", ()))
+                if not raw_batch:
+                    self._set_checkpoint(state=JobState.PARTIAL)
+                    break
+                earliest_raw = min(candle.from_ts for candle in raw_batch)
+                if earliest_raw >= cursor:
+                    raise DataAcquisitionError("Broker pagination cursor did not move backward.")
+                page, page_duplicates, page_rejected = self._validate_page(
+                    fetched,
+                    seen=seen,
+                    remaining=remaining,
+                )
+                duplicates += page_duplicates
+                rejected += page_rejected
+                if not page:
+                    no_progress_pages += 1
+                    if no_progress_pages >= 3:
+                        raise DataAcquisitionError(
+                            "Three broker pages produced no new valid candles."
+                        )
+                    self._set_checkpoint(last_cursor_ts=earliest_raw)
+                    self.write_checkpoint()
+                    continue
+                no_progress_pages = 0
+
+                write_result = self.collector.persist_batch(
+                    page,
+                    symbol=self.checkpoint.instrument,
+                    candle_size_seconds=self.checkpoint.timeframe_seconds,
+                )
+                for candle in page:
+                    seen[candle.from_ts] = candle
+                dataset_ids = self.checkpoint.committed_dataset_ids
+                if write_result.dataset_id not in dataset_ids:
+                    dataset_ids += (write_result.dataset_id,)
+                self._set_checkpoint(
+                    last_cursor_ts=earliest_raw,
+                    unique_candles_persisted=len(seen),
+                    last_successful_batch=len(page),
+                    committed_dataset_ids=dataset_ids,
+                    state=(
+                        JobState.COMPLETED
+                        if len(seen) >= self.checkpoint.target_count
+                        else JobState.RUNNING
+                    ),
+                )
+                self.write_checkpoint()
+                self._progress(pages=pages, duplicates=duplicates, rejected=rejected)
+
+            if self.checkpoint.state == JobState.RUNNING:
+                self._set_checkpoint(
+                    state=(
+                        JobState.COMPLETED
+                        if self.checkpoint.unique_candles_persisted >= self.checkpoint.target_count
+                        else JobState.PARTIAL
+                    )
+                )
+            self.write_checkpoint()
+            return self._result(
+                initial_count=initial_count,
+                pages=pages,
+                duplicates=duplicates,
+                rejected=rejected,
+                seen=seen,
+            )
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self._set_checkpoint(state=JobState.INTERRUPTED, last_error="collection interrupted")
+            self.write_checkpoint()
+            raise
+        except Exception as exc:
+            self._set_checkpoint(state=JobState.FAILED, last_error=str(exc))
+            self.write_checkpoint()
+            if isinstance(exc, DataAcquisitionError):
+                raise
+            raise DataAcquisitionError(f"Backfill failed: {exc}") from exc
+
+
+def _parse_timestamp(value: str | int | float | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    normalized = value.strip().replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        raise ValueError("Date values must include a timezone (use Z for UTC).")
+    return int(parsed.timestamp())
+
+
+def load_checkpoint(storage_dir: Path | str, job_id: str) -> BackfillCheckpoint:
+    """Read a checkpoint, rejecting missing or corrupt recovery state."""
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        raise DataAcquisitionError("Invalid backfill job ID.")
+    path = Path(storage_dir) / f"backfill_checkpoint_{job_id}.json"
+    if not path.is_file():
+        raise DataAcquisitionError(f"No checkpoint found for job ID: {job_id}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return BackfillCheckpoint.from_dict(payload)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise DataAcquisitionError(f"Invalid checkpoint {path}: {exc}") from exc
+
+
+def launch_backfill(
+    *,
+    collector: HistoricalDataCollector,
+    job_id: str,
+    instrument: str,
+    timeframe_seconds: int,
+    target_count: int,
+    client: HistoricalBroker,
+    active_id: int | None = None,
+    from_date: str | int | None = None,
+    to_date: str | int | None = None,
+    page_size: int = 500,
+    max_retries: int = 5,
+    resume: bool = False,
+    on_progress: ProgressCallback | None = None,
+    backoff_base_seconds: float = 1.0,
+) -> BackfillJob:
+    """Create a new job or reconstruct one exactly from its durable checkpoint."""
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        raise DataAcquisitionError("Invalid backfill job ID.")
+    if resume:
+        checkpoint = load_checkpoint(collector.storage_dir, job_id)
+        if normalize_symbol(instrument) != checkpoint.instrument:
+            raise DataAcquisitionError("Resume instrument does not match checkpoint.")
+        registered = InstrumentRegistry.get(checkpoint.instrument)
+        if checkpoint.active_id != registered.active_id:
+            raise DataAcquisitionError("Checkpoint active_id does not match its instrument.")
+    else:
+        canonical = normalize_symbol(instrument)
+        registered = InstrumentRegistry.get(canonical)
+        if active_id is not None and active_id != registered.active_id:
+            raise DataAcquisitionError("active_id does not match the registered instrument.")
+        start_ts = _parse_timestamp(from_date)
+        end_ts = _parse_timestamp(to_date) or int(datetime.now(UTC).timestamp())
+        if start_ts is not None and start_ts >= end_ts:
+            raise ValueError("--from must be earlier than --to")
+        checkpoint = BackfillCheckpoint(
+            job_id=job_id,
+            instrument=canonical,
+            active_id=registered.active_id,
+            timeframe_seconds=timeframe_seconds,
+            target_count=target_count,
+            page_size=page_size,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            last_cursor_ts=end_ts,
+            unique_candles_persisted=0,
+            last_successful_batch=0,
+        )
+    return BackfillJob(
+        collector=collector,
+        checkpoint=checkpoint,
+        client=client,
+        max_retries=max_retries,
+        backoff_base_seconds=backoff_base_seconds,
+        on_progress=on_progress,
+    )

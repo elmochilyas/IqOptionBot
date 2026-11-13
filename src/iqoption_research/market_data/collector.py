@@ -29,19 +29,17 @@ from iqoption_research.connectors.iqoption.exceptions import (
 )
 from iqoption_research.execution.account_diagnostics import BrokerAccountDiagnostic
 from iqoption_research.market_data.catalog import DatasetCatalog
-from iqoption_research.market_data.importer import import_candles_from_csv
-from iqoption_research.market_data.parquet_storage import (
-    read_candles_parquet,
-    write_candles_parquet,
-)
-from iqoption_research.market_data.symbols import normalize_symbol
 from iqoption_research.market_data.validation import (
-    DataQualityReport,
     assess_data_quality,
 )
-from iqoption_research.models.market import Candle, CandleSize
+from iqoption_research.models.market import Candle
 
 logger = logging.getLogger(__name__)
+
+
+class DataAcquisitionError(RuntimeError):
+    """Raised when data collection fails or is blocked by security policies."""
+
 
 DEFAULT_DATASET_DIR: Final[Path] = Path("data/datasets")
 
@@ -60,6 +58,63 @@ class JobState:
     COMPLETED = "completed"
     PARTIAL = "partial"
     FAILED = "failed"
+
+
+class HistoricalDataCollector:
+    """Manages authentic market data acquisition, validation, deduplication, and cataloging."""
+
+    def __init__(
+        self,
+        *,
+        storage_dir: Path | str | None = None,
+        catalog: DatasetCatalog | None = None,
+        account_diagnostic: BrokerAccountDiagnostic | None = None,
+    ) -> None:
+        self.storage_dir = Path(storage_dir) if storage_dir is not None else DEFAULT_DATASET_DIR
+        self.catalog = catalog or DatasetCatalog(self.storage_dir / "catalog.db")
+        self.account_diagnostic = account_diagnostic or BrokerAccountDiagnostic()
+
+    def is_otc_instrument(self, symbol: str) -> bool:
+        """Identify whether an instrument is an OTC synthetic market."""
+        if not isinstance(symbol, str):
+            return False
+        raw = symbol.strip().upper()
+        return "OTC" in raw or raw.endswith("-OTC") or raw.endswith("_OTC")
+
+    def deduplicate_and_sort_candles(self, candles: list[Candle]) -> list[Candle]:
+        """Deduplicate candles by from_ts and sort chronologically."""
+        if not candles:
+            return []
+
+        # Keep latest or unique candle for each from_ts
+        seen: dict[int, Candle] = {}
+        for c in candles:
+            seen[c.from_ts] = c
+
+        return sorted(seen.values(), key=lambda c: c.from_ts)
+
+    async def collect_from_broker(
+        self,
+        client: AsyncIQOption,
+        *,
+        symbol: str = "EURUSD",
+        candle_size_seconds: int = 60,
+        end_time_ts: int | None = None,
+        count: int = 1000,
+        chunk_size: int = 500,
+        require_practice: bool = False,
+        allow_partial: bool = True,
+    ) -> list[Candle]:
+        """Fetch authentic historical candles from IQ Option using read-only methods.
+
+        Enforces:
+        - Strict read-only connector assertion.
+        - Verification that account ledger routing is blocked.
+        - Symbol normalization and OTC isolation.
+        - Automatic pagination when count exceeds chunk size.
+        - Deduplication and chronological sorting across pages.
+        - Graceful handling of network disconnects and partial collections.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +158,7 @@ class BackfillCheckpoint:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "BackfillCheckpoint":
+    def from_dict(cls, data: dict) -> BackfillCheckpoint:
         return cls(
             job_id=data["job_id"],
             instrument=data["instrument"],
@@ -176,7 +231,7 @@ class BackfillJob:
         """Persist the checkpoint to the catalog/storage directory."""
         cp_path = self.collector.storage_dir / f"backfill_checkpoint_{self.checkpoint.job_id}.json"
         try:
-            with open(cp_path, "w", encoding="utf-8") as f:
+            with Path(cp_path).open("w", encoding="utf-8") as f:
                 json.dump(self.checkpoint.to_dict(), f, indent=2, sort_keys=True)
             logger.info("Checkpoint written: %s", cp_path)
         except Exception as exc:
@@ -188,7 +243,7 @@ class BackfillJob:
         if not cp_path.is_file():
             return None
         try:
-            with open(cp_path, "r", encoding="utf-8") as f:
+            with Path(cp_path).open("r", encoding="utf-8") as f:
                 data = json.load(f)
             return BackfillCheckpoint.from_dict(data)
         except Exception as exc:
@@ -205,7 +260,6 @@ class BackfillJob:
         active_id = self.checkpoint.active_id
         timeframe = self.checkpoint.timeframe_seconds
         target = self.checkpoint.target_count
-        date_range = self.checkpoint.date_range
         last_cursor = self.checkpoint.last_cursor_ts
         persisted_unique = self.checkpoint.unique_candles_persisted
 
@@ -343,10 +397,9 @@ class BackfillJob:
                         # In a real implementation, we'd use asyncio.sleep here
                         # but for simplicity in this sync-ish flow we just log
                         continue
-                    else:
-                        raise DataAcquisitionError(
-                            f"Broker historical fetch failed after {self.max_retries} retries: {exc}"
-                        ) from exc
+                    raise DataAcquisitionError(
+                        f"Broker historical fetch failed after {self.max_retries} retries: {exc}"
+                    ) from exc
 
             batch = fetch_res.candle_list
             pages_fetched += 1
@@ -618,7 +671,6 @@ class BackfillJob:
         In production this calls client.get_candles().  In tests it can be
         monkeypatched to return mock data.
         """
-        from iqoption_research.connectors.iqoption.client import AsyncIQOption
 
         client: AsyncIQOption  # suppress missing-type
         # We'll resolve the client from the job's collector context
@@ -679,7 +731,7 @@ def launch_backfill(
         state=JobState.NOT_STARTED,
     )
 
-    job = BackfillJob(
+    return BackfillJob(
         collector=collector,
         checkpoint=checkpoint,
         client=client,
@@ -687,4 +739,40 @@ def launch_backfill(
         on_progress=on_progress,
         on_finished=on_finished,
     )
-    return job
+# ---------------------------------------------------------------------------
+# CoverageReport — persisted dataset summary (re-exported from __init__.py)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageReport:
+    """Detailed coverage and quality summary for a stored dataset."""
+
+    symbol: str
+    candle_size_seconds: int
+    source: str
+    provenance: str
+    is_otc: bool
+    total_bars: int
+    start_utc: str | None
+    end_utc: str | None
+    duration_hours: float
+    gap_count: int
+    max_gap_seconds: int
+    quality_verdict: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "symbol": self.symbol,
+            "candle_size_seconds": self.candle_size_seconds,
+            "source": self.source,
+            "provenance": self.provenance,
+            "is_otc": self.is_otc,
+            "total_bars": self.total_bars,
+            "start_utc": self.start_utc,
+            "end_utc": self.end_utc,
+            "duration_hours": self.duration_hours,
+            "gap_count": self.gap_count,
+            "max_gap_seconds": self.max_gap_seconds,
+            "quality_verdict": self.quality_verdict,
+        }

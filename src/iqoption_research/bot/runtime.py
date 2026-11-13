@@ -38,6 +38,7 @@ from iqoption_research.observation.adapter import (
     ObservationAuthorizationToken,
     ObservationMode,
 )
+from iqoption_research.observation.heartbeat import FeedHealthStatus
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class RuntimeConfig:
     risk_config: RiskConfig = field(default_factory=RiskConfig)
     observation_token: ObservationAuthorizationToken | None = None
     max_runtime_seconds: float | None = None
+    startup_grace_seconds: float = 30.0
     impute_missing_quotes: bool = False
 
 
@@ -323,17 +325,19 @@ class ContinuousBotRuntime:
                     ls = watchdog.latched_status
                     # is_latched + controller not None means ingestion blocking is valid
                     if ls is not None and ls in {
-                        __import__("iqoption_research.observation.heartbeat").FeedHealthStatus.STALE,
-                        __import__("iqoption_research.observation.heartbeat").FeedHealthStatus.DISCONNECTED,
+                        FeedHealthStatus.STALE,
+                        FeedHealthStatus.DISCONNECTED,
                     }:
                         self._controller.block_ingestion(
                             f"Feed health {ls.value}: {watchdog.latched_reason}"
                         )
                     logger.warning("Feed health issue latched: %s", watchdog.latched_reason)
-            except asyncio.CancelledError:
-                raise
             except Exception as exc:  # noqa BL001
-                logger.debug("Watchdog poll error: %s", exc)
+                logger.error("Watchdog poll error: %s", exc)
+                if self._controller is not None:
+                    self._controller.block_ingestion(f"Watchdog error: {exc}")
+                self.state = RuntimeState.ERROR
+                self._last_error = f"Watchdog poll error: {exc}"
             # Poll every 5 seconds, respecting shutdown
             try:
                 await asyncio.wait_for(self._shutdown_event.wait(), timeout=5.0)
@@ -368,6 +372,9 @@ class ContinuousBotRuntime:
         # Schedule the independent watchdog task for feed health monitoring
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
+        # Bounded startup grace period: fail closed if no valid candle arrives
+        self._startup_deadline = time.monotonic() + self.config.startup_grace_seconds
+
         try:
             async for raw_candle in self.client.stream_candles(
                 self.config.symbol,
@@ -376,8 +383,20 @@ class ContinuousBotRuntime:
                 if self._shutdown_event.is_set():
                     break
 
+                # Enforce startup grace period - fail closed if no candle before deadline
+                if time.monotonic() > self._startup_deadline:
+                    logger.error(
+                        "Startup grace period exceeded; no valid candle received. "
+                        "Halting."
+                    )
+                    self.state = RuntimeState.ERROR
+                    self._last_error = "Startup grace period exceeded; no valid candle received"
+                    self._controller.emergency_stop(reason="Startup grace period exceeded")
+                    break
+
                 await self._pause_event.wait()
 
+                # Enforce max_runtime_seconds independently of candle arrival
                 if (
                     self.config.max_runtime_seconds is not None
                     and self._started_at is not None
@@ -390,14 +409,22 @@ class ContinuousBotRuntime:
         finally:
             # Cancel the watchdog task first, then close the client
             self._watchdog_task.cancel()
-            with __import__("contextlib").suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._watchdog_task
             await self.client.close()
 
     async def _cleanup(self) -> None:
         """Orderly shutdown of controller, sessions, and persistence."""
         logger.info("Commencing clean runtime shutdown...")
-        self.state = RuntimeState.STOPPING
+
+        # Preserve ERROR state through cleanup - do not overwrite to STOPPED
+        if self.state == RuntimeState.ERROR:
+            logger.error(
+                "Preserving ERROR state through cleanup: %s",
+                self._last_error or "unknown",
+            )
+        else:
+            self.state = RuntimeState.STOPPING
 
         if self._controller is not None:
             self._controller.stop()
@@ -440,7 +467,10 @@ class ContinuousBotRuntime:
 
         # Clear in-memory session on full stop
         await self.auth_manager.logout()
-        self.state = RuntimeState.STOPPED
+
+        # Preserve ERROR state; only transition to STOPPED if not already in ERROR
+        if self.state != RuntimeState.ERROR:
+            self.state = RuntimeState.STOPPED
         logger.info("Runtime shutdown complete. Active session cleared.")
 
     def get_status_snapshot(self) -> BotStatusSnapshot | None:

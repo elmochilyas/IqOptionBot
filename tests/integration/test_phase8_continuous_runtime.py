@@ -194,7 +194,7 @@ def test_cli_bot_data_collect_mock() -> None:
 # New: Watchdog and Live Authentication Integration Tests
 ###############################################################################
 
-pytest.mark.asyncio
+
 async def test_watchdog_enum_values() -> None:
     """Verify ModelProvenance enum values are well-defined."""
     from iqoption_research.inference.provenance import ModelProvenance
@@ -231,6 +231,7 @@ async def test_watchdog_reset_mechanism() -> None:
 async def test_live_cli_authentication_wires_through() -> None:
     """Verify that bot run --live calls start_interactive_session."""
     from typer.testing import CliRunner
+
     from iqoption_research.cli.main import app
 
     runner = CliRunner()

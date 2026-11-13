@@ -12,6 +12,7 @@ Implements Sections 3, 4, 9, 11:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -103,6 +104,7 @@ class ContinuousBotRuntime:
         self._last_error: str | None = None
         self._started_at: float | None = None
         self._run_task: asyncio.Task[None] | None = None
+        self._watchdog_task: asyncio.Task[None] | None = None
 
     def _init_auth_manager(self) -> AuthenticationManager:
         provider = MockAuthProvider() if self.config.dev_mock else IQOptionAuthProvider()
@@ -307,6 +309,37 @@ class ContinuousBotRuntime:
             # Small yield to permit event handling
             await asyncio.sleep(0.001)
 
+    async def _watchdog_loop(self) -> None:
+        """Independent timer-driven feed health watchdog."""
+        from iqoption_research.observation.watchdog import FeedHealthWatchdog
+        if self._controller is None:
+            return
+        watchdog = FeedHealthWatchdog(self._controller.observation_adapter)
+        while not self._shutdown_event.is_set():
+            try:
+                watchdog.poll(now_ts=time.time())
+                # If feed latched as stale/disconnected, block ingestion
+                if watchdog.is_latched and self._controller is not None:
+                    ls = watchdog.latched_status
+                    # is_latched + controller not None means ingestion blocking is valid
+                    if ls is not None and ls in {
+                        __import__("iqoption_research.observation.heartbeat").FeedHealthStatus.STALE,
+                        __import__("iqoption_research.observation.heartbeat").FeedHealthStatus.DISCONNECTED,
+                    }:
+                        self._controller.block_ingestion(
+                            f"Feed health {ls.value}: {watchdog.latched_reason}"
+                        )
+                    logger.warning("Feed health issue latched: %s", watchdog.latched_reason)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa BL001
+                logger.debug("Watchdog poll error: %s", exc)
+            # Poll every 5 seconds, respecting shutdown
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=5.0)
+            except TimeoutError:
+                continue
+
     async def _run_live_observation_loop(self) -> None:
         """Ingest live completed market candles from authorized read-only broker feed."""
         if self._controller is None:
@@ -314,6 +347,10 @@ class ContinuousBotRuntime:
 
         adapter = self._controller.observation_adapter
         adapter.assert_mode_permission()
+
+        # Start interactive session if not already authenticated
+        if self.auth_manager.session is None or not self.auth_manager.session.is_active:
+            await self.start_interactive_session()
 
         if self.client is None:
             # Initialize read-only client using active authenticated session
@@ -327,6 +364,9 @@ class ContinuousBotRuntime:
 
         self.client.assert_read_only()
         await self.client.connect()
+
+        # Schedule the independent watchdog task for feed health monitoring
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
         try:
             async for raw_candle in self.client.stream_candles(
@@ -348,6 +388,10 @@ class ContinuousBotRuntime:
 
                 self._controller.process_candle(raw_candle)
         finally:
+            # Cancel the watchdog task first, then close the client
+            self._watchdog_task.cancel()
+            with __import__("contextlib").suppress(asyncio.CancelledError):
+                await self._watchdog_task
             await self.client.close()
 
     async def _cleanup(self) -> None:
@@ -387,6 +431,12 @@ class ContinuousBotRuntime:
             }
             summary_path.write_text(json.dumps(summary_data, indent=2), encoding="utf-8")
             logger.info("Session telemetry persisted to %s", summary_path)
+
+        # Cancel the watchdog task first
+        if self._watchdog_task is not None:
+            self._watchdog_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._watchdog_task
 
         # Clear in-memory session on full stop
         await self.auth_manager.logout()

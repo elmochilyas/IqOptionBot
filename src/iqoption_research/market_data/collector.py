@@ -92,6 +92,69 @@ class HistoricalDataCollector:
             seen[c.from_ts] = c
 
         return sorted(seen.values(), key=lambda c: c.from_ts)
+    def load_dataset(
+        self,
+        symbol: str = "EURUSD",
+        candle_size_seconds: int = 60,
+    ) -> list[Candle]:
+        """Load previously persisted candles from Parquet storage.
+
+        Reads candles from the partitioned Parquet directory structure.
+        Returns an empty list if no persisted data exists.
+        """
+        from pathlib import Path
+
+        from iqoption_research.market_data.parquet_storage import read_filtered_candles
+
+        base_dir = Path(self.storage_dir).resolve()
+        safe_symbol = symbol.lower()
+        safe_tf = f"{candle_size_seconds}s"
+
+        # Try to read from the partition directory
+        partition_dir = base_dir / "broker_authentic_collection" / safe_symbol / safe_tf
+        if not partition_dir.is_dir():
+            return []
+
+        candles = read_filtered_candles(
+            partition_dir,
+            symbol=symbol,
+            size_seconds=candle_size_seconds,
+        )
+        return candles
+
+    def persist_dataset(
+        self,
+        candles: list[Candle],
+        symbol: str = "EURUSD",
+        candle_size_seconds: int = 60,
+        source: str = "phase9_backfill",
+        provenance: str = "AUTHENTIC_MARKET_DATA",
+        allow_rejected: bool = False,
+    ) -> Path:
+        """Persist candles to partitioned Parquet storage.
+
+        Writes candles to the partitioned Parquet directory structure
+        and registers the dataset in the SQLite catalog.
+
+        Returns the path to the written Parquet file.
+        """
+        from pathlib import Path
+
+        from iqoption_research.market_data.parquet_storage import write_candles_parquet
+
+        base_dir = Path(self.storage_dir).resolve()
+
+        # Write candles to Parquet
+        result = write_candles_parquet(
+            candles=candles,
+            root_dir=base_dir,
+            source=source,
+            is_synthetic=False,
+            catalog=self.catalog,
+            on_duplicate="ignore",
+        )
+
+        return Path(result.parquet_path)
 
     async def collect_from_broker(
         self,

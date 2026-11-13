@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -13,12 +13,14 @@ from typer.testing import CliRunner
 
 from iqoption_research.cli.commands import backfill_cmd
 from iqoption_research.cli.main import app
+from iqoption_research.market_data.candles import normalize_candle
 from iqoption_research.market_data.collector import (
     BackfillCheckpoint,
     BackfillJob,
     DataAcquisitionError,
     HistoricalDataCollector,
     JobState,
+    _conflicting_market_fields,
     launch_backfill,
     load_checkpoint,
 )
@@ -127,6 +129,54 @@ class InclusiveBoundaryBroker(OfflineHistoricalBroker):
         return FakeFetchResult(candles)
 
 
+class NormalizedInclusiveBoundaryBroker(InclusiveBoundaryBroker):
+    """Inclusive broker whose candles use the production normalization path."""
+
+    def _candle(self, from_ts: int, size: int) -> Candle:
+        offset = (from_ts // size) % 1000
+        open_price = 1.05 + offset / 100_000
+        close_price = open_price + 0.00002
+        raw = {
+            "id": from_ts,
+            "from": from_ts,
+            "to": from_ts + size,
+            "at": (from_ts + size) * 1_000_000_000,
+            "open": open_price,
+            "max": close_price + 0.00001,
+            "min": open_price - 0.00001,
+            "close": close_price,
+            "volume": 100 + offset,
+            "bid": close_price - 0.00005,
+            "ask": close_price + 0.00005,
+        }
+        return normalize_candle(
+            raw,
+            symbol="EURUSD",
+            active_id=1,
+            size=size,
+            provenance="historical",
+            server_time_ns=(from_ts + size + 1) * 1_000_000_000,
+        )
+
+
+class ConflictingNormalizedBoundaryBroker(NormalizedInclusiveBoundaryBroker):
+    """Return a valid boundary duplicate with a changed persisted market field."""
+
+    async def get_candles(
+        self,
+        symbol: str,
+        size: int | CandleSize,
+        count: int,
+        *,
+        endtime: int | None = None,
+    ) -> FakeFetchResult:
+        result = await super().get_candles(symbol, size, count, endtime=endtime)
+        candles = list(result.candle_list)
+        boundary = candles[-1]
+        candles[-1] = replace(boundary, volume=boundary.volume + 1)
+        return FakeFetchResult(candles)
+
+
 def _write_failed_999_checkpoint(
     collector: HistoricalDataCollector,
     *,
@@ -207,16 +257,23 @@ async def test_failed_999_checkpoint_resumes_with_only_missing_unique_candle(
     tmp_path: Path,
 ) -> None:
     collector = HistoricalDataCollector(storage_dir=tmp_path / "datasets")
-    fixture_client = OfflineHistoricalBroker()
+    fixture_client = NormalizedInclusiveBoundaryBroker()
     failed, original_files = _write_failed_999_checkpoint(
         collector,
         client=fixture_client,
         job_id="eurusd-1000-001",
     )
+    reloaded_before_resume = collector.load_dataset(
+        "EURUSD", 60, dataset_ids=failed.committed_dataset_ids
+    )
+    persisted_boundary = next(
+        candle for candle in reloaded_before_resume if candle.from_ts == failed.last_cursor_ts
+    )
+    broker_boundary = fixture_client._candle(failed.last_cursor_ts, 60)
     original_entries = [
         collector.catalog.get_dataset(dataset_id) for dataset_id in failed.committed_dataset_ids
     ]
-    broker = InclusiveBoundaryBroker(resume_request=True)
+    broker = NormalizedInclusiveBoundaryBroker(resume_request=True)
     resumed = launch_backfill(
         collector=collector,
         job_id="eurusd-1000-001",
@@ -236,6 +293,12 @@ async def test_failed_999_checkpoint_resumes_with_only_missing_unique_candle(
         collector.catalog.get_dataset(dataset_id) for dataset_id in failed.committed_dataset_ids
     ]
 
+    assert persisted_boundary != broker_boundary
+    assert persisted_boundary.raw == {}
+    assert broker_boundary.raw != {}
+    assert persisted_boundary.identity_provenance == "explicit_broker_metadata"
+    assert broker_boundary.identity_provenance == "verified_correlated_request"
+    assert _conflicting_market_fields(persisted_boundary, broker_boundary) == ()
     assert result.state == JobState.COMPLETED
     assert result.newly_persisted == 1
     assert result.unique_candles == 1000
@@ -255,6 +318,47 @@ async def test_failed_999_checkpoint_resumes_with_only_missing_unique_candle(
     assert len({candle.from_ts for candle in persisted}) == 1000
     assert persisted[0].from_ts == failed.last_cursor_ts - 60
     assert collector.catalog.count_datasets() == 3
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_real_market_field_conflict_after_metadata_is_ignored(
+    tmp_path: Path,
+) -> None:
+    collector = HistoricalDataCollector(storage_dir=tmp_path / "datasets")
+    failed, original_files = _write_failed_999_checkpoint(
+        collector,
+        client=NormalizedInclusiveBoundaryBroker(),
+        job_id="conflicting-volume",
+    )
+    broker = ConflictingNormalizedBoundaryBroker(resume_request=True)
+    resumed = launch_backfill(
+        collector=collector,
+        job_id=failed.job_id,
+        instrument="EURUSD",
+        timeframe_seconds=60,
+        target_count=1000,
+        page_size=500,
+        client=broker,
+        resume=True,
+        backoff_base_seconds=0,
+    )
+
+    with pytest.raises(DataAcquisitionError, match="fields: volume"):
+        await resumed.run()
+
+    stopped = load_checkpoint(collector.storage_dir, failed.job_id)
+    preserved_entries = [
+        collector.catalog.get_dataset(dataset_id) for dataset_id in failed.committed_dataset_ids
+    ]
+    assert stopped.state == JobState.FAILED
+    assert stopped.unique_candles_persisted == 999
+    assert stopped.committed_dataset_ids == failed.committed_dataset_ids
+    assert collector.catalog.count_datasets() == 2
+    assert [
+        (collector.storage_dir / entry.file_path).read_bytes()
+        for entry in preserved_entries
+        if entry is not None
+    ] == list(original_files)
 
 
 @pytest.mark.asyncio

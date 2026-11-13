@@ -50,6 +50,62 @@ TRANSIENT_FETCH_ERRORS: Final[tuple[type[BaseException], ...]] = (
     TimeoutError,
     OSError,
 )
+MARKET_DATA_FIELDS: Final[tuple[str, ...]] = (
+    "active_id",
+    "symbol",
+    "size",
+    "from_ts",
+    "to_ts",
+    "at_ts",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "bid",
+    "ask",
+    "is_complete",
+)
+
+
+def _market_data_values(candle: Candle) -> tuple[object, ...]:
+    """Return exactly the stable candle fields persisted by Parquet storage.
+
+    Transport payload details (``raw``), collection labels (``provenance``), and
+    identity audit labels (``identity_provenance``) are intentionally excluded:
+    the Parquet schema does not preserve them losslessly. Instrument identity,
+    timeframe, timestamps, prices, volume, quotes, and completeness remain strict.
+    """
+    return (
+        candle.active_id,
+        candle.symbol,
+        candle.size,
+        candle.from_ts,
+        candle.to_ts,
+        candle.at_ts,
+        candle.open,
+        candle.high,
+        candle.low,
+        candle.close,
+        candle.volume,
+        candle.bid,
+        candle.ask,
+        candle.is_complete,
+    )
+
+
+def _conflicting_market_fields(existing: Candle, candidate: Candle) -> tuple[str, ...]:
+    """Name persisted market fields whose values conflict for duplicate candles."""
+    return tuple(
+        field_name
+        for field_name, old_value, new_value in zip(
+            MARKET_DATA_FIELDS,
+            _market_data_values(existing),
+            _market_data_values(candidate),
+            strict=True,
+        )
+        if old_value != new_value
+    )
 
 
 class DataAcquisitionError(RuntimeError):
@@ -591,9 +647,11 @@ class BackfillJob:
         for candle in raw_batch:
             if candle.from_ts in seen or candle.from_ts in page:
                 existing = seen.get(candle.from_ts) or page[candle.from_ts]
-                if existing != candle:
+                conflicting_fields = _conflicting_market_fields(existing, candle)
+                if conflicting_fields:
                     raise DataAcquisitionError(
-                        f"Broker returned conflicting data for timestamp {candle.from_ts}."
+                        f"Broker returned conflicting data for timestamp {candle.from_ts} "
+                        f"in fields: {', '.join(conflicting_fields)}."
                     )
                 duplicates += 1
                 continue

@@ -20,7 +20,6 @@ from enum import StrEnum
 from typing import Any, Final
 
 from iqoption_research.connectors.iqoption.exceptions import InvalidCandleError
-from iqoption_research.market_data.symbols import normalize_symbol
 from iqoption_research.models.market import Candle, CandleSize
 
 # Only these raw keys are retained for offline research. Anything else
@@ -39,6 +38,7 @@ RAW_CANDLE_KEYS: Final[frozenset[str]] = frozenset({
     "bid",
     "ask",
     "phase",
+    "_identity_provenance",
 })
 
 # Price sanity bounds for EUR/USD-like FX pairs. Deliberately wide; this
@@ -137,13 +137,20 @@ def utc_from_ns(ts_ns: int) -> datetime:
     return datetime.fromtimestamp(ts_ns / 1_000_000_000, tz=UTC)
 
 
-def sanitize_raw_candle(raw: dict[str, Any]) -> dict[str, Any]:
+def sanitize_raw_candle(
+    raw: dict[str, Any],
+    *,
+    identity_provenance: str | None = None,
+) -> dict[str, Any]:
     """Return only allowlisted primitive fields from a raw candle."""
     clean: dict[str, Any] = {}
     for key in RAW_CANDLE_KEYS:
-        value = raw.get(key)
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            clean[key] = value
+        if key in raw:
+            value = raw[key]
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                clean[key] = value
+    if identity_provenance is not None and clean.get("_identity_provenance") is None:
+        clean["_identity_provenance"] = identity_provenance
     return clean
 
 
@@ -174,6 +181,21 @@ def _as_int(raw: dict[str, Any], key: str, *, required: bool = True) -> int:
     return int(value)
 
 
+def _as_optional_int(raw: dict[str, Any], key: str) -> int | None:
+    """Extract an integer field if present; return None if omitted or null.
+
+    Distinguishes an omitted/null field from explicitly supplied 0.
+    """
+    value = raw.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise InvalidCandleError(f"Field {key!r} is not numeric")
+    if isinstance(value, float) and not value.is_integer():
+        raise InvalidCandleError(f"Field {key!r} is not an integer")
+    return int(value)
+
+
 def validate_ohlc(open_: float, high: float, low: float, close: float) -> None:
     """Validate OHLC structural consistency and price bounds.
 
@@ -196,39 +218,78 @@ def normalize_candle(
     raw: dict[str, Any],
     *,
     symbol: str | None = None,
+    active_id: int | None = None,
     size: int | CandleSize | None = None,
     provenance: str = "historical",
     server_time_ns: int | None = None,
 ) -> Candle:
     """Validate and normalize one raw candle.
 
+    Distinguishes missing active_id from explicit active_id=0 or conflicting IDs.
+    Propagates trustworthy instrument context from correlated requests when the
+    broker payload omits active_id.
+
     Args:
         raw: Raw candle object from IQ Option.
-        symbol: Canonical symbol; inferred from ``active_id`` if omitted.
+        symbol: Canonical symbol or alias; verified against active_id if both provided.
+        active_id: Context broker active ID, e.g. from validated request frame.
         size: Timeframe; taken from raw when present.
         provenance: "historical" or "streaming".
         server_time_ns: Server clock in ns, used to flag the forming candle.
 
     Raises:
-        InvalidCandleError: On any structural or consistency failure.
+        InvalidCandleError: On any structural, consistency, or instrument identity failure.
     """
     if not isinstance(raw, dict):
         raise InvalidCandleError("Candle must be an object")
 
-    # Symbol resolution
-    if symbol is None:
-        active_id = _as_int(raw, "active_id")
-        from iqoption_research.market_data.symbols import SUPPORTED_INSTRUMENTS
+    from iqoption_research.market_data.instruments import Instrument, InstrumentRegistry
 
-        match = next(
-            (inst.symbol for inst in SUPPORTED_INSTRUMENTS.values() if inst.active_id == active_id),
-            None,
-        )
-        if match is None:
-            raise InvalidCandleError(f"Unknown active_id {active_id}")
-        canonical_symbol = match
+    # 1. Resolve context instrument if symbol or active_id provided
+    context_inst: Instrument | None = None
+    if symbol is not None:
+        context_inst = InstrumentRegistry.get(symbol)
+        if active_id is not None and active_id != context_inst.active_id:
+            raise InvalidCandleError(
+                f"Context instrument conflict: symbol {symbol!r} expects active_id "
+                f"{context_inst.active_id}, got {active_id}"
+            )
+    elif active_id is not None:
+        context_inst = InstrumentRegistry.get_by_active_id(active_id)
+
+    # 2. Check per-candle active_id in raw payload (distinguish missing from 0)
+    raw_active_id = _as_optional_int(raw, "active_id")
+
+    final_inst: Instrument
+    identity_provenance: str
+
+    if raw_active_id is not None:
+        # Per-candle active_id was explicitly supplied in raw broker metadata
+        if not InstrumentRegistry.is_supported_active_id(raw_active_id):
+            raise InvalidCandleError(f"Unknown or unsupported active_id: {raw_active_id}")
+        raw_inst = InstrumentRegistry.get_by_active_id(raw_active_id)
+
+        # If context was provided, verify strict agreement (rejects OTC mismatch)
+        if context_inst is not None and (
+            raw_inst.active_id != context_inst.active_id or raw_inst.symbol != context_inst.symbol
+        ):
+            raise InvalidCandleError(
+                f"Instrument conflict: candle raw active_id {raw_active_id} ({raw_inst.symbol}) "
+                f"conflicts with expected {context_inst.active_id} ({context_inst.symbol})"
+            )
+        final_inst = raw_inst
+        identity_provenance = "explicit_broker_metadata"
     else:
-        canonical_symbol = normalize_symbol(symbol)
+        # active_id field was omitted in raw payload (standard for IQ Option historical candles)
+        if context_inst is None:
+            raise InvalidCandleError(
+                "Missing active_id in candle payload and no instrument context provided"
+            )
+        final_inst = context_inst
+        identity_provenance = "verified_correlated_request"
+
+    canonical_symbol = final_inst.symbol
+    resolved_active_id = final_inst.active_id
 
     # Size resolution
     size_candidate = size if size is not None else raw.get("size")
@@ -283,7 +344,7 @@ def normalize_candle(
         is_complete = False
 
     return Candle(
-        active_id=_as_int(raw, "active_id", required=False),
+        active_id=resolved_active_id,
         symbol=canonical_symbol,
         size=resolved_size,
         from_ts=from_ts,
@@ -296,16 +357,18 @@ def normalize_candle(
         volume=volume,
         bid=bid,
         ask=ask,
-        raw=sanitize_raw_candle(raw),
+        raw=sanitize_raw_candle(raw, identity_provenance=identity_provenance),
         is_complete=is_complete,
         provenance=provenance,
+        identity_provenance=identity_provenance,
     )
 
 
 def normalize_candles(
     raw_candles: list[dict[str, Any]],
     *,
-    symbol: str,
+    symbol: str | None = None,
+    active_id: int | None = None,
     size: int | CandleSize,
     provenance: str = "historical",
     server_time_ns: int | None = None,
@@ -323,6 +386,7 @@ def normalize_candles(
                 normalize_candle(
                     raw,
                     symbol=symbol,
+                    active_id=active_id,
                     size=size,
                     provenance=provenance,
                     server_time_ns=server_time_ns,

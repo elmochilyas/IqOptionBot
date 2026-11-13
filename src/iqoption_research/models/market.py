@@ -77,6 +77,9 @@ class Candle:
     # Derived/computed (not in raw)
     is_complete: bool = True  # False for current forming candle
     provenance: str = "historical"  # "historical" | "streaming"
+    identity_provenance: str = (
+        "explicit_broker_metadata"  # "explicit_broker_metadata" | "verified_correlated_request"
+    )
 
     def __post_init__(self) -> None:
         # Validation happens in factory methods

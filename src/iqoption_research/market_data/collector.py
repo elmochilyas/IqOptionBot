@@ -252,6 +252,7 @@ class HistoricalDataCollector:
         candle_size_seconds: int,
         source: str = "iqoption",
         provenance: str = "AUTHENTIC_MARKET_DATA",
+        allow_rejected: bool = False,
     ) -> Path:
         """Deduplicate, audit, sort, and atomically persist candles to Parquet."""
         canonical = normalize_symbol(symbol)
@@ -265,12 +266,25 @@ class HistoricalDataCollector:
         if existing:
             clean_candles = self.deduplicate_and_sort_candles(existing + clean_candles)
 
-        # Audit quality
+        # Audit quality with expected instrument validation
         report: DataQualityReport = assess_data_quality(
             clean_candles,
             expected_size=candle_size_seconds,
             is_historical=True,
+            expected_instrument=canonical,
         )
+        if report.acceptance_status == "rejected" and not allow_rejected:
+            critical_msgs = [
+                i.message for i in report.issues if i.severity in ("CRITICAL", "ERROR")
+            ]
+            err_msg = (
+                f"Dataset quality rejected (score={report.score:.1f}, "
+                f"status={report.acceptance_status}): "
+                f"{'; '.join(critical_msgs) or 'Quality validation failed'}"
+            )
+            logger.error(err_msg)
+            raise DataAcquisitionError(err_msg)
+
         if report.acceptance_status == "rejected":
             logger.warning(
                 "Dataset quality status is rejected (score=%.1f)",

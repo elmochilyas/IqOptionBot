@@ -338,21 +338,22 @@ class AuthenticationManager:
         )
 
     async def logout(self) -> bool:
-        """Invalidate session on the broker and clear in-memory state."""
+        """Invalidate session on the broker and clear in-memory state. Idempotent."""
         self._last_error = None
         if self._session is not None:
             try:
                 await self.provider.logout(self._session.ssid)
-            except (ConnectionError, TimeoutError, OSError) as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Error during provider logout: %s", exc)
             finally:
                 self._session.invalidate()
                 self._session = None
 
-        self.state_machine.transition_to(
-            AuthStatus.DISCONNECTED_BY_USER,
-            reason="explicit_user_logout",
-        )
+        if self.state_machine.current_state != AuthStatus.DISCONNECTED_BY_USER:
+            self.state_machine.transition_to(
+                AuthStatus.DISCONNECTED_BY_USER,
+                reason="explicit_user_logout",
+            )
         return True
 
     def handle_transport_disconnect(self) -> None:

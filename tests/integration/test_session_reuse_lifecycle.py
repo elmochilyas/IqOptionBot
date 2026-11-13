@@ -47,7 +47,6 @@ class FakeWebSocket:
                         "candles": [
                             {
                                 "id": 1,
-                                "active_id": 1,
                                 "from": 1700000000,
                                 "at": 1700000060000000000,
                                 "open": 1.0850,

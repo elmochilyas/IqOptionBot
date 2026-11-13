@@ -421,11 +421,28 @@ class AsyncIQOption:
             timeout=self._config.request_timeout,
         )
 
+        # Validate request correlation and envelope-level instrument context
+        if isinstance(response, dict):
+            resp_req_id = response.get("request_id")
+            if resp_req_id is not None and str(resp_req_id) != request_id:
+                raise InvalidCandleError(
+                    f"Correlated request mismatch: expected {request_id}, got {resp_req_id}"
+                )
+            msg_payload = response.get("msg")
+            if isinstance(msg_payload, dict):
+                env_active_id = msg_payload.get("active_id")
+                if env_active_id is not None and int(env_active_id) != active_id:
+                    raise InvalidCandleError(
+                        f"Broker response envelope active_id {env_active_id} "
+                        f"conflicts with requested active_id {active_id}"
+                    )
+
         raw_candles = self._extract_candles(response)
         server_time_ns = ws.server_time_ns or int(time.time() * 1_000_000_000)
         candles, errors = normalize_candles(
             raw_candles,
             symbol=canonical,
+            active_id=active_id,
             size=resolved_size,
             provenance="historical",
             server_time_ns=server_time_ns,
@@ -434,6 +451,8 @@ class AsyncIQOption:
             candles,
             expected_size=resolved_size,
             now_utc=datetime.now(UTC),
+            expected_instrument=canonical,
+            is_historical=True,
         )
         return CandleFetchResult(
             symbol=canonical,
@@ -500,6 +519,7 @@ class AsyncIQOption:
                     candle = normalize_candle(
                         raw,
                         symbol=canonical,
+                        active_id=active_id,
                         size=resolved_size,
                         provenance="streaming",
                         server_time_ns=ws.server_time_ns,

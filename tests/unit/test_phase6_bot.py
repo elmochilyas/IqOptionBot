@@ -54,7 +54,10 @@ def model_bundle_fixture() -> ModelBundle:
         model=model,
         scaler=scaler,
         calibrator=None,
-        metadata={"created_at_utc": "2026-11-12T12:00:00+00:00"},
+        metadata={
+            "created_at_utc": "2026-11-12T12:00:00+00:00",
+            "model_provenance": "demo_synthetic",
+        },
     )
 
 
@@ -120,6 +123,7 @@ def test_bot_controller_automated_paper_trading(model_bundle_fixture: ModelBundl
             initial_balance=10000.0,
             payout_rate=0.85,
             fixed_stake=100.0,
+            impute_missing_quotes=True,
         ),
         model_bundle=model_bundle_fixture,
     )

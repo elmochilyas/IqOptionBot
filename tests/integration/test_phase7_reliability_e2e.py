@@ -125,7 +125,12 @@ def test_no_network_socket_opened_during_pipeline_replay(
     bundle, report = loader.load(trained_disk_bundle)
     assert report.is_valid is True
 
-    cfg = BotConfig(symbol="EURUSD", mode=BotMode.OFFLINE_REPLAY, initial_balance=10000.0)
+    cfg = BotConfig(
+        symbol="EURUSD",
+        mode=BotMode.OFFLINE_REPLAY,
+        initial_balance=10000.0,
+        impute_missing_quotes=True,
+    )
     bot = BotController(cfg, model_bundle=bundle)
     bot.start()
 
@@ -147,7 +152,7 @@ def test_adversarial_candle_stream_anomalies(trained_disk_bundle: Path) -> None:
     bundle, _ = loader.load(trained_disk_bundle)
 
     bot = BotController(
-        BotConfig(symbol="EURUSD", mode=BotMode.OFFLINE_REPLAY),
+        BotConfig(symbol="EURUSD", mode=BotMode.OFFLINE_REPLAY, impute_missing_quotes=True),
         model_bundle=bundle,
     )
     bot.start()
@@ -200,7 +205,7 @@ def test_instrument_isolation_eurusd_vs_eurusd_otc(trained_disk_bundle: Path) ->
     bundle, _ = loader.load(trained_disk_bundle)
 
     bot = BotController(
-        BotConfig(symbol="EURUSD", mode=BotMode.OFFLINE_REPLAY),
+        BotConfig(symbol="EURUSD", mode=BotMode.OFFLINE_REPLAY, impute_missing_quotes=True),
         model_bundle=bundle,
     )
     bot.start()
@@ -247,6 +252,7 @@ def test_risk_limits_and_consecutive_loss_circuit_breaker(trained_disk_bundle: P
             mode=BotMode.OFFLINE_REPLAY,
             risk_config=risk_cfg,
             fixed_stake=100.0,
+            impute_missing_quotes=True,
         ),
         model_bundle=bundle,
     )
@@ -322,7 +328,12 @@ def test_process_restart_and_persistent_snapshot_recovery(
     snapshot_path = tmp_path / "custom_snapshot.json"
     session_path = tmp_path / "custom_session.json"
 
-    cfg = BotConfig(symbol="EURUSD", mode=BotMode.OFFLINE_REPLAY, initial_balance=10000.0)
+    cfg = BotConfig(
+        symbol="EURUSD",
+        mode=BotMode.OFFLINE_REPLAY,
+        initial_balance=10000.0,
+        impute_missing_quotes=True,
+    )
     bot = BotController(cfg, model_bundle=bundle)
     bot.start()
 
@@ -373,7 +384,7 @@ def test_streaming_vs_offline_inference_parity(trained_disk_bundle: Path) -> Non
 
     # 2. Streaming features
     stream_buffer = RollingFeatureBuffer(capacity=64, include_volume=True, is_replay=True)
-    inference_pipeline = ModelInferencePipeline(bundle)
+    inference_pipeline = ModelInferencePipeline(bundle, impute_missing_quotes=True)
 
     stream_results = []
     for c in candles:

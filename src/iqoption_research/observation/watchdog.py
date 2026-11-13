@@ -37,9 +37,10 @@ class FeedHealthWatchdog:
         self,
         adapter: MarketObservationAdapter,
         *,
-        halt_statuses: frozenset[FeedHealthStatus] = frozenset(
-            {FeedHealthStatus.STALE, FeedHealthStatus.DISCONNECTED}
-        ),
+        halt_statuses: frozenset[FeedHealthStatus] = frozenset({
+            FeedHealthStatus.STALE,
+            FeedHealthStatus.DISCONNECTED,
+        }),
     ) -> None:
         self.adapter = adapter
         self.halt_statuses = halt_statuses

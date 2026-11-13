@@ -42,7 +42,7 @@ class SplitBoundary:
 
 @dataclass(frozen=True, slots=True)
 class DatasetSplits(Generic[T]):  # noqa: UP046
-    """Container holding chronological splits, boundary metadata, and purge statistics."""
+    """Container holding chronological splits, boundary metadata, and provenance tracking."""
 
     train: tuple[T, ...]
     val: tuple[T, ...]
@@ -54,6 +54,7 @@ class DatasetSplits(Generic[T]):  # noqa: UP046
     purged_val_count: int
     embargo_val_count: int
     embargo_test_count: int
+    provenance: str = "unknown"
 
 
 def _extract_ts(item: Any) -> tuple[int, int]:
@@ -98,7 +99,7 @@ class ChronologicalSplitter:
         self.label_horizon_bars = label_horizon_bars
         self.embargo_bars = embargo_bars
 
-    def split(self, items: Sequence[T]) -> DatasetSplits[T]:
+    def split(self, items: Sequence[T], _provenance: str = "unknown") -> DatasetSplits[T]:
         """Execute chronological split with purging and embargo.
 
         Raises:

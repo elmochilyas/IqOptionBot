@@ -48,6 +48,7 @@ class ModelInferencePipeline:
         *,
         call_threshold: float = DEFAULT_CALL_THRESHOLD,
         put_threshold: float = DEFAULT_PUT_THRESHOLD,
+        impute_missing_quotes: bool = False,
         validator: ModelIntegrityValidator | None = None,
     ) -> None:
         if call_threshold <= put_threshold:
@@ -64,6 +65,20 @@ class ModelInferencePipeline:
         report = self.validator.validate_bundle(bundle)
         if not report.is_valid:
             raise ValueError(f"Invalid model bundle: {'; '.join(report.errors)}")
+
+        # Enforce stream compatibility at initialization so incompatible
+        # live feature streams cannot produce actionable predictions.
+        has_quotes = impute_missing_quotes
+        has_vol = True  # default; can be overridden by config
+        compat, compat_err = self.validator.check_stream_compatibility(
+            bundle, has_quotes=has_quotes, has_volume=has_vol
+        )
+        if not compat:
+            raise ValueError(
+                f"Stream compatibility check failed: {compat_err}. "
+                f"Incoming live stream does not supply required features. "
+                f"Re-train model with compatible feature set or enable imputation."
+            )
 
         model = bundle.model
         self._model_name = getattr(model, "name", model.__class__.__name__)

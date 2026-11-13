@@ -9,9 +9,11 @@ predictive performance.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from iqoption_research.ml.tracking.artifacts import ModelBundle
+if TYPE_CHECKING:
+    from iqoption_research.ml.tracking.artifacts import ModelBundle
+
 
 PROVENANCE_METADATA_KEY: Final[str] = "model_provenance"
 LEGACY_PROVENANCE_METADATA_KEY: Final[str] = "provenance"
@@ -37,9 +39,15 @@ class ModelProvenance(StrEnum):
 
 def classify_bundle_provenance(bundle: ModelBundle) -> ModelProvenance:
     """Resolve a bundle's provenance from metadata, failing closed to UNKNOWN."""
+    # Check direct metadata keys first
     raw = bundle.metadata.get(PROVENANCE_METADATA_KEY) or bundle.metadata.get(
         LEGACY_PROVENANCE_METADATA_KEY
     )
+    # If not found at top level, check nested metadata dict
+    if raw is None and isinstance(bundle.metadata.get("metadata"), dict):
+        raw_nested = bundle.metadata["metadata"].get(PROVENANCE_METADATA_KEY)
+        raw_legacy = bundle.metadata["metadata"].get(LEGACY_PROVENANCE_METADATA_KEY)
+        raw = raw_nested or raw_legacy
     if raw is None:
         return ModelProvenance.UNKNOWN
     normalized = str(raw).strip().lower()

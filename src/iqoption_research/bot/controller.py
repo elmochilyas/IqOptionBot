@@ -83,6 +83,7 @@ class BotConfig:
     fixed_stake: float = 100.0
     risk_config: RiskConfig = field(default_factory=RiskConfig)
     observation_token: ObservationAuthorizationToken | None = None
+    impute_missing_quotes: bool = False
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.fixed_stake) or self.fixed_stake <= 0.0:
@@ -145,13 +146,15 @@ class BotController:
         if not allow_actionable_signals:
             self._signal_authority_reason = (
                 f"MODEL_PROVENANCE_NOT_AUTHENTIC: '{self.model_provenance.value}' model may "
-            "observe and collect data but cannot emit actionable paper-trade signals."
+                "observe and collect data but cannot emit actionable paper-trade signals."
             )
 
         # Setup inference pipeline
         self.inference_pipeline = inference_pipeline
         if self.inference_pipeline is None and model_bundle is not None:
-            self.inference_pipeline = ModelInferencePipeline(model_bundle)
+            self.inference_pipeline = ModelInferencePipeline(
+                model_bundle, impute_missing_quotes=self.config.impute_missing_quotes
+            )
 
         # Signal generator bridge connecting inference pipeline to PaperTradingEngine
         def _signal_bridge(
@@ -360,9 +363,7 @@ class BotController:
             model_name=model_name,
             model_provenance=self.model_provenance.value,
             data_provenance=self.last_candle_provenance,
-            signal_authority=(
-                "enabled" if self.allow_actionable_signals else "observation_only"
-            ),
+            signal_authority=("enabled" if self.allow_actionable_signals else "observation_only"),
             last_prediction_direction=(
                 latest_pred.direction.value if latest_pred is not None else "N/A"
             ),

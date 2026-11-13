@@ -80,7 +80,10 @@ def _train_quick_model_bundle() -> ModelBundle:
         model=model,
         scaler=scaler,
         calibrator=calibrator,
-        metadata={"created_at_utc": "2026-11-12T12:00:00+00:00"},
+        metadata={
+            "created_at_utc": "2026-11-12T12:00:00+00:00",
+            "model_provenance": "demo_synthetic",
+        },
     )
 
 

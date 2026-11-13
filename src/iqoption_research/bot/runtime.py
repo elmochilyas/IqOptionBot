@@ -177,9 +177,11 @@ class ContinuousBotRuntime:
         if not success:
             self.state = RuntimeState.ERROR
             self._last_error = self.auth_manager.last_error or "Authentication failed"
+            self.client = None  # Clear any stale client reference from partial initialization
             return False
 
         self.state = RuntimeState.AUTHENTICATED
+        self.client = None  # Ensure client is clean for fresh session initialization
         return True
 
     def _prepare_model_bundle(self) -> ModelBundle:
@@ -315,6 +317,7 @@ class ContinuousBotRuntime:
     async def _watchdog_loop(self) -> None:
         """Independent timer-driven feed health watchdog."""
         from iqoption_research.observation.watchdog import FeedHealthWatchdog
+
         if self._controller is None:
             return
         watchdog = FeedHealthWatchdog(self._controller.observation_adapter)
@@ -380,6 +383,12 @@ class ContinuousBotRuntime:
             self._startup_grace_period_timeout()
         )
 
+        # Independent max_runtime_seconds deadline task that fires regardless of candle arrival.
+        # This ensures a silent WebSocket stream still triggers a timeout and halts execution.
+        self._max_runtime_task: asyncio.Task[None] | None = asyncio.create_task(
+            self._max_runtime_seconds_timeout()
+        )
+
         try:
             async for raw_candle in self.client.stream_candles(
                 self.config.symbol,
@@ -398,16 +407,6 @@ class ContinuousBotRuntime:
 
                 await self._pause_event.wait()
 
-                # Enforce max_runtime_seconds independently of candle arrival.
-                # Uses monotonic elapsed time so a silent stream still times out.
-                if (
-                    self.config.max_runtime_seconds is not None
-                    and self._started_at is not None
-                    and (time.time() - self._started_at) >= self.config.max_runtime_seconds
-                ):
-                    logger.info("Max observation runtime reached. Halting live stream.")
-                    break
-
                 self._controller.process_candle(raw_candle)
         finally:
             # Cancel the grace-period supervision task first
@@ -415,11 +414,37 @@ class ContinuousBotRuntime:
                 self._startup_grace_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._startup_grace_task
-            # Cancel the watchdog task first, then close the client
+            # Cancel the max_runtime task first, then the watchdog task, then close the client
+            if self._max_runtime_task is not None:
+                self._max_runtime_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._max_runtime_task
             self._watchdog_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watchdog_task
             await self.client.close()
+
+    async def _max_runtime_seconds_timeout(self) -> None:
+        """Fire ERROR state if the overall runtime exceeds max_runtime_seconds, regardless of candle
+        arrival.
+
+            This task runs independently of the candle ingestion loop, so the timeout
+            can expire even when the stream is silent (no candles received).
+        """
+        try:
+            if self.config.max_runtime_seconds is None:
+                return
+            await asyncio.sleep(self.config.max_runtime_seconds)
+            # Only act if we haven't already received a first candle or cancelled
+            if not self._first_candle_received and not self._shutdown_event.is_set():
+                logger.error("Max observation runtime exceeded; no valid candle received. Halting.")
+                self.state = RuntimeState.ERROR
+                self._last_error = "Max observation runtime exceeded; no valid candle received"
+                if self._controller is not None:
+                    self._controller.emergency_stop(reason="Max observation runtime exceeded")
+        except asyncio.CancelledError:
+            # Task was cancelled because a candle arrived or shutdown was requested
+            pass
 
     async def _startup_grace_period_timeout(self) -> None:
         """Fire ERROR state if no valid candle arrives before the startup grace deadline.
@@ -431,15 +456,11 @@ class ContinuousBotRuntime:
             await asyncio.sleep(self.config.startup_grace_seconds)
             # Only act if we haven't already received a first candle or cancelled
             if not self._first_candle_received and not self._shutdown_event.is_set():
-                logger.error(
-                    "Startup grace period exceeded; no valid candle received. Halting."
-                )
+                logger.error("Startup grace period exceeded; no valid candle received. Halting.")
                 self.state = RuntimeState.ERROR
                 self._last_error = "Startup grace period exceeded; no valid candle received"
                 if self._controller is not None:
-                    self._controller.emergency_stop(
-                        reason="Startup grace period exceeded"
-                    )
+                    self._controller.emergency_stop(reason="Startup grace period exceeded")
         except asyncio.CancelledError:
             # Task was cancelled because a candle arrived while grace was waiting
             pass
@@ -448,14 +469,9 @@ class ContinuousBotRuntime:
         """Orderly shutdown of controller, sessions, and persistence."""
         logger.info("Commencing clean runtime shutdown...")
 
-        # Preserve ERROR state through cleanup - do not overwrite to STOPPED
-        if self.state == RuntimeState.ERROR:
-            logger.error(
-                "Preserving ERROR state through cleanup: %s",
-                self._last_error or "unknown",
-            )
-        else:
-            self.state = RuntimeState.STOPPING
+        # Guard: preserve ERROR state through all cleanup paths.
+        # This ensures ERROR is never overwritten to STOPPED during shutdown.
+        error_present = self.state == RuntimeState.ERROR
 
         if self._controller is not None:
             self._controller.stop()
@@ -499,9 +515,14 @@ class ContinuousBotRuntime:
         # Clear in-memory session on full stop
         await self.auth_manager.logout()
 
-        # Preserve ERROR state; only transition to STOPPED if not already in ERROR
-        if self.state != RuntimeState.ERROR:
+        # Preserve ERROR state; only transition to STOPPED if not already in ERROR.
+        # This guard is the definitive state transition: ERROR survives cleanup;
+        # any other state transitions to STOPPED.
+        if error_present:
+            self.state = RuntimeState.ERROR
+        else:
             self.state = RuntimeState.STOPPED
+
         logger.info("Runtime shutdown complete. Active session cleared.")
 
     def get_status_snapshot(self) -> BotStatusSnapshot | None:

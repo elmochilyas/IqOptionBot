@@ -198,6 +198,7 @@ def test_cli_bot_data_collect_mock() -> None:
 async def test_watchdog_enum_values() -> None:
     """Verify ModelProvenance enum values are well-defined."""
     from iqoption_research.inference.provenance import ModelProvenance
+
     assert ModelProvenance.DEMO_SYNTHETIC.value == "demo_synthetic"
     assert ModelProvenance.SYNTHETIC_TRAINED.value == "synthetic_trained"
     assert ModelProvenance.AUTHENTIC_TRAINED.value == "authentic_trained"
@@ -209,6 +210,7 @@ async def test_watchdog_enum_values() -> None:
 async def test_watchdog_latch_mechanism() -> None:
     """Verify watchdog latch status properties."""
     from iqoption_research.observation.heartbeat import FeedHealthStatus
+
     # Verify FeedHealthStatus enum values
     assert FeedHealthStatus.DISCONNECTED.value == "disconnected"
     assert FeedHealthStatus.STALE.value == "stale"
@@ -220,6 +222,7 @@ async def test_watchdog_latch_mechanism() -> None:
 async def test_watchdog_reset_mechanism() -> None:
     """Verify watchdog reset requires proper authorization."""
     from iqoption_research.observation.heartbeat import FeedHealthStatus
+
     # Verify status values are valid
     healthy = FeedHealthStatus.HEALTHY
     disconnected = FeedHealthStatus.DISCONNECTED

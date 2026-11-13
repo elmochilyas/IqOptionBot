@@ -71,10 +71,16 @@ class LoadedHistoricalDataset:
     catalog_entries: tuple[CatalogEntry, ...]
     quality_report: DataQualityReport
     sufficiency_evaluation: SufficiencyEvaluation | None
+    provenance: str = "unknown"
 
     @property
     def candle_count(self) -> int:
         return len(self.candles)
+
+    @property
+    def provenance_property(self) -> str:
+        """Return the dataset provenance for inspection/tracking."""
+        return self.provenance
 
 
 class HistoricalDatasetLoader:
@@ -277,5 +283,6 @@ class HistoricalDatasetLoader:
             gaps=tuple(quality.gaps),
             catalog_entries=tuple(matched_entries),
             quality_report=quality,
+            provenance=("synthetic" if is_dataset_synthetic else "authentic"),
             sufficiency_evaluation=sufficiency,
         )

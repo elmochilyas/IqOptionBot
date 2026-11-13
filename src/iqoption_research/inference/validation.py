@@ -9,14 +9,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from iqoption_research.inference.provenance import (
-    ModelProvenance,
-    classify_bundle_provenance,
-)
-from iqoption_research.ml.tracking.artifacts import ModelBundle
-from iqoption_research.research.features.pipeline import FeatureRow
+if TYPE_CHECKING:
+    from iqoption_research.ml.tracking.artifacts import ModelBundle
+    from iqoption_research.research.features.pipeline import FeatureRow
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +30,7 @@ class ValidationReport:
     feature_count: int
     model_name: str
     training_timestamp_utc: str | None
-    provenance: ModelProvenance = ModelProvenance.UNKNOWN
+    provenance: str | None = None
 
 
 class ModelIntegrityValidator:
@@ -73,13 +70,15 @@ class ModelIntegrityValidator:
         if bundle.calibrator is not None and not getattr(bundle.calibrator, "is_fitted", False):
             errors.append("ProbabilityCalibrator in bundle is not marked as fitted.")
 
-        # 5. Resolve training-data provenance; absence is a warning, not silent trust
+        # 5. Resolve training-data provenance; absence is an error, not silent trust
+        from iqoption_research.inference.provenance import (
+            ModelProvenance,
+            classify_bundle_provenance,
+        )
+
         provenance = classify_bundle_provenance(bundle)
         if provenance is ModelProvenance.UNKNOWN:
-            warnings.append(
-                "Artifact metadata does not declare a recognized model provenance. "
-                "Actionable signals will be disabled until provenance is explicit."
-            )
+            errors.append("Provenance missing: signals disabled")
 
         # 6. Check model age from metadata
         created_str = bundle.metadata.get("created_at_utc")

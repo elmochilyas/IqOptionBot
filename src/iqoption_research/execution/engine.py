@@ -376,14 +376,12 @@ class PaperTradingEngine:
         self.last_risk_denial = decision
         if decision.circuit_state != self._last_recorded_halt_state and self.risk_manager.is_halted:
             self._last_recorded_halt_state = decision.circuit_state
-            self.halt_events.append(
-                {
-                    "ts": now_ts,
-                    "state": decision.circuit_state.value,
-                    "reason": decision.reason.value if decision.reason else "unspecified",
-                    "message": decision.message,
-                }
-            )
+            self.halt_events.append({
+                "ts": now_ts,
+                "state": decision.circuit_state.value,
+                "reason": decision.reason.value if decision.reason else "unspecified",
+                "message": decision.message,
+            })
             if len(self.halt_events) > 100:
                 self.halt_events.pop(0)
             logger.warning("Paper trading halted: %s", decision.message)

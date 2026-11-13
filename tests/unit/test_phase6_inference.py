@@ -32,7 +32,7 @@ def trained_bundle_fixture(tmp_path: Path) -> tuple[Path, ModelBundle, list[Feat
     """Train a simple deterministic model on synthetic causal data and save to bundle."""
     candles = generate_synthetic_candles(SyntheticMarketConfig(n_bars=60, seed=42)).candles
 
-    pipeline = CausalFeaturePipeline(include_volume=True, include_quotes=True)
+    pipeline = CausalFeaturePipeline(include_volume=True, include_quotes=False)
     dataset = pipeline.transform(candles)
     rows = list(dataset.rows[20:])  # warm-up cleared
 
@@ -63,6 +63,8 @@ def trained_bundle_fixture(tmp_path: Path) -> tuple[Path, ModelBundle, list[Feat
         "model_type": "LogisticRegression",
         "created_at_utc": "2026-11-12T12:00:00+00:00",
         "target": "binary_up_down",
+        "model_provenance": "demo_synthetic",
+        "security_note": "Trusted local artifact only",
     }
     save_model_bundle(
         directory=bundle_dir,
@@ -99,7 +101,9 @@ def test_model_inference_pipeline_predictions(
     trained_bundle_fixture: tuple[Path, ModelBundle, list[FeatureRow]],
 ) -> None:
     _, bundle, rows = trained_bundle_fixture
-    pipeline = ModelInferencePipeline(bundle, call_threshold=0.55, put_threshold=0.45)
+    pipeline = ModelInferencePipeline(
+        bundle, call_threshold=0.55, put_threshold=0.45, impute_missing_quotes=True
+    )
 
     assert pipeline.model_name == "logistic_regression"
     assert len(pipeline.feature_names) > 0

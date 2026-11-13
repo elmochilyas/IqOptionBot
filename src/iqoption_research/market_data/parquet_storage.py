@@ -282,16 +282,21 @@ def write_candles_parquet(
                 _compute_file_sha256(target_meta) if target_meta.is_file() else ""
             )
             cat_entry = catalog.get_dataset(dataset_id) if catalog is not None else None
-            return ParquetWriteResult(
-                dataset_id=dataset_id,
-                parquet_path=target_parquet,
-                metadata_path=target_meta,
-                sha256_checksum=existing_parquet_checksum,
-                metadata_sha256=existing_meta_checksum,
-                candle_count=len(candles),
-                quality_report=quality,
-                catalog_entry=cat_entry,
-            )
+            # A crash can occur after atomic file publication but before SQLite
+            # registration. Return only when the storage/catalog commit is complete;
+            # otherwise fall through and deterministically republish/register the
+            # same content so the orphaned page is recoverable on resume.
+            if catalog is None or cat_entry is not None:
+                return ParquetWriteResult(
+                    dataset_id=dataset_id,
+                    parquet_path=target_parquet,
+                    metadata_path=target_meta,
+                    sha256_checksum=existing_parquet_checksum,
+                    metadata_sha256=existing_meta_checksum,
+                    candle_count=len(candles),
+                    quality_report=quality,
+                    catalog_entry=cat_entry,
+                )
 
     # 5. Write to temporary staging
     try:

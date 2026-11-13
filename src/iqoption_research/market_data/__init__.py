@@ -22,9 +22,15 @@ from iqoption_research.market_data.catalog import (
     DatasetCatalog,
 )
 from iqoption_research.market_data.collector import (
+    BackfillCheckpoint,
+    BackfillJob,
+    BackfillResult,
     CoverageReport,
     DataAcquisitionError,
     HistoricalDataCollector,
+    JobState,
+    launch_backfill,
+    load_checkpoint,
 )
 from iqoption_research.market_data.fetch import CandleFetchResult
 from iqoption_research.market_data.instruments import (
@@ -113,6 +119,9 @@ __all__ = [
     "POLICY_STATISTICAL_BACKTEST",
     "REGISTRY_VERSION",
     "SUPPORTED_INSTRUMENTS",
+    "BackfillCheckpoint",
+    "BackfillJob",
+    "BackfillResult",
     "CandleError",
     "CandleFetchResult",
     "CandleGap",
@@ -127,6 +136,7 @@ __all__ = [
     "ImmutableDatasetError",
     "Instrument",
     "InstrumentRegistry",
+    "JobState",
     "MarketSchedule",
     "ParquetWriteResult",
     "ResearchSufficiencyPolicy",
@@ -151,7 +161,9 @@ __all__ = [
     "get_instrument",
     "get_market_schedule",
     "is_supported",
+    "launch_backfill",
     "load_candles_jsonl",
+    "load_checkpoint",
     "normalize_candle",
     "normalize_candles",
     "normalize_symbol",

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -25,7 +26,12 @@ from iqoption_research.execution.risk import (
     OperationalRiskManager,
     RiskConfig,
 )
-from iqoption_research.inference.pipeline import ModelInferencePipeline
+from iqoption_research.inference.pipeline import InferenceResult, ModelInferencePipeline
+from iqoption_research.inference.provenance import (
+    ModelProvenance,
+    classify_bundle_provenance,
+)
+from iqoption_research.ml.decision.engine import DecisionEngineConfig, StakeMode
 from iqoption_research.ml.tracking.artifacts import ModelBundle
 from iqoption_research.models.market import Candle
 from iqoption_research.observation.adapter import (
@@ -78,6 +84,14 @@ class BotConfig:
     risk_config: RiskConfig = field(default_factory=RiskConfig)
     observation_token: ObservationAuthorizationToken | None = None
 
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.fixed_stake) or self.fixed_stake <= 0.0:
+            raise ValueError("fixed_stake must be a finite positive amount")
+        if self.candle_size_seconds <= 0:
+            raise ValueError("candle_size_seconds must be > 0")
+        if self.initial_balance <= 0.0:
+            raise ValueError("initial_balance must be > 0")
+
 
 class BotController:
     """Autonomous trading bot controller coordinating observation, inference, and execution."""
@@ -90,10 +104,13 @@ class BotController:
         inference_pipeline: ModelInferencePipeline | None = None,
         paper_engine: PaperTradingEngine | None = None,
         observation_adapter: MarketObservationAdapter | None = None,
+        allow_actionable_signals: bool | None = None,
     ) -> None:
         self.config = config or BotConfig()
         self._state = BotState.IDLE
         self._started_at: float | None = None
+        self._ingestion_blocked_reason: str | None = None
+        self.last_candle_provenance: str = "unknown"
 
         # Setup monitoring & session
         self.session = TradingSession(initial_balance=self.config.initial_balance)
@@ -112,6 +129,25 @@ class BotController:
             authorization_token=self.config.observation_token,
         )
 
+        # Model provenance determines whether predictions may drive paper orders
+        self.model_provenance = (
+            classify_bundle_provenance(model_bundle)
+            if model_bundle is not None
+            else ModelProvenance.UNKNOWN
+        )
+        if allow_actionable_signals is None:
+            allow_actionable_signals = (
+                self.config.mode == BotMode.OFFLINE_REPLAY
+                or self.model_provenance.permits_actionable_signals
+            )
+        self.allow_actionable_signals = allow_actionable_signals
+        self._signal_authority_reason: str | None = None
+        if not allow_actionable_signals:
+            self._signal_authority_reason = (
+                f"MODEL_PROVENANCE_NOT_AUTHENTIC: '{self.model_provenance.value}' model may "
+            "observe and collect data but cannot emit actionable paper-trade signals."
+            )
+
         # Setup inference pipeline
         self.inference_pipeline = inference_pipeline
         if self.inference_pipeline is None and model_bundle is not None:
@@ -123,11 +159,29 @@ class BotController:
         ) -> tuple[SignalDirection, float]:
             if self.inference_pipeline is not None:
                 res = self.inference_pipeline.infer(feature_row)
+                if not self.allow_actionable_signals:
+                    res = InferenceResult(
+                        direction=SignalDirection.HOLD,
+                        calibrated_probability=0.5,
+                        raw_probability=res.raw_probability,
+                        confidence=0.0,
+                        abstention_reason=self._signal_authority_reason,
+                        latency_ms=res.latency_ms,
+                        candle_timestamp=res.candle_timestamp,
+                        model_name=res.model_name,
+                        feature_count=res.feature_count,
+                    )
                 self.session.record_prediction(res)
                 return res.direction, res.calibrated_probability
             return SignalDirection.HOLD, 0.5
 
-        # Setup paper trading engine
+        # Setup paper trading engine with the configured stake propagated end to end
+        decision_config = DecisionEngineConfig(
+            mode=StakeMode.FIXED_AMOUNT,
+            fixed_amount=self.config.fixed_stake,
+            payout_rate=self.config.payout_rate,
+            default_capital=self.config.initial_balance,
+        )
         engine_cfg = PaperTradingConfig(
             symbol=self.config.symbol,
             payout_rate=self.config.payout_rate,
@@ -135,6 +189,7 @@ class BotController:
             initial_balance=self.config.initial_balance,
             is_replay=(self.config.mode == BotMode.OFFLINE_REPLAY),
             risk_config=self.config.risk_config,
+            decision_config=decision_config,
         )
         self.risk_manager = OperationalRiskManager(self.config.risk_config)
         self.engine = paper_engine or PaperTradingEngine(
@@ -219,6 +274,24 @@ class BotController:
         self.persist_snapshot()
         self.session.save_to_disk()
 
+    def fail(self, reason: str) -> None:
+        """Record a terminal runtime failure without discarding diagnostics."""
+        self.monitor.record_error(reason)
+        self._state = BotState.ERROR
+
+    def block_ingestion(self, reason: str) -> None:
+        """Block all new candle ingestion when feed health is no longer trustworthy."""
+        self._ingestion_blocked_reason = reason
+        self.monitor.record_error(reason)
+
+    def unblock_ingestion(self) -> None:
+        """Clear an ingestion block after explicit, authorized recovery."""
+        self._ingestion_blocked_reason = None
+
+    @property
+    def ingestion_blocked_reason(self) -> str | None:
+        return self._ingestion_blocked_reason
+
     def process_candle(
         self,
         candle: Candle,
@@ -229,8 +302,18 @@ class BotController:
         if self._state != BotState.RUNNING:
             return None
 
-        current_now = now_ts if now_ts is not None else float(candle.to_ts)
+        if self._ingestion_blocked_reason is not None:
+            return None
+
+        # Live observation must be judged against the wall clock, never the candle's own
+        # timestamp (which would make every candle look perfectly fresh). Replay stays
+        # deterministic by using virtual candle time.
+        if self.config.mode == BotMode.OBSERVE_ONLY:
+            current_now = now_ts if now_ts is not None else time.time()
+        else:
+            current_now = now_ts if now_ts is not None else float(candle.to_ts)
         self.session.record_candle()
+        self.last_candle_provenance = candle.provenance
 
         # 1. Observation layer validation
         obs_event = self.observation_adapter.process_incoming_candle(
@@ -275,6 +358,11 @@ class BotController:
             symbol=self.config.symbol,
             connection_status="connected" if self._state == BotState.RUNNING else "idle",
             model_name=model_name,
+            model_provenance=self.model_provenance.value,
+            data_provenance=self.last_candle_provenance,
+            signal_authority=(
+                "enabled" if self.allow_actionable_signals else "observation_only"
+            ),
             last_prediction_direction=(
                 latest_pred.direction.value if latest_pred is not None else "N/A"
             ),
@@ -290,9 +378,7 @@ class BotController:
             session_pnl=self.engine.portfolio.total_pnl,
             max_drawdown_pct=self.engine.portfolio.max_drawdown_pct * 100.0,
             circuit_breaker_state=self.risk_manager.circuit_state.value,
-            feed_health=self.observation_adapter.heartbeat_monitor.evaluate_health(
-                is_replay=(self.config.mode == BotMode.OFFLINE_REPLAY)
-            ).status.value,
+            feed_health=self.observation_adapter.evaluate_feed_health().status.value,
             feed_gaps_count=self.observation_adapter.gaps_count,
             rejected_candles_count=self.observation_adapter.rejected_count,
             data_source=(
@@ -300,7 +386,7 @@ class BotController:
                 if self.config.mode == BotMode.OFFLINE_REPLAY
                 else "live_observation"
             ),
-            provenance="SYNTHETIC_ENGINEERING_ONLY",
+            provenance=self.model_provenance.value,
             uncertainty=max(0.0, min(1.0, 1.0 - (conf * 2.0))),
             settled_trades_count=len(self.session.settled_orders),
             risk_limits=risk_limits,

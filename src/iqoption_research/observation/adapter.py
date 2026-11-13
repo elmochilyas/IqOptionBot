@@ -22,6 +22,7 @@ from iqoption_research.observation.clock import (
 )
 from iqoption_research.observation.heartbeat import (
     FeedHealthEvent,
+    FeedHealthStatus,
     FeedHeartbeatMonitor,
 )
 from iqoption_research.observation.reconnect import ReconnectResynchronizer
@@ -67,6 +68,19 @@ class ObservationEvent:
     clock_drift: ClockDriftResult
     feed_health: FeedHealthEvent
     observed_at_ts: float
+    data_provenance: str = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class MarketClosureWindow:
+    """Known scheduled market closure (e.g. weekend or broker maintenance)."""
+
+    start_ts: float
+    end_ts: float
+    reason: str = "scheduled_market_closure"
+
+    def contains(self, timestamp: float) -> bool:
+        return self.start_ts <= timestamp < self.end_ts
 
 
 class MarketObservationAdapter:
@@ -104,6 +118,39 @@ class MarketObservationAdapter:
         self._rejected_candles_count: int = 0
         self._feed_gaps_count: int = 0
         self._history: list[ObservationEvent] = []
+        self._closures: list[MarketClosureWindow] = []
+
+    def register_market_closure(self, start_ts: float, end_ts: float, *, reason: str = "") -> None:
+        """Register a scheduled closure so watchdog silence is not treated as failure."""
+        if end_ts <= start_ts:
+            raise ValueError("Market closure end_ts must be strictly after start_ts")
+        self._closures.append(
+            MarketClosureWindow(
+                start_ts=float(start_ts),
+                end_ts=float(end_ts),
+                reason=reason or "scheduled_market_closure",
+            )
+        )
+
+    def is_market_closed(self, timestamp: float) -> bool:
+        """Whether the timestamp falls inside a known scheduled closure."""
+        return any(window.contains(timestamp) for window in self._closures)
+
+    def evaluate_feed_health(self, now_ts: float | None = None) -> FeedHealthEvent:
+        """Timer-driven health evaluation, independent of candle arrival."""
+        now = now_ts if now_ts is not None else time.time()
+        if self.mode == ObservationMode.OFFLINE_REPLAY:
+            return self.heartbeat_monitor.evaluate_health(current_ts=now, is_replay=True)
+        if self.is_market_closed(now):
+            return FeedHealthEvent(
+                status=FeedHealthStatus.MARKET_CLOSED,
+                last_arrival_ts=self.heartbeat_monitor.last_arrival_ts,
+                seconds_since_last_candle=0.0,
+                expected_interval_seconds=self.heartbeat_monitor.candle_interval,
+                missed_cycles=0,
+                message="Market closed by schedule; feed silence is expected.",
+            )
+        return self.heartbeat_monitor.evaluate_health(current_ts=now, is_replay=False)
 
     @property
     def is_observe_only_authorized(self) -> bool:
@@ -167,7 +214,7 @@ class MarketObservationAdapter:
             drift_res = self.clock_validator.evaluate(
                 float(candle.to_ts), current_local_ts=now, is_replay=is_replay
             )
-            health = self.heartbeat_monitor.evaluate_health(current_ts=now, is_replay=is_replay)
+            health = self.evaluate_feed_health(now)
             self._rejected_candles_count += 1
             event = ObservationEvent(
                 candle=candle,
@@ -176,6 +223,7 @@ class MarketObservationAdapter:
                 clock_drift=drift_res,
                 feed_health=health,
                 observed_at_ts=now,
+                data_provenance=candle.provenance,
             )
             self._history.append(event)
             return event
@@ -209,7 +257,7 @@ class MarketObservationAdapter:
                 self._feed_gaps_count += 1
                 self.reconnect_manager.record_disconnect(timestamp=now)
 
-        health = self.heartbeat_monitor.evaluate_health(current_ts=now, is_replay=is_replay)
+        health = self.evaluate_feed_health(now)
 
         event = ObservationEvent(
             candle=candle,
@@ -218,6 +266,7 @@ class MarketObservationAdapter:
             clock_drift=drift_res,
             feed_health=health,
             observed_at_ts=now,
+            data_provenance=candle.provenance,
         )
         self._history.append(event)
         return event

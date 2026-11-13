@@ -15,6 +15,7 @@ Strict guarantees:
 from __future__ import annotations
 
 import logging
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -94,6 +95,8 @@ class EngineStepResult:
     portfolio_equity: float
     consecutive_losses: int
     circuit_state: CircuitBreakerState
+    risk_denials_total: int = 0
+    candle_provenance: str = "unknown"
 
 
 class PaperTradingEngine:
@@ -134,8 +137,12 @@ class PaperTradingEngine:
 
         # Simulation / account state
         self._step_counter = 0
-        self._history: list[EngineStepResult] = []
+        self._history: deque[EngineStepResult] = deque(maxlen=10_000)
         self._open_positions: list[PaperOrder] = []
+        self.last_risk_denial: RiskDecision | None = None
+        self.risk_denials_count = 0
+        self.halt_events: list[dict[str, object]] = []
+        self._last_recorded_halt_state: CircuitBreakerState | None = None
 
         # Verified practice account state simulation
         self._active_balance_id: str = "balance_practice_99"
@@ -252,9 +259,10 @@ class PaperTradingEngine:
             if direction != SignalDirection.HOLD:
                 # Build Signal
                 signal_id = f"sig_{candle.symbol}_{candle.to_ts}_{direction.value}"
+                proposed_stake = self.decision_engine.stake_config.fixed_amount
                 signal = Signal(
                     direction=direction,
-                    stake=self.decision_engine.stake_config.fixed_amount,
+                    stake=proposed_stake,
                     horizon_bars=self.config.default_horizon_bars,
                     metadata={
                         "signal_id": signal_id,
@@ -268,7 +276,6 @@ class PaperTradingEngine:
 
                 # Formulate OrderProposal
                 side = OrderSide.CALL if direction == SignalDirection.CALL else OrderSide.PUT
-                proposed_stake = self.decision_engine.stake_config.fixed_amount
                 proposal = OrderProposal(
                     symbol=candle.symbol,
                     side=side,
@@ -301,24 +308,21 @@ class PaperTradingEngine:
                         is_replay=self.config.is_replay,
                     )
 
-                    # Create order in state machine
-                    order = self.state_machine.create_order(
-                        signal_id=signal_id,
-                        symbol=candle.symbol,
-                        side=side,
-                        stake=proposal.proposed_stake,
-                        payout_rate=self.config.payout_rate,
-                        expiry_horizon_bars=self.config.default_horizon_bars,
-                        created_ts=current_now,
-                    )
-
-                    # Validate with risk decision
-                    self.state_machine.validate_order(
-                        order, risk_decision, validated_ts=current_now
-                    )
-
                     if risk_decision.permitted:
-                        # Advance SIMULATED_PENDING -> SIMULATED_OPEN
+                        # Risk approval is required before any order record is created, so a
+                        # latched breaker cannot generate endless phantom journal entries.
+                        order = self.state_machine.create_order(
+                            signal_id=signal_id,
+                            symbol=candle.symbol,
+                            side=side,
+                            stake=risk_decision.approved_stake,
+                            payout_rate=self.config.payout_rate,
+                            expiry_horizon_bars=self.config.default_horizon_bars,
+                            created_ts=current_now,
+                        )
+                        self.state_machine.validate_order(
+                            order, risk_decision, validated_ts=current_now
+                        )
                         self.state_machine.submit_pending(order, timestamp=current_now)
                         expiry_ts = current_now + (
                             self.config.default_horizon_bars * self.config.candle_size_seconds
@@ -332,6 +336,8 @@ class PaperTradingEngine:
                         self.risk_manager.record_order_opened(order)
                         self._open_positions.append(order)
                         new_order = order
+                    else:
+                        self._record_risk_denial(risk_decision, current_now)
                 else:
                     # Halt on unsafe account mode (e.g. REAL account detected)
                     self.risk_manager.trip_circuit_breaker(
@@ -358,9 +364,29 @@ class PaperTradingEngine:
             portfolio_equity=self.portfolio.current_balance,
             consecutive_losses=self.portfolio.consecutive_losses,
             circuit_state=self.risk_manager.circuit_state,
+            risk_denials_total=self.risk_denials_count,
+            candle_provenance=candle.provenance,
         )
         self._history.append(step_rec)
         return step_rec
+
+    def _record_risk_denial(self, decision: RiskDecision, now_ts: float) -> None:
+        """Track a rejected proposal without creating a simulated order record."""
+        self.risk_denials_count += 1
+        self.last_risk_denial = decision
+        if decision.circuit_state != self._last_recorded_halt_state and self.risk_manager.is_halted:
+            self._last_recorded_halt_state = decision.circuit_state
+            self.halt_events.append(
+                {
+                    "ts": now_ts,
+                    "state": decision.circuit_state.value,
+                    "reason": decision.reason.value if decision.reason else "unspecified",
+                    "message": decision.message,
+                }
+            )
+            if len(self.halt_events) > 100:
+                self.halt_events.pop(0)
+            logger.warning("Paper trading halted: %s", decision.message)
 
     def _infer_direction_and_probability(
         self, feature_row: FeatureRow

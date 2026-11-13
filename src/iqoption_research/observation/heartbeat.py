@@ -23,6 +23,7 @@ class FeedHealthStatus(StrEnum):
     DEGRADED = "degraded"
     STALE = "stale"
     DISCONNECTED = "disconnected"
+    MARKET_CLOSED = "market_closed"
     UNINITIALIZED = "uninitialized"
 
 

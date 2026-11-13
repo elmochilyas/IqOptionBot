@@ -22,6 +22,9 @@ class BotStatusSnapshot:
     symbol: str
     connection_status: str
     model_name: str
+    model_provenance: str
+    data_provenance: str
+    signal_authority: str
     last_prediction_direction: str
     last_prediction_prob: float
     confidence: float
@@ -52,6 +55,9 @@ class BotStatusSnapshot:
             "symbol": self.symbol,
             "connection_status": self.connection_status,
             "model_name": self.model_name,
+            "model_provenance": self.model_provenance,
+            "data_provenance": self.data_provenance,
+            "signal_authority": self.signal_authority,
             "last_prediction_direction": self.last_prediction_direction,
             "last_prediction_prob": self.last_prediction_prob,
             "confidence": self.confidence,
@@ -84,6 +90,9 @@ class BotStatusSnapshot:
             symbol=str(data.get("symbol", "EURUSD")),
             connection_status=str(data.get("connection_status", "disconnected")),
             model_name=str(data.get("model_name", "None")),
+            model_provenance=str(data.get("model_provenance", "unknown")),
+            data_provenance=str(data.get("data_provenance", "unknown")),
+            signal_authority=str(data.get("signal_authority", "enabled")),
             last_prediction_direction=str(data.get("last_prediction_direction", "N/A")),
             last_prediction_prob=float(data.get("last_prediction_prob", 0.5)),
             confidence=float(data.get("confidence", 0.0)),
@@ -135,6 +144,9 @@ class BotStatusMonitor:
         symbol: str,
         connection_status: str,
         model_name: str,
+        model_provenance: str = "unknown",
+        data_provenance: str = "unknown",
+        signal_authority: str = "enabled",
         last_prediction_direction: str = "N/A",
         last_prediction_prob: float = 0.5,
         confidence: float = 0.0,
@@ -167,6 +179,9 @@ class BotStatusMonitor:
             symbol=symbol,
             connection_status=connection_status,
             model_name=model_name,
+            model_provenance=model_provenance,
+            data_provenance=data_provenance,
+            signal_authority=signal_authority,
             last_prediction_direction=last_prediction_direction,
             last_prediction_prob=last_prediction_prob,
             confidence=confidence,

@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final
 
+from iqoption_research.inference.provenance import (
+    ModelProvenance,
+    classify_bundle_provenance,
+)
 from iqoption_research.ml.tracking.artifacts import ModelBundle
 from iqoption_research.research.features.pipeline import FeatureRow
 
@@ -29,6 +33,7 @@ class ValidationReport:
     feature_count: int
     model_name: str
     training_timestamp_utc: str | None
+    provenance: ModelProvenance = ModelProvenance.UNKNOWN
 
 
 class ModelIntegrityValidator:
@@ -68,7 +73,15 @@ class ModelIntegrityValidator:
         if bundle.calibrator is not None and not getattr(bundle.calibrator, "is_fitted", False):
             errors.append("ProbabilityCalibrator in bundle is not marked as fitted.")
 
-        # 5. Check model age from metadata
+        # 5. Resolve training-data provenance; absence is a warning, not silent trust
+        provenance = classify_bundle_provenance(bundle)
+        if provenance is ModelProvenance.UNKNOWN:
+            warnings.append(
+                "Artifact metadata does not declare a recognized model provenance. "
+                "Actionable signals will be disabled until provenance is explicit."
+            )
+
+        # 6. Check model age from metadata
         created_str = bundle.metadata.get("created_at_utc")
         if created_str:
             try:
@@ -91,6 +104,7 @@ class ModelIntegrityValidator:
             feature_count=len(feature_names),
             model_name=model_name,
             training_timestamp_utc=str(created_str) if created_str else None,
+            provenance=provenance,
         )
 
     def validate_feature_row_schema(

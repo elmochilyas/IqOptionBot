@@ -195,6 +195,8 @@ class PaperPortfolio:
     losing_trades: int = 0
     flat_trades: int = 0
     total_pnl: float = 0.0
+    gross_profit: float = 0.0
+    gross_loss: float = 0.0
     max_drawdown_amount: float = 0.0
     max_drawdown_pct: float = 0.0
     consecutive_losses: int = 0
@@ -207,9 +209,20 @@ class PaperPortfolio:
 
     @property
     def profit_factor(self) -> float:
-        # PnL gains / abs(losses)
-        # Approximate from count/rate if individual items not stored
-        return 0.0  # Detailed calculation in reports
+        """Gross profit divided by gross loss from settled paper trades.
+
+        Returns 0.0 when nothing has settled or when there are losses but no profit,
+        and positive infinity when profits exist with zero gross losses.
+        """
+        if self.total_trades == 0:
+            return 0.0
+        if abs(self.gross_profit) < 1e-12 and abs(self.gross_loss) < 1e-12:
+            return 0.0
+        if abs(self.gross_loss) < 1e-12:
+            if self.gross_profit > 0.0:
+                return float("inf")
+            return 0.0
+        return self.gross_profit / self.gross_loss
 
     def record_settled_order(self, pnl: float) -> None:
         """Update portfolio state with settled simulated PnL."""
@@ -219,9 +232,11 @@ class PaperPortfolio:
 
         if pnl > 0.0:
             self.winning_trades += 1
+            self.gross_profit += pnl
             self.consecutive_losses = 0
         elif pnl < 0.0:
             self.losing_trades += 1
+            self.gross_loss += abs(pnl)
             self.consecutive_losses += 1
             if self.consecutive_losses > self.max_consecutive_losses:
                 self.max_consecutive_losses = self.consecutive_losses

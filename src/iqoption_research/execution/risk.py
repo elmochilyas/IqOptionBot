@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from iqoption_research.execution.models import OrderSide, PaperOrder, PaperPortfolio, ProductType
 
@@ -72,6 +72,15 @@ class RiskConfig:
         stale_market_data_threshold_seconds: Market feed age threshold for shutdown.
         min_confidence_prob: Minimum calibrated model probability to permit entry.
         min_payout_rate: Minimum binary payout rate required to place a trade.
+        daily_loss_basis: "gross_realized" (default) counts every losing trade's absolute
+            loss, so a 50% win rate session halts once gross losses reach the limit even
+            if net PnL is positive. "net_realized" compares the limit against negative
+            net realized PnL instead. Gross is the conservative default and is reported
+            verbatim in halt messages.
+        stake_oversize_policy: "clamp" (default) reduces an oversized proposed stake to
+            the permitted maximum; "reject" refuses the proposal outright. Both policies
+            keep approved exposure inside max_stake_per_trade, max_stake_pct_balance and
+            max_simultaneous_exposure.
     """
 
     max_stake_per_trade: float = 200.0
@@ -85,6 +94,8 @@ class RiskConfig:
     stale_market_data_threshold_seconds: float = 180.0  # 3 minutes
     min_confidence_prob: float = 0.55
     min_payout_rate: float = 0.70
+    daily_loss_basis: Literal["gross_realized", "net_realized"] = "gross_realized"
+    stake_oversize_policy: Literal["clamp", "reject"] = "clamp"
 
     def __post_init__(self) -> None:
         if self.max_stake_per_trade <= 0.0:
@@ -109,6 +120,10 @@ class RiskConfig:
             raise ValueError("min_confidence_prob must be in [0.50, 1.0)")
         if not (0.0 < self.min_payout_rate < 2.0):
             raise ValueError("min_payout_rate must be in (0.0, 2.0)")
+        if self.daily_loss_basis not in {"gross_realized", "net_realized"}:
+            raise ValueError("daily_loss_basis must be 'gross_realized' or 'net_realized'")
+        if self.stake_oversize_policy not in {"clamp", "reject"}:
+            raise ValueError("stake_oversize_policy must be 'clamp' or 'reject'")
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +165,7 @@ class OperationalRiskManager:
         self._session_trades_count: int = 0
         self._session_initial_balance: float | None = None
         self._daily_realized_loss: float = 0.0
+        self._daily_net_pnl: float = 0.0
 
     @property
     def circuit_state(self) -> CircuitBreakerState:
@@ -204,6 +220,7 @@ class OperationalRiskManager:
         self._cooldown_until_ts = 0.0
         self._halt_reason = ""
         self._daily_realized_loss = 0.0
+        self._daily_net_pnl = 0.0
         if current_balance is not None:
             self._session_initial_balance = current_balance
         return True
@@ -340,12 +357,17 @@ class OperationalRiskManager:
                 circuit_state=self._circuit_state,
             )
 
-        # 9. Daily loss check
-        if self._daily_realized_loss >= self.config.max_daily_loss:
+        # 9. Daily loss check (basis is explicit in RiskConfig)
+        daily_loss = (
+            self._daily_realized_loss
+            if self.config.daily_loss_basis == "gross_realized"
+            else max(0.0, -self._daily_net_pnl)
+        )
+        if daily_loss >= self.config.max_daily_loss:
             self._circuit_state = CircuitBreakerState.HALTED_DAILY_LOSS
             self._halt_reason = (
-                f"Daily loss limit breached: "
-                f"${self._daily_realized_loss:.2f} >= ${self.config.max_daily_loss:.2f}"
+                f"Daily loss limit breached ({self.config.daily_loss_basis}): "
+                f"${daily_loss:.2f} >= ${self.config.max_daily_loss:.2f}"
             )
             return RiskDecision(
                 permitted=False,
@@ -386,7 +408,17 @@ class OperationalRiskManager:
         max_allowed_stake = min(self.config.max_stake_per_trade, max_pct_stake)
 
         if proposal.proposed_stake > max_allowed_stake:
-            # Clamp stake to maximum allowed or reject if strictly exceeded
+            if self.config.stake_oversize_policy == "reject":
+                return RiskDecision(
+                    permitted=False,
+                    approved_stake=0.0,
+                    reason=RiskRejectionReason.EXCEEDS_MAX_STAKE,
+                    message=(
+                        f"Proposed stake ${proposal.proposed_stake:.2f} exceeds permitted "
+                        f"maximum ${max_allowed_stake:.2f} (policy=reject)."
+                    ),
+                    circuit_state=self._circuit_state,
+                )
             approved_stake = max_allowed_stake
         else:
             approved_stake = proposal.proposed_stake
@@ -443,6 +475,7 @@ class OperationalRiskManager:
         Applies cooldown if order resulted in a loss, and tracks daily loss.
         """
         pnl = order.simulated_pnl or 0.0
+        self._daily_net_pnl += pnl
         if pnl < 0.0:
             loss_amount = abs(pnl)
             self._daily_realized_loss += loss_amount
@@ -459,10 +492,15 @@ class OperationalRiskManager:
                     f"tripped circuit breaker."
                 )
 
-            if self._daily_realized_loss >= self.config.max_daily_loss:
+            if self.config.daily_loss_basis == "gross_realized":
+                daily_loss = self._daily_realized_loss
+            else:
+                daily_loss = max(0.0, -self._daily_net_pnl)
+            if daily_loss >= self.config.max_daily_loss:
                 self._circuit_state = CircuitBreakerState.HALTED_DAILY_LOSS
                 self._halt_reason = (
-                    f"Daily loss limit (${self._daily_realized_loss:.2f}) tripped circuit breaker."
+                    f"Daily loss limit ({self.config.daily_loss_basis}: ${daily_loss:.2f}) "
+                    "tripped circuit breaker."
                 )
 
         if portfolio.max_drawdown_pct >= self.config.max_daily_drawdown_pct:

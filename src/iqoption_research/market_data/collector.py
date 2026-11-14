@@ -112,6 +112,10 @@ class DataAcquisitionError(RuntimeError):
     """Raised when collection, validation, recovery, or persistence fails."""
 
 
+class BrokerRequestBudgetExhausted(DataAcquisitionError):
+    """Raised before a broker request would exceed a durable job budget."""
+
+
 class HistoricalBroker(Protocol):
     """Small read-only broker surface used by the backfill engine."""
 
@@ -457,6 +461,9 @@ class BackfillCheckpoint:
     last_successful_batch: int
     committed_dataset_ids: tuple[str, ...] = ()
     retry_count: int = 0
+    max_broker_requests: int | None = None
+    broker_requests_made: int = 0
+    complete_on_start_boundary: bool = False
     state: str = JobState.NOT_STARTED
     last_error: str | None = None
     created_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -501,6 +508,13 @@ class BackfillCheckpoint:
             last_successful_batch=int(data.get("last_successful_batch", 0)),
             committed_dataset_ids=tuple(data.get("committed_dataset_ids", ())),
             retry_count=int(data.get("retry_count", 0)),
+            max_broker_requests=(
+                int(data["max_broker_requests"])
+                if data.get("max_broker_requests") is not None
+                else None
+            ),
+            broker_requests_made=int(data.get("broker_requests_made", 0)),
+            complete_on_start_boundary=bool(data.get("complete_on_start_boundary")),
             state=str(data.get("state", JobState.NOT_STARTED)),
             last_error=data.get("last_error"),
             created_at_utc=str(data.get("created_at_utc", datetime.now(UTC).isoformat())),
@@ -585,6 +599,8 @@ class BackfillJob:
                 "duplicates_skipped": duplicates,
                 "rejected_records": rejected,
                 "current_cursor": self.checkpoint.last_cursor_ts,
+                "broker_requests_made": self.checkpoint.broker_requests_made,
+                "max_broker_requests": self.checkpoint.max_broker_requests,
             })
         except Exception:
             logger.warning("Backfill progress callback failed", exc_info=True)
@@ -606,6 +622,13 @@ class BackfillJob:
     async def _fetch_page(self, count: int, cursor: int) -> Any:
         last_error: BaseException | None = None
         for attempt in range(self.max_retries + 1):
+            request_limit = self.checkpoint.max_broker_requests
+            if request_limit is not None and self.checkpoint.broker_requests_made >= request_limit:
+                raise BrokerRequestBudgetExhausted(
+                    f"Broker request budget exhausted ({request_limit} requests)."
+                )
+            self._set_checkpoint(broker_requests_made=self.checkpoint.broker_requests_made + 1)
+            self.write_checkpoint()
             try:
                 return await self.client.get_candles(
                     self.checkpoint.instrument,
@@ -738,6 +761,13 @@ class BackfillJob:
             raise ValueError("target_count must be positive")
         if not 1 <= self.checkpoint.page_size <= 1000:
             raise ValueError("page_size must be within 1..1000")
+        if (
+            self.checkpoint.max_broker_requests is not None
+            and self.checkpoint.max_broker_requests <= 0
+        ):
+            raise ValueError("max_broker_requests must be positive")
+        if self.checkpoint.broker_requests_made < 0:
+            raise ValueError("broker_requests_made cannot be negative")
         self.client.assert_read_only()
         committed = self._load_committed()
         seen = {candle.from_ts: candle for candle in committed}
@@ -756,14 +786,24 @@ class BackfillJob:
             while self.checkpoint.unique_candles_persisted < self.checkpoint.target_count:
                 cursor = self.checkpoint.last_cursor_ts
                 if self.checkpoint.start_ts is not None and cursor <= self.checkpoint.start_ts:
-                    self._set_checkpoint(state=JobState.PARTIAL)
+                    self._set_checkpoint(
+                        state=(
+                            JobState.COMPLETED
+                            if self.checkpoint.complete_on_start_boundary
+                            else JobState.PARTIAL
+                        )
+                    )
                     break
                 remaining = self.checkpoint.target_count - self.checkpoint.unique_candles_persisted
                 requested = self._request_count(
                     remaining=remaining,
                     has_committed_candles=bool(seen),
                 )
-                fetched = await self._fetch_page(requested, cursor)
+                try:
+                    fetched = await self._fetch_page(requested, cursor)
+                except BrokerRequestBudgetExhausted as exc:
+                    self._set_checkpoint(state=JobState.PARTIAL, last_error=str(exc))
+                    break
                 pages += 1
                 raw_batch = list(getattr(fetched, "candle_list", ()))
                 if not raw_batch:
@@ -895,6 +935,8 @@ def launch_backfill(
     resume: bool = False,
     on_progress: ProgressCallback | None = None,
     backoff_base_seconds: float = 1.0,
+    max_broker_requests: int | None = None,
+    additional_broker_requests: int | None = None,
 ) -> BackfillJob:
     """Create a new job or reconstruct one exactly from its durable checkpoint."""
     if not JOB_ID_PATTERN.fullmatch(job_id):
@@ -906,6 +948,20 @@ def launch_backfill(
         registered = InstrumentRegistry.get(checkpoint.instrument)
         if checkpoint.active_id != registered.active_id:
             raise DataAcquisitionError("Checkpoint active_id does not match its instrument.")
+        if additional_broker_requests is not None:
+            if additional_broker_requests <= 0:
+                raise ValueError("additional_broker_requests must be positive")
+            checkpoint = replace(
+                checkpoint,
+                max_broker_requests=(
+                    (
+                        checkpoint.max_broker_requests
+                        if checkpoint.max_broker_requests is not None
+                        else checkpoint.broker_requests_made
+                    )
+                    + additional_broker_requests
+                ),
+            )
     else:
         canonical = normalize_symbol(instrument)
         registered = InstrumentRegistry.get(canonical)
@@ -927,6 +983,7 @@ def launch_backfill(
             last_cursor_ts=end_ts,
             unique_candles_persisted=0,
             last_successful_batch=0,
+            max_broker_requests=max_broker_requests,
         )
     return BackfillJob(
         collector=collector,

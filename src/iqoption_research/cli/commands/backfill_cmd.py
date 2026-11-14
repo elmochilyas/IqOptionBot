@@ -23,6 +23,12 @@ from iqoption_research.market_data.collector import (
     launch_backfill,
     load_checkpoint,
 )
+from iqoption_research.research.phase11 import (
+    BackwardExpansionPlan,
+    audit_expansion_coverage,
+    build_backward_expansion_plan,
+    launch_backward_expansion,
+)
 
 app = typer.Typer(help="Authentic historical market-data backfill and recovery")
 
@@ -86,6 +92,7 @@ async def _run_authorized_job(
     output_dir: Path,
     saved_credentials: bool,
     resume: bool,
+    additional_broker_requests: int | None = None,
 ) -> BackfillResult:
     client, cleanup = await _connect_live_client(saved_credentials)
     try:
@@ -101,6 +108,7 @@ async def _run_authorized_job(
             page_size=page_size,
             client=client,
             resume=resume,
+            additional_broker_requests=additional_broker_requests,
         )
         return await job.run()
     finally:
@@ -121,6 +129,27 @@ def _emit_result(result: BackfillResult, *, json_output: bool) -> None:
     print_success(f"Pages fetched: {result.pages_fetched}")
     print_success(f"Duplicates skipped: {result.duplicates_skipped}")
     print_success(f"Rejected broker records: {result.rejected_records}")
+
+
+async def _run_authorized_extension(
+    *,
+    plan: BackwardExpansionPlan,
+    job_id: str,
+    output_dir: Path,
+    saved_credentials: bool,
+) -> BackfillResult:
+    client, cleanup = await _connect_live_client(saved_credentials)
+    try:
+        collector = HistoricalDataCollector(storage_dir=output_dir)
+        job = launch_backward_expansion(
+            collector=collector,
+            plan=plan,
+            job_id=job_id,
+            client=client,
+        )
+        return await job.run()
+    finally:
+        await cleanup()
 
 
 @app.command("backfill")
@@ -188,6 +217,112 @@ def _checkpoint_payload(checkpoint: BackfillCheckpoint) -> dict[str, Any]:
     return payload
 
 
+@app.command("coverage-audit")
+def coverage_audit_command(
+    instrument: str = typer.Option("EURUSD", "--symbol"),
+    size: int = typer.Option(60, "--size"),
+    target_days: int = typer.Option(90, "--target-days", min=1),
+    max_new_candles: int = typer.Option(150_000, "--max-new-candles", min=1),
+    page_size: int = typer.Option(500, "--page-size", min=1, max=1000),
+    max_requests: int | None = typer.Option(None, "--max-requests", min=1),
+    output_dir: Path = typer.Option(Path("data/datasets"), "--output-dir"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Audit verified coverage and print a bounded backward-extension plan offline."""
+    try:
+        coverage, _ = audit_expansion_coverage(
+            output_dir,
+            symbol=instrument,
+            candle_size_seconds=size,
+            target_calendar_days=target_days,
+        )
+        plan = build_backward_expansion_plan(
+            output_dir,
+            symbol=instrument,
+            candle_size_seconds=size,
+            target_calendar_days=target_days,
+            max_new_candles=max_new_candles,
+            page_size=page_size,
+            max_broker_requests=max_requests,
+        )
+    except (DataAcquisitionError, ValueError) as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from exc
+    payload = {"coverage": coverage.to_dict(), "plan": plan.to_dict()}
+    if json_output:
+        typer.echo(json.dumps(payload, sort_keys=True))
+        return
+    print_header("Authentic Historical Coverage")
+    print_success(f"Unique candles: {coverage.base.unique_candles}")
+    print_success(f"Oldest: {coverage.oldest_utc}")
+    print_success(f"Newest: {coverage.newest_utc}")
+    print_success(f"Calendar span: {coverage.base.calendar_span_days:.2f} days")
+    print_success(f"Scheduled closures: {coverage.scheduled_closure_count}")
+    print_warning(f"Unexpected gaps: {coverage.unexpected_gap_count}")
+    print_success(f"Target: {target_days} days | satisfied: {coverage.meets_target}")
+    if plan.needs_collection:
+        print_success(f"Collect backward to: {plan.target_oldest_utc}")
+        print_success(f"New-candle cap: {plan.max_new_candles}")
+        print_success(f"Broker-request cap: {plan.max_broker_requests}")
+
+
+@app.command("backfill-extend")
+def backfill_extend_command(
+    instrument: str = typer.Option("EURUSD", "--symbol"),
+    size: int = typer.Option(60, "--size"),
+    target_days: int = typer.Option(120, "--target-days", min=1),
+    max_new_candles: int = typer.Option(150_000, "--max-new-candles", min=1),
+    page_size: int = typer.Option(500, "--page-size", min=1, max=1000),
+    max_requests: int = typer.Option(400, "--max-requests", min=1),
+    job_id: str = typer.Option(..., "--job-id"),
+    live: bool = typer.Option(False, "--live"),
+    yes_i_understand: bool = typer.Option(False, "--yes-i-understand"),
+    saved_credentials: bool = typer.Option(False, "--saved"),
+    output_dir: Path = typer.Option(Path("data/datasets"), "--output-dir"),
+    strict: bool = typer.Option(False, "--strict"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Extend strictly before the oldest verified candle using a bounded live job."""
+    if not live:
+        print_error(
+            "Offline safety mode is active. Historical extension requires "
+            "--live --yes-i-understand; no broker connection was attempted."
+        )
+        raise typer.Exit(code=2)
+    if not yes_i_understand:
+        raise typer.BadParameter("--live requires --yes-i-understand")
+    resolved_job_id = _validate_job_id(job_id)
+    try:
+        plan = build_backward_expansion_plan(
+            output_dir,
+            symbol=instrument,
+            candle_size_seconds=size,
+            target_calendar_days=target_days,
+            max_new_candles=max_new_candles,
+            page_size=page_size,
+            max_broker_requests=max_requests,
+        )
+        if not plan.needs_collection:
+            print_success("Historical coverage already satisfies the requested target.")
+            return
+        result = asyncio.run(
+            _run_authorized_extension(
+                plan=plan,
+                job_id=resolved_job_id,
+                output_dir=output_dir,
+                saved_credentials=saved_credentials,
+            )
+        )
+        _emit_result(result, json_output=json_output)
+        if strict and result.state != JobState.COMPLETED:
+            raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
+    except (DataAcquisitionError, ValueError) as exc:
+        print_error(f"Historical extension failed: {exc}")
+        raise typer.Exit(code=1) from exc
+
+
 @app.command("backfill-status")
 def backfill_status_command(
     job_id: str = typer.Option(..., "--job-id"),
@@ -213,6 +348,10 @@ def backfill_status_command(
     print_success(f"Unique candles persisted: {checkpoint.unique_candles_persisted}")
     print_success(f"Remaining: {payload['remaining']}")
     print_success(f"Committed partitions: {len(checkpoint.committed_dataset_ids)}")
+    if checkpoint.max_broker_requests is not None:
+        print_success(
+            f"Broker requests: {checkpoint.broker_requests_made}/{checkpoint.max_broker_requests}"
+        )
     if checkpoint.last_error:
         print_warning(f"Last error: {checkpoint.last_error}")
 
@@ -226,6 +365,12 @@ def backfill_resume_command(
     saved_credentials: bool = typer.Option(False, "--saved", help="Use saved credentials"),
     strict: bool = typer.Option(False, "--strict"),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only"),
+    additional_requests: int | None = typer.Option(
+        None,
+        "--additional-requests",
+        min=1,
+        help="Explicitly add a bounded request budget to this resume",
+    ),
 ) -> None:
     """Resume an existing job from its last committed page."""
     if not live:
@@ -251,6 +396,7 @@ def backfill_resume_command(
                 output_dir=output_dir,
                 saved_credentials=saved_credentials,
                 resume=True,
+                additional_broker_requests=additional_requests,
             )
         )
         _emit_result(result, json_output=json_output)

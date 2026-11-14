@@ -65,6 +65,10 @@ from iqoption_research.ml.reporting import (
 from iqoption_research.ml.targets.specs import TargetSpec, TargetType
 from iqoption_research.ml.tracking.artifacts import load_model_bundle
 from iqoption_research.ml.tracking.tracker import ExperimentRecord, ExperimentTracker
+from iqoption_research.research.phase11 import (
+    run_phase11_evaluation,
+    write_phase11_reports,
+)
 
 console = Console()
 ml_app = typer.Typer(
@@ -75,6 +79,105 @@ ml_app = typer.Typer(
 
 DEFAULT_WORKSPACE = Path("data/ml_workspace")
 DEFAULT_DB = Path("data/ml_experiments.db")
+
+
+@ml_app.command(
+    "phase11",
+    help="Run development research and optionally consume confirmation exactly once.",
+)
+def phase11_command(
+    storage_dir: Path = typer.Option(Path("data/datasets"), "--storage"),
+    target_days: int = typer.Option(90, "--target-days", min=1),
+    confirmation_days: int = typer.Option(14, "--confirmation-days", min=1),
+    report_path: Path = typer.Option(Path("data/phase11/phase11_report.md"), "--report"),
+    json_path: Path = typer.Option(Path("data/phase11/phase11_results.json"), "--json"),
+    confirmation_state: Path = typer.Option(
+        Path("data/phase11/confirmation_state.json"),
+        "--confirmation-state",
+        help="Durable Phase 10 cutoff and one-time confirmation status",
+    ),
+    confirm_once: bool = typer.Option(
+        False,
+        "--confirm-once",
+        help="Consume eligible post-Phase-10 data as independent confirmation exactly once",
+    ),
+    folds: int = typer.Option(4, "--folds", min=1, max=8),
+    confidence: float = typer.Option(0.55, "--confidence", min=0.5, max=0.99),
+    spread_pips: float = typer.Option(1.0, "--spread-pips", min=0.0),
+    slippage_pips: float = typer.Option(0.10, "--slippage-pips", min=0.0),
+    seed: int = typer.Option(42, "--seed"),
+) -> None:
+    """Evaluate local authentic data only; never imports or connects a broker client."""
+    config = Phase10Config(
+        n_folds=folds,
+        initial_train_ratio=0.50,
+        validation_ratio=0.10,
+        test_ratio=(0.40 / folds),
+        confidence_threshold=confidence,
+        spread_pips=spread_pips,
+        slippage_pips=slippage_pips,
+        seed=seed,
+        minimum_calendar_days=float(target_days),
+    )
+    try:
+        result = run_phase11_evaluation(
+            storage_dir,
+            target_calendar_days=target_days,
+            confirmation_days=confirmation_days,
+            config=config,
+            confirmation_state_path=confirmation_state,
+            evaluate_confirmation=confirm_once,
+        )
+    except (Phase10Error, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    markdown, json_output = write_phase11_reports(
+        result,
+        markdown_path=report_path,
+        json_path=json_path,
+    )
+    coverage = result.coverage
+    console.print(
+        Panel(
+            f"{coverage.base.unique_candles:,} verified unique candles\n"
+            f"{coverage.oldest_utc} -> {coverage.newest_utc}\n"
+            f"{coverage.base.calendar_span_days:.2f}/{target_days} calendar days\n"
+            f"Scheduled closures: {coverage.scheduled_closure_count}; "
+            f"unexpected gaps: {coverage.unexpected_gap_count}",
+            title="Phase 11 Coverage and Robustness",
+        )
+    )
+    if result.confirmation_evaluated and result.confirmation_metrics:
+        table = Table(title="One-time independent confirmation results")
+        table.add_column("Model")
+        table.add_column("Accuracy", justify="right")
+        table.add_column("Trades", justify="right")
+        table.add_column("Net PnL", justify="right")
+        table.add_column("Max DD", justify="right")
+        for metric in result.confirmation_metrics.values():
+            table.add_row(
+                metric.model_name,
+                f"{metric.accuracy:.2%}",
+                f"{metric.trade_count:,}",
+                f"{metric.net_pnl:+.2f}",
+                f"{metric.max_drawdown_percent:.2%}",
+            )
+        console.print(table)
+    elif result.ready_for_confirmation:
+        console.print(
+            "[yellow]Confirmation is eligible but remains reserved. Freeze model development "
+            "before using --confirm-once.[/yellow]"
+        )
+    else:
+        console.print(
+            "[yellow]Development research may proceed when coverage is sufficient, but no "
+            "genuinely unseen post-Phase-10 confirmation period is available.[/yellow]"
+        )
+    console.print(
+        f"[cyan]Confirmation status: {result.confirmation_evaluation_status} | "
+        f"Phase 10 cutoff: {result.prior_evaluation_cutoff_utc}[/cyan]"
+    )
+    console.print(f"[green]Markdown report: {markdown.resolve()}[/green]")
+    console.print(f"[green]JSON evidence: {json_output.resolve()}[/green]")
 
 
 @ml_app.command(

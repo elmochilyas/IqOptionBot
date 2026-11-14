@@ -1,9 +1,10 @@
-# IQ Option AI Trading Research System (Phases 1–10)
+# IQ Option AI Trading Research System (Phases 1–11)
 
 Quantitative market research, authentic historical data cataloging, causal feature engineering,
 offline backtesting, and offline machine-learning research platform. Phase 10 adds checksum-backed
 authentic-data auditing, overlap deduplication, gap-aware preparation, and strict walk-forward
-evaluation with simulated execution costs.
+evaluation with simulated execution costs. Phase 11 adds bounded backward expansion, durable
+coverage audits, and a one-time post-Phase-10 confirmation protocol.
 
 > [!WARNING]
 > **UNOFFICIAL BROKER INTERFACE**: This research tooling interacts with an unofficial, reverse-engineered WebSocket interface (`wss://iqoption.com/echo/websocket`). Its compatibility, platform authorization, and terms of service compliance have not been established by IQ Option.
@@ -18,8 +19,8 @@ evaluation with simulated execution costs.
 
 - **Operating System**: Windows (PowerShell)
 - **Python Version**: 3.12.10
-- **Test Suite**: 1,114 passing tests (`pytest`, 100% pass rate, 0 failures, 0 skips)
-- **Type Checking**: Clean MyPy verification across 148 source files (`mypy src`)
+- **Test Suite**: 1,121 passing tests (`pytest`, 100% pass rate, 0 failures, 0 skips)
+- **Type Checking**: Clean MyPy verification across 221 files (`mypy src tests`)
 - **Linting & Style**: Clean Ruff compliance (`ruff check src tests`)
 - **Security Audit**: 7/7 automated offline security checks passed (`iqresearch security-check`)
 - **Evidence Status**: Phase 10 authentic evaluation is complete. **No real-market edge was detected.** The available 17.93-day sample is insufficient for reliable conclusions and requires later independent data.
@@ -199,6 +200,32 @@ python -m iqoption_research.cli.main ml phase10 --storage data/datasets --folds 
 The command writes a Markdown report and machine-readable JSON evidence under `data/phase10/`
 by default. It never imports a broker client, reads credentials, or places orders.
 
+### 3.5. Phase 11 Historical Expansion and Confirmation
+
+Audit current checksum-verified coverage and generate a bounded backward-extension plan without
+connecting to a broker:
+
+```powershell
+python -m iqoption_research.cli.main data coverage-audit --output-dir data/datasets --target-days 120 --max-new-candles 150000 --page-size 500 --max-requests 400
+```
+
+After separately authorizing collection, `data backfill-extend` begins exactly before the oldest
+verified candle. Standard `backfill-status` and `backfill-resume` commands provide crash recovery.
+Once at least 90 pre-cutoff days are present, the following command performs development research.
+The October-November Phase 10 data remains labelled previously evaluated and cannot be promoted to
+an independent holdout:
+
+```powershell
+python -m iqoption_research.cli.main ml phase11 --storage data/datasets --target-days 90 --confirmation-days 14
+```
+
+Only newly collected data strictly after the persisted Phase 10 cutoff can become confirmation.
+After the research design is frozen, `--confirm-once` consumes that eligible period and durably
+prevents it from being presented as independent evidence again.
+
+See [docs/PHASE11_HISTORICAL_EXPANSION.md](docs/PHASE11_HISTORICAL_EXPANSION.md) for the exact
+explicitly authorized live command and recovery workflow.
+
 ---
 
 ## 4. Key Security & Research Controls
@@ -209,7 +236,7 @@ by default. It never imports a broker client, reads credentials, or places order
    - Features rely exclusively on completed past bars ($t' \le t$).
    - Prediction targets strictly evaluate forward-looking windows ($t+1$ to $t+H$).
    - Scalers are fitted strictly on the training partition; calibrators are fitted strictly on the validation partition. Both are frozen and persisted in the bundle.
-   - The final holdout is evaluated once and never used for fitting, calibration, model selection, or threshold tuning.
+   - Previously evaluated Phase 10 history is development data. Only post-cutoff future data can be consumed once as independent confirmation, with durable status preventing repeats.
 4. **Cryptographic Provenance**: SQLite catalog (`data/catalog.db`) and Parquet storage verify file integrity using SHA-256 checksums and sidecar metadata.
 5. **Strict TLS Enforcement**: HTTPS and WebSocket connections enforce certificate verification via the `certifi` CA bundle and hostname checking (`ssl.CERT_REQUIRED`, TLS 1.2 minimum).
 6. **Hardcoded Endpoint Allowlist**: Only `https://auth.iqoption.com/api/v2/login`, `https://auth.iqoption.com/api/v1.0/logout`, and `wss://iqoption.com/echo/websocket` are accepted by the network layer.

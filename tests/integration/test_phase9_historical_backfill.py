@@ -21,6 +21,7 @@ from iqoption_research.market_data.collector import (
     HistoricalDataCollector,
     JobState,
     _conflicting_market_fields,
+    diagnose_exclusive_boundary,
     launch_backfill,
     load_checkpoint,
 )
@@ -127,6 +128,44 @@ class InclusiveBoundaryBroker(OfflineHistoricalBroker):
             self._candle(start + index * seconds, seconds) for index in range(returned_count)
         ]
         return FakeFetchResult(candles)
+
+
+class ExclusiveEndtimeBroker(OfflineHistoricalBroker):
+    """Return minute-aligned candles at or before the requested second."""
+
+    def __init__(
+        self,
+        *,
+        contradictory_boundary: int | None = None,
+        history_available: bool = True,
+    ) -> None:
+        super().__init__()
+        self.contradictory_boundary = contradictory_boundary
+        self.history_available = history_available
+        self.requested_endtimes: list[int] = []
+
+    async def get_candles(
+        self,
+        symbol: str,
+        size: int | CandleSize,
+        count: int,
+        *,
+        endtime: int | None = None,
+    ) -> FakeFetchResult:
+        self.calls += 1
+        assert symbol == self.symbol
+        assert endtime is not None
+        self.requested_endtimes.append(endtime)
+        seconds = int(size)
+        if not self.history_available:
+            return FakeFetchResult([])
+        if self.contradictory_boundary is not None:
+            return FakeFetchResult([self._candle(self.contradictory_boundary, seconds)])
+        latest = endtime - (endtime % seconds)
+        start = latest - (count - 1) * seconds
+        return FakeFetchResult([
+            self._candle(start + index * seconds, seconds) for index in range(count)
+        ])
 
 
 class NormalizedInclusiveBoundaryBroker(InclusiveBoundaryBroker):
@@ -396,6 +435,138 @@ async def test_boundary_only_response_stops_partial_without_repeating_requests(
     assert stopped.committed_dataset_ids == failed.committed_dataset_ids
     assert "no older history" in (stopped.last_error or "").lower()
     assert collector.catalog.count_datasets() == 2
+
+
+@pytest.mark.asyncio
+async def test_exclusive_boundary_diagnostic_finds_older_history_without_writes(
+    tmp_path: Path,
+) -> None:
+    collector = HistoricalDataCollector(storage_dir=tmp_path / "datasets")
+    failed, original_files = _write_failed_999_checkpoint(
+        collector,
+        client=OfflineHistoricalBroker(),
+        job_id="exclusive-diagnostic",
+    )
+    checkpoint_path = collector.storage_dir / "backfill_checkpoint_exclusive-diagnostic.json"
+    original_checkpoint = checkpoint_path.read_bytes()
+    broker = ExclusiveEndtimeBroker()
+
+    result = await diagnose_exclusive_boundary(
+        collector=collector,
+        checkpoint=failed,
+        client=broker,
+        probe_count=5,
+    )
+
+    assert result.older_history_available is True
+    assert result.valid_older_count == 5
+    assert result.requested_endtime == failed.last_cursor_ts - 1
+    assert broker.requested_endtimes == [failed.last_cursor_ts - 1]
+    assert broker.read_only_assertions == 1
+    assert checkpoint_path.read_bytes() == original_checkpoint
+    entries = [collector.catalog.get_dataset(item) for item in failed.committed_dataset_ids]
+    assert [
+        (collector.storage_dir / entry.file_path).read_bytes()
+        for entry in entries
+        if entry is not None
+    ] == list(original_files)
+    assert collector.catalog.count_datasets() == 2
+
+
+@pytest.mark.asyncio
+async def test_exclusive_boundary_diagnostic_rejects_contradictory_response(
+    tmp_path: Path,
+) -> None:
+    collector = HistoricalDataCollector(storage_dir=tmp_path / "datasets")
+    failed, _ = _write_failed_999_checkpoint(
+        collector,
+        client=OfflineHistoricalBroker(),
+        job_id="contradictory-diagnostic",
+    )
+    checkpoint_path = collector.storage_dir / "backfill_checkpoint_contradictory-diagnostic.json"
+    original_checkpoint = checkpoint_path.read_bytes()
+
+    with pytest.raises(DataAcquisitionError, match="response is contradictory"):
+        await diagnose_exclusive_boundary(
+            collector=collector,
+            checkpoint=failed,
+            client=ExclusiveEndtimeBroker(contradictory_boundary=failed.last_cursor_ts),
+            probe_count=5,
+        )
+
+    assert checkpoint_path.read_bytes() == original_checkpoint
+    assert collector.catalog.count_datasets() == 2
+
+
+@pytest.mark.asyncio
+async def test_exclusive_boundary_diagnostic_reports_empty_history_once(
+    tmp_path: Path,
+) -> None:
+    collector = HistoricalDataCollector(storage_dir=tmp_path / "datasets")
+    failed, _ = _write_failed_999_checkpoint(
+        collector,
+        client=OfflineHistoricalBroker(),
+        job_id="empty-exclusive-diagnostic",
+    )
+    checkpoint_path = collector.storage_dir / "backfill_checkpoint_empty-exclusive-diagnostic.json"
+    original_checkpoint = checkpoint_path.read_bytes()
+    broker = ExclusiveEndtimeBroker(history_available=False)
+
+    result = await diagnose_exclusive_boundary(
+        collector=collector,
+        checkpoint=failed,
+        client=broker,
+        probe_count=5,
+    )
+
+    assert result.older_history_available is False
+    assert result.conclusion == "no_older_history_at_exclusive_endtime"
+    assert broker.calls == 1
+    assert checkpoint_path.read_bytes() == original_checkpoint
+    assert collector.catalog.count_datasets() == 2
+
+
+@pytest.mark.asyncio
+async def test_existing_checkpoint_resumes_with_explicit_exclusive_cursor(
+    tmp_path: Path,
+) -> None:
+    collector = HistoricalDataCollector(storage_dir=tmp_path / "datasets")
+    failed, original_files = _write_failed_999_checkpoint(
+        collector,
+        client=OfflineHistoricalBroker(),
+        job_id="exclusive-resume",
+    )
+    broker = ExclusiveEndtimeBroker()
+    resumed = launch_backfill(
+        collector=collector,
+        job_id=failed.job_id,
+        instrument=failed.instrument,
+        timeframe_seconds=failed.timeframe_seconds,
+        target_count=failed.target_count,
+        page_size=failed.page_size,
+        client=broker,
+        resume=True,
+        request_before_cursor=True,
+        backoff_base_seconds=0,
+    )
+
+    result = await resumed.run()
+    completed = load_checkpoint(collector.storage_dir, failed.job_id)
+
+    assert result.state == JobState.COMPLETED
+    assert result.unique_candles == 1000
+    assert result.newly_persisted == 1
+    assert broker.requested_endtimes == [failed.last_cursor_ts - 1]
+    assert completed.request_before_cursor is True
+    assert completed.committed_dataset_ids[:2] == failed.committed_dataset_ids
+    original_entries = [
+        collector.catalog.get_dataset(item) for item in failed.committed_dataset_ids
+    ]
+    assert [
+        (collector.storage_dir / entry.file_path).read_bytes()
+        for entry in original_entries
+        if entry is not None
+    ] == list(original_files)
 
 
 @pytest.mark.asyncio
@@ -686,6 +857,21 @@ def test_cli_offline_default_never_opens_broker(
     )
     assert result.exit_code == 2
     assert "Offline safety mode is active" in result.output
+    assert connected is False
+
+    diagnostic = CliRunner().invoke(
+        app,
+        [
+            "data",
+            "backfill-boundary-diagnostic",
+            "--job-id",
+            "must-stay-offline",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+    assert diagnostic.exit_code == 2
+    assert "no broker connection was attempted" in diagnostic.output
     assert connected is False
 
 

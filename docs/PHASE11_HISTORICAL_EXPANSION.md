@@ -58,6 +58,41 @@ python -m iqoption_research.cli.main data backfill-status --job-id eurusd-histor
 python -m iqoption_research.cli.main data backfill-resume --job-id eurusd-history-120d-001 --output-dir data/datasets --live --yes-i-understand
 ```
 
+### Inclusive-boundary diagnostic
+
+If a job stops after receiving only its current earliest candle, that response alone does not
+establish that the broker has no older data. Run this separately authorized diagnostic exactly
+once. It makes one read-only request with `endtime = checkpoint_cursor - 1`, validates the returned
+records, and does not write candles, catalog rows, or checkpoint state:
+
+```powershell
+python -m iqoption_research.cli.main data backfill-boundary-diagnostic --job-id eurusd-history-120d-001 --probe-count 500 --output-dir data/datasets --live --yes-i-understand
+```
+
+Interpret the result conservatively:
+
+- `older_history_available_with_exclusive_endtime`: the previous stop was inclusive-pagination
+  behavior. Resume the same job, without creating another collection, using:
+
+  ```powershell
+  python -m iqoption_research.cli.main data backfill-resume --job-id eurusd-history-120d-001 --output-dir data/datasets --exclusive-cursor --live --yes-i-understand
+  ```
+
+- `no_older_history_at_exclusive_endtime`: the endpoint returned no older candles even after the
+  known boundary was excluded. Treat that as evidence of an IQ Option endpoint availability limit;
+  do not loop probes or fabricate continuity.
+- A candle at or after the excluded boundary, a field conflict, wrong instrument/timeframe,
+  rejected record, or invalid provenance fails the diagnostic as contradictory.
+
+If the endpoint limit is confirmed, suitable external candidates include
+[Dukascopy Historical Data Export](https://www.dukascopy.com/swiss/english/marketwatch/historical/)
+(tick through monthly data) and
+[OANDA v20 candles](https://developer.oanda.com/rest-live-v20/instrument-ep/)
+(M1 and bid/ask/mid components).
+External observations must be imported under a distinct source/provenance and dataset fingerprint.
+Never append them to this IQ Option checkpoint or label them `broker_authentic_collection`; price
+construction, volume semantics, session coverage, and spreads differ by venue.
+
 If the durable 400-request budget is exhausted before reaching the target, authorize a bounded
 additional budget explicitly:
 

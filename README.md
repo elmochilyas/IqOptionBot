@@ -1,6 +1,9 @@
-# IQ Option AI Trading Research System (Phases 1–4)
+# IQ Option AI Trading Research System (Phases 1–10)
 
-Quantitative market research, historical data cataloging, causal feature engineering, offline backtesting, and offline machine learning research platform. Phase 4 adds directional forecasting, validation-only probability calibration, chronological walk-forward evaluation, ensembles, experiment tracking, and a strictly offline decision engine — with an explicit refusal to claim profitability from synthetic data.
+Quantitative market research, authentic historical data cataloging, causal feature engineering,
+offline backtesting, and offline machine-learning research platform. Phase 10 adds checksum-backed
+authentic-data auditing, overlap deduplication, gap-aware preparation, and strict walk-forward
+evaluation with simulated execution costs.
 
 > [!WARNING]
 > **UNOFFICIAL BROKER INTERFACE**: This research tooling interacts with an unofficial, reverse-engineered WebSocket interface (`wss://iqoption.com/echo/websocket`). Its compatibility, platform authorization, and terms of service compliance have not been established by IQ Option.
@@ -15,11 +18,11 @@ Quantitative market research, historical data cataloging, causal feature enginee
 
 - **Operating System**: Windows (PowerShell)
 - **Python Version**: 3.12.10
-- **Test Suite**: 958 passing tests (`pytest`, 100% pass rate, 0 failures, 0 skips — 46 test modules)
-- **Type Checking**: Clean MyPy verification across 104 source files (`mypy src`)
+- **Test Suite**: 1,114 passing tests (`pytest`, 100% pass rate, 0 failures, 0 skips)
+- **Type Checking**: Clean MyPy verification across 148 source files (`mypy src`)
 - **Linting & Style**: Clean Ruff compliance (`ruff check src tests`)
 - **Security Audit**: 7/7 automated offline security checks passed (`iqresearch security-check`)
-- **Evidence Status**: Phase 4 engineering is complete. **No real-market edge has been established.** Synthetic fixtures are engineering demonstrations only; authentic evidence requires independent historical data and replication.
+- **Evidence Status**: Phase 10 authentic evaluation is complete. **No real-market edge was detected.** The available 17.93-day sample is insufficient for reliable conclusions and requires later independent data.
 - **Target Market**: EUR/USD (`active_id=1`), standard Forex and OTC market hours
 
 ---
@@ -181,6 +184,20 @@ python -m iqoption_research.cli.main ml demo
 ```
 
 **Evidence policy.** Synthetic runs can never be promoted to an edge verdict. Authentic-data runs must have at least 200 untouched out-of-sample observations, one-sided binomial `p < 0.05` versus chance, ROC-AUC >= 0.55, and a Brier score not materially worse (> 0.02) than the base-rate baseline before the most optimistic label, `CANDIDATE_EDGE_REQUIRES_REPLICATION`. Anything weaker is reported as `NO_RELIABLE_EDGE_DETECTED` or `INSUFFICIENT_OUT_OF_SAMPLE_DATA`. Even a candidate is explicitly *not* a profitability claim.
+
+### 3.4. Phase 10 Authentic Walk-Forward Evaluation
+
+Phase 10 consumes only the local immutable Phase 9 catalog. It verifies every catalog and
+sidecar checksum, rejects conflicting overlaps, prevents features and labels from crossing
+coverage gaps, and runs expanding walk-forward folds with training-only scaling and
+validation-only calibration. All trading outcomes are simulated with explicit cost assumptions.
+
+```powershell
+python -m iqoption_research.cli.main ml phase10 --storage data/datasets --folds 4 --confidence 0.55 --spread-pips 1.0 --slippage-pips 0.1
+```
+
+The command writes a Markdown report and machine-readable JSON evidence under `data/phase10/`
+by default. It never imports a broker client, reads credentials, or places orders.
 
 ---
 

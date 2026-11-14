@@ -31,6 +31,12 @@ from iqoption_research.ml.fixtures import (
     SyntheticMarketConfig,
     generate_synthetic_candles,
 )
+from iqoption_research.ml.phase10 import (
+    Phase10Config,
+    Phase10Error,
+    run_phase10_experiment,
+    write_phase10_reports,
+)
 from iqoption_research.ml.pipeline import (
     AVAILABLE_MODEL_NAMES,
     PHASE4_DISCLAIMER,
@@ -63,12 +69,94 @@ from iqoption_research.ml.tracking.tracker import ExperimentRecord, ExperimentTr
 console = Console()
 ml_app = typer.Typer(
     name="ml",
-    help="Offline Phase 4 machine learning: prepare, train, evaluate, compare, backtest.",
+    help="Offline ML research: prepare, train, compare, backtest, and authentic walk-forward.",
     no_args_is_help=True,
 )
 
 DEFAULT_WORKSPACE = Path("data/ml_workspace")
 DEFAULT_DB = Path("data/ml_experiments.db")
+
+
+@ml_app.command(
+    "phase10",
+    help="Audit authentic Phase 9 data and run offline walk-forward evaluation.",
+)
+def phase10_command(
+    storage_dir: Path = typer.Option(
+        Path("data/datasets"), "--storage", help="Phase 9 dataset/catalog directory"
+    ),
+    report_path: Path = typer.Option(
+        Path("data/phase10/phase10_report.md"), "--report", help="Markdown report path"
+    ),
+    json_path: Path = typer.Option(
+        Path("data/phase10/phase10_results.json"), "--json", help="JSON evidence path"
+    ),
+    folds: int = typer.Option(4, "--folds", min=1, max=8),
+    confidence: float = typer.Option(0.55, "--confidence", min=0.5, max=0.99),
+    spread_pips: float = typer.Option(1.0, "--spread-pips", min=0.0),
+    slippage_pips: float = typer.Option(0.10, "--slippage-pips", min=0.0),
+    commission: float = typer.Option(0.0, "--commission", min=0.0),
+    seed: int = typer.Option(42, "--seed"),
+    minimum_rows: int = typer.Option(2_000, "--minimum-rows", min=100),
+) -> None:
+    """Execute Phase 10 without importing a broker client or placing orders."""
+    config = Phase10Config(
+        n_folds=folds,
+        initial_train_ratio=0.50,
+        validation_ratio=0.10,
+        test_ratio=(0.40 / folds),
+        confidence_threshold=confidence,
+        spread_pips=spread_pips,
+        slippage_pips=slippage_pips,
+        commission_per_trade=commission,
+        seed=seed,
+        minimum_rows=minimum_rows,
+    )
+    try:
+        result = run_phase10_experiment(storage_dir, config=config)
+    except (Phase10Error, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    markdown, json_output = write_phase10_reports(
+        result,
+        markdown_path=report_path,
+        json_path=json_path,
+    )
+    audit = result.audit
+    console.print(
+        Panel(
+            f"Verified {audit.catalog_entries} catalog partitions and "
+            f"{audit.unique_candles:,} unique authentic candles\n"
+            f"Deduplicated {audit.duplicate_rows:,} overlapping rows; "
+            f"conflicts: {audit.conflicting_duplicates}\n"
+            "Offline walk-forward simulation only; no broker connection or orders.",
+            title="Phase 10 Authentic Data Audit",
+        )
+    )
+    table = Table(title="Strict out-of-sample results")
+    table.add_column("Model")
+    table.add_column("Class")
+    table.add_column("Accuracy", justify="right")
+    table.add_column("Precision", justify="right")
+    table.add_column("Recall", justify="right")
+    table.add_column("Trades", justify="right")
+    table.add_column("Net PnL", justify="right")
+    table.add_column("Max DD", justify="right")
+    for metric in result.metrics.values():
+        table.add_row(
+            metric.model_name,
+            metric.model_class,
+            f"{metric.accuracy:.2%}",
+            f"{metric.precision:.2%}",
+            f"{metric.recall:.2%}",
+            f"{metric.trade_count:,}",
+            f"{metric.net_pnl:+.2f}",
+            f"{metric.max_drawdown_percent:.2%}",
+        )
+    console.print(table)
+    console.print(f"[green]Markdown report: {markdown.resolve()}[/green]")
+    console.print(f"[green]JSON evidence: {json_output.resolve()}[/green]")
+    if result.needs_more_data:
+        console.print("[yellow]Assessment: more historical data is required.[/yellow]")
 
 
 # ---------------------------------------------------------------------------

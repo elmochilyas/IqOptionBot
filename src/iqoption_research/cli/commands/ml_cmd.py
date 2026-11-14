@@ -313,6 +313,124 @@ def phase10_command(
         console.print("[yellow]Assessment: more historical data is required.[/yellow]")
 
 
+@ml_app.command(
+    "phase13-baseline",
+    help="Audit authentic data distribution and execute extended baseline evaluation.",
+)
+def phase13_baseline_command(
+    storage_dir: Path = typer.Option(
+        Path("data/datasets"), "--storage", help="Phase 9/12 dataset/catalog directory"
+    ),
+    report_path: Path = typer.Option(
+        Path("data/phase13/baseline_phase10_report.md"), "--report", help="Markdown report path"
+    ),
+    json_path: Path = typer.Option(
+        Path("data/phase13/extended_baseline.json"), "--json", help="JSON evidence path"
+    ),
+    folds: int = typer.Option(4, "--folds", min=1, max=8),
+    confidence: float = typer.Option(0.55, "--confidence", min=0.5, max=0.99),
+) -> None:
+    from iqoption_research.ml.phase13 import run_phase13_baseline_audit
+
+    cfg = Phase10Config(
+        n_folds=folds,
+        confidence_threshold=confidence,
+    )
+    result = run_phase13_baseline_audit(
+        storage_dir=storage_dir,
+        output_report_path=report_path,
+        output_json_path=json_path,
+        config=cfg,
+    )
+    ds = result["dataset_summary"]
+    m1_pct = result["move_distributions"]["1"]["pct_moves_below_friction_1_2p"]
+    console.print(
+        Panel(
+            f"Audited {ds['unique_candles']:,} candles across {ds['calendar_days']:.2f} days\n"
+            f"Coverage: {ds['earliest_iso']} -> {ds['latest_iso']}\n"
+            f"1-Minute moves below 1.2p friction: {m1_pct:.1f}%\n"
+            "Extended baseline report and JSON evidence generated.",
+            title="Phase 13 Baseline Audit",
+            border_style="cyan",
+        )
+    )
+    table = Table(title="Phase 13 Baseline Walk-Forward Results")
+    table.add_column("Model")
+    table.add_column("Accuracy", justify="right")
+    table.add_column("Bal. Acc", justify="right")
+    table.add_column("ROC-AUC", justify="right")
+    table.add_column("Brier", justify="right")
+    table.add_column("Trades", justify="right")
+    table.add_column("Gross PnL", justify="right")
+    table.add_column("Costs", justify="right")
+    table.add_column("Net PnL", justify="right")
+    table.add_column("Profit Factor", justify="right")
+
+    for name, m in result["model_summaries"].items():
+        o = m["overall"]
+        table.add_row(
+            name,
+            f"{o['accuracy']:.2%}",
+            f"{o['balanced_accuracy']:.2%}",
+            f"{o['roc_auc']:.4f}",
+            f"{o['brier_score']:.4f}",
+            f"{o['trade_count']:,}",
+            f"${o['gross_pnl']:+,.2f}",
+            f"${o['total_costs']:,.2f}",
+            f"${o['net_pnl']:+,.2f}",
+            f"{o['profit_factor']:.3f}",
+        )
+    console.print(table)
+    console.print(f"[green]Markdown report: {report_path.resolve()}[/green]")
+    console.print(f"[green]JSON evidence: {json_path.resolve()}[/green]")
+
+
+@ml_app.command(
+    "phase13-candidate",
+    help="Train, calibrate, verify, and persist an experimental candidate model bundle.",
+)
+def phase13_candidate_command(
+    storage_dir: Path = typer.Option(
+        Path("data/datasets"), "--storage", help="Authentic Parquet dataset directory"
+    ),
+    output_dir: Path = typer.Option(
+        Path("data/phase13/candidate_models/candidate_h1_rf"),
+        "--output",
+        "-o",
+        help="Output bundle path",
+    ),
+    model: str = typer.Option(
+        "random_forest", "--model", help="Model family: random_forest or logistic_regression"
+    ),
+    stationary_only: bool = typer.Option(
+        True, "--stationary-only/--all-features", help="Use stationary features only"
+    ),
+    horizon_bars: int = typer.Option(
+        1, "--horizon", min=1, max=15, help="Prediction horizon in bars"
+    ),
+) -> None:
+    from iqoption_research.ml.phase13 import train_and_save_candidate_bundle
+
+    manifest = train_and_save_candidate_bundle(
+        storage_dir=storage_dir,
+        output_dir=output_dir,
+        model_family=model,
+        stationary_only=stationary_only,
+        horizon_bars=horizon_bars,
+        overwrite=True,
+    )
+    console.print(
+        Panel(
+            f"Candidate model '{model}' trained on authentic data and saved to:\n"
+            f"[bold green]{output_dir.resolve()}[/bold green]\n"
+            f"Manifest SHA-256 Digest: [bold cyan]{manifest.digest()}[/bold cyan]\n"
+            f"Lifecycle Stage: [yellow]DEVELOPMENT_ONLY[/yellow] (Not a confirmed trading edge)",
+            title="Candidate Model Bundle Exported",
+            border_style="green",
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

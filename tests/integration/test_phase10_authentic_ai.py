@@ -17,6 +17,7 @@ from iqoption_research.ml.fixtures import SyntheticMarketConfig, generate_synthe
 from iqoption_research.ml.phase10 import (
     Phase10Config,
     Phase10Error,
+    _simulate_trades,
     audit_authentic_datasets,
     build_walk_forward_folds,
     prepare_clean_dataset,
@@ -136,6 +137,86 @@ def test_gap_boundaries_are_excluded_from_features_and_labels() -> None:
     assert np.all(np.diff(dataset.timestamps) > 0)
 
 
+def test_signal_at_close_enters_only_at_next_candle_open() -> None:
+    candles = _authentic_candles(160)
+    next_candle = candles[21]
+    distinct_open = (next_candle.high + next_candle.low) / 2.0
+    if distinct_open == candles[20].close:
+        distinct_open = next_candle.low
+    candles[21] = replace(next_candle, open=distinct_open)
+
+    dataset = prepare_clean_dataset(candles, candle_size_seconds=60, horizon_bars=1)
+
+    assert dataset.timestamps[0] == candles[20].to_ts
+    assert dataset.entry_timestamps[0] == candles[21].from_ts
+    assert dataset.entry_timestamps[0] >= dataset.timestamps[0]
+    assert dataset.exit_timestamps[0] == candles[21].to_ts
+    assert dataset.entry_prices[0] == candles[21].open
+    assert dataset.entry_prices[0] != candles[20].close
+    assert dataset.exit_prices[0] == candles[21].close
+    assert dataset.y[0] == int(round(candles[21].close - candles[21].open, 9) > 0.0)
+
+
+def test_execution_costs_pnl_drawdown_and_timing_guards() -> None:
+    config = _quick_config(
+        confidence_threshold=0.55,
+        spread_pips=1.0,
+        slippage_pips=0.1,
+        notional_per_trade=10_000.0,
+        initial_capital=10_000.0,
+    )
+    probabilities = np.asarray([0.9, 0.9])
+    signals = np.asarray([60, 120], dtype=np.int64)
+    entries = np.asarray([60, 120], dtype=np.int64)
+    exits = np.asarray([120, 180], dtype=np.int64)
+    entry_prices = np.asarray([1.0, 1.0])
+    exit_prices = np.asarray([1.001, 0.999])
+
+    result = _simulate_trades(
+        probabilities,
+        signals,
+        entries,
+        exits,
+        entry_prices,
+        exit_prices,
+        config,
+    )
+
+    assert result.trade_count == 2
+    assert result.wins == 1
+    assert result.losses == 1
+    assert result.gross_pnl == pytest.approx(0.0, abs=1e-9)
+    assert result.costs == pytest.approx(2.4)
+    assert result.net_pnl == pytest.approx(-2.4)
+    assert result.max_drawdown == pytest.approx(11.2)
+    assert result.max_drawdown_pct == pytest.approx(11.2 / 10_008.8)
+
+    short_result = _simulate_trades(
+        np.asarray([0.1]),
+        signals[:1],
+        entries[:1],
+        exits[:1],
+        entry_prices[:1],
+        np.asarray([0.999]),
+        config,
+    )
+    assert short_result.gross_pnl == pytest.approx(10.0)
+    assert short_result.costs == pytest.approx(1.2)
+    assert short_result.net_pnl == pytest.approx(8.8)
+    assert short_result.wins == 1
+
+    with pytest.raises(Phase10Error, match="before its signal"):
+        _simulate_trades(
+            probabilities[:1],
+            np.asarray([61]),
+            entries[:1],
+            exits[:1],
+            entry_prices[:1],
+            exit_prices[:1],
+            config,
+        )
+
+
 def test_walk_forward_folds_are_purged_and_strictly_future() -> None:
     candles = _authentic_candles(700)
     dataset = prepare_clean_dataset(candles, candle_size_seconds=60, horizon_bars=1)
@@ -146,6 +227,8 @@ def test_walk_forward_folds_are_purged_and_strictly_future() -> None:
     assert fold.train_end < fold.validation_start < fold.validation_end < fold.test_start
     assert fold.train_end_ts < fold.validation_start_ts
     assert fold.validation_end_ts < fold.test_start_ts
+    assert dataset.exit_timestamps[fold.train_end - 1] < dataset.timestamps[fold.validation_start]
+    assert dataset.exit_timestamps[fold.validation_end - 1] < dataset.timestamps[fold.test_start]
 
 
 def test_phase10_experiment_and_cli_are_reproducible_and_offline(tmp_path: Path) -> None:

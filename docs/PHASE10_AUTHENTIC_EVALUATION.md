@@ -24,6 +24,9 @@ features.
 - Four expanding walk-forward folds
 - 50% initial training window, 10% validation window, four sequential 10% test windows
 - One-bar purge between training/validation and validation/test
+- Signal generated only after candle `t` closes
+- Entry at the next available price: candle `t+1` open
+- Exit at candle `t+horizon` close; labels use the same entry-to-exit return
 - Scalers fitted independently on training data only
 - Probability calibration fitted on the immediately preceding validation data only
 - Fixed confidence threshold of 0.55; no threshold optimization on test data
@@ -36,15 +39,15 @@ features.
 
 | Model | Class | Accuracy | Precision | Recall | Trades | Win rate after costs | Execution costs | Net PnL | Max drawdown |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| majority_class | baseline | 53.26% | 0.00% | 0.00% | 0 | 0.00% | 0.00 | +0.00 | 0.00% |
-| rule_based_momentum | baseline | 50.01% | 46.87% | 52.01% | 7,566 | 7.89% | 8,156.55 | -8,132.64 | 81.33% |
-| logistic_regression | machine learning | 53.23% | 25.00% | 0.03% | 988 | 6.78% | 1,072.75 | -1,035.29 | 10.35% |
-| random_forest | machine learning | 53.26% | 0.00% | 0.00% | 2,002 | 8.94% | 2,173.52 | -2,119.64 | 21.20% |
+| majority_class | baseline | 53.11% | 0.00% | 0.00% | 0 | 0.00% | 0.00 | +0.00 | 0.00% |
+| rule_based_momentum | baseline | 50.11% | 47.11% | 52.11% | 7,566 | 7.85% | 8,156.55 | -8,125.66 | 81.26% |
+| logistic_regression | machine learning | 52.22% | 48.22% | 25.70% | 541 | 4.25% | 587.42 | -589.81 | 5.90% |
+| random_forest | machine learning | 53.11% | 50.00% | 0.05% | 538 | 4.09% | 584.29 | -570.71 | 5.72% |
 
 The majority baseline abstained because its probability remained inside the fixed confidence
 band. The apparent directional accuracy is therefore not a profitable trading result. Every
 actionable strategy lost money after the configured spread and slippage assumptions. The best
-ML result, logistic regression, did not beat the capital-preserving baseline.
+ML result, random forest, did not beat the capital-preserving baseline.
 
 ## Assessment
 

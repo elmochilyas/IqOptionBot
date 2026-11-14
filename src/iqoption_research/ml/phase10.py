@@ -24,8 +24,6 @@ from iqoption_research.market_data.parquet_storage import read_candles_parquet
 from iqoption_research.ml.calibration.calibrator import ProbabilityCalibrator
 from iqoption_research.ml.models.base import BaseMLModel
 from iqoption_research.ml.pipeline import create_model
-from iqoption_research.ml.targets.generator import generate_targets
-from iqoption_research.ml.targets.specs import TargetSpec
 from iqoption_research.models.market import Candle
 from iqoption_research.research.features.pipeline import CausalFeaturePipeline
 from iqoption_research.research.features.scalers import StandardScaler
@@ -112,6 +110,8 @@ class CleanResearchDataset:
     X: np.ndarray
     y: np.ndarray
     timestamps: np.ndarray
+    entry_timestamps: np.ndarray
+    exit_timestamps: np.ndarray
     entry_prices: np.ndarray
     exit_prices: np.ndarray
     feature_names: tuple[str, ...]
@@ -390,10 +390,11 @@ def prepare_clean_dataset(
         include_quotes=False,
         drop_warmup=False,
     )
-    target_spec = TargetSpec.binary(horizon_bars=horizon_bars)
     matrices: list[np.ndarray] = []
     labels: list[np.ndarray] = []
     timestamps: list[np.ndarray] = []
+    entry_timestamps: list[np.ndarray] = []
+    exit_timestamps: list[np.ndarray] = []
     entries: list[np.ndarray] = []
     exits: list[np.ndarray] = []
     feature_names: tuple[str, ...] | None = None
@@ -403,14 +404,15 @@ def prepare_clean_dataset(
         if len(segment) <= feature_pipeline.max_lookback + horizon_bars:
             continue
         features = feature_pipeline.transform(segment)
-        y_all, valid_mask = generate_targets(segment, target_spec)
         names = tuple(features.feature_names)
         if feature_names is None:
             feature_names = names
         elif feature_names != names:
             raise Phase10Error("Feature schema changed between contiguous data segments.")
         valid_rows = [
-            row for row in features.rows if not row.is_warmup and bool(valid_mask[row.index])
+            row
+            for row in features.rows
+            if not row.is_warmup and row.index + horizon_bars < len(segment)
         ]
         dropped_warmup += sum(1 for row in features.rows if row.is_warmup)
         matrices.append(
@@ -419,9 +421,32 @@ def prepare_clean_dataset(
                 dtype=np.float64,
             )
         )
-        labels.append(np.asarray([y_all[row.index] for row in valid_rows], dtype=np.int64))
+        labels.append(
+            np.asarray(
+                [
+                    int(
+                        round(
+                            segment[row.index + horizon_bars].close - segment[row.index + 1].open,
+                            9,
+                        )
+                        > 0.0
+                    )
+                    for row in valid_rows
+                ],
+                dtype=np.int64,
+            )
+        )
         timestamps.append(np.asarray([row.available_at_ts for row in valid_rows], dtype=np.int64))
-        entries.append(np.asarray([segment[row.index].close for row in valid_rows], dtype=float))
+        entry_timestamps.append(
+            np.asarray([segment[row.index + 1].from_ts for row in valid_rows], dtype=np.int64)
+        )
+        exit_timestamps.append(
+            np.asarray(
+                [segment[row.index + horizon_bars].to_ts for row in valid_rows],
+                dtype=np.int64,
+            )
+        )
+        entries.append(np.asarray([segment[row.index + 1].open for row in valid_rows], dtype=float))
         exits.append(
             np.asarray([segment[row.index + horizon_bars].close for row in valid_rows], dtype=float)
         )
@@ -431,18 +456,30 @@ def prepare_clean_dataset(
     X = np.concatenate(matrices)
     y = np.concatenate(labels)
     ts = np.concatenate(timestamps)
+    entry_ts = np.concatenate(entry_timestamps)
+    exit_ts = np.concatenate(exit_timestamps)
     entry = np.concatenate(entries)
     exit_prices = np.concatenate(exits)
     if np.any(np.diff(ts) <= 0):
         raise Phase10Error("Prepared timestamps are not strictly chronological.")
+    if np.any(entry_ts < ts):
+        raise Phase10Error("An execution entry precedes its signal availability timestamp.")
+    if np.any(exit_ts <= entry_ts):
+        raise Phase10Error("An execution exit is not later than its entry timestamp.")
     digest = hashlib.sha256()
     digest.update(np.ascontiguousarray(X).tobytes())
     digest.update(np.ascontiguousarray(y).tobytes())
     digest.update(np.ascontiguousarray(ts).tobytes())
+    digest.update(np.ascontiguousarray(entry_ts).tobytes())
+    digest.update(np.ascontiguousarray(exit_ts).tobytes())
+    digest.update(np.ascontiguousarray(entry).tobytes())
+    digest.update(np.ascontiguousarray(exit_prices).tobytes())
     return CleanResearchDataset(
         X=X,
         y=y,
         timestamps=ts,
+        entry_timestamps=entry_ts,
+        exit_timestamps=exit_ts,
         entry_prices=entry,
         exit_prices=exit_prices,
         feature_names=feature_names,
@@ -551,10 +588,29 @@ class _TradingAccumulator:
 
 def _simulate_trades(
     probabilities_up: np.ndarray,
+    signal_timestamps: np.ndarray,
+    entry_timestamps: np.ndarray,
+    exit_timestamps: np.ndarray,
     entry_prices: np.ndarray,
     exit_prices: np.ndarray,
     config: Phase10Config,
 ) -> _TradingAccumulator:
+    lengths = {
+        len(probabilities_up),
+        len(signal_timestamps),
+        len(entry_timestamps),
+        len(exit_timestamps),
+        len(entry_prices),
+        len(exit_prices),
+    }
+    if len(lengths) != 1:
+        raise Phase10Error("Signal, execution timestamp, and price arrays must align.")
+    if np.any(entry_timestamps < signal_timestamps):
+        raise Phase10Error("Cannot execute a trade before its signal is available.")
+    if np.any(exit_timestamps <= entry_timestamps):
+        raise Phase10Error("Trade exits must occur after their entries.")
+    if np.any(entry_prices <= 0.0) or np.any(exit_prices <= 0.0):
+        raise Phase10Error("Execution prices must be positive.")
     state = _TradingAccumulator(equity=config.initial_capital, peak=config.initial_capital)
     upper = config.confidence_threshold
     lower = 1.0 - upper
@@ -620,6 +676,9 @@ def run_phase10_experiment(
         true_parts: list[np.ndarray] = []
         prediction_parts: list[np.ndarray] = []
         probability_parts: list[np.ndarray] = []
+        signal_timestamp_parts: list[np.ndarray] = []
+        entry_timestamp_parts: list[np.ndarray] = []
+        exit_timestamp_parts: list[np.ndarray] = []
         entry_parts: list[np.ndarray] = []
         exit_parts: list[np.ndarray] = []
         for fold in folds:
@@ -627,6 +686,9 @@ def run_phase10_experiment(
             true_parts.append(clean.y[fold.test_start : fold.test_end])
             prediction_parts.append(predictions)
             probability_parts.append(probabilities)
+            signal_timestamp_parts.append(clean.timestamps[fold.test_start : fold.test_end])
+            entry_timestamp_parts.append(clean.entry_timestamps[fold.test_start : fold.test_end])
+            exit_timestamp_parts.append(clean.exit_timestamps[fold.test_start : fold.test_end])
             entry_parts.append(clean.entry_prices[fold.test_start : fold.test_end])
             exit_parts.append(clean.exit_prices[fold.test_start : fold.test_end])
 
@@ -635,6 +697,9 @@ def run_phase10_experiment(
         probabilities_up = np.concatenate(probability_parts)
         trading = _simulate_trades(
             probabilities_up,
+            np.concatenate(signal_timestamp_parts),
+            np.concatenate(entry_timestamp_parts),
+            np.concatenate(exit_timestamp_parts),
             np.concatenate(entry_parts),
             np.concatenate(exit_parts),
             cfg,
@@ -732,6 +797,9 @@ def render_phase10_markdown(result: Phase10Result) -> str:
         f"- Walk-forward folds: **{len(result.folds)}**",
         f"- Label horizon and purge: **{result.config.horizon_bars} bar(s)**",
         "- Features are backward-looking; scalers fit on each training fold only.",
+        "- A signal is available only after candle t closes; execution enters at candle t+1 "
+        "open and exits at candle t+horizon close.",
+        "- Directional labels use that same executable next-open-to-exit return.",
         "- Probability calibration uses only the immediately preceding validation fold.",
         "- Test folds are strictly later and are never used for fitting or calibration.",
         "- Gap boundaries are hard segment boundaries for both features and labels.",

@@ -1,10 +1,11 @@
-# IQ Option AI Trading Research System (Phases 1–11)
+# IQ Option AI Trading Research System (Phases 1–12)
 
 Quantitative market research, authentic historical data cataloging, causal feature engineering,
 offline backtesting, and offline machine-learning research platform. Phase 10 adds checksum-backed
 authentic-data auditing, overlap deduplication, gap-aware preparation, and strict walk-forward
 evaluation with simulated execution costs. Phase 11 adds bounded backward expansion, durable
-coverage audits, and a one-time post-Phase-10 confirmation protocol.
+coverage audits, and a one-time post-freeze confirmation protocol. Phase 12 adds manual,
+checkpointed incremental forward collection from the newest authentic IQ Option candle.
 
 > [!WARNING]
 > **UNOFFICIAL BROKER INTERFACE**: This research tooling interacts with an unofficial, reverse-engineered WebSocket interface (`wss://iqoption.com/echo/websocket`). Its compatibility, platform authorization, and terms of service compliance have not been established by IQ Option.
@@ -20,10 +21,11 @@ coverage audits, and a one-time post-Phase-10 confirmation protocol.
 - **Operating System**: Windows (PowerShell)
 - **Python Version**: 3.12.10
 - **Test Suite**: 1,125 passing tests (`pytest`, 100% pass rate, 0 failures, 0 skips)
-- **Type Checking**: Clean MyPy verification across 221 files (`mypy src tests`)
+- **Type Checking**: Clean MyPy verification across 223 files (`mypy src tests`)
 - **Linting & Style**: Clean Ruff compliance (`ruff check src tests`)
 - **Security Audit**: 7/7 automated offline security checks passed (`iqresearch security-check`)
-- **Evidence Status**: Phase 10 authentic evaluation is complete. **No real-market edge was detected.** The available 17.93-day sample is insufficient for reliable conclusions and requires later independent data.
+- **Evidence Status**: Phase 10 authentic evaluation is complete. **No real-market edge was detected.** Development remains open until at least 90 verified calendar days are available and the operator explicitly freezes a model.
+- **Current Authentic Coverage**: 62,871 unique EURUSD one-minute candles, 59.71 calendar days, zero unexpected open-market gaps.
 - **Target Market**: EUR/USD (`active_id=1`), standard Forex and OTC market hours
 
 ---
@@ -225,6 +227,23 @@ prevents it from being presented as independent evidence again.
 
 See [docs/PHASE11_HISTORICAL_EXPANSION.md](docs/PHASE11_HISTORICAL_EXPANSION.md) for the exact
 explicitly authorized live command and recovery workflow.
+
+### 3.6. Phase 12 Incremental Forward Collection
+
+Plan the next cycle without connecting:
+
+```powershell
+python -m iqoption_research.cli.main data forward-plan --symbol EURUSD --size 60 --page-size 500 --max-requests 20 --output-dir data/datasets
+```
+
+Manually collect only missing newer completed candles:
+
+```powershell
+python -m iqoption_research.cli.main data forward-sync --job-id eurusd-forward-1m --symbol EURUSD --size 60 --page-size 500 --max-requests 20 --output-dir data/datasets --live --yes-i-understand
+```
+
+See [docs/PHASE12_INCREMENTAL_FORWARD_COLLECTION.md](docs/PHASE12_INCREMENTAL_FORWARD_COLLECTION.md)
+for checkpoint recovery, offline status, and the versioned development-freeze protocol.
 
 ---
 

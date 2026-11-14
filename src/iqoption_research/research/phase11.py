@@ -53,7 +53,7 @@ PHASE10_EVALUATION_CUTOFF_TS: Final[int] = 1_794_607_200
 PHASE10_EVALUATED_DATASET_FINGERPRINT: Final[str] = (
     "70d8b1e906d5b76f97b93346ad4399e23abe1630dca66e14b1a1828a617e6632"
 )
-CONFIRMATION_STATE_VERSION: Final[int] = 1
+CONFIRMATION_STATE_VERSION: Final[int] = 2
 DEFAULT_COST_SCENARIOS: Final[tuple[tuple[float, float], ...]] = (
     (0.5, 0.0),
     (1.0, 0.1),
@@ -168,13 +168,19 @@ class ConfirmationProtocolState:
     prior_evaluation_cutoff_utc: str
     prior_evaluated_dataset_fingerprint: str
     confirmation_days: int
-    evaluation_status: str
+    protocol_status: str
+    development_freeze_ts: int | None = None
+    development_freeze_utc: str | None = None
+    development_dataset_fingerprint: str | None = None
+    frozen_model_name: str | None = None
+    model_frozen_at_utc: str | None = None
     confirmation_start_ts: int | None = None
     confirmation_end_ts: int | None = None
     confirmation_dataset_fingerprint: str | None = None
     full_dataset_fingerprint_at_evaluation: str | None = None
     evaluation_started_at_utc: str | None = None
     evaluated_at_utc: str | None = None
+    audit_history: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -186,9 +192,14 @@ class ConfirmationProtocolState:
             raise ConfirmationProtocolError(
                 f"Unsupported confirmation state version {state.schema_version}."
             )
-        if state.evaluation_status not in {"RESERVED", "EVALUATION_STARTED", "EVALUATED"}:
+        if state.protocol_status not in {
+            "DEVELOPMENT_OPEN",
+            "MODEL_FROZEN",
+            "CONFIRMATION_STARTED",
+            "CONFIRMATION_EVALUATED",
+        }:
             raise ConfirmationProtocolError(
-                f"Invalid confirmation evaluation status {state.evaluation_status!r}."
+                f"Invalid research protocol status {state.protocol_status!r}."
             )
         return state
 
@@ -201,6 +212,9 @@ class Phase11EvaluationResult:
     ready_for_confirmation: bool
     confirmation_evaluated: bool
     confirmation_evaluation_status: str
+    development_freeze_utc: str | None
+    development_dataset_fingerprint: str | None
+    frozen_model_name: str | None
     prior_evaluation_cutoff_utc: str
     prior_evaluated_dataset_fingerprint: str
     confirmation_dataset_fingerprint: str | None
@@ -222,6 +236,9 @@ class Phase11EvaluationResult:
             "ready_for_confirmation": self.ready_for_confirmation,
             "confirmation_evaluated": self.confirmation_evaluated,
             "confirmation_evaluation_status": self.confirmation_evaluation_status,
+            "development_freeze_utc": self.development_freeze_utc,
+            "development_dataset_fingerprint": self.development_dataset_fingerprint,
+            "frozen_model_name": self.frozen_model_name,
             "prior_evaluation_cutoff_utc": self.prior_evaluation_cutoff_utc,
             "prior_evaluated_dataset_fingerprint": (self.prior_evaluated_dataset_fingerprint),
             "confirmation_dataset_fingerprint": self.confirmation_dataset_fingerprint,
@@ -454,7 +471,46 @@ def load_or_create_confirmation_state(
     """Load the immutable protocol anchor or establish it from Phase 10 evidence."""
     path = Path(state_path)
     if path.is_file():
-        state = ConfirmationProtocolState.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if int(payload.get("schema_version", 1)) == 1:
+            legacy_status = str(payload.get("evaluation_status", "RESERVED"))
+            reserved_fields = (
+                payload.get("confirmation_start_ts"),
+                payload.get("confirmation_end_ts"),
+                payload.get("confirmation_dataset_fingerprint"),
+                payload.get("evaluation_started_at_utc"),
+                payload.get("evaluated_at_utc"),
+            )
+            if legacy_status != "RESERVED" or any(value is not None for value in reserved_fields):
+                raise ConfirmationProtocolError(
+                    "Legacy protocol contains reserved or consumed confirmation evidence and "
+                    "cannot be silently reclassified."
+                )
+            migrated_at = datetime.now(UTC).isoformat()
+            state = ConfirmationProtocolState(
+                schema_version=CONFIRMATION_STATE_VERSION,
+                prior_evaluation_cutoff_ts=int(payload["prior_evaluation_cutoff_ts"]),
+                prior_evaluation_cutoff_utc=str(payload["prior_evaluation_cutoff_utc"]),
+                prior_evaluated_dataset_fingerprint=str(
+                    payload["prior_evaluated_dataset_fingerprint"]
+                ),
+                confirmation_days=int(payload["confirmation_days"]),
+                protocol_status="DEVELOPMENT_OPEN",
+                audit_history=(
+                    {
+                        "event": "MIGRATED_V1_RESERVED",
+                        "at_utc": migrated_at,
+                        "legacy_status": legacy_status,
+                        "reason": (
+                            "The legacy fixed cutoff was previously evaluated Phase 10 history, "
+                            "not independent confirmation."
+                        ),
+                    },
+                ),
+            )
+            _write_confirmation_state(path, state)
+        else:
+            state = ConfirmationProtocolState.from_dict(payload)
         if state.prior_evaluation_cutoff_ts != prior_evaluation_cutoff_ts:
             raise ConfirmationProtocolError(
                 "The persisted Phase 10 cutoff cannot be changed. Use the recorded cutoff."
@@ -483,10 +539,74 @@ def load_or_create_confirmation_state(
         ).isoformat(),
         prior_evaluated_dataset_fingerprint=recorded_fingerprint,
         confirmation_days=confirmation_days,
-        evaluation_status="RESERVED",
+        protocol_status="DEVELOPMENT_OPEN",
+        audit_history=(
+            {
+                "event": "PROTOCOL_CREATED",
+                "at_utc": datetime.now(UTC).isoformat(),
+                "phase10_cutoff_ts": prior_evaluation_cutoff_ts,
+            },
+        ),
     )
     _write_confirmation_state(path, state)
     return state
+
+
+def freeze_development_protocol(
+    storage_dir: Path | str,
+    *,
+    state_path: Path | str,
+    selected_model: str,
+    target_calendar_days: int = DEFAULT_TARGET_DAYS,
+    confirmation_days: int = DEFAULT_CONFIRMATION_DAYS,
+    symbol: str = "EURUSD",
+    candle_size_seconds: int = 60,
+    prior_evaluation_cutoff_ts: int = PHASE10_EVALUATION_CUTOFF_TS,
+) -> ConfirmationProtocolState:
+    """Irreversibly freeze the current verified development dataset and model name."""
+    if not selected_model.strip():
+        raise ValueError("selected_model cannot be empty")
+    coverage, candles = audit_expansion_coverage(
+        storage_dir,
+        symbol=symbol,
+        candle_size_seconds=candle_size_seconds,
+        target_calendar_days=target_calendar_days,
+    )
+    state = load_or_create_confirmation_state(
+        state_path,
+        candles=candles,
+        confirmation_days=confirmation_days,
+        prior_evaluation_cutoff_ts=prior_evaluation_cutoff_ts,
+    )
+    if state.protocol_status != "DEVELOPMENT_OPEN":
+        raise ConfirmationProtocolError("Development has already been frozen.")
+    if not coverage.meets_target:
+        raise ConfirmationProtocolError(
+            f"Development coverage is {coverage.base.calendar_span_days:.2f} days; "
+            f"{target_calendar_days} days are required before model freeze."
+        )
+    frozen_at = datetime.now(UTC).isoformat()
+    development_fingerprint = _research_candle_fingerprint(candles)
+    event = {
+        "event": "MODEL_FROZEN",
+        "at_utc": frozen_at,
+        "model_name": selected_model.strip(),
+        "development_freeze_ts": candles[-1].from_ts,
+        "development_dataset_fingerprint": development_fingerprint,
+        "unique_candles": coverage.base.unique_candles,
+    }
+    frozen = replace(
+        state,
+        protocol_status="MODEL_FROZEN",
+        development_freeze_ts=candles[-1].from_ts,
+        development_freeze_utc=datetime.fromtimestamp(candles[-1].from_ts, tz=UTC).isoformat(),
+        development_dataset_fingerprint=development_fingerprint,
+        frozen_model_name=selected_model.strip(),
+        model_frozen_at_utc=frozen_at,
+        audit_history=(*state.audit_history, event),
+    )
+    _write_confirmation_state(Path(state_path), frozen)
+    return frozen
 
 
 def partition_confirmation_candles(
@@ -612,19 +732,32 @@ def run_phase11_evaluation(
         confirmation_days=confirmation_days,
         prior_evaluation_cutoff_ts=prior_evaluation_cutoff_ts,
     )
-    if evaluate_confirmation and protocol.evaluation_status != "RESERVED":
+    if evaluate_confirmation and protocol.protocol_status != "MODEL_FROZEN":
         raise ConfirmationProtocolError(
-            "Independent confirmation has already started or completed; it cannot be rerun. "
-            "Use development-only research and collect a later replication period."
+            "Independent confirmation requires a frozen model and cannot be rerun."
         )
-    development_candles, confirmation_candles = partition_confirmation_candles(
-        candles,
-        prior_evaluation_cutoff_ts=protocol.prior_evaluation_cutoff_ts,
-    )
+    if protocol.protocol_status == "DEVELOPMENT_OPEN":
+        development_candles = candles
+        confirmation_candles: list[Candle] = []
+    else:
+        if protocol.development_freeze_ts is None:
+            raise ConfirmationProtocolError("Frozen protocol is missing its development cutoff.")
+        development_candles, confirmation_candles = partition_confirmation_candles(
+            candles,
+            prior_evaluation_cutoff_ts=protocol.development_freeze_ts,
+        )
+        if (
+            protocol.development_dataset_fingerprint is None
+            or _research_candle_fingerprint(development_candles)
+            != protocol.development_dataset_fingerprint
+        ):
+            raise ConfirmationProtocolError(
+                "Frozen development dataset fingerprint no longer matches verified storage."
+            )
     evaluated_at = datetime.now(UTC).isoformat()
     base_limitations = [
-        "The October-November Phase 10 history is previously evaluated development data, "
-        "not an independent holdout.",
+        "The October-November Phase 10 history remains permanently recorded as previously "
+        "evaluated development data, not independent confirmation.",
         "Stored candles lack verified bid/ask quotes; every spread and slippage value is a "
         "modeled sensitivity assumption, not an observed historical quote.",
     ]
@@ -650,8 +783,11 @@ def run_phase11_evaluation(
         return Phase11EvaluationResult(
             coverage=coverage,
             ready_for_confirmation=confirmation_ready,
-            confirmation_evaluated=protocol.evaluation_status == "EVALUATED",
-            confirmation_evaluation_status=protocol.evaluation_status,
+            confirmation_evaluated=protocol.protocol_status == "CONFIRMATION_EVALUATED",
+            confirmation_evaluation_status=protocol.protocol_status,
+            development_freeze_utc=protocol.development_freeze_utc,
+            development_dataset_fingerprint=protocol.development_dataset_fingerprint,
+            frozen_model_name=protocol.frozen_model_name,
             prior_evaluation_cutoff_utc=protocol.prior_evaluation_cutoff_utc,
             prior_evaluated_dataset_fingerprint=(protocol.prior_evaluated_dataset_fingerprint),
             confirmation_dataset_fingerprint=(protocol.confirmation_dataset_fingerprint),
@@ -697,8 +833,11 @@ def run_phase11_evaluation(
         return Phase11EvaluationResult(
             coverage=coverage,
             ready_for_confirmation=confirmation_ready,
-            confirmation_evaluated=protocol.evaluation_status == "EVALUATED",
-            confirmation_evaluation_status=protocol.evaluation_status,
+            confirmation_evaluated=protocol.protocol_status == "CONFIRMATION_EVALUATED",
+            confirmation_evaluation_status=protocol.protocol_status,
+            development_freeze_utc=protocol.development_freeze_utc,
+            development_dataset_fingerprint=protocol.development_dataset_fingerprint,
+            frozen_model_name=protocol.frozen_model_name,
             prior_evaluation_cutoff_utc=protocol.prior_evaluation_cutoff_utc,
             prior_evaluated_dataset_fingerprint=(protocol.prior_evaluated_dataset_fingerprint),
             confirmation_dataset_fingerprint=(protocol.confirmation_dataset_fingerprint),
@@ -711,7 +850,7 @@ def run_phase11_evaluation(
             development_rows=development.row_count,
             confirmation_rows=len(confirmation_candles),
             development_metrics=development_evaluation.metrics,
-            selected_model=development_evaluation.best_model,
+            selected_model=protocol.frozen_model_name or development_evaluation.best_model,
             selected_baseline=development_evaluation.best_baseline,
             confirmation_metrics={},
             cost_sensitivity=(),
@@ -726,20 +865,32 @@ def run_phase11_evaluation(
     )
     if confirmation.row_count < 100:
         raise Phase10Error("Confirmation partition is statistically insufficient.")
+    frozen_model = protocol.frozen_model_name
+    if frozen_model is None:
+        raise ConfirmationProtocolError("Frozen protocol is missing its selected model name.")
     confirmation_fingerprint = _research_candle_fingerprint(confirmation_candles)
+    started_at = datetime.now(UTC).isoformat()
     protocol = replace(
         protocol,
-        evaluation_status="EVALUATION_STARTED",
+        protocol_status="CONFIRMATION_STARTED",
         confirmation_start_ts=confirmation_candles[0].from_ts,
         confirmation_end_ts=confirmation_candles[-1].from_ts,
         confirmation_dataset_fingerprint=confirmation_fingerprint,
         full_dataset_fingerprint_at_evaluation=coverage.base.aggregate_fingerprint,
         evaluation_started_at_utc=evaluated_at,
+        audit_history=(
+            *protocol.audit_history,
+            {
+                "event": "CONFIRMATION_STARTED",
+                "at_utc": started_at,
+                "confirmation_dataset_fingerprint": confirmation_fingerprint,
+            },
+        ),
     )
     _write_confirmation_state(state_path, protocol)
     selected_names = (
         development_evaluation.best_baseline,
-        development_evaluation.best_model,
+        frozen_model,
     )
     confirmation_metrics: dict[str, ModelPerformance] = {}
     selected_probabilities: np.ndarray | None = None
@@ -751,7 +902,7 @@ def run_phase11_evaluation(
             confirmation,
             cfg,
         )
-        if name == development_evaluation.best_model:
+        if name == frozen_model:
             selected_probabilities = probabilities
     if selected_probabilities is None:
         raise Phase10Error("Selected model produced no confirmation probabilities.")
@@ -789,15 +940,26 @@ def run_phase11_evaluation(
     completed_at = datetime.now(UTC).isoformat()
     protocol = replace(
         protocol,
-        evaluation_status="EVALUATED",
+        protocol_status="CONFIRMATION_EVALUATED",
         evaluated_at_utc=completed_at,
+        audit_history=(
+            *protocol.audit_history,
+            {
+                "event": "CONFIRMATION_EVALUATED",
+                "at_utc": completed_at,
+                "confirmation_dataset_fingerprint": confirmation_fingerprint,
+            },
+        ),
     )
     _write_confirmation_state(state_path, protocol)
     return Phase11EvaluationResult(
         coverage=coverage,
         ready_for_confirmation=True,
         confirmation_evaluated=True,
-        confirmation_evaluation_status=protocol.evaluation_status,
+        confirmation_evaluation_status=protocol.protocol_status,
+        development_freeze_utc=protocol.development_freeze_utc,
+        development_dataset_fingerprint=protocol.development_dataset_fingerprint,
+        frozen_model_name=protocol.frozen_model_name,
         prior_evaluation_cutoff_utc=protocol.prior_evaluation_cutoff_utc,
         prior_evaluated_dataset_fingerprint=protocol.prior_evaluated_dataset_fingerprint,
         confirmation_dataset_fingerprint=confirmation_fingerprint,
@@ -808,7 +970,7 @@ def run_phase11_evaluation(
         development_rows=development.row_count,
         confirmation_rows=confirmation.row_count,
         development_metrics=development_evaluation.metrics,
-        selected_model=development_evaluation.best_model,
+        selected_model=protocol.frozen_model_name,
         selected_baseline=development_evaluation.best_baseline,
         confirmation_metrics=confirmation_metrics,
         cost_sensitivity=tuple(sensitivity),
@@ -841,7 +1003,11 @@ def render_phase11_markdown(result: Phase11EvaluationResult) -> str:
         f"- Phase 10 evaluation cutoff: `{result.prior_evaluation_cutoff_utc}`",
         "- Pre-cutoff history classification: **previously evaluated development data**",
         f"- Pre-cutoff dataset fingerprint: `{result.prior_evaluated_dataset_fingerprint}`",
-        f"- Evaluation status: **{result.confirmation_evaluation_status}**",
+        f"- Protocol status: **{result.confirmation_evaluation_status}**",
+        f"- Development freeze: `{result.development_freeze_utc or 'not frozen'}`",
+        f"- Frozen development fingerprint: "
+        f"`{result.development_dataset_fingerprint or 'not frozen'}`",
+        f"- Frozen model: **{result.frozen_model_name or 'not frozen'}**",
         f"- Confirmation dataset fingerprint: "
         f"`{result.confirmation_dataset_fingerprint or 'not assigned'}`",
         "",

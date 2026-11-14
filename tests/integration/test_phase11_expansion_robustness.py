@@ -26,7 +26,9 @@ from iqoption_research.research.phase11 import (
     ConfirmationProtocolError,
     audit_expansion_coverage,
     build_backward_expansion_plan,
+    freeze_development_protocol,
     launch_backward_expansion,
+    load_or_create_confirmation_state,
     partition_confirmation_candles,
     run_phase11_evaluation,
 )
@@ -268,13 +270,13 @@ def test_confirmation_partition_is_strictly_later_and_cost_sensitivity_is_monoto
 ) -> None:
     root = tmp_path / "datasets"
     candles = _candles(2_700, size=3600, seed=555)
-    _persist(root, candles)
     cutoff = candles[2_299].from_ts
     development, confirmation = partition_confirmation_candles(
         candles,
         prior_evaluation_cutoff_ts=cutoff,
     )
     assert development[-1].from_ts == cutoff < confirmation[0].from_ts
+    _persist(root, development)
 
     config = Phase10Config(
         candle_size_seconds=3600,
@@ -299,10 +301,33 @@ def test_confirmation_partition_is_strictly_later_and_cost_sensitivity_is_monoto
         confirmation_state_path=state_path,
         prior_evaluation_cutoff_ts=cutoff,
     )
-    assert development_result.ready_for_confirmation is True
+    assert development_result.ready_for_confirmation is False
     assert development_result.confirmation_evaluated is False
     assert development_result.confirmation_metrics == {}
     assert development_result.development_rows > 100
+
+    frozen = freeze_development_protocol(
+        root,
+        state_path=state_path,
+        selected_model="logistic_regression",
+        target_calendar_days=90,
+        confirmation_days=14,
+        candle_size_seconds=3600,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+    assert frozen.protocol_status == "MODEL_FROZEN"
+    _persist(root, confirmation)
+
+    reserved_result = run_phase11_evaluation(
+        root,
+        target_calendar_days=90,
+        confirmation_days=14,
+        config=config,
+        confirmation_state_path=state_path,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+    assert reserved_result.ready_for_confirmation is True
+    assert reserved_result.confirmation_evaluated is False
 
     result = run_phase11_evaluation(
         root,
@@ -317,7 +342,7 @@ def test_confirmation_partition_is_strictly_later_and_cost_sensitivity_is_monoto
 
     assert result.ready_for_confirmation is True
     assert result.confirmation_evaluated is True
-    assert result.confirmation_evaluation_status == "EVALUATED"
+    assert result.confirmation_evaluation_status == "CONFIRMATION_EVALUATED"
     assert result.development_rows > result.confirmation_rows > 100
     assert set(result.confirmation_metrics) == {
         result.selected_baseline,
@@ -333,7 +358,7 @@ def test_confirmation_partition_is_strictly_later_and_cost_sensitivity_is_monoto
     assert state["prior_evaluation_cutoff_ts"] == cutoff
     assert state["prior_evaluated_dataset_fingerprint"]
     assert state["confirmation_dataset_fingerprint"] == result.confirmation_dataset_fingerprint
-    assert state["evaluation_status"] == "EVALUATED"
+    assert state["protocol_status"] == "CONFIRMATION_EVALUATED"
 
     with pytest.raises(ConfirmationProtocolError, match="cannot be rerun"):
         run_phase11_evaluation(
@@ -378,9 +403,76 @@ def test_previously_evaluated_history_is_development_not_confirmation(
     assert result.confirmation_rows == 0
     assert result.ready_for_confirmation is False
     assert result.confirmation_evaluated is False
-    assert result.confirmation_evaluation_status == "RESERVED"
+    assert result.confirmation_evaluation_status == "DEVELOPMENT_OPEN"
     assert result.confirmation_metrics == {}
     assert "previously evaluated development data" in " ".join(result.limitations)
+
+
+def test_legacy_reserved_protocol_migrates_with_audit_history(tmp_path: Path) -> None:
+    candles = _candles(20, size=3600, seed=557)
+    cutoff = candles[-1].from_ts
+    state_path = tmp_path / "confirmation_state.json"
+    legacy = {
+        "schema_version": 1,
+        "prior_evaluation_cutoff_ts": cutoff,
+        "prior_evaluation_cutoff_utc": datetime.fromtimestamp(cutoff, tz=UTC).isoformat(),
+        "prior_evaluated_dataset_fingerprint": "phase10-fingerprint",
+        "confirmation_days": 14,
+        "evaluation_status": "RESERVED",
+        "confirmation_start_ts": None,
+        "confirmation_end_ts": None,
+        "confirmation_dataset_fingerprint": None,
+        "full_dataset_fingerprint_at_evaluation": None,
+        "evaluation_started_at_utc": None,
+        "evaluated_at_utc": None,
+    }
+    state_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    migrated = load_or_create_confirmation_state(
+        state_path,
+        candles=candles,
+        confirmation_days=14,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+
+    assert migrated.schema_version == 2
+    assert migrated.protocol_status == "DEVELOPMENT_OPEN"
+    assert migrated.prior_evaluated_dataset_fingerprint == "phase10-fingerprint"
+    assert migrated.audit_history[0]["event"] == "MIGRATED_V1_RESERVED"
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["schema_version"] == 2
+    assert persisted["audit_history"][0]["legacy_status"] == "RESERVED"
+
+
+def test_legacy_reserved_confirmation_data_is_never_reclassified(tmp_path: Path) -> None:
+    candles = _candles(20, size=3600, seed=558)
+    cutoff = candles[-1].from_ts
+    state_path = tmp_path / "confirmation_state.json"
+    legacy = {
+        "schema_version": 1,
+        "prior_evaluation_cutoff_ts": cutoff,
+        "prior_evaluation_cutoff_utc": datetime.fromtimestamp(cutoff, tz=UTC).isoformat(),
+        "prior_evaluated_dataset_fingerprint": "phase10-fingerprint",
+        "confirmation_days": 14,
+        "evaluation_status": "RESERVED",
+        "confirmation_start_ts": cutoff + 3600,
+        "confirmation_end_ts": None,
+        "confirmation_dataset_fingerprint": "reserved-fingerprint",
+        "full_dataset_fingerprint_at_evaluation": None,
+        "evaluation_started_at_utc": None,
+        "evaluated_at_utc": None,
+    }
+    state_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    with pytest.raises(ConfirmationProtocolError, match="cannot be silently reclassified"):
+        load_or_create_confirmation_state(
+            state_path,
+            candles=candles,
+            confirmation_days=14,
+            prior_evaluation_cutoff_ts=cutoff,
+        )
+
+    assert json.loads(state_path.read_text(encoding="utf-8")) == legacy
 
 
 def test_phase11_cli_is_offline_by_default_and_reports_current_insufficiency(

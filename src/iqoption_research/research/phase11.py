@@ -905,6 +905,7 @@ def _confirmation_metrics(
         max_drawdown_amount=float(trading.max_drawdown),
         max_drawdown_percent=float(trading.max_drawdown_pct),
         profitable=bool(trading.net_pnl > 0.0),
+        profit_factor=float(trading.profit_factor),
     )
 
 

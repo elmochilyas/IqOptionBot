@@ -1,0 +1,110 @@
+{
+  "created_at_utc": "2026-11-14T14:41:11.220387+00:00",
+  "files": [
+    {
+      "path": "bundle_metadata.json",
+      "sha256": "3b2f7334963a6f916270b1d311b87405a9e01cdeb550201cc55443b0778a2d69",
+      "size": 2258
+    },
+    {
+      "path": "calibrator.json",
+      "sha256": "e0117e9e71fb5167289febf594cf4aa0a62e8360b54c3b17e910873930f3531b",
+      "size": 203
+    },
+    {
+      "path": "metadata.json",
+      "sha256": "d002f478330133bdbc9dcd41bac603733fbde9108d18748f78042258d8897890",
+      "size": 792
+    },
+    {
+      "path": "model.joblib",
+      "sha256": "9704e34c721f2ad9dae316b2cfe5e16609ef14a58e3293e82a50ff67b8f816b5",
+      "size": 577929
+    },
+    {
+      "path": "scaler.json",
+      "sha256": "c79b5b729b3435a0718c113800748f65239551cff94ac4556b9832f3d14860a8",
+      "size": 2205
+    }
+  ],
+  "manifest_version": "1.0",
+  "metadata": {
+    "bundle_format_version": "1.0",
+    "calibrator_method": "sigmoid",
+    "created_at_utc": "2026-11-14T14:41:11.118125+00:00",
+    "feature_names": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio",
+      "log_volume",
+      "volume_ratio_10"
+    ],
+    "has_calibrator": true,
+    "has_scaler": true,
+    "kind": "model_bundle",
+    "metadata": {
+      "created_at_utc": "2026-11-14T14:41:11.032779+00:00",
+      "dataset_candles": 62871,
+      "development_disclaimer": "EXPERIMENTAL DEVELOPMENT ARTIFACT ONLY. NOT A VALIDATED TRADING EDGE. DO NOT DEPLOY FOR REAL-MONEY TRADING OR CONSUME AS INDEPENDENT CONFIRMATION.",
+      "feature_count": 13,
+      "horizon_bars": 1,
+      "independent_confirmation_consumed": false,
+      "is_frozen": false,
+      "lifecycle_stage": "DEVELOPMENT_ONLY",
+      "model_family": "random_forest",
+      "model_provenance": "authentic_trained",
+      "protocol_version": "v2-development",
+      "source_dataset": "authentic_iqoption_eurusd_60s",
+      "stationary_features_only": true,
+      "training_rows": 37609,
+      "validation_rows": 6268
+    },
+    "model": {
+      "class_name": "RandomForestModel",
+      "classes": [
+        0,
+        1
+      ],
+      "feature_names": [
+        "return_1",
+        "log_return_1",
+        "intrabar_return",
+        "sma_ratio_5",
+        "sma_ratio_20",
+        "volatility_10",
+        "volatility_20",
+        "candle_range",
+        "body_to_range",
+        "upper_shadow_ratio",
+        "lower_shadow_ratio",
+        "log_volume",
+        "volume_ratio_10"
+      ],
+      "hyperparameters": {
+        "bootstrap": true,
+        "class_weight": "balanced_subsample",
+        "max_depth": 6,
+        "max_features": "sqrt",
+        "min_samples_leaf": 50,
+        "min_samples_split": 20,
+        "n_estimators": 100,
+        "n_jobs": 1,
+        "random_state": 42
+      },
+      "is_fitted": true,
+      "model_type": "tabular",
+      "name": "random_forest",
+      "saved_at_utc": "2026-11-14T14:41:11.118125+00:00",
+      "version": "1.0.0"
+    },
+    "security_note": "Trusted local artifact only. Do not load joblib/pickle artifacts from untrusted sources."
+  }
+}

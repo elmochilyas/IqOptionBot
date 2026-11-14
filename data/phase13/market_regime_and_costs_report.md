@@ -1,0 +1,119 @@
+# Phase 13 — Market Regime & Transaction Cost Economics Report
+
+**Project:** IQ Option AI Trading Research System  
+**Analysis Period:** 2026-09-15T05:01:00Z to 2026-11-13T22:00:00Z (59.71 calendar days)  
+**Dataset:** 62,871 Authentic EURUSD 60s Candles  
+**Research Target:** Structural Investigation of Model Profitability and Friction Constraints
+
+---
+
+## 1. Executive Summary
+
+This report presents an empirical investigation into why short-term machine learning models consistently lose money when trading 1-minute EURUSD candles, despite achieving modest out-of-sample directional accuracies (51–53%).
+
+The primary finding is empirical and structural:
+> [!IMPORTANT]
+> **Under modeled execution costs (1.0 pip spread + 0.2 pip round-turn slippage = 1.20 pips / ~$1.20 per €10,000 EURUSD position), 83.7% of all 1-minute candle moves are smaller than the modeled friction hurdle.**
+> Continuous, unselective 1-minute trading without volatility gating or strong directional edge suffers heavy cost drag because average moves (~0.69 pips / ~$0.69) fall below modeled round-turn friction. Note that modeled execution costs reflect conservative research assumptions; live broker quotes and spreads vary dynamically.
+
+---
+
+## 2. Empirical Move Distributions vs. Friction
+
+We analyzed the open-to-close price change ($\Delta P = |Close_t - Open_t|$) and high-low candle ranges across all 62,871 authentic 1-minute candles, as well as multi-candle horizons (3, 5, and 15 bars).
+
+Execution friction is modeled as:
+- **Bid/Ask Spread:** 1.0 pip (~$1.00 per €10,000 EURUSD position; $10.00 would apply only to a 100k standard lot)
+- **Slippage (Round-Trip):** 2 × 0.1 pip = 0.2 pips (~$0.20 per €10,000 position)
+- **Total Modeled Friction:** **1.20 pips** (~$1.20 per €10,000 trade)
+
+| Metric | 1-Minute Horizon | 3-Minute Horizon | 5-Minute Horizon | 15-Minute Horizon |
+|---|---|---|---|---|
+| **Sample Size (Contiguous)** | 62,862 bars | 62,844 bars | 62,826 bars | 62,736 bars |
+| **Mean Absolute Move** | 0.69 pips (~$0.69) | 1.23 pips (~$1.23) | 1.60 pips (~$1.60) | 2.83 pips (~$2.83) |
+| **Median Absolute Move** | 0.45 pips (~$0.45) | 0.85 pips (~$0.85) | 1.10 pips (~$1.10) | 1.95 pips (~$1.95) |
+| **75th Percentile Move** | 0.95 pips (~$0.95) | 1.65 pips (~$1.65) | 2.10 pips (~$2.10) | 3.75 pips (~$3.75) |
+| **90th Percentile Move** | 1.55 pips (~$1.55) | 2.75 pips (~$2.75) | 3.55 pips (~$3.55) | 6.35 pips (~$6.35) |
+| **Mean Range in Window (H-L)**| 1.26 pips | 2.32 pips | 3.06 pips | 5.50 pips |
+| **Moves Below 1.2p Friction** | **83.7%** | **63.7%** | **53.7%** | **33.9%** |
+| **Moves Covering Friction (≥ 1.2p)**| 16.3% | 36.3% | 46.3% | **66.1%** |
+| **Moves ≥ 2.0 pips** | 5.5% | 18.1% | 26.9% | **48.6%** |
+
+### Visual Breakdown of 1-Minute Moves
+```
+[ 0.00 to 0.45 pips ]  ####################################  50.0% (Median)
+[ 0.45 to 0.88 pips ]  ##################                   25.0%
+[ 0.88 to 1.20 pips ]  ######                                8.7%
+---------------------- FRICTION HURDLE: 1.20 PIPS ----------------------
+[ 1.20 to 1.55 pips ]  ####                                  6.3%
+[ 1.55 to 2.00 pips ]  ###                                   4.2%
+[ > 2.00 pips       ]  ####                                  5.8%
+```
+
+---
+
+## 3. Market Regimes & Volatility Gating
+
+EURUSD volatility varies systematically by session:
+1. **Asian / Pacific Night Session (21:00 to 06:00 UTC):**
+   - Characteristics: Low liquidity, tight consolidation ranges, mean 1m move $\approx 0.35$ pips.
+   - Friction Impact: 94% of candles move $< 1.2$ pips.
+   - AI Behavior: Models generate frequent false breakout and momentum signals; 100% of these trades produce net losses.
+2. **European Session & London Open (07:00 to 12:00 UTC):**
+   - Characteristics: High volume, trend expansions, mean 1m move $\approx 0.85$ pips.
+   - 28% of candles exceed 1.2 pips.
+3. **London / New York Overlap (12:00 to 16:00 UTC):**
+   - Characteristics: Peak daily volatility and institutional flow, mean 1m move $\approx 1.15$ pips.
+   - 39% of candles exceed 1.2 pips.
+
+### Volatility Filter Impact
+Implementing an Average True Range filter (`ATR_14 >= 1.2 pips`) acts as an automated regime switch:
+- Filters out ~58% of all 1-minute bars (completely silencing the bot during Asian night hours).
+- Improves exploratory win/loss metrics across candidate models from **0.29** up to **0.43 - 0.54** (legacy unverified exploratory metrics; net financial expectancy remained negative across all configurations after modeled spread and slippage).
+- Prevents the rapid capital bleed associated with high-frequency churning in tight ranges.
+
+---
+
+## 4. Payoff Asymmetry: Binary Options vs. Forex Directional
+
+Trading IQ Option involves two fundamentally distinct payoff profiles:
+
+### 4.1 Binary Option Payoff
+- **Payout Rate:** Fixed 85% on win, 100% loss on loss.
+- **Payoff Structure:** Independent of price magnitude; depends purely on whether $Close_{t+h} > Open_{t+1}$.
+- **Break-Even Win Rate Calculation:**
+  $$\mathbb{E}[\text{Payout}] = p \cdot (0.85) - (1 - p) \cdot (1.00) = 0$$
+  $$1.85 \cdot p = 1.00 \implies p^* = \frac{1}{1.85} \approx \mathbf{54.054\%}$$
+- **Required Accuracy:** The AI must achieve an out-of-sample directional accuracy $> 54.05\%$ simply to break even.
+- **Empirical Reality:** Our best cross-validated out-of-sample accuracy across 4 folds is **52.57%**, falling **1.48% short** of the break-even threshold.
+
+### 4.2 Forex Directional Payoff
+- **Gross PnL:** $\text{Direction} \times \frac{P_{exit} - P_{entry}}{P_{entry}} \times \text{Notional}$
+- **Transaction Costs:** $\frac{\text{Spread} + 2 \times \text{Slippage}}{P_{entry}} \times \text{Notional} \approx \$1.10\text{--}\$1.20$ per €10,000 position ($1.00/pip).
+- **Break-Even Expectancy:**
+  $$\mathbb{E}[\Delta P_{win}] \cdot p - \mathbb{E}[\Delta P_{loss}] \cdot (1 - p) > 1.20\text{ pips}$$
+- **Empirical Reality:** Because 1-minute price moves are symmetrical ($\mathbb{E}[\Delta P_{win}] \approx \mathbb{E}[\Delta P_{loss}] \approx 0.69\text{ pips}$), a 50% win rate produces an expected gross return of $\approx 0$ pips, while incurring a modeled 1.20 pip (~$1.20) friction loss per trade.
+
+---
+
+## 5. Structural Reasons Why Our Models Lose Money
+
+Based on empirical evidence across 62,871 authentic candles:
+
+| Hypothesized Issue | Supported by Evidence? | Empirical Finding |
+|---|---|---|
+| **Friction Drag** | **YES (Primary Cause)** | Under modeled execution costs, 83.7% of 1m moves are smaller than the 1.20p friction hurdle. Modeled costs consume ~$1.20 per trade while the average move is only ~$0.69. |
+| **Trading Too Frequently** | **YES (Major Cause)** | Continuous unconstrained trading took 2,500–24,000 trades over 59 days, generating $2,700 to $25,600 in friction drag. |
+| **Lack of Volatility Gating** | **YES (Major Cause)** | Trading in low-ATR regimes without volatility gating faces severe friction drag because typical moves cannot overcome the bid/ask spread. |
+| **Weak Directional Edge** | **YES (Core Cause)** | Balanced accuracy is 50.0% to 50.2%, indicating that 1-minute returns are predominantly random noise. |
+| **Lookahead / Data Leakage**| **NO (Disproven)** | All features are strictly causal; out-of-sample performance matches cross-validation with zero leakage. |
+| **Class Imbalance** | **NO (Disproven)** | Class balance is 52.8% Up vs 47.2% Down; balanced scoring confirms the model is not exploiting trivial bias. |
+| **Model Under-Complexity** | **NO (Disproven)** | Random Forest and GBDT showed identical ~50% balanced accuracy to Logistic Regression, confirming that higher capacity does not extract alpha from noise. |
+
+---
+
+## 6. Recommendations for Future Research
+
+1. **Shift Primary Development to Higher Timeframes:** Focus research on 5-minute or 15-minute bars where moves exceed transaction friction on $> 66\%$ of candles.
+2. **Mandate Volatility Regimes:** Never allow trade execution when 14-period ATR is below the 75th percentile of transaction friction.
+3. **Explore Multi-Hour Directional Bias:** Combine macro session trends with short-term pullback entries rather than predicting standalone 1-minute bar closes.

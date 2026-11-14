@@ -248,6 +248,16 @@ class Phase10Result:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class WalkForwardDatasetEvaluation:
+    """Reusable walk-forward output for an already prepared causal dataset."""
+
+    folds: tuple[FoldDefinition, ...]
+    metrics: dict[str, ModelPerformance]
+    best_model: str
+    best_baseline: str
+
+
 def _safe_catalog_path(storage_dir: Path, relative_path: str) -> Path:
     root = storage_dir.resolve()
     candidate = (root / relative_path).resolve()
@@ -646,6 +656,78 @@ def _simulate_trades(
     return state
 
 
+def evaluate_clean_dataset(
+    clean: CleanResearchDataset,
+    config: Phase10Config,
+) -> WalkForwardDatasetEvaluation:
+    """Evaluate a prepared dataset without reading storage or changing its time range."""
+    folds = build_walk_forward_folds(clean, config)
+    metrics: dict[str, ModelPerformance] = {}
+
+    for name in config.model_names:
+        true_parts: list[np.ndarray] = []
+        prediction_parts: list[np.ndarray] = []
+        probability_parts: list[np.ndarray] = []
+        signal_timestamp_parts: list[np.ndarray] = []
+        entry_timestamp_parts: list[np.ndarray] = []
+        exit_timestamp_parts: list[np.ndarray] = []
+        entry_parts: list[np.ndarray] = []
+        exit_parts: list[np.ndarray] = []
+        for fold in folds:
+            predictions, probabilities = _fit_fold_model(name, clean, fold, config)
+            true_parts.append(clean.y[fold.test_start : fold.test_end])
+            prediction_parts.append(predictions)
+            probability_parts.append(probabilities)
+            signal_timestamp_parts.append(clean.timestamps[fold.test_start : fold.test_end])
+            entry_timestamp_parts.append(clean.entry_timestamps[fold.test_start : fold.test_end])
+            exit_timestamp_parts.append(clean.exit_timestamps[fold.test_start : fold.test_end])
+            entry_parts.append(clean.entry_prices[fold.test_start : fold.test_end])
+            exit_parts.append(clean.exit_prices[fold.test_start : fold.test_end])
+
+        y_true = np.concatenate(true_parts)
+        y_pred = np.concatenate(prediction_parts)
+        probabilities_up = np.concatenate(probability_parts)
+        trading = _simulate_trades(
+            probabilities_up,
+            np.concatenate(signal_timestamp_parts),
+            np.concatenate(entry_timestamp_parts),
+            np.concatenate(exit_timestamp_parts),
+            np.concatenate(entry_parts),
+            np.concatenate(exit_parts),
+            config,
+        )
+        metrics[name] = ModelPerformance(
+            model_name=name,
+            model_class="baseline" if _model_is_baseline(name) else "machine_learning",
+            sample_count=len(y_true),
+            accuracy=float(accuracy_score(y_true, y_pred)),
+            precision=float(precision_score(y_true, y_pred, zero_division=0.0)),
+            recall=float(recall_score(y_true, y_pred, zero_division=0.0)),
+            trade_count=trading.trade_count,
+            win_count=trading.wins,
+            loss_count=trading.losses,
+            win_rate=(trading.wins / trading.trade_count if trading.trade_count else 0.0),
+            gross_pnl=float(trading.gross_pnl),
+            execution_costs=float(trading.costs),
+            net_pnl=float(trading.net_pnl),
+            return_on_capital=float(trading.net_pnl / config.initial_capital),
+            max_drawdown_amount=float(trading.max_drawdown),
+            max_drawdown_percent=float(trading.max_drawdown_pct),
+            profitable=bool(trading.net_pnl > 0.0),
+        )
+
+    baseline_names = [name for name in config.model_names if _model_is_baseline(name)]
+    ml_names = [name for name in config.model_names if not _model_is_baseline(name)]
+    if not baseline_names or not ml_names:
+        raise Phase10Error("At least one baseline and one ML model are required.")
+    return WalkForwardDatasetEvaluation(
+        folds=folds,
+        metrics=metrics,
+        best_baseline=max(baseline_names, key=lambda name: metrics[name].net_pnl),
+        best_model=max(ml_names, key=lambda name: metrics[name].net_pnl),
+    )
+
+
 def run_phase10_experiment(
     storage_dir: Path | str,
     *,
@@ -669,67 +751,11 @@ def run_phase10_experiment(
         raise Phase10Error(
             f"Insufficient authentic rows ({clean.row_count}); minimum is {cfg.minimum_rows}."
         )
-    folds = build_walk_forward_folds(clean, cfg)
-    metrics: dict[str, ModelPerformance] = {}
-
-    for name in cfg.model_names:
-        true_parts: list[np.ndarray] = []
-        prediction_parts: list[np.ndarray] = []
-        probability_parts: list[np.ndarray] = []
-        signal_timestamp_parts: list[np.ndarray] = []
-        entry_timestamp_parts: list[np.ndarray] = []
-        exit_timestamp_parts: list[np.ndarray] = []
-        entry_parts: list[np.ndarray] = []
-        exit_parts: list[np.ndarray] = []
-        for fold in folds:
-            predictions, probabilities = _fit_fold_model(name, clean, fold, cfg)
-            true_parts.append(clean.y[fold.test_start : fold.test_end])
-            prediction_parts.append(predictions)
-            probability_parts.append(probabilities)
-            signal_timestamp_parts.append(clean.timestamps[fold.test_start : fold.test_end])
-            entry_timestamp_parts.append(clean.entry_timestamps[fold.test_start : fold.test_end])
-            exit_timestamp_parts.append(clean.exit_timestamps[fold.test_start : fold.test_end])
-            entry_parts.append(clean.entry_prices[fold.test_start : fold.test_end])
-            exit_parts.append(clean.exit_prices[fold.test_start : fold.test_end])
-
-        y_true = np.concatenate(true_parts)
-        y_pred = np.concatenate(prediction_parts)
-        probabilities_up = np.concatenate(probability_parts)
-        trading = _simulate_trades(
-            probabilities_up,
-            np.concatenate(signal_timestamp_parts),
-            np.concatenate(entry_timestamp_parts),
-            np.concatenate(exit_timestamp_parts),
-            np.concatenate(entry_parts),
-            np.concatenate(exit_parts),
-            cfg,
-        )
-        metrics[name] = ModelPerformance(
-            model_name=name,
-            model_class="baseline" if _model_is_baseline(name) else "machine_learning",
-            sample_count=len(y_true),
-            accuracy=float(accuracy_score(y_true, y_pred)),
-            precision=float(precision_score(y_true, y_pred, zero_division=0.0)),
-            recall=float(recall_score(y_true, y_pred, zero_division=0.0)),
-            trade_count=trading.trade_count,
-            win_count=trading.wins,
-            loss_count=trading.losses,
-            win_rate=(trading.wins / trading.trade_count if trading.trade_count else 0.0),
-            gross_pnl=float(trading.gross_pnl),
-            execution_costs=float(trading.costs),
-            net_pnl=float(trading.net_pnl),
-            return_on_capital=float(trading.net_pnl / cfg.initial_capital),
-            max_drawdown_amount=float(trading.max_drawdown),
-            max_drawdown_percent=float(trading.max_drawdown_pct),
-            profitable=bool(trading.net_pnl > 0.0),
-        )
-
-    baseline_names = [name for name in cfg.model_names if _model_is_baseline(name)]
-    ml_names = [name for name in cfg.model_names if not _model_is_baseline(name)]
-    if not baseline_names or not ml_names:
-        raise Phase10Error("At least one baseline and one ML model are required.")
-    best_baseline = max(baseline_names, key=lambda name: metrics[name].net_pnl)
-    best_model = max(ml_names, key=lambda name: metrics[name].net_pnl)
+    evaluation = evaluate_clean_dataset(clean, cfg)
+    folds = evaluation.folds
+    metrics = evaluation.metrics
+    best_baseline = evaluation.best_baseline
+    best_model = evaluation.best_model
     limitations: list[str] = []
     if audit.calendar_span_days < cfg.minimum_calendar_days:
         limitations.append(

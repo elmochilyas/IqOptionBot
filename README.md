@@ -18,7 +18,7 @@ evaluation with simulated execution costs.
 
 - **Operating System**: Windows (PowerShell)
 - **Python Version**: 3.12.10
-- **Test Suite**: 1,114 passing tests (`pytest`, 100% pass rate, 0 failures, 0 skips)
+- **Test Suite**: 1,120 passing tests (`pytest`, 100% pass rate, 0 failures, 0 skips)
 - **Type Checking**: Clean MyPy verification across 148 source files (`mypy src`)
 - **Linting & Style**: Clean Ruff compliance (`ruff check src tests`)
 - **Security Audit**: 7/7 automated offline security checks passed (`iqresearch security-check`)
@@ -198,6 +198,27 @@ python -m iqoption_research.cli.main ml phase10 --storage data/datasets --folds 
 
 The command writes a Markdown report and machine-readable JSON evidence under `data/phase10/`
 by default. It never imports a broker client, reads credentials, or places orders.
+
+### 3.5. Phase 11 Historical Expansion and Confirmation
+
+Audit current checksum-verified coverage and generate a bounded backward-extension plan without
+connecting to a broker:
+
+```powershell
+python -m iqoption_research.cli.main data coverage-audit --output-dir data/datasets --target-days 120 --max-new-candles 150000 --page-size 500 --max-requests 400
+```
+
+After separately authorizing collection, `data backfill-extend` begins exactly before the oldest
+verified candle. Standard `backfill-status` and `backfill-resume` commands provide crash recovery.
+Once at least 90 days are present, the following command selects models using development data
+and evaluates them once on a reserved final 14-day confirmation period:
+
+```powershell
+python -m iqoption_research.cli.main ml phase11 --storage data/datasets --target-days 90 --confirmation-days 14
+```
+
+See [docs/PHASE11_HISTORICAL_EXPANSION.md](docs/PHASE11_HISTORICAL_EXPANSION.md) for the exact
+explicitly authorized live command and recovery workflow.
 
 ---
 

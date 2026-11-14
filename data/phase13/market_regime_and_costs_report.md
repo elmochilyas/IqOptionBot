@@ -69,7 +69,7 @@ EURUSD volatility varies systematically by session:
 ### Volatility Filter Impact
 Implementing an Average True Range filter (`ATR_14 >= 1.2 pips`) acts as an automated regime switch:
 - Filters out ~58% of all 1-minute bars (completely silencing the bot during Asian night hours).
-- Improves Forex Profit Factor across candidate models from **0.29** up to **0.43 - 0.54**.
+- Improves exploratory win/loss metrics across candidate models from **0.29** up to **0.43 - 0.54** (legacy unverified exploratory metrics; net financial expectancy remained negative across all configurations after modeled spread and slippage).
 - Prevents the rapid capital bleed associated with high-frequency churning in tight ranges.
 
 ---

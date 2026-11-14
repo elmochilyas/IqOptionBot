@@ -59,7 +59,7 @@ Statistical distribution across horizons:
 
 ### 3.2 Impact of Improvements
 - **Stationary Features:** Eliminating non-stationary price levels (`sma_5`, `sma_10`, `sma_20`) and using scale-invariant ratios (`sma_ratio_5`, `candle_range`, returns) stabilized cross-fold calibration and prevented feature drift.
-- **Volatility Filtering (`ATR_14 >= 1.2 pips`):** Eliminated 50–60% of noisy trades during quiet market hours, improving Profit Factor from 0.29 to **0.43 - 0.56**.
+- **Volatility Filtering (`ATR_14 >= 1.2 pips`):** Eliminated 50–60% of noisy trades during quiet market hours, improving exploratory win/loss metrics from 0.29 to **0.43 - 0.56** (legacy unverified exploratory metrics; net financial expectancy remained negative across all configurations after modeled costs).
 - **Confidence Abstention:** Gating predictions by calibrated probability ($\ge 0.55$) reduced trade frequency and concentrated orders in higher-conviction setups (e.g. 210 trades with 54.76% win rate on 1m RF), though fold-by-fold analysis showed this edge was non-stationary across all market regimes.
 
 ---

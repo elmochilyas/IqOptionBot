@@ -137,20 +137,22 @@ python -m iqoption_research.cli.main bot run --storage data/datasets --model-bun
 To test live WebSocket candle streaming in strictly read-only mode during active market hours:
 
 #### Authorization Token Security Properties
-- **Purpose:** The observation authorization token (`ObservationAuthorizationToken`) is an intentional human-in-the-loop security gate. It guarantees that live broker socket connections are never initiated automatically by scripts, tests, or default CLI invocations.
-- **Enforcement:** In `--live` mode, the runtime enforces that a non-empty authorization token is present in memory. If absent, the application immediately aborts with an authorization error.
-- **Process Listing Hygiene:** **Never pass tokens via `--token <value>` on the command line.** Command-line parameters are visible in system process tables (`Get-CimInstance Win32_Process`, Task Manager) and shell history files. Instead, set the ephemeral session environment variable `$env:IQOPTION_OBSERVE_TOKEN`, which remains strictly in memory for the active PowerShell session and disappears when the window closes.
-- **Cryptographic Generation:** Do not use hardcoded or predictable tokens. Generate a fresh, high-entropy 256-bit token for the session.
+- **Nature of the Token:** The observation authorization token (`ObservationAuthorizationToken`) is a **locally checked, non-empty human-authorization marker**; it is **not** cryptographic authentication with the broker or a server-verified one-time token. It is evaluated purely in-process (`bool(token_hash and token_hash.strip())`) to verify that an operator explicitly granted permission for live market data observation.
+- **Purpose:** It serves as a deliberate human-in-the-loop procedural safety gate, ensuring live broker WebSocket streams are never opened unintentionally by headless scripts, default CLI flags, or automated test suites.
+- **Enforcement:** In `--live` mode, the runtime asserts that a non-empty marker string is present. If absent, the application immediately halts with an explicit error.
+- **Process Listing Hygiene:** Prefer setting the marker via the ephemeral session environment variable `$env:IQOPTION_OBSERVE_TOKEN` in the active PowerShell window rather than passing `--token <value>` as a CLI argument. Environment variables avoid exposing operator values in system process listings (`Get-CimInstance Win32_Process`, Task Manager) or command-line logs.
+- **Marker Generation:** Any non-empty operator marker string is accepted. For example, generating a distinct session string via `python -c "import secrets; print(secrets.token_hex(32))"` provides a convenient, unique non-empty marker.
 
 ```powershell
-# 6.1 Generate a cryptographically secure 256-bit token and export to session environment
+# 6.1 Set the session authorization marker in the active PowerShell environment
 $env:IQOPTION_OBSERVE_TOKEN = python -c "import secrets; print(secrets.token_hex(32))"
 
 # 6.2 Run live observation (observe-only, NO trade placement)
 # The CLI automatically detects $env:IQOPTION_OBSERVE_TOKEN without exposing it in process arguments
+# Note: uses --timeout 300 for a 5-minute supervised observation session
 python -m iqoption_research.cli.main bot run --live --model-bundle data/phase13/candidate_models/candidate_h1_rf --timeout 300
 
-# 6.3 Clear the session authorization token upon concluding observation
+# 6.3 Clear the session authorization marker upon concluding observation
 Remove-Item env:IQOPTION_OBSERVE_TOKEN
 ```
 - **Expected Outcome:**

@@ -14,8 +14,9 @@ The offline audit on 2026-11-14 verified every cataloged Parquet partition and m
 - Conflicting duplicate market records: **0**
 - Aggregate source fingerprint: `70d8b1e906d5b76f97b93346ad4399e23abe1630dca66e14b1a1828a617e6632`
 
-The current history does not satisfy the 90-day research gate. Phase 11 therefore leaves the
-confirmation evaluation unexecuted until more authentic history exists.
+The current history does not satisfy the 90-day research gate. It was also already used during
+Phase 10, so it is explicitly classified as previously evaluated development history—not as an
+independent holdout. The immutable Phase 10 cutoff is `2026-11-13T22:00:00+00:00`.
 
 ## Offline planning
 
@@ -70,18 +71,32 @@ After collection or resume, rerun the offline audit:
 python -m iqoption_research.cli.main data coverage-audit --output-dir data/datasets --target-days 120 --max-new-candles 150000 --page-size 500 --max-requests 400
 ```
 
-## Development and untouched confirmation evaluation
+## Development and independent confirmation protocol
 
-Once at least 90 calendar days are verified, run:
+Once at least 90 pre-cutoff calendar days are verified, run development research:
 
 ```powershell
 python -m iqoption_research.cli.main ml phase11 --storage data/datasets --target-days 90 --confirmation-days 14 --folds 4 --confidence 0.55 --spread-pips 1.0 --slippage-pips 0.1 --report data/phase11/phase11_report.md --json data/phase11/phase11_results.json
 ```
 
-Model and baseline selection uses only the earlier development period. The newest 14 calendar
-days remain excluded from scaling, fitting, calibration, thresholding, and model selection. They
-are evaluated once as the chronological confirmation set. Features and labels never cross a
-market gap or the development/confirmation boundary.
+This command creates or verifies `data/phase11/confirmation_state.json`. It persists the Phase 10
+cutoff, the fingerprint of the already evaluated history, the reserved confirmation fingerprint,
+and the one-way status `RESERVED -> EVALUATION_STARTED -> EVALUATED`. Backward expansion improves
+development coverage only. It can never turn the October-November observations into independent
+confirmation data.
+
+A confirmation period must consist entirely of newly collected candles strictly later than the
+Phase 10 cutoff and span at least 14 calendar days. The default command never evaluates it. After
+model choices, features, thresholds, and costs are frozen, consume it explicitly once:
+
+```powershell
+python -m iqoption_research.cli.main ml phase11 --storage data/datasets --target-days 90 --confirmation-days 14 --confirm-once --confirmation-state data/phase11/confirmation_state.json --report data/phase11/phase11_confirmation_report.md --json data/phase11/phase11_confirmation_results.json
+```
+
+The state is durably changed to `EVALUATION_STARTED` before any confirmation result is calculated.
+A completed or interrupted confirmation attempt cannot be rerun as independent evidence. Later
+replication requires a new, later protocol and future data; it must not be created in response to
+the consumed confirmation result. Features and labels never cross a market gap or the cutoff.
 
 The report also evaluates the selected model under these spread/slippage assumptions:
 

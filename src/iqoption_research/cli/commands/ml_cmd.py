@@ -83,7 +83,7 @@ DEFAULT_DB = Path("data/ml_experiments.db")
 
 @ml_app.command(
     "phase11",
-    help="Run development walk-forward and an untouched chronological confirmation period.",
+    help="Run development research and optionally consume confirmation exactly once.",
 )
 def phase11_command(
     storage_dir: Path = typer.Option(Path("data/datasets"), "--storage"),
@@ -91,6 +91,16 @@ def phase11_command(
     confirmation_days: int = typer.Option(14, "--confirmation-days", min=1),
     report_path: Path = typer.Option(Path("data/phase11/phase11_report.md"), "--report"),
     json_path: Path = typer.Option(Path("data/phase11/phase11_results.json"), "--json"),
+    confirmation_state: Path = typer.Option(
+        Path("data/phase11/confirmation_state.json"),
+        "--confirmation-state",
+        help="Durable Phase 10 cutoff and one-time confirmation status",
+    ),
+    confirm_once: bool = typer.Option(
+        False,
+        "--confirm-once",
+        help="Consume eligible post-Phase-10 data as independent confirmation exactly once",
+    ),
     folds: int = typer.Option(4, "--folds", min=1, max=8),
     confidence: float = typer.Option(0.55, "--confidence", min=0.5, max=0.99),
     spread_pips: float = typer.Option(1.0, "--spread-pips", min=0.0),
@@ -115,6 +125,8 @@ def phase11_command(
             target_calendar_days=target_days,
             confirmation_days=confirmation_days,
             config=config,
+            confirmation_state_path=confirmation_state,
+            evaluate_confirmation=confirm_once,
         )
     except (Phase10Error, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -134,8 +146,8 @@ def phase11_command(
             title="Phase 11 Coverage and Robustness",
         )
     )
-    if result.ready_for_confirmation:
-        table = Table(title="Untouched confirmation results")
+    if result.confirmation_evaluated and result.confirmation_metrics:
+        table = Table(title="One-time independent confirmation results")
         table.add_column("Model")
         table.add_column("Accuracy", justify="right")
         table.add_column("Trades", justify="right")
@@ -150,11 +162,20 @@ def phase11_command(
                 f"{metric.max_drawdown_percent:.2%}",
             )
         console.print(table)
+    elif result.ready_for_confirmation:
+        console.print(
+            "[yellow]Confirmation is eligible but remains reserved. Freeze model development "
+            "before using --confirm-once.[/yellow]"
+        )
     else:
         console.print(
-            "[yellow]Insufficient history: confirmation data remains untouched and "
-            "evaluation was not run.[/yellow]"
+            "[yellow]Development research may proceed when coverage is sufficient, but no "
+            "genuinely unseen post-Phase-10 confirmation period is available.[/yellow]"
         )
+    console.print(
+        f"[cyan]Confirmation status: {result.confirmation_evaluation_status} | "
+        f"Phase 10 cutoff: {result.prior_evaluation_cutoff_utc}[/cyan]"
+    )
     console.print(f"[green]Markdown report: {markdown.resolve()}[/green]")
     console.print(f"[green]JSON evidence: {json_output.resolve()}[/green]")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from iqoption_research.ml.fixtures import SyntheticMarketConfig, generate_synthe
 from iqoption_research.ml.phase10 import Phase10Config
 from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.research.phase11 import (
+    ConfirmationProtocolError,
     audit_expansion_coverage,
     build_backward_expansion_plan,
     launch_backward_expansion,
@@ -265,13 +267,14 @@ def test_confirmation_partition_is_strictly_later_and_cost_sensitivity_is_monoto
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "datasets"
-    candles = _candles(2_220, size=3600, seed=555)
+    candles = _candles(2_700, size=3600, seed=555)
     _persist(root, candles)
-    development, confirmation, boundary = partition_confirmation_candles(
+    cutoff = candles[2_299].from_ts
+    development, confirmation = partition_confirmation_candles(
         candles,
-        confirmation_days=14,
+        prior_evaluation_cutoff_ts=cutoff,
     )
-    assert development[-1].from_ts < boundary <= confirmation[0].from_ts
+    assert development[-1].from_ts == cutoff < confirmation[0].from_ts
 
     config = Phase10Config(
         candle_size_seconds=3600,
@@ -286,15 +289,35 @@ def test_confirmation_partition_is_strictly_later_and_cost_sensitivity_is_monoto
             "logistic_regression",
         ),
     )
+    state_path = tmp_path / "confirmation_state.json"
+    development_result = run_phase11_evaluation(
+        root,
+        target_calendar_days=90,
+        confirmation_days=14,
+        config=config,
+        cost_scenarios=((0.0, 0.0), (1.0, 0.1), (2.0, 0.5)),
+        confirmation_state_path=state_path,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+    assert development_result.ready_for_confirmation is True
+    assert development_result.confirmation_evaluated is False
+    assert development_result.confirmation_metrics == {}
+    assert development_result.development_rows > 100
+
     result = run_phase11_evaluation(
         root,
         target_calendar_days=90,
         confirmation_days=14,
         config=config,
         cost_scenarios=((0.0, 0.0), (1.0, 0.1), (2.0, 0.5)),
+        confirmation_state_path=state_path,
+        prior_evaluation_cutoff_ts=cutoff,
+        evaluate_confirmation=True,
     )
 
     assert result.ready_for_confirmation is True
+    assert result.confirmation_evaluated is True
+    assert result.confirmation_evaluation_status == "EVALUATED"
     assert result.development_rows > result.confirmation_rows > 100
     assert set(result.confirmation_metrics) == {
         result.selected_baseline,
@@ -306,6 +329,58 @@ def test_confirmation_partition_is_strictly_later_and_cost_sensitivity_is_monoto
     assert [row.net_pnl for row in result.cost_sensitivity] == sorted(
         (row.net_pnl for row in result.cost_sensitivity), reverse=True
     )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["prior_evaluation_cutoff_ts"] == cutoff
+    assert state["prior_evaluated_dataset_fingerprint"]
+    assert state["confirmation_dataset_fingerprint"] == result.confirmation_dataset_fingerprint
+    assert state["evaluation_status"] == "EVALUATED"
+
+    with pytest.raises(ConfirmationProtocolError, match="cannot be rerun"):
+        run_phase11_evaluation(
+            root,
+            target_calendar_days=90,
+            confirmation_days=14,
+            config=config,
+            confirmation_state_path=state_path,
+            prior_evaluation_cutoff_ts=cutoff,
+            evaluate_confirmation=True,
+        )
+
+
+def test_previously_evaluated_history_is_development_not_confirmation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "datasets"
+    candles = _candles(2_300, size=3600, seed=556)
+    _persist(root, candles)
+    cutoff = candles[-1].from_ts
+    state_path = tmp_path / "confirmation_state.json"
+    config = Phase10Config(
+        candle_size_seconds=3600,
+        n_folds=1,
+        initial_train_ratio=0.60,
+        validation_ratio=0.10,
+        test_ratio=0.20,
+        minimum_rows=500,
+        model_names=("majority_class", "logistic_regression"),
+    )
+
+    result = run_phase11_evaluation(
+        root,
+        target_calendar_days=90,
+        confirmation_days=14,
+        config=config,
+        confirmation_state_path=state_path,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+
+    assert result.development_rows > 2_000
+    assert result.confirmation_rows == 0
+    assert result.ready_for_confirmation is False
+    assert result.confirmation_evaluated is False
+    assert result.confirmation_evaluation_status == "RESERVED"
+    assert result.confirmation_metrics == {}
+    assert "previously evaluated development data" in " ".join(result.limitations)
 
 
 def test_phase11_cli_is_offline_by_default_and_reports_current_insufficiency(
@@ -337,9 +412,11 @@ def test_phase11_cli_is_offline_by_default_and_reports_current_insufficiency(
             str(report),
             "--json",
             str(evidence),
+            "--confirmation-state",
+            str(tmp_path / "confirmation_state.json"),
         ],
     )
     assert evaluated.exit_code == 0, evaluated.output
-    assert "Insufficient history" in evaluated.output
+    assert "Development research may proceed" in evaluated.output
     assert report.is_file()
     assert evidence.is_file()

@@ -40,6 +40,7 @@ from iqoption_research.ml.models.baselines import LogisticRegressionModel
 from iqoption_research.ml.models.tabular import RandomForestModel
 from iqoption_research.ml.phase10 import (
     Phase10Config,
+    _contiguous_segments,
     _fit_fold_model,
     _simulate_trades,
     audit_authentic_datasets,
@@ -119,34 +120,58 @@ def audit_move_distribution(
     candles: Sequence[Candle],
     horizons: Sequence[int] = (1, 3, 5, 15),
     friction_pips: float = 1.20,
+    candle_size_seconds: int = 60,
 ) -> dict[int, MoveDistributionStats]:
-    """Analyze candle move distributions across multiple horizons relative to friction."""
+    """Analyze candle move distributions across multiple horizons relative to friction.
+
+    Uses contiguous market-data segments so multi-candle observations (e.g. 3, 5, 15 min)
+    cannot span scheduled weekend closures or unexpected open-market gaps.
+    Causal alignment: signal at bar t, entry at bar t+1 open, exit at bar t+h close.
+    """
     stats_by_horizon: dict[int, MoveDistributionStats] = {}
-    n = len(candles)
-    if n < 30:
+    if not candles:
         return stats_by_horizon
 
-    # Pre-extract numpy arrays
-    opens = np.array([c.open for c in candles], dtype=np.float64)
-    closes = np.array([c.close for c in candles], dtype=np.float64)
-    highs = np.array([c.high for c in candles], dtype=np.float64)
-    lows = np.array([c.low for c in candles], dtype=np.float64)
-
-    ranges_pips = (highs - lows) * 10000.0
+    # Group into strictly contiguous segments so gaps cannot be crossed
+    segments = _contiguous_segments(list(candles), candle_size_seconds)
 
     for h in horizons:
-        if h == 1:
-            moves = np.abs(closes - opens) * 10000.0
-            h_ranges = ranges_pips
-        else:
-            if n <= h + 1:
+        all_moves: list[float] = []
+        all_ranges: list[float] = []
+
+        for seg in segments:
+            m = len(seg)
+            if m <= h:
                 continue
-            # Horizon h move: entry at t+1 open, exit at t+h close
-            moves = np.abs(closes[h:] - opens[1 : n - h + 1]) * 10000.0
-            h_ranges = (
-                np.maximum.reduce([highs[i : n - h + i] for i in range(1, h + 1)])
-                - np.minimum.reduce([lows[i : n - h + i] for i in range(1, h + 1)])
-            ) * 10000.0
+
+            # Pre-extract numpy arrays within this contiguous segment
+            opens = np.array([c.open for c in seg], dtype=np.float64)
+            closes = np.array([c.close for c in seg], dtype=np.float64)
+            highs = np.array([c.high for c in seg], dtype=np.float64)
+            lows = np.array([c.low for c in seg], dtype=np.float64)
+
+            # Causal entry at t+1 open, exit at t+h close for t in 0 .. m - h - 1
+            # Length: m - h observations
+            seg_entries = opens[1 : m - h + 1]
+            seg_exits = closes[h:m]
+            seg_moves = np.abs(seg_exits - seg_entries) * 10000.0
+
+            if h == 1:
+                seg_ranges = (highs[1:m] - lows[1:m]) * 10000.0
+            else:
+                # High-low range during the entire holding period (t+1 through t+h)
+                seg_highs = np.maximum.reduce([highs[i : m - h + i] for i in range(1, h + 1)])
+                seg_lows = np.minimum.reduce([lows[i : m - h + i] for i in range(1, h + 1)])
+                seg_ranges = (seg_highs - seg_lows) * 10000.0
+
+            all_moves.extend(seg_moves.tolist())
+            all_ranges.extend(seg_ranges.tolist())
+
+        if not all_moves:
+            continue
+
+        moves = np.asarray(all_moves, dtype=np.float64)
+        h_ranges = np.asarray(all_ranges, dtype=np.float64)
 
         sample_cnt = len(moves)
         below_fric = float(np.mean(moves < friction_pips) * 100.0)

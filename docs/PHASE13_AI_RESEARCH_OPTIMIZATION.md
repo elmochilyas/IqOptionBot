@@ -36,9 +36,9 @@ Statistical distribution across horizons:
 - **1-Minute Horizon:**
   - Mean Move: **0.69 pips** (~$0.69) | Median Move: **0.45 pips** (~$0.45)
   - Moves Below Friction: **83.7%** (only 16.3% of 1-minute candles move $\ge 1.20$ pips).
-- **3-Minute Horizon:** Mean Move: 1.24 pips (~$1.24) | Moves Below Friction: 63.7%
-- **5-Minute Horizon:** Mean Move: 1.61 pips (~$1.61) | Moves Below Friction: 53.7%
-- **15-Minute Horizon:** Mean Move: 2.85 pips (~$2.85) | Moves Below Friction: **33.9%** (66.1% cover friction).
+- **3-Minute Horizon:** Mean Move: 1.23 pips (~$1.23) | Moves Below Friction: 63.7%
+- **5-Minute Horizon:** Mean Move: 1.60 pips (~$1.60) | Moves Below Friction: 53.7%
+- **15-Minute Horizon:** Mean Move: 2.83 pips (~$2.83) | Moves Below Friction: **33.9%** (66.1% cover friction).
 
 ### 2.2 Baseline Out-of-Sample Performance (4 Folds)
 | Model | Out-of-Sample Accuracy | Balanced Accuracy | ROC-AUC | Brier Score | Trades | Net PnL (Forex) | Profit Factor |

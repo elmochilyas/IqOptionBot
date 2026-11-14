@@ -61,7 +61,7 @@ def test_audit_move_distribution() -> None:
     assert 5 in stats
 
     s1 = stats[1]
-    assert s1.sample_count == 100
+    assert s1.sample_count == 99
     assert s1.mean_move_pips > 0.0
     assert s1.median_move_pips > 0.0
     assert 0.0 <= s1.pct_moves_below_friction_1_2p <= 100.0
@@ -354,23 +354,151 @@ def test_pip_value_and_friction_math() -> None:
     assert price_cost < 2.00
 
 
-def test_cli_bot_run_live_token_and_offline_options(tmp_path: Path) -> None:
-    """Verify bot run live authorization token gating and offline replay execution."""
+def test_cli_bot_run_live_token_and_offline_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify bot run live authorization token gating via env var and CLI, and offline replay."""
     runner = CliRunner()
 
     # 1. Live observation WITHOUT token must fail with clear security message
+    monkeypatch.delenv("IQOPTION_OBSERVE_TOKEN", raising=False)
     res_no_token = runner.invoke(app, ["bot", "run", "--live"])
     assert res_no_token.exit_code != 0
     assert "Live observation requires an explicit authorization token" in res_no_token.output
 
-    # 2. Live observation with explicit valid token hash (exercises authorization parameter)
+    # 2. Live observation with token provided via environment variable (preferred secure workflow)
     valid_token = "lead-eng-token-abc123"
-    # Since live connects to broker, without credentials it will fail authentication gracefully,
-    # but the token gate itself must pass without complaining about missing token
-    res_with_token = runner.invoke(app, ["bot", "run", "--live", "--token", valid_token])
-    assert "Live observation requires an explicit authorization token" not in res_with_token.output
+    monkeypatch.setenv("IQOPTION_OBSERVE_TOKEN", valid_token)
+    res_env = runner.invoke(app, ["bot", "run", "--live"])
+    # Token gate passes (fails at broker auth gracefully without complaining about missing token)
+    assert "Live observation requires an explicit authorization token" not in res_env.output
 
-    # 3. Offline replay with synthetic bars
+    # 3. Live observation with explicit CLI token (supported for parity)
+    monkeypatch.delenv("IQOPTION_OBSERVE_TOKEN", raising=False)
+    res_cli = runner.invoke(app, ["bot", "run", "--live", "--token", valid_token])
+    assert "Live observation requires an explicit authorization token" not in res_cli.output
+
+    # 4. Offline replay with synthetic bars
     res_offline = runner.invoke(app, ["bot", "run", "--bars", "10"])
     assert res_offline.exit_code == 0
     assert "Continuous Session Concluded" in res_offline.output
+
+
+def test_audit_move_distribution_gaps_not_crossed() -> None:
+    """Verify audit_move_distribution does not span weekend closures or unexpected intraday gaps."""
+    base = _synthetic_authentic_candles(10)[0]
+
+    # Segment 1: Friday afternoon (5 consecutive 1m candles)
+    # Entry prices at ~1.1000
+    t0 = 1791580000
+    seg1 = [
+        replace(
+            base,
+            from_ts=t0 + i * 60,
+            to_ts=t0 + (i + 1) * 60,
+            open=1.1000 + i * 0.0001,
+            close=1.1000 + (i + 0.5) * 0.0001,
+            high=1.1002 + i * 0.0001,
+            low=1.0998 + i * 0.0001,
+        )
+        for i in range(5)
+    ]
+
+    # Weekend gap: jump 48 hours to Sunday 22:00 UTC
+    # Artificially jump price to 1.2000 (a massive 1,000 pip weekend gap)
+    t_weekend = t0 + 172800
+    seg2 = [
+        replace(
+            base,
+            from_ts=t_weekend + i * 60,
+            to_ts=t_weekend + (i + 1) * 60,
+            open=1.2000 + i * 0.0001,
+            close=1.2000 + (i + 0.5) * 0.0001,
+            high=1.2002 + i * 0.0001,
+            low=1.1998 + i * 0.0001,
+        )
+        for i in range(5)
+    ]
+
+    # Intraday gap: jump 15 minutes (900 seconds)
+    t_intraday = t_weekend + 5 * 60 + 900
+    seg3 = [
+        replace(
+            base,
+            from_ts=t_intraday + i * 60,
+            to_ts=t_intraday + (i + 1) * 60,
+            open=1.3000 + i * 0.0001,
+            close=1.3000 + (i + 0.5) * 0.0001,
+            high=1.3002 + i * 0.0001,
+            low=1.2998 + i * 0.0001,
+        )
+        for i in range(2)  # length 2: cannot form 3m move
+    ]
+
+    candles = seg1 + seg2 + seg3
+    stats = audit_move_distribution(candles, horizons=(1, 3, 5))
+
+    # Horizon 1:
+    # Seg 1 has 5-1=4 moves; Seg 2 has 5-1=4 moves; Seg 3 has 2-1=1 move -> Total 9 moves
+    assert stats[1].sample_count == 9
+
+    # Horizon 3:
+    # Seg 1 has 5-3=2 moves; Seg 2 has 5-3=2 moves; Seg 3 has 0 moves (length 2 <= 3).
+    # Total = 4 moves
+    assert stats[3].sample_count == 4
+
+    # Horizon 5:
+    # None of the segments have length > 5, so no 5m moves can be formed without crossing gaps
+    assert 5 not in stats
+
+    # CRITICAL INVARIANT: The massive 1,000 pip (1.1000 -> 1.2000) weekend gap
+    # must NEVER be included in moves or ranges. Maximum move should be < 5 pips.
+    assert stats[1].mean_move_pips < 5.0
+    assert stats[3].mean_move_pips < 5.0
+    assert stats[1].p90_move_pips < 5.0
+    assert stats[3].p90_move_pips < 5.0
+
+
+def test_monday_operator_checklist_cli_offline() -> None:
+    """Validate all Monday runbook CLI commands offline with authentic data and saved model."""
+    runner = CliRunner()
+    storage = "data/datasets"
+    bundle = "data/phase13/candidate_models/candidate_h1_rf"
+
+    # Step 1: Pre-market authentic dataset audit
+    res_audit = runner.invoke(app, ["data", "coverage-audit", "--output-dir", storage])
+    assert res_audit.exit_code == 0
+    assert "Authentic Historical Coverage" in res_audit.output
+    assert "Unique candles: 62871" in res_audit.output
+
+    # Step 2: Forward status (confirms weekend boundary)
+    res_status = runner.invoke(app, ["data", "forward-status", "--output-dir", storage])
+    assert res_status.exit_code == 0
+
+    # Step 3: Forward plan entirely offline
+    res_plan = runner.invoke(app, ["data", "forward-plan", "--output-dir", storage])
+    assert res_plan.exit_code == 0
+
+    # Step 4: Verify candidate model bundle integrity and metadata
+    res_inspect = runner.invoke(app, ["ml", "inspect", "--bundle", bundle])
+    assert res_inspect.exit_code == 0
+    assert "DEVELOPMENT_ONLY" in res_inspect.output
+    assert "authentic_trained" in res_inspect.output
+
+    # Step 5: Supervised offline paper-trading replay with candidate model
+    res_replay = runner.invoke(
+        app,
+        [
+            "bot",
+            "run",
+            "--storage",
+            storage,
+            "--model-bundle",
+            bundle,
+            "--bars",
+            "20",
+        ],
+    )
+    assert res_replay.exit_code == 0
+    assert "Continuous Session Concluded" in res_replay.output
+    assert "random_forest" in res_replay.output

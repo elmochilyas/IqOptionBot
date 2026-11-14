@@ -1,6 +1,6 @@
 # Phase 13 — Authentic Dataset & Model Baseline Audit
 
-**Date:** 2026-11-14T17:51:49.989510+00:00
+**Date:** 2026-11-14T18:25:36.800400+00:00
 
 ## 1. Verified Authentic Dataset
 - **Instrument:** EURUSD (60s bars)
@@ -18,9 +18,9 @@ Modeled execution friction: 1.0 pip spread + 0.2 pip slippage = **1.20 pips** (~
 | Horizon | Mean Move | Median Move | 75th Pct | 90th Pct | % < 1.2p | % ≥ 1.2p |
 |---|---|---|---|---|---|---|
 | 1-minute | 0.69 p | 0.45 p | 0.95 p | 1.55 p | **83.7%** | 16.3% |
-| 3-minute | 1.24 p | 0.85 p | 1.65 p | 2.75 p | 63.7% | 36.3% |
-| 5-minute | 1.61 p | 1.10 p | 2.10 p | 3.55 p | 53.7% | 46.3% |
-| 15-minute | 2.85 p | 1.95 p | 3.75 p | 6.35 p | 33.9% | **66.1%** |
+| 3-minute | 1.23 p | 0.85 p | 1.65 p | 2.75 p | 63.7% | 36.3% |
+| 5-minute | 1.60 p | 1.10 p | 2.10 p | 3.55 p | 53.7% | 46.3% |
+| 15-minute | 2.83 p | 1.95 p | 3.75 p | 6.35 p | 33.9% | **66.1%** |
 
 ### Key Friction Finding
 > [!IMPORTANT]

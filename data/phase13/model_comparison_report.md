@@ -54,7 +54,7 @@ The table below summarizes out-of-sample walk-forward performance across horizon
 ## 3. Detailed Experimental Observations
 
 ### 3.1 Horizon Expansion ($h=1$ to $h=15$)
-- **Move Dynamics:** Expanding the horizon from 1m to 15m increases the median move size from 0.45 pips to 2.12 pips, and raises the proportion of moves exceeding the 1.20 pip friction hurdle from 16.3% to **66.1%**.
+- **Move Dynamics:** Expanding the horizon from 1m to 15m increases the median move size from 0.45 pips to 1.95 pips (mean move from 0.69 pips to 2.83 pips within contiguous segments), raising the proportion of moves exceeding the 1.20 pip friction hurdle from 16.3% to **66.1%**.
 - **Impact on Financial Performance:** On 15m bars, gross PnL before costs actually became slightly positive for Random Forest (+$110.38). However, transaction friction ($6,429.16) completely overwhelmed this marginal alpha, resulting in a net loss of -$6,318.78.
 - **Predictive Quality:** Directional accuracy did not improve at higher horizons (dropping from ~52% down to ~48.7%), indicating that market direction at 15 minutes remains essentially a random walk for short-term technical features.
 

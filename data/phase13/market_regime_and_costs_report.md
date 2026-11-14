@@ -29,15 +29,15 @@ Execution friction is modeled as:
 
 | Metric | 1-Minute Horizon | 3-Minute Horizon | 5-Minute Horizon | 15-Minute Horizon |
 |---|---|---|---|---|
-| **Sample Size** | 62,871 bars | 62,867 bars | 62,865 bars | 62,855 bars |
-| **Mean Absolute Move** | 0.69 pips (~$0.69) | 1.24 pips (~$1.24) | 1.61 pips (~$1.61) | 2.85 pips (~$2.85) |
-| **Median Absolute Move** | 0.45 pips (~$0.45) | 0.88 pips (~$0.88) | 1.18 pips (~$1.18) | 2.12 pips (~$2.12) |
-| **75th Percentile Move** | 0.88 pips (~$0.88) | 1.62 pips (~$1.62) | 2.11 pips (~$2.11) | 3.75 pips (~$3.75) |
-| **90th Percentile Move** | 1.55 pips (~$1.55) | 2.72 pips (~$2.72) | 3.52 pips (~$3.52) | 6.18 pips (~$6.18) |
-| **Mean Candle Range (H-L)** | 1.05 pips | 2.05 pips | 2.76 pips | 5.08 pips |
-| **Moves Below 1.2p Friction** | **83.7%** | **63.7%** | **50.7%** | **33.9%** |
-| **Moves Covering Friction (≥ 1.2p)**| 16.3% | 36.3% | 49.3% | **66.1%** |
-| **Moves ≥ 2.0 pips** | 5.8% | 18.5% | 27.6% | **52.2%** |
+| **Sample Size (Contiguous)** | 62,862 bars | 62,844 bars | 62,826 bars | 62,736 bars |
+| **Mean Absolute Move** | 0.69 pips (~$0.69) | 1.23 pips (~$1.23) | 1.60 pips (~$1.60) | 2.83 pips (~$2.83) |
+| **Median Absolute Move** | 0.45 pips (~$0.45) | 0.85 pips (~$0.85) | 1.10 pips (~$1.10) | 1.95 pips (~$1.95) |
+| **75th Percentile Move** | 0.95 pips (~$0.95) | 1.65 pips (~$1.65) | 2.10 pips (~$2.10) | 3.75 pips (~$3.75) |
+| **90th Percentile Move** | 1.55 pips (~$1.55) | 2.75 pips (~$2.75) | 3.55 pips (~$3.55) | 6.35 pips (~$6.35) |
+| **Mean Range in Window (H-L)**| 1.26 pips | 2.32 pips | 3.06 pips | 5.50 pips |
+| **Moves Below 1.2p Friction** | **83.7%** | **63.7%** | **53.7%** | **33.9%** |
+| **Moves Covering Friction (≥ 1.2p)**| 16.3% | 36.3% | 46.3% | **66.1%** |
+| **Moves ≥ 2.0 pips** | 5.5% | 18.1% | 26.9% | **48.6%** |
 
 ### Visual Breakdown of 1-Minute Moves
 ```

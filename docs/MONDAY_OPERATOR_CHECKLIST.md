@@ -136,16 +136,27 @@ python -m iqoption_research.cli.main bot run --storage data/datasets --model-bun
 
 To test live WebSocket candle streaming in strictly read-only mode during active market hours:
 
+#### Authorization Token Security Properties
+- **Purpose:** The observation authorization token (`ObservationAuthorizationToken`) is an intentional human-in-the-loop security gate. It guarantees that live broker socket connections are never initiated automatically by scripts, tests, or default CLI invocations.
+- **Enforcement:** In `--live` mode, the runtime enforces that a non-empty authorization token is present in memory. If absent, the application immediately aborts with an authorization error.
+- **Process Listing Hygiene:** **Never pass tokens via `--token <value>` on the command line.** Command-line parameters are visible in system process tables (`Get-CimInstance Win32_Process`, Task Manager) and shell history files. Instead, set the ephemeral session environment variable `$env:IQOPTION_OBSERVE_TOKEN`, which remains strictly in memory for the active PowerShell session and disappears when the window closes.
+- **Cryptographic Generation:** Do not use hardcoded or predictable tokens. Generate a fresh, high-entropy 256-bit token for the session.
+
 ```powershell
-# 6.1 Generate gated observation token (read-only posture)
-$token = python -c "from iqoption_research.observation.adapter import ObservationAuthorizationToken; print(ObservationAuthorizationToken.generate(scope='market_observation_only').token)"
+# 6.1 Generate a cryptographically secure 256-bit token and export to session environment
+$env:IQOPTION_OBSERVE_TOKEN = python -c "import secrets; print(secrets.token_hex(32))"
 
 # 6.2 Run live observation (observe-only, NO trade placement)
-python -m iqoption_research.cli.main bot run --live --model-bundle data/phase13/candidate_models/candidate_h1_rf --token $token --timeout 300
+# The CLI automatically detects $env:IQOPTION_OBSERVE_TOKEN without exposing it in process arguments
+python -m iqoption_research.cli.main bot run --live --model-bundle data/phase13/candidate_models/candidate_h1_rf --timeout 300
+
+# 6.3 Clear the session authorization token upon concluding observation
+Remove-Item env:IQOPTION_OBSERVE_TOKEN
 ```
 - **Expected Outcome:**
   - Live 60s completed candles arrive from IQ Option.
   - Read-only guard actively forbids order placement.
+  - Telemetry snapshots display live feed status and zero simulated trade execution.
   - Runs for 300 seconds (5 minutes) and shuts down cleanly.
 
 ---

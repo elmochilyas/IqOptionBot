@@ -59,8 +59,10 @@ python -m iqoption_research.cli.main data coverage-audit --symbol EURUSD --size 
 ```
 
 The status reports verified unique candles, calendar coverage, newest timestamp, records saved,
-duplicates, request usage, and unresolved open-market gaps. Weekend closures are classified as
-scheduled rather than missing data.
+duplicates, request usage, and unresolved open-market gaps. If no forward collection has been
+required yet (for example, before any forward cycle or when the market has remained closed), it
+reports "No forward collection has been required yet" while still displaying verified dataset
+coverage and gap status. Weekend closures are classified as scheduled rather than missing data.
 
 ## Versioned research protocol
 

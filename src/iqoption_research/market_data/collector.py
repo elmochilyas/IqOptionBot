@@ -464,6 +464,7 @@ class BackfillCheckpoint:
     max_broker_requests: int | None = None
     broker_requests_made: int = 0
     complete_on_start_boundary: bool = False
+    request_before_cursor: bool = False
     state: str = JobState.NOT_STARTED
     last_error: str | None = None
     created_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -515,6 +516,7 @@ class BackfillCheckpoint:
             ),
             broker_requests_made=int(data.get("broker_requests_made", 0)),
             complete_on_start_boundary=bool(data.get("complete_on_start_boundary")),
+            request_before_cursor=bool(data.get("request_before_cursor")),
             state=str(data.get("state", JobState.NOT_STARTED)),
             last_error=data.get("last_error"),
             created_at_utc=str(data.get("created_at_utc", datetime.now(UTC).isoformat())),
@@ -536,6 +538,25 @@ class BackfillResult:
     rejected_records: int
     earliest_ts: int | None
     latest_ts: int | None
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class BoundaryDiagnosticResult:
+    """Read-only evidence from one request strictly before a stopped cursor."""
+
+    job_id: str
+    logical_cursor_ts: int
+    requested_endtime: int
+    requested_count: int
+    returned_count: int
+    valid_older_count: int
+    earliest_older_ts: int | None
+    latest_older_ts: int | None
+    older_history_available: bool
+    conclusion: str
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -651,7 +672,7 @@ class BackfillJob:
             f"Broker historical fetch failed after {self.max_retries + 1} attempts: {last_error}"
         )
 
-    def _validate_page(
+    def validate_page(
         self,
         result: Any,
         *,
@@ -799,8 +820,11 @@ class BackfillJob:
                     remaining=remaining,
                     has_committed_candles=bool(seen),
                 )
+                request_endtime = (
+                    cursor - 1 if self.checkpoint.request_before_cursor and seen else cursor
+                )
                 try:
-                    fetched = await self._fetch_page(requested, cursor)
+                    fetched = await self._fetch_page(requested, request_endtime)
                 except BrokerRequestBudgetExhausted as exc:
                     self._set_checkpoint(state=JobState.PARTIAL, last_error=str(exc))
                     break
@@ -809,8 +833,14 @@ class BackfillJob:
                 if not raw_batch:
                     self._set_checkpoint(state=JobState.PARTIAL)
                     break
+                if self.checkpoint.request_before_cursor and any(
+                    candle.from_ts > request_endtime for candle in raw_batch
+                ):
+                    raise DataAcquisitionError(
+                        "Broker returned a candle after the explicitly exclusive endtime."
+                    )
                 earliest_raw = min(candle.from_ts for candle in raw_batch)
-                page, page_duplicates, page_rejected = self._validate_page(
+                page, page_duplicates, page_rejected = self.validate_page(
                     fetched,
                     seen=seen,
                     remaining=remaining,
@@ -919,6 +949,82 @@ def load_checkpoint(storage_dir: Path | str, job_id: str) -> BackfillCheckpoint:
         raise DataAcquisitionError(f"Invalid checkpoint {path}: {exc}") from exc
 
 
+async def diagnose_exclusive_boundary(
+    *,
+    collector: HistoricalDataCollector,
+    checkpoint: BackfillCheckpoint,
+    client: HistoricalBroker,
+    probe_count: int = 500,
+) -> BoundaryDiagnosticResult:
+    """Issue exactly one non-persisting probe at ``cursor - 1``.
+
+    The known inclusive boundary is thereby excluded without skipping a
+    minute-aligned candle. Broker records still pass the normal provenance,
+    identity, duplicate-conflict, and quality checks. Neither the catalog nor
+    the checkpoint is written.
+    """
+    if not 1 <= probe_count <= 1000:
+        raise ValueError("probe_count must be within 1..1000")
+    if checkpoint.last_cursor_ts <= 1:
+        raise DataAcquisitionError("Checkpoint cursor is too small for an exclusive probe.")
+    if checkpoint.state not in {JobState.PARTIAL, JobState.FAILED}:
+        raise DataAcquisitionError("Boundary diagnostics require a partial or failed job.")
+    client.assert_read_only()
+    request_endtime = checkpoint.last_cursor_ts - 1
+    result = await client.get_candles(
+        checkpoint.instrument,
+        size=CandleSize(checkpoint.timeframe_seconds),
+        count=probe_count,
+        endtime=request_endtime,
+    )
+    raw_batch = list(getattr(result, "candle_list", ()))
+    if any(not isinstance(candle, Candle) for candle in raw_batch):
+        raise DataAcquisitionError("Broker diagnostic returned a non-candle record.")
+    if len(raw_batch) > probe_count:
+        raise DataAcquisitionError("Broker returned more candles than the diagnostic requested.")
+    if any(candle.from_ts >= checkpoint.last_cursor_ts for candle in raw_batch):
+        raise DataAcquisitionError(
+            "Broker returned a candle at or after the excluded checkpoint boundary; "
+            "the exclusive diagnostic response is contradictory."
+        )
+    if getattr(result, "errors", ()):
+        raise DataAcquisitionError("Broker diagnostic response contained rejected records.")
+
+    committed = collector.load_dataset(
+        checkpoint.instrument,
+        checkpoint.timeframe_seconds,
+        dataset_ids=checkpoint.committed_dataset_ids,
+    )
+    validator = BackfillJob(collector=collector, checkpoint=checkpoint, client=client)
+    validated, _, rejected = validator.validate_page(
+        result,
+        seen={candle.from_ts: candle for candle in committed},
+        remaining=probe_count,
+    )
+    if rejected:
+        raise DataAcquisitionError(
+            f"Broker diagnostic response contained {rejected} invalid candles."
+        )
+    timestamps = [candle.from_ts for candle in validated]
+    available = bool(timestamps)
+    return BoundaryDiagnosticResult(
+        job_id=checkpoint.job_id,
+        logical_cursor_ts=checkpoint.last_cursor_ts,
+        requested_endtime=request_endtime,
+        requested_count=probe_count,
+        returned_count=len(raw_batch),
+        valid_older_count=len(timestamps),
+        earliest_older_ts=min(timestamps) if timestamps else None,
+        latest_older_ts=max(timestamps) if timestamps else None,
+        older_history_available=available,
+        conclusion=(
+            "older_history_available_with_exclusive_endtime"
+            if available
+            else "no_older_history_at_exclusive_endtime"
+        ),
+    )
+
+
 def launch_backfill(
     *,
     collector: HistoricalDataCollector,
@@ -937,6 +1043,7 @@ def launch_backfill(
     backoff_base_seconds: float = 1.0,
     max_broker_requests: int | None = None,
     additional_broker_requests: int | None = None,
+    request_before_cursor: bool = False,
 ) -> BackfillJob:
     """Create a new job or reconstruct one exactly from its durable checkpoint."""
     if not JOB_ID_PATTERN.fullmatch(job_id):
@@ -962,6 +1069,8 @@ def launch_backfill(
                     + additional_broker_requests
                 ),
             )
+        if request_before_cursor:
+            checkpoint = replace(checkpoint, request_before_cursor=True)
     else:
         canonical = normalize_symbol(instrument)
         registered = InstrumentRegistry.get(canonical)

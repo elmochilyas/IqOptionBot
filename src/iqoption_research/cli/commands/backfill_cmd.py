@@ -7,6 +7,7 @@ import json
 import re
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,10 +17,12 @@ from iqoption_research.cli.output import print_error, print_header, print_succes
 from iqoption_research.market_data.collector import (
     BackfillCheckpoint,
     BackfillResult,
+    BoundaryDiagnosticResult,
     DataAcquisitionError,
     HistoricalBroker,
     HistoricalDataCollector,
     JobState,
+    diagnose_exclusive_boundary,
     launch_backfill,
     load_checkpoint,
 )
@@ -93,6 +96,7 @@ async def _run_authorized_job(
     saved_credentials: bool,
     resume: bool,
     additional_broker_requests: int | None = None,
+    request_before_cursor: bool = False,
 ) -> BackfillResult:
     client, cleanup = await _connect_live_client(saved_credentials)
     try:
@@ -109,6 +113,7 @@ async def _run_authorized_job(
             client=client,
             resume=resume,
             additional_broker_requests=additional_broker_requests,
+            request_before_cursor=request_before_cursor,
         )
         return await job.run()
     finally:
@@ -148,6 +153,26 @@ async def _run_authorized_extension(
             client=client,
         )
         return await job.run()
+    finally:
+        await cleanup()
+
+
+async def _run_boundary_diagnostic(
+    *,
+    checkpoint: BackfillCheckpoint,
+    output_dir: Path,
+    probe_count: int,
+    saved_credentials: bool,
+) -> BoundaryDiagnosticResult:
+    client, cleanup = await _connect_live_client(saved_credentials)
+    try:
+        collector = HistoricalDataCollector(storage_dir=output_dir)
+        return await diagnose_exclusive_boundary(
+            collector=collector,
+            checkpoint=checkpoint,
+            client=client,
+            probe_count=probe_count,
+        )
     finally:
         await cleanup()
 
@@ -356,6 +381,62 @@ def backfill_status_command(
         print_warning(f"Last error: {checkpoint.last_error}")
 
 
+@app.command("backfill-boundary-diagnostic")
+def backfill_boundary_diagnostic_command(
+    job_id: str = typer.Option(..., "--job-id"),
+    output_dir: Path = typer.Option(Path("data/datasets"), "--output-dir"),
+    probe_count: int = typer.Option(500, "--probe-count", min=1, max=1000),
+    live: bool = typer.Option(False, "--live", help="Authorize one read-only broker request"),
+    yes_i_understand: bool = typer.Option(False, "--yes-i-understand"),
+    saved_credentials: bool = typer.Option(False, "--saved", help="Use saved credentials"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only"),
+) -> None:
+    """Probe cursor-1 once without modifying data, catalog, or checkpoint."""
+    if not live:
+        print_error(
+            "Offline safety mode is active. The boundary diagnostic requires "
+            "--live --yes-i-understand; no broker connection was attempted."
+        )
+        raise typer.Exit(code=2)
+    if not yes_i_understand:
+        raise typer.BadParameter("--live requires --yes-i-understand")
+    resolved_job_id = _validate_job_id(job_id)
+    try:
+        checkpoint = load_checkpoint(output_dir, resolved_job_id)
+        result = asyncio.run(
+            _run_boundary_diagnostic(
+                checkpoint=checkpoint,
+                output_dir=output_dir,
+                probe_count=probe_count,
+                saved_credentials=saved_credentials,
+            )
+        )
+    except (DataAcquisitionError, ValueError) as exc:
+        print_error(f"Boundary diagnostic failed: {exc}")
+        raise typer.Exit(code=1) from exc
+    if json_output:
+        typer.echo(json.dumps(result.to_dict(), sort_keys=True))
+        return
+    print_header(f"Exclusive Boundary Diagnostic: {resolved_job_id}")
+    print_success(
+        "Requested endtime: "
+        f"{datetime.fromtimestamp(result.requested_endtime, tz=UTC).isoformat()} "
+        f"({result.requested_endtime})"
+    )
+    print_success(f"Broker records returned: {result.returned_count}")
+    print_success(f"Validated older records: {result.valid_older_count}")
+    if result.older_history_available:
+        print_success("Older history is available when the inclusive boundary is excluded.")
+        print_success(
+            "Resume with --exclusive-cursor; this diagnostic did not persist broker data."
+        )
+    else:
+        print_warning(
+            "No older candles were returned by the exclusive probe. This supports a broker "
+            "endpoint availability limit at the current boundary."
+        )
+
+
 @app.command("backfill-resume")
 def backfill_resume_command(
     job_id: str = typer.Option(..., "--job-id"),
@@ -370,6 +451,11 @@ def backfill_resume_command(
         "--additional-requests",
         min=1,
         help="Explicitly add a bounded request budget to this resume",
+    ),
+    exclusive_cursor: bool = typer.Option(
+        False,
+        "--exclusive-cursor",
+        help="Request each next page at checkpoint cursor minus one second",
     ),
 ) -> None:
     """Resume an existing job from its last committed page."""
@@ -397,6 +483,7 @@ def backfill_resume_command(
                 saved_credentials=saved_credentials,
                 resume=True,
                 additional_broker_requests=additional_requests,
+                request_before_cursor=exclusive_cursor,
             )
         )
         _emit_result(result, json_output=json_output)

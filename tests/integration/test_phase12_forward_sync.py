@@ -503,7 +503,37 @@ def test_forward_cli_plan_and_status_and_noop(tmp_path: Path) -> None:
     assert noop_payload["requests_made"] == 0
     assert noop_payload["new_records_saved"] == 0
 
-    # Also test forward-status with an existing checkpoint
+    # Test forward-status on first run when no checkpoint exists
+    status_first_run = runner.invoke(
+        app,
+        ["data", "forward-status", "--job-id", "forward-noop", "--output-dir", str(root)],
+    )
+    assert status_first_run.exit_code == 0
+    assert "Forward Sync Status: forward-noop" in status_first_run.output
+    assert "No forward collection has been required yet" in status_first_run.output
+    assert "Unique candles: 1" in status_first_run.output
+    assert "Calendar coverage: 0.00 days" in status_first_run.output
+    assert "Unresolved open-market gaps: 0" in status_first_run.output
+
+    status_first_run_json = runner.invoke(
+        app,
+        [
+            "data",
+            "forward-status",
+            "--job-id",
+            "forward-noop",
+            "--output-dir",
+            str(root),
+            "--json",
+        ],
+    )
+    assert status_first_run_json.exit_code == 0
+    first_run_payload = json.loads(status_first_run_json.output)
+    assert first_run_payload["checkpoint"] is None
+    assert first_run_payload["message"] == "No forward collection has been required yet"
+    assert first_run_payload["coverage"]["base"]["unique_candles"] == 1
+
+    # Also test forward-status with a subsequent existing checkpoint
     checkpoint_file = root / "forward_checkpoint_forward-noop.json"
     checkpoint_file.write_text(
         json.dumps({
@@ -642,3 +672,44 @@ def test_phase11_freeze_cli_workflow(tmp_path: Path) -> None:
     )
     assert repeat_freeze.exit_code != 0
     assert "already been frozen" in repeat_freeze.output
+
+
+def test_forward_status_first_run_without_checkpoint(tmp_path: Path) -> None:
+    root = tmp_path / "datasets"
+    start = int(datetime(2026, 11, 10, 0, 0, tzinfo=UTC).timestamp())
+    candles = _series(start, 500)
+    _persist(root, candles)
+    runner = CliRunner()
+
+    res = runner.invoke(
+        app,
+        ["data", "forward-status", "--job-id", "eurusd-forward-1m", "--output-dir", str(root)],
+    )
+    assert res.exit_code == 0
+    assert "Forward Sync Status: eurusd-forward-1m" in res.output
+    assert "No forward collection has been required yet" in res.output
+    assert "Unique candles: 500" in res.output
+    assert "Calendar coverage: 0.35 days" in res.output
+    assert "Unresolved open-market gaps: 0" in res.output
+
+    checkpoint_file = root / "forward_checkpoint_eurusd-forward-1m.json"
+    assert not checkpoint_file.exists()
+
+    json_res = runner.invoke(
+        app,
+        [
+            "data",
+            "forward-status",
+            "--job-id",
+            "eurusd-forward-1m",
+            "--output-dir",
+            str(root),
+            "--json",
+        ],
+    )
+    assert json_res.exit_code == 0
+    payload = json.loads(json_res.output)
+    assert payload["checkpoint"] is None
+    assert payload["message"] == "No forward collection has been required yet"
+    assert payload["coverage"]["base"]["unique_candles"] == 500
+    assert not checkpoint_file.exists()

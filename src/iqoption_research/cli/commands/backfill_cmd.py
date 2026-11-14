@@ -32,8 +32,10 @@ from iqoption_research.market_data.forward_sync import (
     ForwardSyncResult,
     build_forward_sync_plan,
     create_forward_sync_job,
+    forward_checkpoint_path,
     load_forward_checkpoint,
 )
+from iqoption_research.ml.phase10 import Phase10Error
 from iqoption_research.research.phase11 import (
     BackwardExpansionPlan,
     audit_expansion_coverage,
@@ -561,24 +563,42 @@ def forward_status_command(
     """Show the durable forward checkpoint and current verified coverage offline."""
     resolved_job_id = _validate_job_id(job_id)
     try:
-        checkpoint = load_forward_checkpoint(output_dir, resolved_job_id)
-        coverage, _ = audit_expansion_coverage(output_dir, target_calendar_days=90)
-    except (DataAcquisitionError, ValueError) as exc:
+        checkpoint_path = forward_checkpoint_path(output_dir, resolved_job_id)
+        checkpoint = (
+            load_forward_checkpoint(output_dir, resolved_job_id)
+            if checkpoint_path.is_file()
+            else None
+        )
+        symbol = checkpoint.symbol if checkpoint is not None else "EURUSD"
+        size = checkpoint.candle_size_seconds if checkpoint is not None else 60
+        coverage, _ = audit_expansion_coverage(
+            output_dir,
+            symbol=symbol,
+            candle_size_seconds=size,
+            target_calendar_days=90,
+        )
+    except (DataAcquisitionError, ValueError, Phase10Error) as exc:
         print_error(str(exc))
         raise typer.Exit(code=1) from exc
-    payload = {
-        "checkpoint": checkpoint.to_dict(),
+    payload: dict[str, Any] = {
+        "checkpoint": checkpoint.to_dict() if checkpoint is not None else None,
         "coverage": coverage.to_dict(),
     }
+    if checkpoint is None:
+        payload["message"] = "No forward collection has been required yet"
+
     if json_output:
         typer.echo(json.dumps(payload, sort_keys=True))
         return
     print_header(f"Forward Sync Status: {resolved_job_id}")
-    print_success(f"State: {checkpoint.state}")
-    print_success(f"Cycle: {checkpoint.cycle_number}")
-    print_success(f"Requests: {checkpoint.requests_made}/{checkpoint.max_requests}")
-    print_success(f"New records this cycle: {checkpoint.new_records_saved}")
-    print_success(f"Duplicates this cycle: {checkpoint.duplicates_skipped}")
+    if checkpoint is not None:
+        print_success(f"State: {checkpoint.state}")
+        print_success(f"Cycle: {checkpoint.cycle_number}")
+        print_success(f"Requests: {checkpoint.requests_made}/{checkpoint.max_requests}")
+        print_success(f"New records this cycle: {checkpoint.new_records_saved}")
+        print_success(f"Duplicates this cycle: {checkpoint.duplicates_skipped}")
+    else:
+        print_success("No forward collection has been required yet")
     print_success(f"Unique candles: {coverage.base.unique_candles}")
     print_success(f"Calendar coverage: {coverage.base.calendar_span_days:.2f} days")
     print_success(f"Newest timestamp: {coverage.newest_utc}")

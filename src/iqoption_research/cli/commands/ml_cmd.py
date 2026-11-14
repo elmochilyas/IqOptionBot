@@ -92,6 +92,11 @@ def phase11_freeze_command(
     confirmation_state: Path = typer.Option(
         Path("data/phase11/confirmation_state.json"), "--confirmation-state"
     ),
+    artifact_dir: Path | None = typer.Option(
+        None,
+        "--artifact-dir",
+        help="Optional directory where the frozen model bundle will be persisted",
+    ),
     target_days: int = typer.Option(90, "--target-days", min=1),
     confirmation_days: int = typer.Option(14, "--confirmation-days", min=1),
     yes_freeze_development: bool = typer.Option(
@@ -110,6 +115,7 @@ def phase11_freeze_command(
             selected_model=selected_model,
             target_calendar_days=target_days,
             confirmation_days=confirmation_days,
+            artifact_dir=artifact_dir,
         )
     except (Phase10Error, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -117,7 +123,9 @@ def phase11_freeze_command(
         Panel(
             f"Model: {state.frozen_model_name}\n"
             f"Development cutoff: {state.development_freeze_utc}\n"
-            f"Fingerprint: {state.development_dataset_fingerprint}\n"
+            f"Dataset fingerprint: {state.development_dataset_fingerprint}\n"
+            f"Artifact fingerprint: {state.frozen_artifact_fingerprint}\n"
+            f"Artifact path: {state.frozen_artifact_path}\n"
             f"Status: {state.protocol_status}",
             title="Phase 11 Development Frozen",
         )

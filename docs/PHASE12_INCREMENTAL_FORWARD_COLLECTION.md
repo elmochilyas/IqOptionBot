@@ -87,9 +87,14 @@ actually selected during development:
 python -m iqoption_research.cli.main ml phase11-freeze --model logistic_regression --storage data/datasets --target-days 90 --confirmation-days 14 --confirmation-state data/phase11/confirmation_state.json --yes-freeze-development
 ```
 
-The freeze cannot be undone. Only candles strictly later than the frozen development cutoff can
-then accumulate toward confirmation. Confirmation remains unavailable until at least 14 days of
-genuinely later data exist, and still requires the existing explicit `--confirm-once` action.
+The freeze cannot be undone. It fits and serializes the complete model bundle (fitted model
+weights, StandardScaler, ProbabilityCalibrator, decision threshold, feature schema, and configuration)
+into an immutable artifact directory with a SHA-256 manifest. The manifest digest is recorded as the
+`frozen_artifact_fingerprint` in protocol state. During confirmation evaluation, this exact bundle is
+loaded and verified before generating predictions, guaranteeing bit-for-bit reproducibility and
+preventing silent model refitting or configuration drift. Only candles strictly later than the frozen
+development cutoff can then accumulate toward confirmation. Confirmation remains unavailable until at
+least 14 days of genuinely later data exist, and still requires the existing explicit `--confirm-once` action.
 
 ## Limitations
 

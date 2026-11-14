@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,14 +21,18 @@ from iqoption_research.market_data.collector import (
     load_checkpoint,
 )
 from iqoption_research.ml.fixtures import SyntheticMarketConfig, generate_synthetic_candles
-from iqoption_research.ml.phase10 import Phase10Config
+from iqoption_research.ml.phase10 import Phase10Config, Phase10Error, prepare_clean_dataset
+from iqoption_research.ml.tracking.artifacts import load_model_bundle, verify_manifest
 from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.research.phase11 import (
     ConfirmationProtocolError,
     audit_expansion_coverage,
     build_backward_expansion_plan,
+    freeze_development_protocol,
     launch_backward_expansion,
+    load_or_create_confirmation_state,
     partition_confirmation_candles,
+    render_phase11_markdown,
     run_phase11_evaluation,
 )
 
@@ -268,13 +273,13 @@ def test_confirmation_partition_is_strictly_later_and_cost_sensitivity_is_monoto
 ) -> None:
     root = tmp_path / "datasets"
     candles = _candles(2_700, size=3600, seed=555)
-    _persist(root, candles)
     cutoff = candles[2_299].from_ts
     development, confirmation = partition_confirmation_candles(
         candles,
         prior_evaluation_cutoff_ts=cutoff,
     )
     assert development[-1].from_ts == cutoff < confirmation[0].from_ts
+    _persist(root, development)
 
     config = Phase10Config(
         candle_size_seconds=3600,
@@ -299,10 +304,36 @@ def test_confirmation_partition_is_strictly_later_and_cost_sensitivity_is_monoto
         confirmation_state_path=state_path,
         prior_evaluation_cutoff_ts=cutoff,
     )
-    assert development_result.ready_for_confirmation is True
+    assert development_result.ready_for_confirmation is False
     assert development_result.confirmation_evaluated is False
     assert development_result.confirmation_metrics == {}
     assert development_result.development_rows > 100
+
+    frozen = freeze_development_protocol(
+        root,
+        state_path=state_path,
+        selected_model="logistic_regression",
+        target_calendar_days=90,
+        confirmation_days=14,
+        candle_size_seconds=3600,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+    assert frozen.protocol_status == "MODEL_FROZEN"
+    assert frozen.frozen_artifact_fingerprint is not None
+    assert frozen.frozen_artifact_path is not None
+    assert Path(frozen.frozen_artifact_path).is_dir()
+    _persist(root, confirmation)
+
+    reserved_result = run_phase11_evaluation(
+        root,
+        target_calendar_days=90,
+        confirmation_days=14,
+        config=config,
+        confirmation_state_path=state_path,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+    assert reserved_result.ready_for_confirmation is True
+    assert reserved_result.confirmation_evaluated is False
 
     result = run_phase11_evaluation(
         root,
@@ -317,7 +348,10 @@ def test_confirmation_partition_is_strictly_later_and_cost_sensitivity_is_monoto
 
     assert result.ready_for_confirmation is True
     assert result.confirmation_evaluated is True
-    assert result.confirmation_evaluation_status == "EVALUATED"
+    assert result.confirmation_evaluation_status == "CONFIRMATION_EVALUATED"
+    assert result.frozen_artifact_fingerprint == frozen.frozen_artifact_fingerprint
+    markdown = render_phase11_markdown(result)
+    assert frozen.frozen_artifact_fingerprint in markdown
     assert result.development_rows > result.confirmation_rows > 100
     assert set(result.confirmation_metrics) == {
         result.selected_baseline,
@@ -333,7 +367,7 @@ def test_confirmation_partition_is_strictly_later_and_cost_sensitivity_is_monoto
     assert state["prior_evaluation_cutoff_ts"] == cutoff
     assert state["prior_evaluated_dataset_fingerprint"]
     assert state["confirmation_dataset_fingerprint"] == result.confirmation_dataset_fingerprint
-    assert state["evaluation_status"] == "EVALUATED"
+    assert state["protocol_status"] == "CONFIRMATION_EVALUATED"
 
     with pytest.raises(ConfirmationProtocolError, match="cannot be rerun"):
         run_phase11_evaluation(
@@ -378,9 +412,76 @@ def test_previously_evaluated_history_is_development_not_confirmation(
     assert result.confirmation_rows == 0
     assert result.ready_for_confirmation is False
     assert result.confirmation_evaluated is False
-    assert result.confirmation_evaluation_status == "RESERVED"
+    assert result.confirmation_evaluation_status == "DEVELOPMENT_OPEN"
     assert result.confirmation_metrics == {}
     assert "previously evaluated development data" in " ".join(result.limitations)
+
+
+def test_legacy_reserved_protocol_migrates_with_audit_history(tmp_path: Path) -> None:
+    candles = _candles(20, size=3600, seed=557)
+    cutoff = candles[-1].from_ts
+    state_path = tmp_path / "confirmation_state.json"
+    legacy = {
+        "schema_version": 1,
+        "prior_evaluation_cutoff_ts": cutoff,
+        "prior_evaluation_cutoff_utc": datetime.fromtimestamp(cutoff, tz=UTC).isoformat(),
+        "prior_evaluated_dataset_fingerprint": "phase10-fingerprint",
+        "confirmation_days": 14,
+        "evaluation_status": "RESERVED",
+        "confirmation_start_ts": None,
+        "confirmation_end_ts": None,
+        "confirmation_dataset_fingerprint": None,
+        "full_dataset_fingerprint_at_evaluation": None,
+        "evaluation_started_at_utc": None,
+        "evaluated_at_utc": None,
+    }
+    state_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    migrated = load_or_create_confirmation_state(
+        state_path,
+        candles=candles,
+        confirmation_days=14,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+
+    assert migrated.schema_version == 2
+    assert migrated.protocol_status == "DEVELOPMENT_OPEN"
+    assert migrated.prior_evaluated_dataset_fingerprint == "phase10-fingerprint"
+    assert migrated.audit_history[0]["event"] == "MIGRATED_V1_RESERVED"
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["schema_version"] == 2
+    assert persisted["audit_history"][0]["legacy_status"] == "RESERVED"
+
+
+def test_legacy_reserved_confirmation_data_is_never_reclassified(tmp_path: Path) -> None:
+    candles = _candles(20, size=3600, seed=558)
+    cutoff = candles[-1].from_ts
+    state_path = tmp_path / "confirmation_state.json"
+    legacy = {
+        "schema_version": 1,
+        "prior_evaluation_cutoff_ts": cutoff,
+        "prior_evaluation_cutoff_utc": datetime.fromtimestamp(cutoff, tz=UTC).isoformat(),
+        "prior_evaluated_dataset_fingerprint": "phase10-fingerprint",
+        "confirmation_days": 14,
+        "evaluation_status": "RESERVED",
+        "confirmation_start_ts": cutoff + 3600,
+        "confirmation_end_ts": None,
+        "confirmation_dataset_fingerprint": "reserved-fingerprint",
+        "full_dataset_fingerprint_at_evaluation": None,
+        "evaluation_started_at_utc": None,
+        "evaluated_at_utc": None,
+    }
+    state_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    with pytest.raises(ConfirmationProtocolError, match="cannot be silently reclassified"):
+        load_or_create_confirmation_state(
+            state_path,
+            candles=candles,
+            confirmation_days=14,
+            prior_evaluation_cutoff_ts=cutoff,
+        )
+
+    assert json.loads(state_path.read_text(encoding="utf-8")) == legacy
 
 
 def test_phase11_cli_is_offline_by_default_and_reports_current_insufficiency(
@@ -420,3 +521,287 @@ def test_phase11_cli_is_offline_by_default_and_reports_current_insufficiency(
     assert "Development research may proceed" in evaluated.output
     assert report.is_file()
     assert evidence.is_file()
+
+
+def test_frozen_model_bundle_reproducible_predictions_and_calibration(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "datasets"
+    candles = _candles(2_700, size=3600, seed=777)
+    cutoff = candles[2_299].from_ts
+    development, confirmation = partition_confirmation_candles(
+        candles,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+    _persist(root, development)
+
+    config = Phase10Config(
+        candle_size_seconds=3600,
+        n_folds=2,
+        initial_train_ratio=0.50,
+        validation_ratio=0.10,
+        test_ratio=0.20,
+        minimum_rows=500,
+        model_names=("majority_class", "logistic_regression"),
+    )
+    state_path = tmp_path / "confirmation_state.json"
+    artifact_dir = tmp_path / "custom_frozen_bundle"
+
+    frozen = freeze_development_protocol(
+        root,
+        state_path=state_path,
+        selected_model="logistic_regression",
+        target_calendar_days=90,
+        confirmation_days=14,
+        candle_size_seconds=3600,
+        prior_evaluation_cutoff_ts=cutoff,
+        artifact_dir=artifact_dir,
+        config=config,
+    )
+    assert frozen.protocol_status == "MODEL_FROZEN"
+    assert Path(frozen.frozen_artifact_path) == artifact_dir
+    assert frozen.frozen_artifact_fingerprint is not None
+
+    bundle = load_model_bundle(artifact_dir, verify=True)
+    conf_dataset = prepare_clean_dataset(
+        confirmation,
+        candle_size_seconds=config.candle_size_seconds,
+        horizon_bars=config.horizon_bars,
+    )
+    assert bundle.scaler is not None
+    scaled_conf = bundle.scaler.transform(conf_dataset.X)
+    raw_probs = bundle.model.predict_proba(scaled_conf)
+    if bundle.calibrator is not None:
+        calibrated_probs = bundle.calibrator.calibrate(raw_probs)[:, 1]
+    else:
+        calibrated_probs = raw_probs[:, 1]
+
+    _persist(root, confirmation)
+    result = run_phase11_evaluation(
+        root,
+        target_calendar_days=90,
+        confirmation_days=14,
+        config=config,
+        confirmation_state_path=state_path,
+        prior_evaluation_cutoff_ts=cutoff,
+        evaluate_confirmation=True,
+    )
+
+    assert result.confirmation_evaluated is True
+    assert result.frozen_artifact_fingerprint == frozen.frozen_artifact_fingerprint
+    model_perf = result.confirmation_metrics["logistic_regression"]
+    expected_preds = (calibrated_probs >= (frozen.frozen_prediction_threshold or 0.5)).astype(int)
+    expected_acc = float((conf_dataset.y == expected_preds).mean())
+    assert model_perf.sample_count == conf_dataset.row_count
+    assert abs(model_perf.accuracy - expected_acc) < 1e-9
+
+
+def test_frozen_model_bundle_tampering_detection(tmp_path: Path) -> None:
+    root = tmp_path / "datasets"
+    candles = _candles(2_700, size=3600, seed=888)
+    cutoff = candles[2_299].from_ts
+    development, confirmation = partition_confirmation_candles(
+        candles,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+    _persist(root, development)
+
+    config = Phase10Config(
+        candle_size_seconds=3600,
+        n_folds=2,
+        initial_train_ratio=0.50,
+        validation_ratio=0.10,
+        test_ratio=0.20,
+        minimum_rows=500,
+        model_names=("majority_class", "logistic_regression"),
+    )
+    state_path = tmp_path / "confirmation_state.json"
+    artifact_dir = tmp_path / "tamper_test_bundle"
+
+    frozen = freeze_development_protocol(
+        root,
+        state_path=state_path,
+        selected_model="logistic_regression",
+        target_calendar_days=90,
+        confirmation_days=14,
+        candle_size_seconds=3600,
+        prior_evaluation_cutoff_ts=cutoff,
+        artifact_dir=artifact_dir,
+        config=config,
+    )
+    assert frozen.protocol_status == "MODEL_FROZEN"
+    _persist(root, confirmation)
+
+    scaler_file = artifact_dir / "scaler.json"
+    original_scaler_bytes = scaler_file.read_bytes()
+    scaler_file.write_bytes(original_scaler_bytes + b"\n// tampered")
+
+    with pytest.raises(ConfirmationProtocolError, match="integrity violation"):
+        run_phase11_evaluation(
+            root,
+            target_calendar_days=90,
+            confirmation_days=14,
+            config=config,
+            confirmation_state_path=state_path,
+            prior_evaluation_cutoff_ts=cutoff,
+            evaluate_confirmation=True,
+        )
+
+    scaler_file.write_bytes(original_scaler_bytes)
+
+    manifest_file = artifact_dir / "artifact_manifest.json"
+    manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+    manifest_data["metadata"]["tampered"] = True
+    manifest_file.write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
+
+    with pytest.raises(ConfirmationProtocolError, match="fingerprint mismatch"):
+        run_phase11_evaluation(
+            root,
+            target_calendar_days=90,
+            confirmation_days=14,
+            config=config,
+            confirmation_state_path=state_path,
+            prior_evaluation_cutoff_ts=cutoff,
+            evaluate_confirmation=True,
+        )
+
+    shutil.rmtree(artifact_dir)
+    with pytest.raises(ConfirmationProtocolError, match="does not exist"):
+        run_phase11_evaluation(
+            root,
+            target_calendar_days=90,
+            confirmation_days=14,
+            config=config,
+            confirmation_state_path=state_path,
+            prior_evaluation_cutoff_ts=cutoff,
+            evaluate_confirmation=True,
+        )
+
+
+def test_frozen_model_bundle_rejects_unsupported_model_or_config_mismatch(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "datasets"
+    candles = _candles(2_700, size=3600, seed=999)
+    cutoff = candles[2_299].from_ts
+    development, confirmation = partition_confirmation_candles(
+        candles,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+    _persist(root, development)
+
+    config = Phase10Config(
+        candle_size_seconds=3600,
+        n_folds=2,
+        initial_train_ratio=0.50,
+        validation_ratio=0.10,
+        test_ratio=0.20,
+        minimum_rows=500,
+        model_names=("majority_class", "logistic_regression"),
+    )
+    state_path = tmp_path / "confirmation_state.json"
+
+    with pytest.raises(Phase10Error, match="Unsupported model"):
+        freeze_development_protocol(
+            root,
+            state_path=state_path,
+            selected_model="deep_quantum_network",
+            target_calendar_days=90,
+            confirmation_days=14,
+            candle_size_seconds=3600,
+            prior_evaluation_cutoff_ts=cutoff,
+            config=config,
+        )
+
+    assert not state_path.is_file()
+
+    frozen = freeze_development_protocol(
+        root,
+        state_path=state_path,
+        selected_model="logistic_regression",
+        target_calendar_days=90,
+        confirmation_days=14,
+        candle_size_seconds=3600,
+        prior_evaluation_cutoff_ts=cutoff,
+        config=config,
+    )
+    assert frozen.protocol_status == "MODEL_FROZEN"
+    _persist(root, confirmation)
+
+    mismatched_config = replace(config, confidence_threshold=0.85)
+    with pytest.raises(ConfirmationProtocolError, match="confidence_threshold"):
+        run_phase11_evaluation(
+            root,
+            target_calendar_days=90,
+            confirmation_days=14,
+            config=mismatched_config,
+            confirmation_state_path=state_path,
+            prior_evaluation_cutoff_ts=cutoff,
+            evaluate_confirmation=True,
+        )
+
+    mismatched_horizon = replace(config, horizon_bars=2)
+    with pytest.raises(ConfirmationProtocolError, match="horizon_bars"):
+        run_phase11_evaluation(
+            root,
+            target_calendar_days=90,
+            confirmation_days=14,
+            config=mismatched_horizon,
+            confirmation_state_path=state_path,
+            prior_evaluation_cutoff_ts=cutoff,
+            evaluate_confirmation=True,
+        )
+
+
+def test_freeze_and_confirm_with_baseline_model(tmp_path: Path) -> None:
+    root = tmp_path / "datasets"
+    candles = _candles(2_700, size=3600, seed=123)
+    cutoff = candles[2_299].from_ts
+    development, confirmation = partition_confirmation_candles(
+        candles,
+        prior_evaluation_cutoff_ts=cutoff,
+    )
+    _persist(root, development)
+
+    config = Phase10Config(
+        candle_size_seconds=3600,
+        n_folds=2,
+        initial_train_ratio=0.50,
+        validation_ratio=0.10,
+        test_ratio=0.20,
+        minimum_rows=500,
+        model_names=("majority_class", "logistic_regression"),
+    )
+    state_path = tmp_path / "confirmation_state.json"
+    artifact_dir = tmp_path / "baseline_bundle"
+
+    frozen = freeze_development_protocol(
+        root,
+        state_path=state_path,
+        selected_model="majority_class",
+        target_calendar_days=90,
+        confirmation_days=14,
+        candle_size_seconds=3600,
+        prior_evaluation_cutoff_ts=cutoff,
+        artifact_dir=artifact_dir,
+        config=config,
+    )
+    assert frozen.protocol_status == "MODEL_FROZEN"
+    assert frozen.frozen_model_name == "majority_class"
+
+    manifest = verify_manifest(artifact_dir)
+    assert manifest.digest() == frozen.frozen_artifact_fingerprint
+
+    _persist(root, confirmation)
+    result = run_phase11_evaluation(
+        root,
+        target_calendar_days=90,
+        confirmation_days=14,
+        config=config,
+        confirmation_state_path=state_path,
+        prior_evaluation_cutoff_ts=cutoff,
+        evaluate_confirmation=True,
+    )
+    assert result.confirmation_evaluated is True
+    assert "majority_class" in result.confirmation_metrics
+    assert result.frozen_artifact_fingerprint == frozen.frozen_artifact_fingerprint

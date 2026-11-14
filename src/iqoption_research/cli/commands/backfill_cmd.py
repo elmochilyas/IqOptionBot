@@ -26,6 +26,14 @@ from iqoption_research.market_data.collector import (
     launch_backfill,
     load_checkpoint,
 )
+from iqoption_research.market_data.forward_sync import (
+    ForwardState,
+    ForwardSyncPlan,
+    ForwardSyncResult,
+    build_forward_sync_plan,
+    create_forward_sync_job,
+    load_forward_checkpoint,
+)
 from iqoption_research.research.phase11 import (
     BackwardExpansionPlan,
     audit_expansion_coverage,
@@ -136,6 +144,23 @@ def _emit_result(result: BackfillResult, *, json_output: bool) -> None:
     print_success(f"Rejected broker records: {result.rejected_records}")
 
 
+def _emit_forward_result(result: ForwardSyncResult, *, json_output: bool) -> None:
+    if json_output:
+        typer.echo(json.dumps(result.to_dict(), sort_keys=True))
+        return
+    print_header(f"Forward Sync: {result.job_id}")
+    print_success(f"State: {result.state}")
+    print_success(f"Unique candles: {result.unique_candles}")
+    print_success(f"Calendar coverage: {result.calendar_coverage_days:.2f} days")
+    print_success(f"Newest completed candle: {result.newest_timestamp_utc}")
+    print_success(f"New records saved: {result.new_records_saved}")
+    print_success(f"Duplicates skipped: {result.duplicates_skipped}")
+    if result.unresolved_gap_count:
+        print_warning(f"Unresolved open-market gaps: {result.unresolved_gap_count}")
+    else:
+        print_success("Unresolved open-market gaps: 0")
+
+
 async def _run_authorized_extension(
     *,
     plan: BackwardExpansionPlan,
@@ -173,6 +198,29 @@ async def _run_boundary_diagnostic(
             client=client,
             probe_count=probe_count,
         )
+    finally:
+        await cleanup()
+
+
+async def _run_forward_sync(
+    *,
+    plan: ForwardSyncPlan,
+    job_id: str,
+    output_dir: Path,
+    saved_credentials: bool,
+    additional_requests: int | None,
+) -> ForwardSyncResult:
+    client, cleanup = await _connect_live_client(saved_credentials)
+    try:
+        collector = HistoricalDataCollector(storage_dir=output_dir)
+        job = create_forward_sync_job(
+            collector=collector,
+            plan=plan,
+            job_id=job_id,
+            client=client,
+            additional_requests=additional_requests,
+        )
+        return await job.run()
     finally:
         await cleanup()
 
@@ -379,6 +427,165 @@ def backfill_status_command(
         )
     if checkpoint.last_error:
         print_warning(f"Last error: {checkpoint.last_error}")
+
+
+@app.command("forward-plan")
+def forward_plan_command(
+    instrument: str = typer.Option("EURUSD", "--symbol"),
+    size: int = typer.Option(60, "--size"),
+    page_size: int = typer.Option(500, "--page-size", min=1, max=1000),
+    max_requests: int = typer.Option(20, "--max-requests", min=1),
+    output_dir: Path = typer.Option(Path("data/datasets"), "--output-dir"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Plan an incremental forward sync entirely offline."""
+    try:
+        plan = build_forward_sync_plan(
+            output_dir,
+            symbol=instrument,
+            candle_size_seconds=size,
+            page_size=page_size,
+            max_requests=max_requests,
+        )
+    except (DataAcquisitionError, ValueError) as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from exc
+    if json_output:
+        typer.echo(json.dumps(plan.to_dict(), sort_keys=True))
+        return
+    print_header("Incremental Forward Collection Plan")
+    print_success(f"Unique candles: {plan.current_unique_candles}")
+    print_success(
+        "Newest verified candle: "
+        f"{datetime.fromtimestamp(plan.latest_stored_to_ts, tz=UTC).isoformat()}"
+    )
+    print_success(
+        "Latest completed boundary: "
+        f"{datetime.fromtimestamp(plan.target_completed_end_ts, tz=UTC).isoformat()}"
+    )
+    print_success(f"Expected open-market candles: {plan.expected_open_candles}")
+    print_success(f"Estimated broker requests: {plan.estimated_requests}")
+    print_success(f"Request budget: {plan.max_requests}")
+    if not plan.needs_broker_request:
+        print_success("No broker request is needed; the market window contains no missing opens.")
+
+
+@app.command("forward-sync")
+def forward_sync_command(
+    job_id: str = typer.Option("eurusd-forward-1m", "--job-id"),
+    instrument: str = typer.Option("EURUSD", "--symbol"),
+    size: int = typer.Option(60, "--size"),
+    page_size: int = typer.Option(500, "--page-size", min=1, max=1000),
+    max_requests: int = typer.Option(20, "--max-requests", min=1),
+    additional_requests: int | None = typer.Option(
+        None,
+        "--additional-requests",
+        min=1,
+        help="Explicitly extend an exhausted in-progress cycle budget",
+    ),
+    output_dir: Path = typer.Option(Path("data/datasets"), "--output-dir"),
+    live: bool = typer.Option(False, "--live", help="Authorize read-only broker access"),
+    yes_i_understand: bool = typer.Option(False, "--yes-i-understand"),
+    saved_credentials: bool = typer.Option(False, "--saved", help="Use saved credentials"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Manually run one bounded incremental forward-collection cycle."""
+    if not live:
+        print_error(
+            "Offline safety mode is active. Forward sync requires "
+            "--live --yes-i-understand; no broker connection was attempted."
+        )
+        raise typer.Exit(code=2)
+    if not yes_i_understand:
+        raise typer.BadParameter("--live requires --yes-i-understand")
+    resolved_job_id = _validate_job_id(job_id)
+    try:
+        plan = build_forward_sync_plan(
+            output_dir,
+            symbol=instrument,
+            candle_size_seconds=size,
+            page_size=page_size,
+            max_requests=max_requests,
+        )
+        try:
+            existing_forward = load_forward_checkpoint(output_dir, resolved_job_id)
+        except DataAcquisitionError:
+            existing_forward = None
+        resume_pending = bool(
+            existing_forward is not None
+            and existing_forward.state
+            in {ForwardState.RUNNING, ForwardState.INTERRUPTED, ForwardState.PARTIAL}
+        )
+        if not plan.needs_broker_request and not resume_pending:
+            coverage, _ = audit_expansion_coverage(
+                output_dir,
+                symbol=instrument,
+                candle_size_seconds=size,
+            )
+            result = ForwardSyncResult(
+                job_id=resolved_job_id,
+                state="completed",
+                unique_candles=coverage.base.unique_candles,
+                calendar_coverage_days=coverage.base.calendar_span_days,
+                newest_timestamp_utc=coverage.newest_utc,
+                new_records_saved=0,
+                duplicates_skipped=0,
+                requests_made=0,
+                unresolved_gap_count=coverage.unexpected_gap_count,
+                scheduled_closure_count=coverage.scheduled_closure_count,
+            )
+        else:
+            result = asyncio.run(
+                _run_forward_sync(
+                    plan=plan,
+                    job_id=resolved_job_id,
+                    output_dir=output_dir,
+                    saved_credentials=saved_credentials,
+                    additional_requests=additional_requests,
+                )
+            )
+        _emit_forward_result(result, json_output=json_output)
+    except typer.Exit:
+        raise
+    except (DataAcquisitionError, ValueError) as exc:
+        print_error(f"Forward sync failed: {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("forward-status")
+def forward_status_command(
+    job_id: str = typer.Option("eurusd-forward-1m", "--job-id"),
+    output_dir: Path = typer.Option(Path("data/datasets"), "--output-dir"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show the durable forward checkpoint and current verified coverage offline."""
+    resolved_job_id = _validate_job_id(job_id)
+    try:
+        checkpoint = load_forward_checkpoint(output_dir, resolved_job_id)
+        coverage, _ = audit_expansion_coverage(output_dir, target_calendar_days=90)
+    except (DataAcquisitionError, ValueError) as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from exc
+    payload = {
+        "checkpoint": checkpoint.to_dict(),
+        "coverage": coverage.to_dict(),
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, sort_keys=True))
+        return
+    print_header(f"Forward Sync Status: {resolved_job_id}")
+    print_success(f"State: {checkpoint.state}")
+    print_success(f"Cycle: {checkpoint.cycle_number}")
+    print_success(f"Requests: {checkpoint.requests_made}/{checkpoint.max_requests}")
+    print_success(f"New records this cycle: {checkpoint.new_records_saved}")
+    print_success(f"Duplicates this cycle: {checkpoint.duplicates_skipped}")
+    print_success(f"Unique candles: {coverage.base.unique_candles}")
+    print_success(f"Calendar coverage: {coverage.base.calendar_span_days:.2f} days")
+    print_success(f"Newest timestamp: {coverage.newest_utc}")
+    if coverage.unexpected_gap_count:
+        print_warning(f"Unresolved open-market gaps: {coverage.unexpected_gap_count}")
+    else:
+        print_success("Unresolved open-market gaps: 0")
 
 
 @app.command("backfill-boundary-diagnostic")

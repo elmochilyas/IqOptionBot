@@ -66,6 +66,7 @@ from iqoption_research.ml.targets.specs import TargetSpec, TargetType
 from iqoption_research.ml.tracking.artifacts import load_model_bundle
 from iqoption_research.ml.tracking.tracker import ExperimentRecord, ExperimentTracker
 from iqoption_research.research.phase11 import (
+    freeze_development_protocol,
     run_phase11_evaluation,
     write_phase11_reports,
 )
@@ -79,6 +80,56 @@ ml_app = typer.Typer(
 
 DEFAULT_WORKSPACE = Path("data/ml_workspace")
 DEFAULT_DB = Path("data/ml_experiments.db")
+
+
+@ml_app.command(
+    "phase11-freeze",
+    help="Irreversibly freeze the current development dataset and selected model.",
+)
+def phase11_freeze_command(
+    selected_model: str = typer.Option(..., "--model"),
+    storage_dir: Path = typer.Option(Path("data/datasets"), "--storage"),
+    confirmation_state: Path = typer.Option(
+        Path("data/phase11/confirmation_state.json"), "--confirmation-state"
+    ),
+    artifact_dir: Path | None = typer.Option(
+        None,
+        "--artifact-dir",
+        help="Optional directory where the frozen model bundle will be persisted",
+    ),
+    target_days: int = typer.Option(90, "--target-days", min=1),
+    confirmation_days: int = typer.Option(14, "--confirmation-days", min=1),
+    yes_freeze_development: bool = typer.Option(
+        False,
+        "--yes-freeze-development",
+        help="Required acknowledgement that the model and development fingerprint become fixed",
+    ),
+) -> None:
+    """Freeze local research evidence only; never connects to a broker."""
+    if not yes_freeze_development:
+        raise typer.BadParameter("Freezing requires --yes-freeze-development")
+    try:
+        state = freeze_development_protocol(
+            storage_dir,
+            state_path=confirmation_state,
+            selected_model=selected_model,
+            target_calendar_days=target_days,
+            confirmation_days=confirmation_days,
+            artifact_dir=artifact_dir,
+        )
+    except (Phase10Error, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(
+        Panel(
+            f"Model: {state.frozen_model_name}\n"
+            f"Development cutoff: {state.development_freeze_utc}\n"
+            f"Dataset fingerprint: {state.development_dataset_fingerprint}\n"
+            f"Artifact fingerprint: {state.frozen_artifact_fingerprint}\n"
+            f"Artifact path: {state.frozen_artifact_path}\n"
+            f"Status: {state.protocol_status}",
+            title="Phase 11 Development Frozen",
+        )
+    )
 
 
 @ml_app.command(

@@ -32,10 +32,10 @@ The table below summarizes out-of-sample walk-forward performance across horizon
 
 | Horizon | Model Family | Feature Set | Vol. Filter | Conf. Min | OOS Acc | Bal. Acc | ROC-AUC | Brier | FX Trades | FX Net PnL | Profit Factor | Binary Win% | Binary PnL |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **1m** | Majority Class | N/A | 0.0p | N/A | 52.81% | 50.00% | 0.5000 | 0.2492 | 0 | $0.00 | N/A | 0.0% | $0.00 |
-| **1m** | Momentum Baseline | Price | 0.0p | N/A | 47.96% | 47.94% | 0.4794 | 0.5204 | 21,399 | -$25,502.82 | 0.287 | 47.96% | -$256,785 |
-| **1m** | Logistic Regression | Standard (17) | 0.0p | 0.50 | 52.81% | 50.00% | 0.5070 | 0.2499 | 2,752 | -$2,785.64 | 0.297 | 50.84% | -$27,240 |
-| **1m** | Random Forest | Standard (17) | 0.0p | 0.50 | 51.82% | 50.12% | 0.5137 | 0.2490 | 3,446 | -$3,485.49 | 0.295 | 50.23% | -$37,210 |
+| **1m** | Majority Class | N/A | 0.0p | N/A | 52.81% | 50.00% | 0.4957 | 0.2492 | 0 | $0.00 | 0.000 | 0.0% | $0.00 |
+| **1m** | Momentum Baseline | Price | 0.0p | N/A | 49.23% | 49.33% | 0.4948 | 0.2529 | 23,910 | -$25,500.93 | 0.061 | 49.23% | -$256,785 |
+| **1m** | Logistic Regression | Standard (17) | 0.0p | 0.55 | 52.66% | 50.12% | 0.5137 | 0.2490 | 2,561 | -$2,785.23 | 0.044 | 50.84% | -$27,240 |
+| **1m** | Random Forest | Standard (17) | 0.0p | 0.55 | 51.82% | 50.10% | 0.5070 | 0.2499 | 3,200 | -$3,486.09 | 0.039 | 50.23% | -$37,210 |
 | **1m** | Logistic Regression | Stationary (13) | 0.0p | 0.52 | 52.56% | 50.15% | 0.5140 | 0.2490 | 15,169 | -$16,312.34 | 0.041 | 47.46% | -$185,085 |
 | **1m** | Logistic Regression | Stationary (13) | 1.2p | 0.55 | 52.56% | 50.15% | 0.5140 | 0.2490 | 2,441 | -$2,649.14 | 0.027 | 45.76% | -$37,455 |
 | **1m** | Random Forest | Stationary (13) | 0.0p | 0.52 | 52.57% | 50.21% | 0.5118 | 0.2490 | 1,481 | -$1,556.32 | 0.169 | 49.36% | -$15,755 |

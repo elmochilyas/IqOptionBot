@@ -6,15 +6,20 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 from typer.testing import CliRunner
 
 from iqoption_research.cli.main import app
 from iqoption_research.market_data.collector import BACKFILL_SOURCE, HistoricalDataCollector
+from iqoption_research.market_data.sessions import GapClassification, get_market_schedule
+from iqoption_research.market_data.validation import find_gaps
 from iqoption_research.ml.fixtures import SyntheticMarketConfig, generate_synthetic_candles
+from iqoption_research.ml.phase10 import Phase10Config, _simulate_trades
 from iqoption_research.ml.phase13 import (
     STATIONARY_FEATURE_NAMES,
     audit_move_distribution,
+    run_phase13_baseline_audit,
     train_and_save_candidate_bundle,
     verify_offline_replay,
 )
@@ -215,3 +220,157 @@ def test_cli_bot_replay_with_authentic_data(tmp_path: Path) -> None:
     assert res.exit_code == 0
     assert "Replay Completed" in res.output
     assert "authentic_trained" in res.output
+
+
+def test_market_schedule_gap_classification(tmp_path: Path) -> None:
+    """Verify market schedule calendar distinguishes weekend closures from unscheduled gaps."""
+    # Create candles with an artificial weekend gap (Friday 22:00 UTC to Sunday 22:00 UTC)
+    # 2026-10-09 22:00:00 UTC (Friday) = 1791583200
+    # 2026-10-11 22:00:00 UTC (Sunday) = 1791756000
+    friday_ts = 1791583200
+    sunday_ts = 1791756000
+    mon_jump_ts = sunday_ts + 3600
+
+    base_candles = _synthetic_authentic_candles(3)
+    candle_fri = replace(base_candles[0], from_ts=friday_ts, to_ts=friday_ts + 60)
+    candle_sun = replace(base_candles[1], from_ts=sunday_ts, to_ts=sunday_ts + 60)
+    candle_mon = replace(base_candles[2], from_ts=mon_jump_ts, to_ts=mon_jump_ts + 60)
+
+    candles = [candle_fri, candle_sun, candle_mon]
+    schedule = get_market_schedule("EURUSD")
+    classified = find_gaps(candles, 60, market_schedule=schedule)
+
+    assert len(classified) == 2
+    weekend_cls = GapClassification.SCHEDULED_WEEKEND_CLOSURE.value
+    intraday_cls = GapClassification.UNSCHEDULED_INTRADAY_GAP.value
+    weekend_gaps = [g for g in classified if g.classification == weekend_cls]
+    intraday_gaps = [g for g in classified if g.classification == intraday_cls]
+    assert len(weekend_gaps) == 1
+    assert len(intraday_gaps) == 1
+
+    # Test baseline audit integration
+    storage_dir = tmp_path / "datasets"
+    report_file = tmp_path / "gap_report.md"
+    json_file = tmp_path / "gap_results.json"
+    _persist_test_catalog(storage_dir, count=250)
+
+    cfg = Phase10Config(n_folds=2, model_names=("majority_class",))
+    res = run_phase13_baseline_audit(
+        storage_dir=storage_dir,
+        output_report_path=report_file,
+        output_json_path=json_file,
+        config=cfg,
+    )
+    summary = res["dataset_summary"]
+    assert "scheduled_weekend_closures" in summary
+    assert "unexpected_open_market_gaps" in summary
+    assert "unresolved_quality_issues" in summary
+    assert summary["unexpected_open_market_gaps"] == 0
+
+
+def test_trading_accumulator_financial_profit_factor() -> None:
+    """Verify that financial profit factor calculates gross_profit / gross_loss with edge cases."""
+    cfg = Phase10Config(
+        confidence_threshold=0.55,
+        spread_pips=1.0,
+        slippage_pips=0.10,
+        commission_per_trade=0.0,
+        notional_per_trade=10000.0,
+        initial_capital=10000.0,
+    )
+
+    # 1. Zero trades (abstention: probabilities at 0.50)
+    sig_ts = np.array([1000, 1060], dtype=np.int64)
+    ent_ts = np.array([1060, 1120], dtype=np.int64)
+    exit_ts = np.array([1120, 1180], dtype=np.int64)
+    entry_p = np.array([1.1000, 1.1000], dtype=np.float64)
+    exit_p = np.array([1.1050, 1.0950], dtype=np.float64)
+    probs_abstain = np.array([0.50, 0.50], dtype=np.float64)
+
+    acc_zero = _simulate_trades(probs_abstain, sig_ts, ent_ts, exit_ts, entry_p, exit_p, cfg)
+    assert acc_zero.trade_count == 0
+    assert acc_zero.gross_profit == 0.0
+    assert acc_zero.gross_loss == 0.0
+    assert acc_zero.profit_factor == 0.0
+
+    # 2. 100% win rate (Zero losses -> infinite profit factor)
+    probs_win = np.array([0.80, 0.80], dtype=np.float64)
+    # Both long trades move up by 10 pips (well above 1.2p cost)
+    exit_p_win = np.array([1.1010, 1.1010], dtype=np.float64)
+    acc_win = _simulate_trades(probs_win, sig_ts, ent_ts, exit_ts, entry_p, exit_p_win, cfg)
+    assert acc_win.trade_count == 2
+    assert acc_win.wins == 2
+    assert acc_win.losses == 0
+    assert acc_win.gross_profit > 0.0
+    assert acc_win.gross_loss == 0.0
+    assert acc_win.profit_factor == float("inf")
+
+    # 3. 0% win rate (All losses -> profit factor 0.0)
+    # Long trades move down by 10 pips
+    exit_p_loss = np.array([1.0990, 1.0990], dtype=np.float64)
+    acc_loss = _simulate_trades(probs_win, sig_ts, ent_ts, exit_ts, entry_p, exit_p_loss, cfg)
+    assert acc_loss.trade_count == 2
+    assert acc_loss.wins == 0
+    assert acc_loss.losses == 2
+    assert acc_loss.gross_profit == 0.0
+    assert acc_loss.gross_loss > 0.0
+    assert acc_loss.profit_factor == 0.0
+
+    # 4. Mixed trades (One win, one loss -> positive finite profit factor)
+    exit_p_mixed = np.array([1.1020, 1.0990], dtype=np.float64)
+    acc_mixed = _simulate_trades(probs_win, sig_ts, ent_ts, exit_ts, entry_p, exit_p_mixed, cfg)
+    assert acc_mixed.trade_count == 2
+    assert acc_mixed.wins == 1
+    assert acc_mixed.losses == 1
+    assert acc_mixed.gross_profit > 0.0
+    assert acc_mixed.gross_loss > 0.0
+    expected_pf = acc_mixed.gross_profit / acc_mixed.gross_loss
+    assert acc_mixed.profit_factor == pytest.approx(expected_pf)
+
+
+def test_pip_value_and_friction_math() -> None:
+    """Verify EURUSD €10k notional pip value is $1.00/pip and friction is ~$1.11 to $1.20."""
+    notional = 10000.0  # EUR
+    pip_size = 0.0001
+    spread_pips = 1.0
+    slippage_pips = 0.10
+
+    # Standard Forex pip value formula at parity (1.0000)
+    pip_value_at_parity = notional * pip_size
+    assert pip_value_at_parity == 1.00  # $1.00 USD per pip
+
+    # At typical exchange rate (e.g. 1.0850)
+    entry = 1.0850
+    # Price cost in simulator: (spread + 2 * slippage) / entry * notional
+    spread_val = spread_pips * pip_size
+    slippage_val = slippage_pips * pip_size
+    total_friction_pips = spread_pips + 2.0 * slippage_pips
+    assert total_friction_pips == pytest.approx(1.20)
+
+    price_cost = (spread_val + 2.0 * slippage_val) / entry * notional
+    # 0.00012 / 1.0850 * 10000 = $1.10599 USD (~$1.11 USD)
+    assert 1.00 < price_cost < 1.25
+    # Verify it is an order of magnitude smaller than $12.00 (which belongs to 100k standard lot)
+    assert price_cost < 2.00
+
+
+def test_cli_bot_run_live_token_and_offline_options(tmp_path: Path) -> None:
+    """Verify bot run live authorization token gating and offline replay execution."""
+    runner = CliRunner()
+
+    # 1. Live observation WITHOUT token must fail with clear security message
+    res_no_token = runner.invoke(app, ["bot", "run", "--live"])
+    assert res_no_token.exit_code != 0
+    assert "Live observation requires an explicit authorization token" in res_no_token.output
+
+    # 2. Live observation with explicit valid token hash (exercises authorization parameter)
+    valid_token = "lead-eng-token-abc123"
+    # Since live connects to broker, without credentials it will fail authentication gracefully,
+    # but the token gate itself must pass without complaining about missing token
+    res_with_token = runner.invoke(app, ["bot", "run", "--live", "--token", valid_token])
+    assert "Live observation requires an explicit authorization token" not in res_with_token.output
+
+    # 3. Offline replay with synthetic bars
+    res_offline = runner.invoke(app, ["bot", "run", "--bars", "10"])
+    assert res_offline.exit_code == 0
+    assert "Continuous Session Concluded" in res_offline.output

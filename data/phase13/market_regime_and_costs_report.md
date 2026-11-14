@@ -11,10 +11,10 @@
 
 This report presents an empirical investigation into why short-term machine learning models consistently lose money when trading 1-minute EURUSD candles, despite achieving modest out-of-sample directional accuracies (51–53%).
 
-The primary finding is mathematical and structural:
-> [!CAUTION]
-> **On a 1-minute horizon, 83.7% of all EURUSD price moves are smaller than the standard execution friction (1.20 pips).**
-> In other words, even an omniscient oracle that guesses the exact direction of every single candle will lose money on more than 4 out of every 5 trades. High-frequency 1-minute trading without aggressive volatility gating is mathematically doomed to negative net expectancy.
+The primary finding is empirical and structural:
+> [!IMPORTANT]
+> **Under modeled execution costs (1.0 pip spread + 0.2 pip round-turn slippage = 1.20 pips / ~$1.20 per €10,000 EURUSD position), 83.7% of all 1-minute candle moves are smaller than the modeled friction hurdle.**
+> Continuous, unselective 1-minute trading without volatility gating or strong directional edge suffers heavy cost drag because average moves (~0.69 pips / ~$0.69) fall below modeled round-turn friction. Note that modeled execution costs reflect conservative research assumptions; live broker quotes and spreads vary dynamically.
 
 ---
 
@@ -22,18 +22,18 @@ The primary finding is mathematical and structural:
 
 We analyzed the open-to-close price change ($\Delta P = |Close_t - Open_t|$) and high-low candle ranges across all 62,871 authentic 1-minute candles, as well as multi-candle horizons (3, 5, and 15 bars).
 
-Execution friction is modeled conservatively as:
-- **Bid/Ask Spread:** 1.0 pip ($10.00 per standard $10,000 lot)
-- **Slippage (Round-Trip):** 2 × 0.1 pip = 0.2 pips ($2.00 per lot)
-- **Total Friction:** **1.20 pips** ($12.00 per trade)
+Execution friction is modeled as:
+- **Bid/Ask Spread:** 1.0 pip (~$1.00 per €10,000 EURUSD position; $10.00 would apply only to a 100k standard lot)
+- **Slippage (Round-Trip):** 2 × 0.1 pip = 0.2 pips (~$0.20 per €10,000 position)
+- **Total Modeled Friction:** **1.20 pips** (~$1.20 per €10,000 trade)
 
 | Metric | 1-Minute Horizon | 3-Minute Horizon | 5-Minute Horizon | 15-Minute Horizon |
 |---|---|---|---|---|
 | **Sample Size** | 62,871 bars | 62,867 bars | 62,865 bars | 62,855 bars |
-| **Mean Absolute Move** | 0.69 pips ($6.90) | 1.24 pips ($12.40) | 1.61 pips ($16.10) | 2.85 pips ($28.50) |
-| **Median Absolute Move** | 0.45 pips ($4.50) | 0.88 pips ($8.80) | 1.18 pips ($11.80) | 2.12 pips ($21.20) |
-| **75th Percentile Move** | 0.88 pips ($8.80) | 1.62 pips ($16.20) | 2.11 pips ($21.10) | 3.75 pips ($37.50) |
-| **90th Percentile Move** | 1.55 pips ($15.50) | 2.72 pips ($27.20) | 3.52 pips ($35.20) | 6.18 pips ($61.80) |
+| **Mean Absolute Move** | 0.69 pips (~$0.69) | 1.24 pips (~$1.24) | 1.61 pips (~$1.61) | 2.85 pips (~$2.85) |
+| **Median Absolute Move** | 0.45 pips (~$0.45) | 0.88 pips (~$0.88) | 1.18 pips (~$1.18) | 2.12 pips (~$2.12) |
+| **75th Percentile Move** | 0.88 pips (~$0.88) | 1.62 pips (~$1.62) | 2.11 pips (~$2.11) | 3.75 pips (~$3.75) |
+| **90th Percentile Move** | 1.55 pips (~$1.55) | 2.72 pips (~$2.72) | 3.52 pips (~$3.52) | 6.18 pips (~$6.18) |
 | **Mean Candle Range (H-L)** | 1.05 pips | 2.05 pips | 2.76 pips | 5.08 pips |
 | **Moves Below 1.2p Friction** | **83.7%** | **63.7%** | **50.7%** | **33.9%** |
 | **Moves Covering Friction (≥ 1.2p)**| 16.3% | 36.3% | 49.3% | **66.1%** |
@@ -89,10 +89,10 @@ Trading IQ Option involves two fundamentally distinct payoff profiles:
 
 ### 4.2 Forex Directional Payoff
 - **Gross PnL:** $\text{Direction} \times \frac{P_{exit} - P_{entry}}{P_{entry}} \times \text{Notional}$
-- **Transaction Costs:** $\frac{\text{Spread} + 2 \times \text{Slippage}}{P_{entry}} \times \text{Notional} \approx \$12.00$ per $10k lot.
+- **Transaction Costs:** $\frac{\text{Spread} + 2 \times \text{Slippage}}{P_{entry}} \times \text{Notional} \approx \$1.10\text{--}\$1.20$ per €10,000 position ($1.00/pip).
 - **Break-Even Expectancy:**
   $$\mathbb{E}[\Delta P_{win}] \cdot p - \mathbb{E}[\Delta P_{loss}] \cdot (1 - p) > 1.20\text{ pips}$$
-- **Empirical Reality:** Because 1-minute price moves are symmetrical ($\mathbb{E}[\Delta P_{win}] \approx \mathbb{E}[\Delta P_{loss}] \approx 0.69\text{ pips}$), a 50% win rate produces an expected gross return of $\approx 0$ pips, while incurring a guaranteed 1.20 pip friction loss per trade.
+- **Empirical Reality:** Because 1-minute price moves are symmetrical ($\mathbb{E}[\Delta P_{win}] \approx \mathbb{E}[\Delta P_{loss}] \approx 0.69\text{ pips}$), a 50% win rate produces an expected gross return of $\approx 0$ pips, while incurring a modeled 1.20 pip (~$1.20) friction loss per trade.
 
 ---
 
@@ -102,9 +102,9 @@ Based on empirical evidence across 62,871 authentic candles:
 
 | Hypothesized Issue | Supported by Evidence? | Empirical Finding |
 |---|---|---|
-| **Friction Drag** | **YES (Primary Cause)** | 83.7% of 1m moves are smaller than the 1.20p friction hurdle. Costs consume $12.00 per trade while average move is only $6.90. |
-| **Trading Too Frequently** | **YES (Major Cause)** | Continuous unconstrained trading took 2,700–21,000 trades over 59 days, generating $2,700 to $25,000 in friction drag. |
-| **Lack of Volatility Gating** | **YES (Major Cause)** | Trading in low-ATR regimes guarantees net losses because moves cannot mathematically overcome the bid/ask spread. |
+| **Friction Drag** | **YES (Primary Cause)** | Under modeled execution costs, 83.7% of 1m moves are smaller than the 1.20p friction hurdle. Modeled costs consume ~$1.20 per trade while the average move is only ~$0.69. |
+| **Trading Too Frequently** | **YES (Major Cause)** | Continuous unconstrained trading took 2,500–24,000 trades over 59 days, generating $2,700 to $25,600 in friction drag. |
+| **Lack of Volatility Gating** | **YES (Major Cause)** | Trading in low-ATR regimes without volatility gating faces severe friction drag because typical moves cannot overcome the bid/ask spread. |
 | **Weak Directional Edge** | **YES (Core Cause)** | Balanced accuracy is 50.0% to 50.2%, indicating that 1-minute returns are predominantly random noise. |
 | **Lookahead / Data Leakage**| **NO (Disproven)** | All features are strictly causal; out-of-sample performance matches cross-validation with zero leakage. |
 | **Class Imbalance** | **NO (Disproven)** | Class balance is 52.8% Up vs 47.2% Down; balanced scoring confirms the model is not exploiting trivial bias. |

@@ -730,6 +730,22 @@ def run_cmd(
         "--impute-quotes",
         help="Impute missing quotes if model expects quotes",
     ),
+    model_bundle: Path | None = typer.Option(
+        None,
+        "--model-bundle",
+        "-m",
+        help="Optional path to verified model bundle directory",
+    ),
+    token: str | None = typer.Option(
+        None,
+        "--token",
+        help="Explicit observation authorization token string",
+    ),
+    storage: Path | None = typer.Option(
+        None,
+        "--storage",
+        help="Optional authentic dataset directory for offline replay",
+    ),
 ) -> None:
     """Run continuous bot loop with streaming inference and paper trading."""
     import asyncio
@@ -752,14 +768,21 @@ def run_cmd(
     )
 
     auth_token = None
+    token_str = (token.strip() if token else "") or os.environ.get(
+        "IQOPTION_OBSERVE_TOKEN", ""
+    ).strip()
     if live:
-        token_str = os.environ.get("IQOPTION_OBSERVE_TOKEN", "").strip()
         if not token_str:
             console.print(
                 "[bold red]Live observation requires an explicit authorization token.[/bold red]\n"
-                "Set environment variable: IQOPTION_OBSERVE_TOKEN='<token>'."
+                "Pass --token '<token>' or set env var IQOPTION_OBSERVE_TOKEN='<token>'."
             )
             raise typer.Exit(code=1)
+        auth_token = ObservationAuthorizationToken(
+            token_hash=token_str,
+            authorized_by="LeadSystemsEngineer",
+        )
+    elif token_str:
         auth_token = ObservationAuthorizationToken(
             token_hash=token_str,
             authorized_by="LeadSystemsEngineer",
@@ -770,6 +793,7 @@ def run_cmd(
         mode=BotMode.OBSERVE_ONLY if live else BotMode.OFFLINE_REPLAY,
         use_saved_credentials=saved_creds,
         dev_mock=not live,
+        model_path=model_bundle,
         observation_token=auth_token,
         max_runtime_seconds=max_seconds if max_seconds > 0 else None,
         impute_missing_quotes=impute_quotes,
@@ -780,23 +804,29 @@ def run_cmd(
     # In replay mode, load authentic or generate synthetic candles
     replay_candles = None
     if not live:
-        collector = HistoricalDataCollector()
-        try:
-            replay_candles = collector.load_dataset(symbol)
-        except UnsupportedInstrumentError:
-            replay_candles = None
-        if not replay_candles:
-            console.print(
-                f"[dim]No stored dataset for {symbol}; generating {bars} "
-                "synthetic bars for demonstration.[/dim]"
-            )
-            replay_candles = list(
-                generate_synthetic_candles(
-                    SyntheticMarketConfig(symbol=symbol, n_bars=bars, seed=42)
-                ).candles
-            )
+        if storage is not None:
+            from iqoption_research.ml.phase10 import audit_authentic_datasets
+
+            _, all_candles = audit_authentic_datasets(storage)
+            replay_candles = list(all_candles[-bars:])
         else:
-            replay_candles = replay_candles[:bars]
+            collector = HistoricalDataCollector()
+            try:
+                replay_candles = collector.load_dataset(symbol)
+            except UnsupportedInstrumentError:
+                replay_candles = None
+            if not replay_candles:
+                console.print(
+                    f"[dim]No stored dataset for {symbol}; generating {bars} "
+                    "synthetic bars for demonstration.[/dim]"
+                )
+                replay_candles = list(
+                    generate_synthetic_candles(
+                        SyntheticMarketConfig(symbol=symbol, n_bars=bars, seed=42)
+                    ).candles
+                )
+            else:
+                replay_candles = replay_candles[:bars]
 
     try:
         snapshot = asyncio.run(runtime.run(candles_iterable=replay_candles))

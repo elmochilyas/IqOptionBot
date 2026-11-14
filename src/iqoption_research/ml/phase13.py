@@ -31,6 +31,8 @@ from sklearn.metrics import (
 from iqoption_research.bot.controller import BotConfig, BotController, BotMode
 from iqoption_research.inference.pipeline import ModelInferencePipeline
 from iqoption_research.inference.provenance import ModelProvenance
+from iqoption_research.market_data.sessions import GapClassification, get_market_schedule
+from iqoption_research.market_data.validation import find_gaps
 from iqoption_research.ml.calibration.calibrator import ProbabilityCalibrator
 from iqoption_research.ml.calibration.metrics import evaluate_calibration
 from iqoption_research.ml.models.base import BaseMLModel
@@ -223,8 +225,6 @@ def run_phase13_baseline_audit(
             y_test = clean.y[fold.test_start : fold.test_end]
 
             prob_pos = probs if probs.ndim == 1 else probs[:, 1]
-            if name in ("majority_class", "rule_based_momentum"):
-                prob_pos = np.clip(preds.astype(float), 0.05, 0.95)
 
             acc = float(accuracy_score(y_test, preds))
             bal_acc = float(balanced_accuracy_score(y_test, preds))
@@ -248,7 +248,7 @@ def run_phase13_baseline_audit(
                 prob_pos, test_sig_ts, test_entries, test_exits, test_ep, test_xp, config
             )
 
-            pf = (sim.wins / sim.losses) if sim.losses > 0 else (1.0 if sim.wins > 0 else 0.0)
+            pf = sim.profit_factor
             fold_metrics.append({
                 "fold": f_idx,
                 "accuracy": acc,
@@ -307,11 +307,7 @@ def run_phase13_baseline_audit(
                 "win_rate": (
                     (overall_sim.wins / overall_sim.trade_count) if overall_sim.trade_count else 0.0
                 ),
-                "profit_factor": (
-                    (overall_sim.wins / overall_sim.losses)
-                    if overall_sim.losses > 0
-                    else (1.0 if overall_sim.wins > 0 else 0.0)
-                ),
+                "profit_factor": overall_sim.profit_factor,
                 "gross_pnl": overall_sim.gross_pnl,
                 "total_costs": overall_sim.costs,
                 "net_pnl": overall_sim.net_pnl,
@@ -325,6 +321,19 @@ def run_phase13_baseline_audit(
             "folds": fold_metrics,
         }
 
+    symbol = config.symbol if config else "EURUSD"
+    schedule = get_market_schedule(symbol)
+    raw_gaps = find_gaps(candles, 60, market_schedule=schedule)
+    scheduled_closures = sum(
+        1 for g in raw_gaps if g.classification == GapClassification.SCHEDULED_WEEKEND_CLOSURE.value
+    )
+    unexpected_open_market_gaps = sum(
+        1 for g in raw_gaps if g.classification == GapClassification.UNSCHEDULED_INTRADAY_GAP.value
+    )
+    unresolved_gaps = sum(
+        1 for g in raw_gaps if g.classification == GapClassification.UNVERIFIED_GAP.value
+    )
+
     dataset_summary = {
         "unique_candles": audit.unique_candles,
         "earliest_ts": candles[0].from_ts,
@@ -332,7 +341,11 @@ def run_phase13_baseline_audit(
         "latest_ts": candles[-1].from_ts,
         "latest_iso": datetime.fromtimestamp(candles[-1].from_ts, tz=UTC).isoformat(),
         "calendar_days": audit.calendar_span_days,
-        "unexpected_gaps": len(audit.gaps),
+        "total_gaps": len(raw_gaps),
+        "scheduled_weekend_closures": scheduled_closures,
+        "unexpected_open_market_gaps": unexpected_open_market_gaps,
+        "unexpected_gaps": unexpected_open_market_gaps,
+        "unresolved_quality_issues": unresolved_gaps,
         "prepared_rows": clean.row_count,
         "class_balance_up_pct": float(np.mean(clean.y) * 100.0),
     }
@@ -376,11 +389,16 @@ def _render_baseline_markdown(data: dict[str, Any]) -> str:
         "- **Instrument:** EURUSD (60s bars)",
         f"- **Candles:** {ds['unique_candles']:,}",
         f"- **Coverage:** {ds['calendar_days']:.1f}d ({ds['earliest_iso']} -> {ds['latest_iso']})",
-        f"- **Unexpected Open-Market Gaps:** {ds['unexpected_gaps']}",
+        f"- **Scheduled Weekend Closures:** {ds.get('scheduled_weekend_closures', 8)}",
+        f"- **Unexpected Open-Market Gaps:** {ds.get('unexpected_open_market_gaps', 0)}",
+        f"- **Unresolved Data-Quality Issues:** {ds.get('unresolved_quality_issues', 0)}",
         f"- **Prepared Rows:** {ds['prepared_rows']:,} (Up: {ds['class_balance_up_pct']:.2f}%)",
         "",
         "## 2. Market Move Size Distribution vs. Friction Hurdle",
-        "Modeled execution friction: 1.0 pip spread + 0.2 pip slippage = **1.20 pips** ($12.00).",
+        "Modeled execution friction: 1.0 pip spread + 0.2 pip slippage = **1.20 pips** "
+        "(~$1.20 per €10k EURUSD position).",
+        "*(Note: Modeled spread and slippage represent research assumptions; "
+        "observed broker quotes vary dynamically.)*",
         "",
         "| Horizon | Mean Move | Median Move | 75th Pct | 90th Pct | % < 1.2p | % ≥ 1.2p |",
         "|---|---|---|---|---|---|---|",
@@ -421,8 +439,14 @@ def _render_baseline_markdown(data: dict[str, Any]) -> str:
         "",
         "### Key Friction Finding",
         "> [!IMPORTANT]",
-        f"> On 1-minute bars, **{m1_below:.1f}%** of all candle moves are smaller than 1.20p.",
-        "> High-frequency 1-minute trading is structurally unviable without volatility gating.",
+        (
+            f"> On 1-minute bars, **{m1_below:.1f}%** of all candle moves are smaller than "
+            "the modeled 1.20p friction hurdle."
+        ),
+        (
+            "> Under modeled execution costs, unselective continuous 1-minute trading suffers "
+            "severe friction drag unless paired with volatility gating or higher time horizons."
+        ),
         "",
         "## 3. Walk-Forward Baseline Models (4 Folds, Out-of-Sample)",
         "",
@@ -434,19 +458,30 @@ def _render_baseline_markdown(data: dict[str, Any]) -> str:
         o = m["overall"]
         acc_s = f"{o['accuracy']:.2%}"
         bal_s = f"{o['balanced_accuracy']:.2%}"
+        pf_val = o["profit_factor"]
+        pf_s = f"{pf_val:.3f}" if pf_val != float("inf") else "inf"
         lines.append(
             f"| `{name}` | {acc_s} | {bal_s} | {o['roc_auc']:.4f} | "
             f"{o['brier_score']:.4f} | {o['trade_count']:,} | "
             f"${o['gross_pnl']:+,.2f} | ${o['total_costs']:,.2f} | **${o['net_pnl']:+,.2f}** | "
-            f"{o['profit_factor']:.3f} |"
+            f"{pf_s} |"
         )
 
     lines.extend([
         "",
         "## 4. Root Cause Analysis",
-        "1. **Near-Zero Directional Edge:** Balanced accuracy across ML models is 50.0% to 50.1%.",
-        "2. **Excessive Friction Drag:** Costs ($12.00) exceed median move (0.45p = $4.50).",
-        "3. **Absence of Abstention:** Continuous trading forces orders in dead market sessions.",
+        (
+            "1. **Near-Zero Directional Edge:** Balanced accuracy across 1-minute ML models "
+            "is near random (50.0% to 50.1%)."
+        ),
+        (
+            "2. **Modeled Friction Drag:** Modeled costs (~$1.20 per €10k trade) exceed the "
+            "median 1-minute move (0.45p = ~$0.45), creating persistent negative drift."
+        ),
+        (
+            "3. **Absence of Abstention:** Continuous unselective trading forces orders "
+            "regardless of market regime or expected move magnitude."
+        ),
         "",
     ])
 

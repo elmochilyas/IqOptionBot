@@ -85,6 +85,7 @@ class BotConfig:
     risk_config: RiskConfig = field(default_factory=RiskConfig)
     observation_token: ObservationAuthorizationToken | None = None
     impute_missing_quotes: bool = False
+    sessions_dir: Path | str = Path("data/bot_sessions")
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.fixed_stake) or self.fixed_stake <= 0.0:
@@ -107,6 +108,7 @@ class BotController:
         paper_engine: PaperTradingEngine | None = None,
         observation_adapter: MarketObservationAdapter | None = None,
         allow_actionable_signals: bool | None = None,
+        session: TradingSession | None = None,
     ) -> None:
         self.config = config or BotConfig()
         self._state = BotState.IDLE
@@ -115,7 +117,12 @@ class BotController:
         self.last_candle_provenance: str = "unknown"
 
         # Setup monitoring & session
-        self.session = TradingSession(initial_balance=self.config.initial_balance)
+        sessions_path = Path(self.config.sessions_dir)
+        sessions_path.mkdir(parents=True, exist_ok=True)
+        self.session = session or TradingSession(
+            initial_balance=self.config.initial_balance,
+            sessions_dir=sessions_path,
+        )
         self.monitor = BotStatusMonitor()
 
         # Setup observation adapter
@@ -150,6 +157,25 @@ class BotController:
                 "observe and collect data but cannot emit actionable paper-trade signals."
             )
 
+        # Model metadata
+        self.model_bundle = model_bundle
+        if model_bundle is not None:
+            self.model_version = str(
+                model_bundle.metadata.get(
+                    "version",
+                    getattr(model_bundle.model, "version", "1.0.0"),
+                )
+            )
+            self.model_name = getattr(
+                model_bundle.model, "name", model_bundle.model.__class__.__name__
+            )
+        elif inference_pipeline is not None:
+            self.model_name = inference_pipeline.model_name
+            self.model_version = "1.0.0"
+        else:
+            self.model_name = "BuiltinDecisionEngine"
+            self.model_version = "1.0.0"
+
         # Setup inference pipeline
         self.inference_pipeline = inference_pipeline
         if self.inference_pipeline is None and model_bundle is not None:
@@ -177,6 +203,18 @@ class BotController:
                     )
                 self.session.record_prediction(res)
                 return res.direction, res.calibrated_probability
+            res = InferenceResult(
+                direction=SignalDirection.HOLD,
+                calibrated_probability=0.5,
+                raw_probability=0.5,
+                confidence=0.0,
+                abstention_reason="NO_MODEL_PIPELINE: Builtin decision engine fallback",
+                latency_ms=0.0,
+                candle_timestamp=feature_row.available_at_ts,
+                model_name=self.model_name,
+                feature_count=len(feature_row.features),
+            )
+            self.session.record_prediction(res)
             return SignalDirection.HOLD, 0.5
 
         # Setup paper trading engine with the configured stake propagated end to end
@@ -330,6 +368,9 @@ class BotController:
         if not obs_event.is_valid:
             return None
 
+        # Resolve prior pending prediction outcomes against incoming completed candle
+        self.session.journal.resolve_outcomes(candle)
+
         # 2. Feed completed candle into paper-trading engine
         step_result = self.engine.process_candle(candle, now_ts=current_now)
 
@@ -338,6 +379,70 @@ class BotController:
             self.session.record_new_order(step_result.new_order)
         for settled in step_result.settled_orders:
             self.session.record_settled_order(settled)
+
+        # 4. Record completed candle inference into persistent prediction journal
+        if step_result.feature_row_produced and self.session.latest_prediction is not None:
+            pred = self.session.latest_prediction
+            if pred.candle_timestamp == candle.to_ts:
+                # Classify paper trade generation status and reasons
+                if step_result.new_order is not None:
+                    trade_status = "eligible_opened"
+                    block_reason = None
+                    order_id = step_result.new_order.order_id
+                elif pred.direction == SignalDirection.HOLD:
+                    order_id = None
+                    if not self.allow_actionable_signals:
+                        trade_status = "blocked_authority"
+                        block_reason = self._signal_authority_reason
+                    else:
+                        trade_status = "none_hold"
+                        block_reason = pred.abstention_reason
+                else:
+                    # Directional signal (CALL or PUT) produced, but no simulated order opened
+                    order_id = None
+                    if (
+                        step_result.risk_decision is not None
+                        and not step_result.risk_decision.permitted
+                    ):
+                        trade_status = "blocked_risk"
+                        block_reason = step_result.risk_decision.message
+                    elif self.risk_manager.is_halted:
+                        trade_status = "blocked_risk"
+                        block_reason = (
+                            f"Operational risk circuit breaker latched: "
+                            f"{step_result.circuit_state.value}"
+                        )
+                    else:
+                        trade_status = "blocked_safety"
+                        block_reason = "Practice safety check rejected proposal"
+
+                dir_str = (
+                    "UP"
+                    if pred.direction == SignalDirection.CALL
+                    else ("DOWN" if pred.direction == SignalDirection.PUT else "HOLD")
+                )
+
+                self.session.journal.record_inference(
+                    symbol=candle.symbol,
+                    candle_size_seconds=self.config.candle_size_seconds,
+                    candle_from_ts=candle.from_ts,
+                    candle_to_ts=candle.to_ts,
+                    candle_close=candle.close,
+                    model_name=self.model_name,
+                    model_version=self.model_version,
+                    model_provenance=self.model_provenance.value,
+                    calibrated_probability=pred.calibrated_probability,
+                    raw_probability=pred.raw_probability,
+                    direction=dir_str,
+                    confidence=pred.confidence,
+                    uncertainty=max(0.0, min(1.0, 1.0 - (pred.confidence * 2.0))),
+                    abstention_reason=pred.abstention_reason,
+                    trade_status=trade_status,
+                    trade_block_reason=block_reason,
+                    paper_order_id=order_id,
+                    risk_state=step_result.circuit_state.value,
+                    horizon_bars=1,
+                )
 
         # Periodically persist snapshot to maintain live telemetry
         self.persist_snapshot()
@@ -431,6 +536,13 @@ class BotController:
             termination_reason=termination_reason,
             subscription_state="active" if self._state == BotState.RUNNING else "inactive",
             last_error=last_error,
+            journal_records_count=self.session.journal.total_records,
+            unresolved_predictions_count=self.session.journal.pending_count,
+            directional_accuracy_pct=(
+                self.session.journal.build_summary().accuracy_metrics["accuracy_pct"]
+                if self.session.journal.total_records > 0
+                else None
+            ),
         )
 
     def persist_snapshot(self, path: Path | str | None = None) -> Path:

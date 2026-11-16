@@ -6,10 +6,12 @@ and gated observe-only market observation controls.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -134,6 +136,12 @@ def _render_snapshot_table(snapshot: BotStatusSnapshot, title: str) -> None:
     table.add_row("Last Valid Candle", str(last_valid))
     last_completed = getattr(snapshot, "last_completed_candle_time", None) or "None"
     table.add_row("Last Completed Candle", str(last_completed))
+    table.add_row("Journal Records", str(getattr(snapshot, "journal_records_count", 0)))
+    table.add_row(
+        "Unresolved Predictions", str(getattr(snapshot, "unresolved_predictions_count", 0))
+    )
+    acc_val = getattr(snapshot, "directional_accuracy_pct", None)
+    table.add_row("Directional Accuracy", f"{acc_val:.1f}%" if acc_val is not None else "N/A")
     if getattr(snapshot, "time_remaining_seconds", None) is not None:
         table.add_row("Time Remaining", f"{snapshot.time_remaining_seconds:.1f}s")
     if getattr(snapshot, "termination_reason", None):
@@ -166,6 +174,255 @@ def status_command() -> None:
                 border_style="yellow",
             )
         )
+
+
+@bot_app.command("journal", help="Inspect AI prediction journal and performance diagnostics.")
+def journal_command(
+    session_id: str = typer.Option(
+        "", "--session", "-s", help="Session ID (e.g. session_1794842044) or empty for latest"
+    ),
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of recent inferences to display"),
+    storage: Path = typer.Option(Path("data/bot_sessions"), "--storage", help="Sessions directory"),
+) -> None:
+    """Inspect persisted prediction journal and performance diagnostics."""
+    from iqoption_research.bot.journal import PredictionJournal
+
+    if not storage.exists():
+        console.print(f"[yellow]Sessions directory {storage} does not exist.[/yellow]")
+        return
+
+    # Find target session file
+    target_summary: Path | None = None
+    target_journal: Path | None = None
+
+    if session_id:
+        target_summary = storage / f"{session_id}_summary.json"
+        target_journal = storage / f"{session_id}_journal.jsonl"
+    else:
+        # Find latest summary or journal
+        summaries = sorted(storage.glob("*_summary.json"), key=os.path.getmtime, reverse=True)
+        journals = sorted(storage.glob("*_journal.jsonl"), key=os.path.getmtime, reverse=True)
+        if summaries:
+            target_summary = summaries[0]
+            sid = target_summary.stem.replace("_summary", "")
+            target_journal = storage / f"{sid}_journal.jsonl"
+        elif journals:
+            target_journal = journals[0]
+            sid = target_journal.stem.replace("_journal", "")
+            target_summary = storage / f"{sid}_summary.json"
+
+    if (target_summary is None or not target_summary.is_file()) and (
+        target_journal is None or not target_journal.is_file()
+    ):
+        console.print(
+            Panel(
+                "[yellow]No prediction journal or session summary files found.[/yellow]\n"
+                f"Searched directory: {storage}",
+                title="IQ Option Bot Journal",
+                border_style="yellow",
+            )
+        )
+        return
+
+    # Display Session Diagnostic Header
+    summary_data: dict[str, Any] = {}
+    if target_summary is not None and target_summary.is_file():
+        with contextlib.suppress(json.JSONDecodeError):
+            summary_data = json.loads(target_summary.read_text(encoding="utf-8"))
+
+    resolved_sid = str(
+        summary_data.get(
+            "session_id",
+            target_journal.stem.replace("_journal", "") if target_journal else "unknown",
+        )
+    )
+    console.print(
+        Panel(
+            f"[bold cyan]AI Prediction Journal & Performance Diagnostics[/bold cyan]\n"
+            f"Session: [bold white]{resolved_sid}[/bold white] | "
+            f"Mode: {summary_data.get('mode', 'N/A')} | "
+            f"Symbol: {summary_data.get('symbol', 'EURUSD')}\n"
+            f"Closed At: {summary_data.get('closed_at_utc', 'N/A')} | "
+            f"Termination: {summary_data.get('termination_reason', 'N/A')}",
+            title="Session Overview",
+            border_style="cyan",
+        )
+    )
+
+    # Load journal records
+    records = []
+    if target_journal is not None and target_journal.is_file():
+        records = PredictionJournal.load_from_jsonl(target_journal)
+
+    # Diagnostic Summary Table
+    diag = summary_data.get("performance_diagnostics")
+    if not diag and records:
+        pj = PredictionJournal(resolved_sid, journal_path=target_journal)
+        for r in records:
+            pj.add_record(r)
+        diag = pj.build_summary().to_dict()
+    elif not diag and "snapshot" in summary_data:
+        snap = summary_data["snapshot"]
+        last_dir = str(snap.get("last_prediction_direction", "hold")).upper()
+        abst = snap.get("abstention_reason") or "UNCERTAIN_ZONE"
+        abst_key = abst.split(":")[0].strip() if ":" in abst else abst
+        p_val = float(snap.get("last_prediction_prob", 0.5))
+        c_val = float(snap.get("confidence", 0.0))
+        p_count = int(snap.get("prediction_count", 0))
+        diag = {
+            "total_predictions": p_count,
+            "direction_counts": {last_dir: p_count},
+            "hold_reasons": {abst_key: p_count} if last_dir == "HOLD" else {},
+            "probability_distribution": {
+                "min": p_val,
+                "max": p_val,
+                "mean": p_val,
+                "median": p_val,
+                "std": 0.0,
+                "p25": p_val,
+                "p50": p_val,
+                "p75": p_val,
+            },
+            "confidence_statistics": {
+                "min": c_val,
+                "max": c_val,
+                "mean": c_val,
+                "std": 0.0,
+            },
+            "accuracy_metrics": {
+                "total_resolved_directional": 0,
+                "correct": 0,
+                "incorrect": 0,
+                "ties": 0,
+                "accuracy_pct": 0.0,
+                "unresolved_count": p_count,
+            },
+            "paper_trade_metrics": {
+                "eligible_opened": int(snap.get("paper_trades_count", 0)),
+                "blocked_total": 0,
+                "blocked_by_risk": 0,
+                "blocked_by_safety": 0,
+                "blocked_by_authority": 0,
+                "none_hold": p_count,
+                "settled_trades_count": int(snap.get("settled_trades_count", 0)),
+                "simulated_pnl": float(snap.get("session_pnl", 0.0)),
+            },
+            "zero_trades_reasons": [
+                f"Legacy session summary (no per-candle journal file recorded). "
+                f"All {p_count} inferences resulted in HOLD with final prediction "
+                f"abstention: {abst}."
+            ],
+        }
+
+    if diag:
+        diag_table = Table(title="Performance Diagnostics Summary", show_lines=True)
+        diag_table.add_column("Diagnostic Metric", style="bold cyan")
+        diag_table.add_column("Value", style="bold white")
+
+        diag_table.add_row("Total Predictions", str(diag.get("total_predictions", 0)))
+        dirs = diag.get("direction_counts", {})
+        diag_table.add_row(
+            "Direction Counts",
+            f"UP: {dirs.get('UP', 0)} | DOWN: {dirs.get('DOWN', 0)} | HOLD: {dirs.get('HOLD', 0)}",
+        )
+        hr = diag.get("hold_reasons", {})
+        hr_str = ", ".join(f"{k}: {v}" for k, v in hr.items()) or "None"
+        diag_table.add_row("HOLD Reason Breakdown", hr_str)
+
+        p_dist = diag.get("probability_distribution", {})
+        p_str = (
+            f"Min: {p_dist.get('min', 0.0):.3f} | Max: {p_dist.get('max', 0.0):.3f} | "
+            f"Mean: {p_dist.get('mean', 0.0):.3f} | Median: {p_dist.get('median', 0.0):.3f} | "
+            f"IQR: [{p_dist.get('p25', 0.0):.3f}, {p_dist.get('p75', 0.0):.3f}]"
+        )
+        diag_table.add_row("Probability Distribution", p_str)
+
+        c_stat = diag.get("confidence_statistics", {})
+        c_str = (
+            f"Mean: {c_stat.get('mean', 0.0):.3f} | "
+            f"Min: {c_stat.get('min', 0.0):.3f} | "
+            f"Max: {c_stat.get('max', 0.0):.3f}"
+        )
+        diag_table.add_row("Confidence Statistics", c_str)
+
+        acc = diag.get("accuracy_metrics", {})
+        acc_str = (
+            f"{acc.get('accuracy_pct', 0.0):.1f}% "
+            f"(Correct: {acc.get('correct', 0)}, Incorrect: {acc.get('incorrect', 0)}, "
+            f"Ties: {acc.get('ties', 0)}, Unresolved: {acc.get('unresolved_count', 0)})"
+        )
+        diag_table.add_row("Directional Accuracy", acc_str)
+
+        pm = diag.get("paper_trade_metrics", {})
+        pm_str = (
+            f"Opened: {pm.get('eligible_opened', 0)} | "
+            f"Blocked: {pm.get('blocked_total', 0)} "
+            f"(Risk: {pm.get('blocked_by_risk', 0)}, "
+            f"Safety: {pm.get('blocked_by_safety', 0)}, "
+            f"Authority: {pm.get('blocked_by_authority', 0)}) | "
+            f"Settled: {pm.get('settled_trades_count', 0)} | "
+            f"Net PnL: ${pm.get('simulated_pnl', 0.0):+,.2f}"
+        )
+        diag_table.add_row("Paper Trading Status", pm_str)
+
+        z_reasons = diag.get("zero_trades_reasons", [])
+        if z_reasons:
+            diag_table.add_row("Zero-Trade Diagnosis", "\n".join(z_reasons))
+
+        console.print(diag_table)
+
+    # Detailed Records Table
+    if records:
+        disp_records = records[-limit:] if limit > 0 else records
+        title_str = (
+            f"Prediction Journal Inferences (showing last {len(disp_records)} of {len(records)})"
+        )
+        rec_table = Table(
+            title=title_str,
+            show_lines=True,
+        )
+        rec_table.add_column("#", style="dim", justify="right")
+        rec_table.add_column("Candle To TS", style="bold white")
+        rec_table.add_column("Close", style="cyan")
+        rec_table.add_column("Direction", style="bold")
+        rec_table.add_column("Cal Prob", justify="right")
+        rec_table.add_column("Conf", justify="right")
+        rec_table.add_column("Trade Status", style="yellow")
+        rec_table.add_column("Outcome", style="green")
+        rec_table.add_column("Future Close", justify="right")
+        rec_table.add_column("Return %", justify="right")
+
+        for r in disp_records:
+            dir_style = (
+                "green"
+                if r.direction in {"UP", "CALL"}
+                else ("red" if r.direction in {"DOWN", "PUT"} else "yellow")
+            )
+            out_style = (
+                "green"
+                if r.outcome_status == "correct"
+                else ("red" if r.outcome_status == "incorrect" else "dim")
+            )
+            fut_c = f"{r.actual_future_close:.5f}" if r.actual_future_close is not None else "-"
+            ret_s = (
+                f"{r.actual_future_return * 100.0:+.3f}%"
+                if r.actual_future_return is not None
+                else "-"
+            )
+
+            rec_table.add_row(
+                str(r.record_index),
+                str(r.candle_to_ts),
+                f"{r.candle_close:.5f}",
+                f"[{dir_style}]{r.direction}[/{dir_style}]",
+                f"{r.calibrated_probability:.3f}",
+                f"{r.confidence:.3f}",
+                r.trade_status,
+                f"[{out_style}]{r.outcome_status}[/{out_style}]",
+                fut_c,
+                ret_s,
+            )
+        console.print(rec_table)
 
 
 @bot_app.command("account-check", help="Investigate REAL vs PRACTICE balance state and routing.")

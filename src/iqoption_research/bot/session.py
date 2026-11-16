@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
+from iqoption_research.bot.journal import PredictionJournal
 from iqoption_research.execution.models import PaperOrder
 from iqoption_research.inference.pipeline import InferenceResult
 
@@ -53,6 +54,9 @@ class TradingSession:
         session_id: str | None = None,
         initial_balance: float = 10000.0,
         prediction_buffer_size: int = DEFAULT_PREDICTION_BUFFER_SIZE,
+        journal: PredictionJournal | None = None,
+        journal_path: Path | str | None = None,
+        sessions_dir: Path | str | None = None,
     ) -> None:
         self.session_id = session_id or f"session_{int(time.time())}"
         self.started_at_ts = time.time()
@@ -63,6 +67,17 @@ class TradingSession:
         self._predictions: deque[InferenceResult] = deque(maxlen=prediction_buffer_size)
         self._settled_orders: list[PaperOrder] = []
         self._open_orders: list[PaperOrder] = []
+        sessions_path = (
+            Path(sessions_dir) if sessions_dir is not None else Path("data/bot_sessions")
+        )
+        journal_file = (
+            Path(journal_path)
+            if journal_path is not None
+            else sessions_path / f"{self.session_id}_journal.jsonl"
+        )
+        self.journal = journal or PredictionJournal(
+            session_id=self.session_id, journal_path=journal_file
+        )
 
     @property
     def candles_processed(self) -> int:
@@ -150,6 +165,9 @@ class TradingSession:
             "predictions_count": len(self._predictions),
             "settled_orders_count": len(self._settled_orders),
             "open_orders_count": len(self._open_orders),
+            "journal_records_count": self.journal.total_records,
+            "journal_pending_count": self.journal.pending_count,
+            "journal_path": str(self.journal.journal_path),
         }
 
     def save_to_disk(self, file_path: Path | str | None = None) -> Path:
@@ -158,6 +176,10 @@ class TradingSession:
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(self.to_dict(), indent=2)
         target.write_text(payload, encoding="utf-8")
+        try:
+            self.journal.save_jsonl()
+        except OSError as exc:
+            logger.warning("Failed to sync journal during session save: %s", exc)
         return target
 
     @classmethod

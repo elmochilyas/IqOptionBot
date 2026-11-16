@@ -35,6 +35,10 @@ from iqoption_research.execution.execution_engine import (
     ModularExecutionEngine,
     ModularStepResult,
 )
+from iqoption_research.execution.live_practice_transport import (
+    IQOptionLivePracticeTransport,
+    IQOptionLivePracticeTransportConfig,
+)
 from iqoption_research.execution.models import (
     VALID_ORDER_TRANSITIONS,
     ExecutionEvent,
@@ -129,6 +133,8 @@ __all__ = [
     "ExecutionStateMachine",
     "ForexCFDAdapter",
     "ForexPayoffModel",
+    "IQOptionLivePracticeTransport",
+    "IQOptionLivePracticeTransportConfig",
     "IncomingBinaryOrderAckBody",
     "IncomingBinarySettlementBody",
     "InvalidStateTransitionError",

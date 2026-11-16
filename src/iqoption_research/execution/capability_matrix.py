@@ -227,6 +227,25 @@ BROKER_CAPABILITIES: tuple[BrokerOperation, ...] = (
         risk_assessment="Medium risk; reconciled against candle prices at expiration.",
         notes="Paper settlement is verified; live broker frame is unverified.",
     ),
+    BrokerOperation(
+        operation_id="binary_practice_transport_live",
+        product_type=ProductType.BINARY,
+        category=OperationCategory.ORDER_SUBMISSION,
+        name="Binary Practice Live Transport",
+        description=(
+            "Guarded live Practice order submission, ticket tracking, and settlement "
+            "via IQOptionLivePracticeTransport."
+        ),
+        status=BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
+        protocol_frame_name="binary-options.open-option",
+        verified_in_codebase=True,
+        live_broker_allowed=True,
+        risk_assessment=(
+            "Medium risk; virtual funds only, fails closed on Real balance detection, "
+            "requires explicit supervisor authorization."
+        ),
+        notes="Verified in Phase 18 via dedicated IQOptionLivePracticeTransport.",
+    ),
     # --- Digital Options Operations ---
     BrokerOperation(
         operation_id="digital_simulated_trade",

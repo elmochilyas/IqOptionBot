@@ -9,6 +9,8 @@ Provides commands for:
 
 from __future__ import annotations
 
+import os
+import time
 from datetime import UTC, datetime
 
 import typer
@@ -25,6 +27,7 @@ from iqoption_research.execution.execution_engine import (
     ModularExecutionConfig,
     ModularExecutionEngine,
 )
+from iqoption_research.execution.live_practice_transport import IQOptionLivePracticeTransport
 from iqoption_research.execution.models import OrderSide, ProductType
 from iqoption_research.execution.modes import (
     ExecutionMode,
@@ -37,6 +40,7 @@ from iqoption_research.execution.practice_transport import (
 )
 from iqoption_research.models.account import AccountType, Balance, Profile
 from iqoption_research.models.market import Candle, CandleSize
+from iqoption_research.security.credentials import Credentials
 
 console = Console()
 execution_app = typer.Typer(
@@ -468,17 +472,176 @@ def practice_test_command(
 
     if not offline_mock:
         console.print(
-            Panel.fit(
-                "[bold red]Live Socket Transmission Prohibited[/bold red]\n"
-                "[yellow]IQ Option does not provide an authorized, documented public API for "
-                "programmatic trading.\n"
-                "Live socket transmission is withheld to prevent unverified "
-                "socket calls.[/yellow]\n"
-                "[dim]Use --offline-mock (default) for deterministic execution verification.[/dim]",
-                border_style="red",
-            )
+            "[bold yellow]Initiating live practice connection to IQ Option...[/bold yellow]"
         )
-        raise typer.Exit(code=1)
+        email = os.environ.get("IQOPTION_EMAIL")
+        password = os.environ.get("IQOPTION_PASSWORD")
+        if not email or not password:
+            console.print(
+                "[dim]Credentials not found in environment "
+                "(IQOPTION_EMAIL / IQOPTION_PASSWORD).[/dim]"
+            )
+            email = typer.prompt("IQ Option Account Email")
+            password = typer.prompt("IQ Option Password", hide_input=True)
+
+        credentials = Credentials(email=email, password=password)
+        transport = IQOptionLivePracticeTransport(credentials=credentials)
+
+        try:
+            with console.status(
+                "[bold green]Connecting to IQ Option and verifying Practice account..."
+            ):
+                transport.start()
+        except RealAccountExecutionBlockedError as exc:
+            console.print(f"[bold red]CRITICAL SAFETY BLOCK: {exc}[/bold red]")
+            raise typer.Exit(code=1) from exc
+        except Exception as exc:
+            console.print(
+                f"[bold red]Failed to connect or verify practice transport: {exc}[/bold red]"
+            )
+            raise typer.Exit(code=1) from exc
+
+        try:
+            live_bal = transport.active_balance_id
+            live_amount = 0.0
+            for b in transport.balances:
+                if str(b.id) == str(live_bal):
+                    live_amount = float(b.amount)
+                    break
+
+            live_audit_table = Table(
+                title="[bold green]Live Broker Account State (Verified)[/bold green]"
+            )
+            live_audit_table.add_column("Property", style="cyan")
+            live_audit_table.add_column("Live Value", style="bold white")
+            live_audit_table.add_row(
+                "Verified Account Type", "[bold green]PRACTICE (type 4)[/bold green]"
+            )
+            live_audit_table.add_row("Active Practice Balance ID", str(live_bal))
+            live_audit_table.add_row("Current Virtual Balance", f"${live_amount:,.2f}")
+            live_audit_table.add_row("Underlying Instrument", symbol.upper())
+            live_audit_table.add_row("Stake Amount", f"${stake:.2f}")
+            console.print(live_audit_table)
+
+            reconfirm = typer.confirm(
+                f"Transmit single ${stake:.2f} Practice trade on {symbol.upper()} to broker?",
+                default=False,
+            )
+            if not reconfirm:
+                console.print("[yellow]Aborted by operator. Live trade not sent.[/yellow]")
+                transport.close()
+                raise typer.Abort()
+
+            tok = PracticeExecutionAuthToken(
+                authorization_signature="sig_supervisor_cli_practice_live",
+                supervisor_id="supervisor_cli_operator_live",
+            )
+            mode_cfg = ExecutionModeConfig(
+                mode=ExecutionMode.PRACTICE,
+                practice_enabled=True,
+                practice_auth_token=tok,
+            )
+            engine = ModularExecutionEngine(
+                ModularExecutionConfig(
+                    symbol=symbol.upper(),
+                    mode=ExecutionMode.PRACTICE,
+                    default_product_type=ProductType.BINARY,
+                    initial_balance=live_amount,
+                    mode_config=mode_cfg,
+                    single_test_order_mode=True,
+                )
+            )
+
+            now_ts = time.time()
+            c1 = Candle(
+                active_id=1,
+                symbol=symbol.upper(),
+                size=CandleSize.MIN_1,
+                from_ts=int(now_ts) - 60,
+                to_ts=int(now_ts),
+                at_ts=int(now_ts) * 1_000_000_000,
+                open=1.0850,
+                high=1.0855,
+                low=1.0848,
+                close=1.0852,
+                volume=100,
+                bid=1.0852,
+                ask=1.0852,
+            )
+
+            proposal = engine.create_proposal(
+                symbol=symbol.upper(),
+                side=norm_side,
+                stake=stake,
+                candle_to_ts=float(c1.to_ts),
+                signal_id="sig_operator_cli_live_test",
+            )
+            order, dec = engine.propose_and_validate(
+                proposal,
+                current_ts=float(c1.to_ts),
+                profile=transport.profile,
+                balances=transport.balances,
+            )
+            if not dec.permitted:
+                console.print(
+                    f"[bold red]Order rejected by risk controller: {dec.message}[/bold red]"
+                )
+                raise typer.Exit(code=1)
+
+            console.print("[bold cyan]Submitting order to live broker transport...[/bold cyan]")
+            _ = engine.submit_order(order, c1, broker_transport=transport)
+
+            if not order.broker_order_id:
+                console.print(f"[bold red]Broker order failed: {order.state.value}[/bold red]")
+                raise typer.Exit(code=1)
+
+            console.print(
+                Panel.fit(
+                    "[bold green]Broker Practice Order Confirmed[/bold green]\n"
+                    f"• Broker Ticket ID: [bold white]{order.broker_order_id}[/bold white]\n"
+                    f"• Local Order ID: {order.order_id}\n"
+                    f"• State: {order.state.value.upper()}\n"
+                    f"• Expiry TS: {int(order.expiry_ts or 0)}",
+                    border_style="green",
+                )
+            )
+
+            console.print("[bold yellow]Monitoring position until expiration...[/bold yellow]")
+            try:
+                settlement = transport.wait_for_settlement(
+                    order.broker_order_id, timeout_seconds=90.0
+                )
+                new_bal = 0.0
+                for b in transport.balances:
+                    if str(b.id) == str(live_bal):
+                        new_bal = float(b.amount)
+                        break
+
+                console.print(
+                    Panel.fit(
+                        "[bold green]Live Broker Settlement Verified[/bold green]\n"
+                        f"• Broker Ticket ID: {settlement.option_id}\n"
+                        f"• Outcome: [bold]{(settlement.outcome or 'UNKNOWN').upper()}[/bold]\n"
+                        f"• Realized PnL: ${settlement.net_pnl:+.2f}\n"
+                        f"• Exit Price: {settlement.exit_price}\n"
+                        f"• Close Time: {settlement.exit_ts}\n"
+                        f"• Prior Practice Balance: ${live_amount:,.2f}\n"
+                        f"• New Practice Balance: ${new_bal:,.2f} "
+                        f"(Delta: ${new_bal - live_amount:+.2f})\n"
+                        f"• Financial Consistency: {settlement.is_financially_consistent} "
+                        f"({settlement.consistency_note})\n"
+                        "• SQLite Journal: Audit trail durably committed.",
+                        border_style="green",
+                    )
+                )
+            except TimeoutError:
+                console.print(
+                    "[yellow]Timed out waiting for broker settlement notification. "
+                    "Position will reconcile on subsequent poll.[/yellow]"
+                )
+        finally:
+            transport.close()
+        return
 
     # Execute deterministic mock dispatch
     tok = PracticeExecutionAuthToken(

@@ -119,8 +119,8 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
         )
 
     def is_broker_transmission_supported(self) -> bool:
-        """Binary broker submission is unverified protocol evidence in Phase 16."""
-        return False
+        """Binary broker submission is supported on PRACTICE accounts via verified transport."""
+        return self.execution_mode == ExecutionMode.PRACTICE
 
     def execute_order(
         self,

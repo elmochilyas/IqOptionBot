@@ -155,6 +155,11 @@ class AuthenticationManager:
         if result.mfa_challenge is not None:
             result = await self._resolve_mfa_challenge(result.mfa_challenge, mfa_callback)
             if not result.success:
+                if not self._last_error:
+                    self._last_error = (
+                        result.error_message
+                        or "Two-factor authentication (2FA) verification failed or was cancelled."
+                    )
                 return False
 
         # 5. Process result
@@ -218,6 +223,11 @@ class AuthenticationManager:
         if result.mfa_challenge is not None:
             result = await self._resolve_mfa_challenge(result.mfa_challenge, mfa_callback)
             if not result.success:
+                if not self._last_error:
+                    self._last_error = (
+                        result.error_message
+                        or "Two-factor authentication (2FA) verification failed or was cancelled."
+                    )
                 return False
 
         return await self._process_auth_result(result, email)
@@ -291,7 +301,40 @@ class AuthenticationManager:
 
         # Probe profile and verify PRACTICE status
         await self._discover_account_profile()
+        if (
+            self.config.require_practice_verification
+            and self.state_machine.current_state == AuthStatus.ACCOUNT_UNVERIFIED
+        ):
+            self._last_error = (
+                "Account practice verification failed: "
+                "session is not verified for PRACTICE trading."
+            )
+
         return True
+
+    def check_session_validity(self) -> tuple[bool, str | None]:
+        """Verify active session validity and return (is_valid, sanitized_reason)."""
+        if self._session is None:
+            return False, "No active session in memory. Authentication required."
+        if not self._session.is_valid:
+            return False, "Session has been invalidated or logged out."
+        if self._session.is_expired():
+            age = self._session.age_seconds()
+            ttl = self._session.ttl_seconds
+            return (
+                False,
+                f"Session expired ({age:.1f}s elapsed, TTL is {ttl:.0f}s).",
+            )
+        if (
+            self.config.require_practice_verification
+            and self.state_machine.current_state == AuthStatus.ACCOUNT_UNVERIFIED
+        ):
+            return (
+                False,
+                "Account practice verification failed: "
+                "session is not verified for PRACTICE trading.",
+            )
+        return True, None
 
     async def _discover_account_profile(self) -> None:
         """Fetch server profile, assess PRACTICE verification, and transition state."""

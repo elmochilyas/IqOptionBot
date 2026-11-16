@@ -351,6 +351,7 @@ class BotController:
         connection_status: str | None = None,
         reconnection_attempts: int = 0,
         last_message_time: str | None = None,
+        last_error: str | None = None,
     ) -> BotStatusSnapshot:
         """Compile a comprehensive operational snapshot of the bot."""
         latest_pred = self.session.latest_prediction
@@ -429,6 +430,7 @@ class BotController:
             time_remaining_seconds=time_remaining_seconds,
             termination_reason=termination_reason,
             subscription_state="active" if self._state == BotState.RUNNING else "inactive",
+            last_error=last_error,
         )
 
     def persist_snapshot(self, path: Path | str | None = None) -> Path:

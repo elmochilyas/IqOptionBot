@@ -119,21 +119,39 @@ async def async_login(
             )
 
             if response.status != 200:
-                raise LoginError(f"Login failed: HTTP {response.status}")
+                err_msg = f"Login failed: HTTP {response.status}"
+                if isinstance(payload, dict) and payload.get("message"):
+                    err_msg = str(payload["message"])
+                raise LoginError(err_msg)
 
-            # Extract SSID cookie
+            # Extract SSID from cookies or JSON payload
+            ssid: str | None = None
             ssid_cookie = response.cookies.get("ssid")
-            if ssid_cookie is None:
+            if ssid_cookie is not None and ssid_cookie.value:
+                ssid = ssid_cookie.value
+            elif isinstance(payload, dict):
+                data_obj = payload.get("data")
+                if isinstance(data_obj, dict) and data_obj.get("ssid"):
+                    ssid = str(data_obj["ssid"])
+                elif payload.get("ssid"):
+                    ssid = str(payload["ssid"])
+
+            if ssid is None:
                 # Check for 2FA challenge
-                if isinstance(payload, dict) and payload.get("code") == "verify":
+                if isinstance(payload, dict) and (
+                    payload.get("code") in {"verify", "verify_2fa", "2fa"}
+                    or "2fa" in str(payload.get("code", "")).lower()
+                ):
                     raise TwoFactorRequiredError(
                         "Two-factor authentication (2FA) challenge required by broker. "
                         "Phase 1 read-only connectivity does not implement interactive "
                         "2FA challenge resolution. Authentication halted safely."
                     )
-                raise LoginError("Login succeeded but no SSID cookie was returned")
+                err_msg = "Login succeeded but no SSID cookie or token was returned"
+                if isinstance(payload, dict) and payload.get("message"):
+                    err_msg = str(payload["message"])
+                raise LoginError(err_msg)
 
-            ssid = ssid_cookie.value
             logger.info("HTTPS login successful, SSID obtained")
             return ssid
 

@@ -17,6 +17,7 @@ Covers:
 from __future__ import annotations
 
 import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -24,7 +25,7 @@ from iqoption_research.auth.browser_research import get_browser_login_feasibilit
 from iqoption_research.auth.config import RuntimeSecurityConfig
 from iqoption_research.auth.manager import AuthenticationManager
 from iqoption_research.auth.mfa import MFAChallenge, MFAMethod
-from iqoption_research.auth.provider import AuthResult, MockAuthProvider
+from iqoption_research.auth.provider import AuthResult, IQOptionAuthProvider, MockAuthProvider
 from iqoption_research.auth.session import AuthSession
 from iqoption_research.auth.state import (
     AuthStateMachine,
@@ -430,3 +431,203 @@ def test_browser_feasibility_report_concludes_separation() -> None:
     assert report.browser_scraping_recommended is False
     assert report.verdict == "SEPARATE_AUTHENTICATION_MANDATED"
     assert len(report.security_risks) >= 5
+
+
+# -----------------------------------------------------------------------------
+# 9. Broker Response Handling & Authentication Failure Telemetry Regressions
+# -----------------------------------------------------------------------------
+
+
+def _build_mock_http_session(
+    status: int = 200,
+    json_payload: dict | None = None,
+    cookies: dict[str, str] | None = None,
+) -> MagicMock:
+    """Construct mock aiohttp session for testing broker HTTP responses offline."""
+    mock_response = MagicMock()
+    mock_response.status = status
+    mock_response.json = AsyncMock(return_value=json_payload)
+
+    cookie_dict = {}
+    if cookies:
+        for k, v in cookies.items():
+            c_mock = MagicMock()
+            c_mock.value = v
+            cookie_dict[k] = c_mock
+    mock_response.cookies = cookie_dict
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    mock_session = MagicMock()
+    mock_session.post = AsyncMock(return_value=mock_response)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_session.close = AsyncMock()
+    return mock_session
+
+
+@pytest.mark.asyncio
+async def test_iqoption_auth_provider_extracts_ssid_from_cookie() -> None:
+    """SSID present in HTTP response cookies is successfully extracted."""
+    provider = IQOptionAuthProvider()
+    creds = Credentials(email="trader@example.com", password="mock_secret_123")
+    mock_session = _build_mock_http_session(
+        status=200,
+        json_payload={"code": "success"},
+        cookies={"ssid": "cookie_ssid_1234567890"},
+    )
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        result = await provider.login(creds)
+        assert result.success is True
+        assert result.ssid == "cookie_ssid_1234567890"
+        assert result.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_iqoption_auth_provider_extracts_ssid_from_json_data() -> None:
+    """SSID present in JSON payload under 'data.ssid' is successfully extracted."""
+    provider = IQOptionAuthProvider()
+    creds = Credentials(email="trader@example.com", password="mock_secret_123")
+    mock_session = _build_mock_http_session(
+        status=200,
+        json_payload={"code": "success", "data": {"ssid": "data_ssid_9876543210"}},
+        cookies={},
+    )
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        result = await provider.login(creds)
+        assert result.success is True
+        assert result.ssid == "data_ssid_9876543210"
+        assert result.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_iqoption_auth_provider_extracts_ssid_from_json_root() -> None:
+    """SSID present at JSON root payload is successfully extracted."""
+    provider = IQOptionAuthProvider()
+    creds = Credentials(email="trader@example.com", password="mock_secret_123")
+    mock_session = _build_mock_http_session(
+        status=200,
+        json_payload={"code": "success", "ssid": "root_ssid_5555555555"},
+        cookies={},
+    )
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        result = await provider.login(creds)
+        assert result.success is True
+        assert result.ssid == "root_ssid_5555555555"
+        assert result.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_iqoption_auth_provider_rejects_credentials_with_sanitized_error() -> None:
+    """HTTP 401 or invalid_credentials returns clear, sanitized error
+    without exposing credentials.
+    """
+    provider = IQOptionAuthProvider()
+    creds = Credentials(email="trader@example.com", password="wrong_secret_pass")
+    mock_session = _build_mock_http_session(
+        status=401,
+        json_payload={"code": "invalid_credentials", "message": "Invalid email or password"},
+        cookies={},
+    )
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        result = await provider.login(creds)
+        assert result.success is False
+        assert result.ssid is None
+        assert result.status_code == 401
+        assert result.error_message == "Invalid email or password"
+        assert "wrong_secret_pass" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_iqoption_auth_provider_detects_2fa_challenge_variants() -> None:
+    """2FA challenge variants (verify, verify_2fa) return structured MFAChallenge."""
+    provider = IQOptionAuthProvider()
+    creds = Credentials(email="trader@example.com", password="correct_secret_pass")
+
+    # Variant 1: standard verify
+    mock_session1 = _build_mock_http_session(
+        status=200,
+        json_payload={"code": "verify", "token": "mfa_tok_1", "method": "authenticator"},
+        cookies={},
+    )
+    with patch("aiohttp.ClientSession", return_value=mock_session1):
+        res1 = await provider.login(creds)
+        assert res1.success is False
+        assert res1.mfa_challenge is not None
+        assert res1.mfa_challenge.token == "mfa_tok_1"
+        assert res1.mfa_challenge.method == MFAMethod.AUTHENTICATOR
+
+    # Variant 2: verify_2fa with SMS
+    mock_session2 = _build_mock_http_session(
+        status=200,
+        json_payload={"code": "verify_2fa", "token": "mfa_tok_2", "method": "sms"},
+        cookies={},
+    )
+    with patch("aiohttp.ClientSession", return_value=mock_session2):
+        res2 = await provider.login(creds)
+        assert res2.success is False
+        assert res2.mfa_challenge is not None
+        assert res2.mfa_challenge.token == "mfa_tok_2"
+        assert res2.mfa_challenge.method == MFAMethod.SMS
+
+
+@pytest.mark.asyncio
+async def test_iqoption_auth_provider_handles_rate_limiting() -> None:
+    """HTTP 429 returns rate limit notification without crashing."""
+    provider = IQOptionAuthProvider()
+    creds = Credentials(email="trader@example.com", password="mock_secret_123")
+    mock_session = _build_mock_http_session(
+        status=429,
+        json_payload={"message": "Too many requests"},
+        cookies={},
+    )
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        result = await provider.login(creds)
+        assert result.success is False
+        assert result.status_code == 429
+        assert "rate limit" in str(result.error_message).lower()
+
+
+@pytest.mark.asyncio
+async def test_iqoption_auth_provider_handles_missing_token_or_challenge() -> None:
+    """HTTP 200 without SSID or 2FA challenge returns explicit sanitized error."""
+    provider = IQOptionAuthProvider()
+    creds = Credentials(email="trader@example.com", password="mock_secret_123")
+    mock_session = _build_mock_http_session(
+        status=200,
+        json_payload={"status": "ok"},
+        cookies={},
+    )
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        result = await provider.login(creds)
+        assert result.success is False
+        assert result.status_code == 200
+        assert "SSID" in str(result.error_message)
+
+
+def test_authentication_manager_check_session_validity() -> None:
+    """check_session_validity diagnoses unauthenticated, invalid, and expired states."""
+    manager = AuthenticationManager(provider=MockAuthProvider())
+    is_valid, reason = manager.check_session_validity()
+    assert is_valid is False
+    assert "No active session" in str(reason)
+
+    # Active valid session
+    session = AuthSession(ssid="test_ssid_valid", email="trader@example.com", ttl_seconds=3600.0)
+    session.is_practice_verified = True
+    manager._session = session
+    is_valid, reason = manager.check_session_validity()
+    assert is_valid is True
+    assert reason is None
+
+    # Expired session
+    session.authenticated_at = time.time() - 4000.0
+    is_valid, reason = manager.check_session_validity()
+    assert is_valid is False
+    assert "expired" in str(reason).lower()

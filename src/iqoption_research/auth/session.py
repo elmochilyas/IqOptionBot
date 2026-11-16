@@ -48,6 +48,11 @@ class AuthSession:
         return self.__repr__()
 
     @property
+    def is_valid(self) -> bool:
+        """Whether the session has not been explicitly invalidated."""
+        return self._is_valid
+
+    @property
     def is_active(self) -> bool:
         """Whether the session is internally valid and not expired."""
         return self._is_valid and not self.is_expired()

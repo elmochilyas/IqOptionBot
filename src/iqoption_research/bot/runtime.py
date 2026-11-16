@@ -27,6 +27,7 @@ from iqoption_research.auth.provider import IQOptionAuthProvider, MockAuthProvid
 from iqoption_research.auth.state import AuthStatus
 from iqoption_research.bot.controller import BotConfig, BotController, BotMode
 from iqoption_research.bot.monitor import BotStatusSnapshot
+from iqoption_research.bot.session import DEFAULT_PREDICTION_BUFFER_SIZE
 from iqoption_research.connectors.iqoption.client import AsyncIQOption
 from iqoption_research.execution.risk import RiskConfig
 from iqoption_research.inference.loader import SafeModelArtifactLoader
@@ -93,6 +94,8 @@ class ContinuousBotRuntime:
         client: AsyncIQOption | None = None,
         model_bundle: ModelBundle | None = None,
         sessions_dir: Path | str | None = None,
+        controller: BotController | None = None,
+        prediction_buffer_size: int = DEFAULT_PREDICTION_BUFFER_SIZE,
     ) -> None:
         self.config = config or RuntimeConfig()
         self.state = RuntimeState.IDLE
@@ -101,8 +104,9 @@ class ContinuousBotRuntime:
         self.model_bundle = model_bundle
         self.sessions_dir = Path(sessions_dir) if sessions_dir is not None else DEFAULT_SESSIONS_DIR
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self.prediction_buffer_size = prediction_buffer_size
 
-        self._controller: BotController | None = None
+        self._controller: BotController | None = controller
         self._shutdown_event = asyncio.Event()
         self._pause_event = asyncio.Event()
         self._pause_event.set()  # Not paused by default
@@ -121,6 +125,34 @@ class ContinuousBotRuntime:
     def _init_auth_manager(self) -> AuthenticationManager:
         provider = MockAuthProvider() if self.config.dev_mock else IQOptionAuthProvider()
         return AuthenticationManager(provider=provider)
+
+    def build_controller(
+        self,
+        session_id: str | None = None,
+        prediction_buffer_size: int | None = None,
+    ) -> BotController:
+        """Construct an initialized BotController using current runtime configuration."""
+        buf_size = (
+            prediction_buffer_size
+            if prediction_buffer_size is not None
+            else self.prediction_buffer_size
+        )
+        bot_cfg = BotConfig(
+            symbol=self.config.symbol,
+            candle_size_seconds=self.config.candle_size_seconds,
+            mode=self.config.mode,
+            initial_balance=self.config.initial_balance,
+            payout_rate=self.config.payout_rate,
+            fixed_stake=self.config.fixed_stake,
+            risk_config=self.config.risk_config,
+            observation_token=self.config.observation_token,
+            sessions_dir=self.sessions_dir,
+        )
+        return BotController(
+            config=bot_cfg,
+            session_id=session_id,
+            prediction_buffer_size=buf_size,
+        )
 
     @property
     def is_running(self) -> bool:
@@ -288,12 +320,14 @@ class ContinuousBotRuntime:
             observation_token=self.config.observation_token,
             sessions_dir=self.sessions_dir,
         )
-        self._controller = BotController(
-            config=bot_cfg,
-            model_bundle=bundle,
-            inference_pipeline=inference,
-            observation_adapter=adapter,
-        )
+        if self._controller is None:
+            self._controller = BotController(
+                config=bot_cfg,
+                model_bundle=bundle,
+                inference_pipeline=inference,
+                observation_adapter=adapter,
+                prediction_buffer_size=self.prediction_buffer_size,
+            )
         self._session_id = self._controller.session.session_id
 
         # 4. Start controller
@@ -377,6 +411,9 @@ class ContinuousBotRuntime:
                 and (time.time() - self._started_at) >= self.config.max_runtime_seconds
             ):
                 logger.info("Max runtime seconds reached. Halting replay.")
+                self._termination_reason = (
+                    f"MAX_RUNTIME_REACHED: {self.config.max_runtime_seconds:.1f}s deadline elapsed"
+                )
                 break
 
             if self._controller is not None:
@@ -384,6 +421,9 @@ class ContinuousBotRuntime:
 
             # Small yield to permit event handling
             await asyncio.sleep(0.001)
+
+        if not self._shutdown_event.is_set() and not self._termination_reason:
+            self._termination_reason = "REPLAY_COMPLETED: Processed all historical candles"
 
     async def _watchdog_loop(self) -> None:
         """Independent timer-driven feed health watchdog."""
@@ -676,6 +716,14 @@ class ContinuousBotRuntime:
         # Guard: preserve ERROR state through all cleanup paths.
         error_present = self.state == RuntimeState.ERROR
 
+        if not self._termination_reason:
+            if error_present:
+                self._termination_reason = f"ERROR: {self._last_error or 'Runtime error occurred'}"
+            elif self.config.mode == BotMode.OFFLINE_REPLAY:
+                self._termination_reason = "CLEAN_SHUTDOWN: Replay completed all candles"
+            else:
+                self._termination_reason = "CLEAN_SHUTDOWN: Normal session completion"
+
         if self._controller is not None:
             if error_present:
                 self._controller.fail(self._last_error or "Runtime error occurred")
@@ -683,7 +731,10 @@ class ContinuousBotRuntime:
                 self._controller.stop()
             self._final_snapshot = (
                 self.get_status_snapshot()
-                or self._controller.get_status_snapshot(last_error=self._last_error)
+                or self._controller.get_status_snapshot(
+                    last_error=self._last_error,
+                    termination_reason=self._termination_reason,
+                )
             )
             snapshot = self._final_snapshot
 

@@ -13,7 +13,9 @@ from iqoption_research.bot.journal import (
     PredictionOutcome,
     TradeEligibilityStatus,
 )
+from iqoption_research.bot.session import TradingSession
 from iqoption_research.cli.main import app
+from iqoption_research.inference.pipeline import InferenceResult, SignalDirection
 from iqoption_research.models.market import Candle
 
 
@@ -730,3 +732,61 @@ def test_legacy_session_unverified_status(tmp_path: Path) -> None:
     # Must report UNVERIFIED for historical decisions 1-29
     assert "UNVERIFIED" in res.output
     assert "unrecoverable" in res.output
+
+
+def test_trading_session_reconciles_lifetime_and_ring_buffer_counts(tmp_path: Path) -> None:
+    """Verify that TradingSession distinguishes bounded ring buffer from lifetime count."""
+    session = TradingSession(
+        session_id="test_reconcile",
+        prediction_buffer_size=5,
+        sessions_dir=tmp_path,
+    )
+
+    for i in range(15):
+        res = InferenceResult(
+            direction=SignalDirection.HOLD,
+            calibrated_probability=0.48,
+            raw_probability=0.48,
+            confidence=0.02,
+            abstention_reason="UNCERTAIN_ZONE",
+            latency_ms=1.0,
+            candle_timestamp=1000 + i * 60,
+            model_name="test_model",
+            feature_count=13,
+            calibrated_prob_up=0.48,
+            side_probability=0.50,
+        )
+        session.record_prediction(res)
+
+    # Lifetime count must be 15
+    assert session.prediction_count == 15
+    # Bounded buffer must be capped at 5
+    assert session.buffered_prediction_count == 5
+    assert session.prediction_buffer_capacity == 5
+    assert len(session.recent_predictions) == 5
+
+    # Summary must report lifetime predictions
+    summary = session.generate_summary(
+        current_balance=10000.0,
+        peak_balance=10000.0,
+        max_drawdown_amount=0.0,
+        max_drawdown_pct=0.0,
+        total_trades=0,
+        winning_trades=0,
+        losing_trades=0,
+        win_rate=0.0,
+    )
+    assert summary.predictions_generated == 15
+
+    # Serialization dictionary
+    d = session.to_dict()
+    assert d["predictions_count"] == 15
+    assert d["buffered_predictions_count"] == 5
+    assert d["prediction_buffer_capacity"] == 5
+
+    # Save to disk and restore
+    save_path = tmp_path / "saved_session.json"
+    session.save_to_disk(save_path)
+    restored = TradingSession.load_from_disk(save_path)
+    assert restored is not None
+    assert restored.prediction_count == 15

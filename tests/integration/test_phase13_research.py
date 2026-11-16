@@ -16,7 +16,12 @@ from iqoption_research.market_data.collector import BACKFILL_SOURCE, HistoricalD
 from iqoption_research.market_data.sessions import GapClassification, get_market_schedule
 from iqoption_research.market_data.validation import find_gaps
 from iqoption_research.ml.fixtures import SyntheticMarketConfig, generate_synthetic_candles
-from iqoption_research.ml.phase10 import Phase10Config, _simulate_trades
+from iqoption_research.ml.phase10 import (
+    Phase10Config,
+    _simulate_trades,
+    audit_authentic_datasets,
+    prepare_clean_dataset,
+)
 from iqoption_research.ml.phase13 import (
     STATIONARY_FEATURE_NAMES,
     audit_move_distribution,
@@ -503,3 +508,69 @@ def test_monday_operator_checklist_cli_offline() -> None:
     assert res_replay.exit_code == 0
     assert "Continuous Session Concluded" in res_replay.output
     assert "random_forest" in res_replay.output
+
+
+def test_candidate_model_probability_audit_and_oos_bounds() -> None:
+    """Verify candidate RF model partition boundaries, probabilities, and holdout preservation."""
+    storage_dir = Path("data/datasets")
+    bundle_dir = Path("data/phase13/candidate_models/candidate_h1_rf")
+    bundle = load_model_bundle(bundle_dir)
+
+    _audit, candles = audit_authentic_datasets(storage_dir)
+    clean = prepare_clean_dataset(candles, candle_size_seconds=60, horizon_bars=1)
+
+    # 1. Training and validation boundaries
+    train_rows = int(bundle.metadata.get("metadata", {}).get("training_rows", 37609))
+    val_rows = int(bundle.metadata.get("metadata", {}).get("validation_rows", 6268))
+    assert train_rows == 37609
+    assert val_rows == 6268
+
+    train_end = train_rows
+    val_end = train_rows + val_rows
+    assert train_end == 37609
+    assert val_end == 43877
+
+    # 2. Phase 10 / confirmation holdout cutoff isolation
+    confirmation_cutoff_ts = 1794607200  # 2026-11-13T22:00:00Z
+    dev_mask = clean.timestamps < confirmation_cutoff_ts
+    dev_rows = int(dev_mask.sum())
+    assert dev_rows == 62682
+
+    # Development OOS window must be strictly between val_end and cutoff
+    oos_start = val_end
+    oos_end = dev_rows
+    assert oos_end > oos_start
+    oos_rows = oos_end - oos_start
+    assert oos_rows == 18805
+
+    # 3. Model inference and probability distribution on OOS development data
+    feat_indices = [clean.feature_names.index(f) for f in STATIONARY_FEATURE_NAMES]
+    X_oos = clean.X[oos_start:oos_end, feat_indices]
+    y_oos = clean.y[oos_start:oos_end]
+    assert len(X_oos) == 18805
+    assert len(y_oos) == 18805
+
+    scaled_oos = np.asarray(bundle.scaler.transform(X_oos), dtype=np.float64)
+    cal_probs_up = bundle.calibrator.calibrate(bundle.model.predict_proba(scaled_oos))[:, 1]
+
+    # Verify probability distribution properties
+    mean_prob = float(np.mean(cal_probs_up))
+    median_prob = float(np.median(cal_probs_up))
+    std_prob = float(np.std(cal_probs_up))
+    assert 0.45 < mean_prob < 0.49
+    assert 0.46 < median_prob < 0.49
+    assert std_prob < 0.03  # Tightly concentrated probabilities
+
+    # Abstention behavior: >=85% of predictions fall in [0.45, 0.55] uncertainty zone
+    up_signals = cal_probs_up >= 0.55
+    down_signals = cal_probs_up <= 0.45
+    hold_signals = ~up_signals & ~down_signals
+    hold_rate = float(np.mean(hold_signals))
+    assert hold_rate >= 0.85, f"Expected >= 85% HOLD abstention, got {hold_rate:.1%}"
+
+    # Verify 14-day independent confirmation holdout is strictly preserved
+    conf_state_path = Path("data/phase11/confirmation_state.json")
+    assert conf_state_path.is_file()
+    conf_data = json.loads(conf_state_path.read_text(encoding="utf-8"))
+    assert conf_data["evaluation_status"] == "RESERVED"
+    assert conf_data["evaluated_at_utc"] is None

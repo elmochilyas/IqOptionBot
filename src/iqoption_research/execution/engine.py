@@ -193,6 +193,10 @@ class PaperTradingEngine:
             verification_ts if verification_ts is not None else datetime.now(UTC).timestamp()
         )
 
+    def warm_up(self, candles: list[Candle]) -> int:
+        """Pre-warm rolling feature buffer with authentic candles without executing trades."""
+        return self.feature_buffer.warm_up(candles)
+
     def process_candle(
         self,
         candle: Candle,

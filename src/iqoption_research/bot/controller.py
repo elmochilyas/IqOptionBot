@@ -11,6 +11,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Final
@@ -295,6 +296,10 @@ class BotController:
     def ingestion_blocked_reason(self) -> str | None:
         return self._ingestion_blocked_reason
 
+    def warm_up(self, candles: list[Candle]) -> int:
+        """Pre-warm feature buffer with authentic candles without emitting trades."""
+        return self.engine.warm_up(candles)
+
     def process_candle(
         self,
         candle: Candle,
@@ -338,7 +343,15 @@ class BotController:
         self.persist_snapshot()
         return step_result
 
-    def get_status_snapshot(self) -> BotStatusSnapshot:
+    def get_status_snapshot(
+        self,
+        *,
+        termination_reason: str | None = None,
+        time_remaining_seconds: float | None = None,
+        connection_status: str | None = None,
+        reconnection_attempts: int = 0,
+        last_message_time: str | None = None,
+    ) -> BotStatusSnapshot:
         """Compile a comprehensive operational snapshot of the bot."""
         latest_pred = self.session.latest_prediction
         model_name = (
@@ -355,11 +368,23 @@ class BotController:
             "max_consecutive_losses": float(self.config.risk_config.max_consecutive_losses),
         }
 
+        latest_c = self.observation_adapter.latest_candle
+        last_candle_iso = (
+            datetime.fromtimestamp(float(latest_c.to_ts), tz=UTC).isoformat()
+            if latest_c is not None
+            else None
+        )
+        conn_stat = (
+            connection_status
+            if connection_status is not None
+            else ("connected" if self._state == BotState.RUNNING else "idle")
+        )
+
         return self.monitor.build_snapshot(
             state=self._state.value,
             mode=self.config.mode.value,
             symbol=self.config.symbol,
-            connection_status="connected" if self._state == BotState.RUNNING else "idle",
+            connection_status=conn_stat,
             model_name=model_name,
             model_provenance=self.model_provenance.value,
             data_provenance=self.last_candle_provenance,
@@ -391,6 +416,16 @@ class BotController:
             uncertainty=max(0.0, min(1.0, 1.0 - (conf * 2.0))),
             settled_trades_count=len(self.session.settled_orders),
             risk_limits=risk_limits,
+            last_message_time=last_message_time,
+            last_valid_candle_time=last_candle_iso,
+            last_completed_candle_time=last_candle_iso,
+            accepted_candles_count=self.observation_adapter.accepted_count,
+            reconnection_attempts=reconnection_attempts,
+            prediction_count=self.session.prediction_count,
+            paper_trades_count=self.engine.portfolio.total_trades,
+            time_remaining_seconds=time_remaining_seconds,
+            termination_reason=termination_reason,
+            subscription_state="active" if self._state == BotState.RUNNING else "inactive",
         )
 
     def persist_snapshot(self, path: Path | str | None = None) -> Path:

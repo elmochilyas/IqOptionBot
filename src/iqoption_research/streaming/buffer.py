@@ -246,6 +246,27 @@ class RollingFeatureBuffer:
         self._window.clear()
         self._status = BufferStatus.WARMING_UP
 
+    def warm_up(self, candles: list[Candle]) -> int:
+        """Causally populate buffer with authentic historical candles without trade emission."""
+        added = 0
+        for candle in candles:
+            if not candle.is_complete:
+                continue
+            prev_candle = self._window[-1] if self._window else None
+            validation = validate_streaming_candle(
+                candle,
+                previous_candle=prev_candle,
+                now_ts=float(candle.to_ts),
+                is_replay=True,
+            )
+            if validation.is_valid:
+                self._window.append(candle)
+                self._processed_count += 1
+                added += 1
+        if len(self._window) >= self._warmup_lookback:
+            self._status = BufferStatus.READY
+        return added
+
     def update(
         self,
         candle: Candle,

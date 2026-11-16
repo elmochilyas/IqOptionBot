@@ -26,6 +26,7 @@ from iqoption_research.connectors.iqoption.exceptions import (
     InvalidCandleError,
     LoginError,
     OfflineModeError,
+    ReconnectExhaustedError,
     TradingNotAllowedError,
 )
 from iqoption_research.connectors.iqoption.http_auth import (
@@ -180,8 +181,22 @@ class AsyncIQOption:
         return self._offline
 
     @property
+    def reconnect_attempts(self) -> int:
+        return self._ws.reconnect_attempts if self._ws is not None else 0
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed or (self._ws is not None and self._ws.is_closed)
+
+    @property
     def is_ready(self) -> bool:
         return self._ws is not None and self._ws.is_ready
+
+    @property
+    def is_failed(self) -> bool:
+        if self._ws is not None:
+            return self._ws.is_failed
+        return self.monitor.state == ConnectionState.FAILED
 
     @property
     def is_authenticated(self) -> bool:
@@ -508,10 +523,34 @@ class AsyncIQOption:
         await ws.send(MSG_SUBSCRIBE, sub_frame)
         try:
             while True:
-                if idle_timeout is not None:
-                    payload = await asyncio.wait_for(queue.get(), timeout=idle_timeout)
-                else:
-                    payload = await queue.get()
+                if ws.is_failed or (
+                    ws.is_closed and ws.fail_reason == DisconnectReason.RECONNECT_EXHAUSTED
+                ):
+                    raise ReconnectExhaustedError("WebSocket reconnect budget exhausted")
+                if ws.is_closed:
+                    raise ConnectionError("WebSocket connection closed")
+
+                wait_step = min(idle_timeout, 1.0) if idle_timeout is not None else 1.0
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=wait_step)
+                except TimeoutError as err:
+                    if ws.is_failed or (
+                        ws.is_closed and ws.fail_reason == DisconnectReason.RECONNECT_EXHAUSTED
+                    ):
+                        raise ReconnectExhaustedError(
+                            "WebSocket reconnect budget exhausted"
+                        ) from err
+                    if ws.is_closed:
+                        raise ConnectionError("WebSocket connection closed") from err
+                    if idle_timeout is not None and idle_timeout <= wait_step:
+                        raise TimeoutError(
+                            f"Stream candles idle timeout ({idle_timeout}s) exceeded"
+                        ) from err
+                    continue
+
+                if isinstance(payload, Exception):
+                    raise payload
+
                 try:
                     message = {"name": "candle-generated", "msg": payload}
                     raw = parse_candle_generated(message)

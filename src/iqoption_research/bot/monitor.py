@@ -46,6 +46,16 @@ class BotStatusSnapshot:
     settled_trades_count: int = 0
     risk_limits: dict[str, float] = field(default_factory=dict)
     error_history: tuple[str, ...] = ()
+    last_message_time: str | None = None
+    last_valid_candle_time: str | None = None
+    last_completed_candle_time: str | None = None
+    accepted_candles_count: int = 0
+    reconnection_attempts: int = 0
+    prediction_count: int = 0
+    paper_trades_count: int = 0
+    time_remaining_seconds: float | None = None
+    termination_reason: str | None = None
+    subscription_state: str = "none"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +89,16 @@ class BotStatusSnapshot:
             "settled_trades_count": self.settled_trades_count,
             "risk_limits": dict(self.risk_limits),
             "error_history": list(self.error_history),
+            "last_message_time": self.last_message_time,
+            "last_valid_candle_time": self.last_valid_candle_time,
+            "last_completed_candle_time": self.last_completed_candle_time,
+            "accepted_candles_count": self.accepted_candles_count,
+            "reconnection_attempts": self.reconnection_attempts,
+            "prediction_count": self.prediction_count,
+            "paper_trades_count": self.paper_trades_count,
+            "time_remaining_seconds": self.time_remaining_seconds,
+            "termination_reason": self.termination_reason,
+            "subscription_state": self.subscription_state,
         }
 
     @classmethod
@@ -114,6 +134,20 @@ class BotStatusSnapshot:
             settled_trades_count=int(data.get("settled_trades_count", 0)),
             risk_limits=dict(data.get("risk_limits", {})),
             error_history=tuple(str(e) for e in data.get("error_history", ())),
+            last_message_time=data.get("last_message_time"),
+            last_valid_candle_time=data.get("last_valid_candle_time"),
+            last_completed_candle_time=data.get("last_completed_candle_time"),
+            accepted_candles_count=int(data.get("accepted_candles_count", 0)),
+            reconnection_attempts=int(data.get("reconnection_attempts", 0)),
+            prediction_count=int(data.get("prediction_count", 0)),
+            paper_trades_count=int(data.get("paper_trades_count", 0)),
+            time_remaining_seconds=(
+                float(data["time_remaining_seconds"])
+                if data.get("time_remaining_seconds") is not None
+                else None
+            ),
+            termination_reason=data.get("termination_reason"),
+            subscription_state=str(data.get("subscription_state", "none")),
         )
 
 
@@ -167,6 +201,16 @@ class BotStatusMonitor:
         settled_trades_count: int = 0,
         risk_limits: dict[str, float] | None = None,
         current_ts: float | None = None,
+        last_message_time: str | None = None,
+        last_valid_candle_time: str | None = None,
+        last_completed_candle_time: str | None = None,
+        accepted_candles_count: int = 0,
+        reconnection_attempts: int = 0,
+        prediction_count: int = 0,
+        paper_trades_count: int = 0,
+        time_remaining_seconds: float | None = None,
+        termination_reason: str | None = None,
+        subscription_state: str = "none",
     ) -> BotStatusSnapshot:
         """Create an immutable status snapshot for CLI dashboards or monitoring."""
         now = current_ts if current_ts is not None else time.time()
@@ -203,4 +247,14 @@ class BotStatusMonitor:
             settled_trades_count=settled_trades_count,
             risk_limits=dict(risk_limits or {}),
             error_history=tuple(self._error_history),
+            last_message_time=last_message_time,
+            last_valid_candle_time=last_valid_candle_time,
+            last_completed_candle_time=last_completed_candle_time,
+            accepted_candles_count=accepted_candles_count,
+            reconnection_attempts=reconnection_attempts,
+            prediction_count=prediction_count,
+            paper_trades_count=paper_trades_count,
+            time_remaining_seconds=time_remaining_seconds,
+            termination_reason=termination_reason,
+            subscription_state=subscription_state,
         )

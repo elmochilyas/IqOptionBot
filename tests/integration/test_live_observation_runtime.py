@@ -14,6 +14,7 @@ Validates:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import time
 from pathlib import Path
@@ -562,3 +563,178 @@ async def test_zero_broker_trading_frames_sent():
         frame_str = json.dumps(frame).lower()
         for kw in FORBIDDEN_PROTOCOL_KEYWORDS:
             assert kw not in frame_str, f"Forbidden keyword {kw!r} found in outgoing frame: {frame}"
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Telemetry distinguishes forming, duplicate, and invalid candles,
+# and verifies inference invariants (exactly once per completed candle)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_telemetry_candle_classification_and_inference_invariants():
+    """Verify telemetry correctly classifies forming updates, duplicates, and errors,
+    and guarantees ML inference executes strictly once per completed candle.
+    """
+    bundle_path = Path("data/phase13/candidate_models/candidate_h1_rf")
+    assert bundle_path.exists(), "candidate_h1_rf bundle must exist"
+
+    loader = SafeModelArtifactLoader()
+    bundle, report = loader.load(bundle_path)
+    assert report.is_valid is True
+
+    from iqoption_research.market_data.collector import HistoricalDataCollector
+
+    collector = HistoricalDataCollector()
+    stored_candles = collector.load_dataset("EURUSD", 60)
+    assert len(stored_candles) >= 30
+
+    auth_token = ObservationAuthorizationToken(
+        token_hash="a" * 64,
+        authorized_by="LeadSystemsEngineer",
+    )
+    bot_cfg = BotConfig(
+        symbol="EURUSD",
+        mode=BotMode.OBSERVE_ONLY,
+        observation_token=auth_token,
+        fixed_stake=100.0,
+        payout_rate=0.85,
+    )
+    controller = BotController(
+        config=bot_cfg,
+        model_bundle=bundle,
+    )
+    controller.start()
+
+    # Pre-warm buffer with 25 authentic candles
+    warm_count = controller.warm_up(stored_candles[:25])
+    assert warm_count == 25
+    assert controller.engine.feature_buffer.status.value == "ready"
+    assert controller.session.prediction_count == 0
+
+    base_candle = stored_candles[25]
+
+    # 1. Ingest forming candle update (is_complete=False)
+    # Represents the in-flight candle updates received every second
+    forming_candle = dataclasses.replace(base_candle, is_complete=False)
+    res_forming = controller.process_candle(forming_candle, now_ts=float(forming_candle.to_ts))
+    assert res_forming is None, "Forming candle must not trigger paper trade or inference"
+    assert controller.observation_adapter.forming_count == 1
+    assert controller.observation_adapter.accepted_count == 0
+    assert controller.observation_adapter.duplicate_count == 0
+    assert controller.observation_adapter.invalid_count == 0
+    assert controller.session.prediction_count == 0
+
+    # 2. Ingest the completed candle (is_complete=True)
+    completed_candle = base_candle
+    res_completed = controller.process_candle(
+        completed_candle, now_ts=float(completed_candle.to_ts)
+    )
+    assert res_completed is not None, "Completed candle must be accepted"
+    assert controller.observation_adapter.accepted_count == 1
+    assert controller.observation_adapter.forming_count == 1
+    assert controller.session.prediction_count == 1
+
+    latest_pred = controller.session.latest_prediction
+    assert latest_pred is not None
+    assert latest_pred.candle_timestamp == completed_candle.to_ts
+
+    # 3. Ingest identical duplicate completed candle (same from_ts and to_ts)
+    duplicate_candle = base_candle
+    res_dup = controller.process_candle(duplicate_candle, now_ts=float(duplicate_candle.to_ts))
+    assert res_dup is None, "Duplicate candle must not trigger execution or inference"
+    assert controller.observation_adapter.duplicate_count == 1
+    assert controller.observation_adapter.accepted_count == 1
+    assert controller.session.prediction_count == 1, "Duplicate must not increment prediction count"
+
+    # 4. Ingest genuinely invalid candle (symbol mismatch)
+    mismatched_candle = dataclasses.replace(stored_candles[26], symbol="EURUSD-OTC")
+    res_invalid = controller.process_candle(
+        mismatched_candle, now_ts=float(stored_candles[26].to_ts)
+    )
+    assert res_invalid is None, "Invalid candle must be rejected"
+    assert controller.observation_adapter.invalid_count == 1
+    assert controller.session.prediction_count == 1
+
+    # 5. Ingest second consecutive completed candle
+    next_candle = stored_candles[26]
+    res_next = controller.process_candle(next_candle, now_ts=float(next_candle.to_ts))
+    assert res_next is not None, "Second completed candle must be accepted"
+    assert controller.observation_adapter.accepted_count == 2
+    assert controller.session.prediction_count == 2
+    assert controller.session.latest_prediction is not None
+    assert controller.session.latest_prediction.candle_timestamp == next_candle.to_ts
+
+    # 6. Verify snapshot telemetry breakdown
+    snapshot = controller.get_status_snapshot()
+    assert snapshot.accepted_candles_count == 2
+    assert snapshot.forming_candles_count == 1
+    assert snapshot.duplicate_candles_count == 1
+    assert snapshot.invalid_candles_count == 1
+    assert snapshot.rejected_candles_count == 1  # Reports genuine invalid count
+    assert snapshot.prediction_count == 2
+
+    snap_dict = snapshot.to_dict()
+    assert snap_dict["forming_candles_count"] == 1
+    assert snap_dict["duplicate_candles_count"] == 1
+    assert snap_dict["invalid_candles_count"] == 1
+
+    controller.stop()
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Broker liveness timestamp persists in telemetry across socket close
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_telemetry_liveness_and_last_message_persistence_across_close():
+    """Verify Last Received Message reflects broker traffic and persists across socket closure."""
+    now_s = int(time.time())
+    candle_frame = make_candle_frame(active_id=1, size=60, to_ts=now_s)
+    messages = [*make_handshake_messages(server_time_s=now_s), json.dumps(candle_frame)]
+    sock = MockWebSocketConnection(messages)
+
+    async def factory() -> MockWebSocketConnection:
+        return sock
+
+    auth_provider = MockAuthProvider()
+    auth_manager = AuthenticationManager(provider=auth_provider)
+    await auth_manager.login_interactive(email="trader@example.com", password="mock_secret_123")
+
+    client = AsyncIQOption(
+        ssid="mock_session_ssid",
+        offline=False,
+        connect_factory=factory,
+    )
+
+    auth_token = ObservationAuthorizationToken(
+        token_hash="a" * 64,
+        authorized_by="LeadSystemsEngineer",
+    )
+    cfg = RuntimeConfig(
+        symbol="EURUSD",
+        mode=BotMode.OBSERVE_ONLY,
+        observation_token=auth_token,
+        max_runtime_seconds=0.4,
+        startup_grace_seconds=10.0,
+        dev_mock=True,
+    )
+
+    runtime = ContinuousBotRuntime(
+        config=cfg,
+        auth_manager=auth_manager,
+        client=client,
+    )
+
+    snapshot = await runtime.run()
+
+    # The client must be closed after runtime cleanup
+    assert client.is_closed is True
+    # The client must have retained last_message_at despite _ws being cleared
+    assert client.last_message_at is not None
+
+    # Telemetry snapshot must report a valid ISO timestamp for Last Received Message
+    assert snapshot.last_message_time is not None
+    assert snapshot.last_message_time != "None"
+    assert "T" in snapshot.last_message_time

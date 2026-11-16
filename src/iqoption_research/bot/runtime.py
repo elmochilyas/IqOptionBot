@@ -113,6 +113,9 @@ class ContinuousBotRuntime:
         self._max_runtime_task: asyncio.Task[None] | None = None
         self._first_candle_received: bool = False
         self._termination_reason: str | None = None
+        self._last_message_time: str | None = None
+        self._final_snapshot: BotStatusSnapshot | None = None
+        self._session_id: str | None = None
 
     def _init_auth_manager(self) -> AuthenticationManager:
         provider = MockAuthProvider() if self.config.dev_mock else IQOptionAuthProvider()
@@ -274,6 +277,7 @@ class ContinuousBotRuntime:
             inference_pipeline=inference,
             observation_adapter=adapter,
         )
+        self._session_id = self._controller.session.session_id
 
         # 4. Start controller
         self._controller.start()
@@ -320,6 +324,8 @@ class ContinuousBotRuntime:
         snap = self.get_status_snapshot()
         if snap is not None:
             return snap
+        if self._final_snapshot is not None:
+            return self._final_snapshot
         if self._controller is not None:
             c_snap = self._controller.get_status_snapshot()
             if c_snap is not None:
@@ -607,10 +613,13 @@ class ContinuousBotRuntime:
 
         if self._controller is not None:
             self._controller.stop()
-            snapshot = self.get_status_snapshot() or self._controller.get_status_snapshot()
+            self._final_snapshot = (
+                self.get_status_snapshot() or self._controller.get_status_snapshot()
+            )
+            snapshot = self._final_snapshot
 
             # Save post-session report
-            session_id = f"session_{int(time.time())}"
+            session_id = self._session_id or f"session_{int(time.time())}"
             summary_path = self.sessions_dir / f"{session_id}_summary.json"
             all_session_orders = (
                 self._controller.session.settled_orders + self._controller.session.open_orders
@@ -675,9 +684,13 @@ class ContinuousBotRuntime:
             if self.client is not None:
                 conn_status = self.client.state.value
                 reconnect_attempts = self.client.reconnect_attempts
-                if self.client.ws is not None and self.client.ws.last_message_at is not None:
-                    elapsed = time.monotonic() - self.client.ws.last_message_at
+                last_msg_at = self.client.last_message_at
+                if last_msg_at is not None:
+                    elapsed = time.monotonic() - last_msg_at
                     last_msg_iso = datetime.fromtimestamp(now - elapsed, tz=UTC).isoformat()
+                    self._last_message_time = last_msg_iso
+            if last_msg_iso is None and self._last_message_time is not None:
+                last_msg_iso = self._last_message_time
             return self._controller.get_status_snapshot(
                 termination_reason=self._termination_reason,
                 time_remaining_seconds=rem,
@@ -685,4 +698,4 @@ class ContinuousBotRuntime:
                 reconnection_attempts=reconnect_attempts,
                 last_message_time=last_msg_iso,
             )
-        return None
+        return self._final_snapshot

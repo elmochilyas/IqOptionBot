@@ -115,6 +115,9 @@ class MarketObservationAdapter:
         # Validation state tracking
         self._previous_candle: Candle | None = None
         self._accepted_candles_count: int = 0
+        self._forming_updates_count: int = 0
+        self._duplicate_candles_count: int = 0
+        self._invalid_candles_count: int = 0
         self._rejected_candles_count: int = 0
         self._feed_gaps_count: int = 0
         self._history: list[ObservationEvent] = []
@@ -162,7 +165,23 @@ class MarketObservationAdapter:
         return self._accepted_candles_count
 
     @property
+    def forming_count(self) -> int:
+        """Count of expected intermediate forming-candle updates."""
+        return self._forming_updates_count
+
+    @property
+    def duplicate_count(self) -> int:
+        """Count of duplicate completed candles."""
+        return self._duplicate_candles_count
+
+    @property
+    def invalid_count(self) -> int:
+        """Count of genuinely invalid or corrupt candles (excluding expected forming updates)."""
+        return self._invalid_candles_count
+
+    @property
     def rejected_count(self) -> int:
+        """Total non-accepted candles across all causes (for backward compatibility)."""
         return self._rejected_candles_count
 
     @property
@@ -216,6 +235,7 @@ class MarketObservationAdapter:
             )
             health = self.evaluate_feed_health(now)
             self._rejected_candles_count += 1
+            self._invalid_candles_count += 1
             event = ObservationEvent(
                 candle=candle,
                 is_valid=False,
@@ -253,9 +273,15 @@ class MarketObservationAdapter:
             self._accepted_candles_count += 1
         else:
             self._rejected_candles_count += 1
-            if val_res.verdict == StreamValidationVerdict.GAP_DISCONTINUITY:
-                self._feed_gaps_count += 1
-                self.reconnect_manager.record_disconnect(timestamp=now)
+            if val_res.verdict == StreamValidationVerdict.INCOMPLETE:
+                self._forming_updates_count += 1
+            elif val_res.verdict == StreamValidationVerdict.DUPLICATE:
+                self._duplicate_candles_count += 1
+            else:
+                self._invalid_candles_count += 1
+                if val_res.verdict == StreamValidationVerdict.GAP_DISCONTINUITY:
+                    self._feed_gaps_count += 1
+                    self.reconnect_manager.record_disconnect(timestamp=now)
 
         health = self.evaluate_feed_health(now)
 

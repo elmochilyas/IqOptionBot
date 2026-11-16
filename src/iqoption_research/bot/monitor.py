@@ -53,6 +53,9 @@ class BotStatusSnapshot:
     reconnection_attempts: int = 0
     prediction_count: int = 0
     paper_trades_count: int = 0
+    forming_candles_count: int = 0
+    duplicate_candles_count: int = 0
+    invalid_candles_count: int = 0
     time_remaining_seconds: float | None = None
     termination_reason: str | None = None
     subscription_state: str = "none"
@@ -96,6 +99,9 @@ class BotStatusSnapshot:
             "reconnection_attempts": self.reconnection_attempts,
             "prediction_count": self.prediction_count,
             "paper_trades_count": self.paper_trades_count,
+            "forming_candles_count": self.forming_candles_count,
+            "duplicate_candles_count": self.duplicate_candles_count,
+            "invalid_candles_count": self.invalid_candles_count,
             "time_remaining_seconds": self.time_remaining_seconds,
             "termination_reason": self.termination_reason,
             "subscription_state": self.subscription_state,
@@ -141,6 +147,9 @@ class BotStatusSnapshot:
             reconnection_attempts=int(data.get("reconnection_attempts", 0)),
             prediction_count=int(data.get("prediction_count", 0)),
             paper_trades_count=int(data.get("paper_trades_count", 0)),
+            forming_candles_count=int(data.get("forming_candles_count", 0)),
+            duplicate_candles_count=int(data.get("duplicate_candles_count", 0)),
+            invalid_candles_count=int(data.get("invalid_candles_count", 0)),
             time_remaining_seconds=(
                 float(data["time_remaining_seconds"])
                 if data.get("time_remaining_seconds") is not None
@@ -208,6 +217,9 @@ class BotStatusMonitor:
         reconnection_attempts: int = 0,
         prediction_count: int = 0,
         paper_trades_count: int = 0,
+        forming_candles_count: int = 0,
+        duplicate_candles_count: int = 0,
+        invalid_candles_count: int = 0,
         time_remaining_seconds: float | None = None,
         termination_reason: str | None = None,
         subscription_state: str = "none",
@@ -254,6 +266,9 @@ class BotStatusMonitor:
             reconnection_attempts=reconnection_attempts,
             prediction_count=prediction_count,
             paper_trades_count=paper_trades_count,
+            forming_candles_count=forming_candles_count,
+            duplicate_candles_count=duplicate_candles_count,
+            invalid_candles_count=invalid_candles_count,
             time_remaining_seconds=time_remaining_seconds,
             termination_reason=termination_reason,
             subscription_state=subscription_state,

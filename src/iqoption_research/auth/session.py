@@ -34,6 +34,9 @@ class AuthSession:
     is_practice_verified: bool = False
     server_account_type: str = "UNKNOWN"
     active_balance_id: str | None = None
+    practice_verification_status: str | None = None
+    practice_verification_details: str | None = None
+    has_practice_balance: bool = False
     _is_valid: bool = True
 
     def __repr__(self) -> str:
@@ -46,6 +49,11 @@ class AuthSession:
 
     def __str__(self) -> str:
         return self.__repr__()
+
+    @property
+    def is_valid(self) -> bool:
+        """Whether the session has not been explicitly invalidated."""
+        return self._is_valid
 
     @property
     def is_active(self) -> bool:

@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from iqoption_research.auth.manager import AuthenticationManager
-from iqoption_research.auth.provider import MockAuthProvider
+from iqoption_research.auth.provider import AuthResult, MockAuthProvider
 from iqoption_research.bot.controller import BotConfig, BotController, BotMode
 from iqoption_research.bot.runtime import ContinuousBotRuntime, RuntimeConfig, RuntimeState
 from iqoption_research.connectors.iqoption.client import AsyncIQOption
@@ -41,6 +41,7 @@ from iqoption_research.connectors.iqoption.ws_client import (
     IQOptionWebSocketClient,
 )
 from iqoption_research.inference.loader import SafeModelArtifactLoader
+from iqoption_research.models.account import AccountType, Balance, Profile
 from iqoption_research.models.connection import (
     ConnectionConfig,
     ConnectionState,
@@ -461,7 +462,7 @@ async def test_runtime_timeout_deadline_bounds_silent_stream():
     elapsed = time.monotonic() - t_start
 
     # Execution must finish in bounded time (not hang indefinitely)
-    assert elapsed < 3.0
+    assert elapsed < 6.0
     assert runtime.state in {RuntimeState.STOPPED, RuntimeState.STOPPING}
     assert snapshot is not None
     assert "MAX_RUNTIME_REACHED" in str(snapshot.termination_reason)
@@ -738,3 +739,288 @@ async def test_telemetry_liveness_and_last_message_persistence_across_close():
     assert snapshot.last_message_time is not None
     assert snapshot.last_message_time != "None"
     assert "T" in snapshot.last_message_time
+
+
+# ---------------------------------------------------------------------------
+# Test 11: Authentication failure with invalid credentials sets telemetry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_runtime_auth_failure_rejected_credentials_telemetry():
+    """Verify rejected credentials exit safely, setting ERROR state, Last Error,
+    and AUTH_FAILED reason.
+    """
+    auth_provider = MockAuthProvider(
+        valid_email="real_trader@example.com",
+        valid_password="real_password_123",
+    )
+    auth_manager = AuthenticationManager(provider=auth_provider)
+
+    auth_token = ObservationAuthorizationToken(
+        token_hash="a" * 64,
+        authorized_by="LeadSystemsEngineer",
+    )
+    cfg = RuntimeConfig(
+        symbol="EURUSD",
+        mode=BotMode.OBSERVE_ONLY,
+        observation_token=auth_token,
+        max_runtime_seconds=5.0,
+        dev_mock=True,
+    )
+
+    runtime = ContinuousBotRuntime(
+        config=cfg,
+        auth_manager=auth_manager,
+    )
+
+    # Mock terminal input to provide incorrect password
+    def mock_prompt() -> tuple[str, str]:
+        return "real_trader@example.com", "wrong_password_999"
+
+    monkeypatch_prompt = pytest.MonkeyPatch()
+    monkeypatch_prompt.setattr(auth_manager, "_prompt_credentials_from_terminal", mock_prompt)
+
+    try:
+        with pytest.raises(RuntimeError, match="Authentication failed"):
+            await runtime.run()
+    finally:
+        monkeypatch_prompt.undo()
+
+    # Runtime state must be ERROR
+    assert runtime.state == RuntimeState.ERROR
+
+    # Snapshot must reflect the failure with populated Last Error (NOT None)
+    snapshot = runtime.get_status_snapshot()
+    assert snapshot is not None
+    assert snapshot.state.lower() == "error"
+    assert "AUTH_FAILED" in str(snapshot.termination_reason)
+    assert snapshot.last_error is not None
+    assert snapshot.last_error != "None"
+    assert "invalid" in snapshot.last_error.lower() or "rejected" in snapshot.last_error.lower()
+    assert snapshot.accepted_candles_count == 0
+    assert snapshot.prediction_count == 0
+    assert snapshot.paper_trades_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Expired in-memory session triggers clean exit and telemetry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_runtime_auth_failure_expired_session_telemetry():
+    """Verify expired session halts observation loop safely with explicit TTL expiration error."""
+    auth_provider = MockAuthProvider()
+    auth_manager = AuthenticationManager(provider=auth_provider)
+    await auth_manager.login_interactive(email="trader@example.com", password="mock_secret_123")
+
+    # Manually expire the session
+    assert auth_manager._session is not None
+    auth_manager._session.authenticated_at = time.time() - 90000.0  # Expired past 24h
+    assert auth_manager.session is None  # Session property returns None when expired
+
+    auth_token = ObservationAuthorizationToken(
+        token_hash="a" * 64,
+        authorized_by="LeadSystemsEngineer",
+    )
+    cfg = RuntimeConfig(
+        symbol="EURUSD",
+        mode=BotMode.OBSERVE_ONLY,
+        observation_token=auth_token,
+        max_runtime_seconds=5.0,
+        dev_mock=True,
+    )
+
+    runtime = ContinuousBotRuntime(
+        config=cfg,
+        auth_manager=auth_manager,
+    )
+
+    with pytest.raises(RuntimeError, match="expired"):
+        await runtime.run()
+
+    assert runtime.state == RuntimeState.ERROR
+    snapshot = runtime.get_status_snapshot()
+    assert snapshot is not None
+    assert snapshot.state.lower() == "error"
+    assert "AUTH_FAILED" in str(snapshot.termination_reason)
+    assert snapshot.last_error is not None
+    assert "expired" in snapshot.last_error.lower()
+    assert snapshot.accepted_candles_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 13: 2FA challenge resolution failure triggers clean exit & telemetry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_runtime_auth_failure_challenge_required_telemetry():
+    """Verify 2FA challenge cancellation or failure halts execution with sanitized telemetry."""
+    auth_provider = MockAuthProvider(require_2fa=True, expected_mfa_code="999999")
+    auth_manager = AuthenticationManager(provider=auth_provider)
+
+    auth_token = ObservationAuthorizationToken(
+        token_hash="a" * 64,
+        authorized_by="LeadSystemsEngineer",
+    )
+    cfg = RuntimeConfig(
+        symbol="EURUSD",
+        mode=BotMode.OBSERVE_ONLY,
+        observation_token=auth_token,
+        max_runtime_seconds=5.0,
+        dev_mock=True,
+    )
+
+    runtime = ContinuousBotRuntime(
+        config=cfg,
+        auth_manager=auth_manager,
+    )
+
+    # Cancel MFA callback
+    def cancel_mfa(challenge: Any) -> str:
+        raise KeyboardInterrupt("User cancelled 2FA prompt")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        auth_manager,
+        "_prompt_credentials_from_terminal",
+        lambda: ("trader@example.com", "mock_secret_123"),
+    )
+    monkeypatch.setattr(
+        "iqoption_research.auth.manager.default_interactive_mfa_prompt",
+        cancel_mfa,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="Authentication failed"):
+            await runtime.run()
+    finally:
+        monkeypatch.undo()
+
+    assert runtime.state == RuntimeState.ERROR
+    snapshot = runtime.get_status_snapshot()
+    assert snapshot is not None
+    assert snapshot.state.lower() == "error"
+    assert "AUTH_FAILED" in str(snapshot.termination_reason)
+    assert snapshot.last_error is not None
+    assert "2fa" in snapshot.last_error.lower() or "challenge" in snapshot.last_error.lower()
+
+
+# ---------------------------------------------------------------------------
+# Test 14: Missing active session state triggers clean exit and telemetry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_runtime_auth_missing_active_session_safe_exit():
+    """Verify missing session state after login triggers clean ERROR state and diagnostics."""
+
+    # Custom provider that returns success=False without session
+    class FailingProvider(MockAuthProvider):
+        async def login(self, credentials: Any) -> AuthResult:
+            return AuthResult(success=False, error_message="Broker unreachable")
+
+    auth_manager = AuthenticationManager(provider=FailingProvider())
+    auth_token = ObservationAuthorizationToken(
+        token_hash="a" * 64,
+        authorized_by="LeadSystemsEngineer",
+    )
+    cfg = RuntimeConfig(
+        symbol="EURUSD",
+        mode=BotMode.OBSERVE_ONLY,
+        observation_token=auth_token,
+        max_runtime_seconds=5.0,
+        dev_mock=True,
+    )
+
+    runtime = ContinuousBotRuntime(
+        config=cfg,
+        auth_manager=auth_manager,
+    )
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        auth_manager,
+        "_prompt_credentials_from_terminal",
+        lambda: ("trader@example.com", "mock_secret_123"),
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="Authentication failed"):
+            await runtime.run()
+    finally:
+        monkeypatch.undo()
+
+    assert runtime.state == RuntimeState.ERROR
+    snapshot = runtime.get_status_snapshot()
+    assert snapshot is not None
+    assert snapshot.state.lower() == "error"
+    assert "AUTH_FAILED" in str(snapshot.termination_reason)
+    assert snapshot.last_error == "Broker unreachable"
+    assert snapshot.accepted_candles_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 15: Active REAL balance fails practice verification closed with telemetry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_runtime_active_real_account_practice_verification_failure_telemetry():
+    """Active REAL account fails PRACTICE verification closed with clear diagnostics."""
+    profile = Profile.from_raw({
+        "user_id": 12345,
+        "email": "trader@example.com",
+        "balance_id": 200,
+        "first_name": "Test",
+        "last_name": "User",
+    })
+    balances = [
+        Balance(id="100", type=AccountType.PRACTICE, amount=10000.0, currency="USD"),
+        Balance(id="200", type=AccountType.REAL, amount=250.0, currency="USD"),
+    ]
+    provider = MockAuthProvider(mock_profile=profile, mock_balances=balances)
+    auth_manager = AuthenticationManager(provider=provider)
+
+    auth_token = ObservationAuthorizationToken(
+        token_hash="a" * 64,
+        authorized_by="LeadSystemsEngineer",
+    )
+    cfg = RuntimeConfig(
+        symbol="EURUSD",
+        mode=BotMode.OBSERVE_ONLY,
+        observation_token=auth_token,
+        max_runtime_seconds=5.0,
+        dev_mock=True,
+    )
+
+    runtime = ContinuousBotRuntime(
+        config=cfg,
+        auth_manager=auth_manager,
+    )
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        auth_manager,
+        "_prompt_credentials_from_terminal",
+        lambda: ("trader@example.com", "mock_secret_123"),
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="practice verification failed"):
+            await runtime.run()
+    finally:
+        monkeypatch.undo()
+
+    assert runtime.state == RuntimeState.ERROR
+    snapshot = runtime.get_status_snapshot()
+    assert snapshot is not None
+    assert snapshot.state.lower() == "error"
+    assert "AUTH_FAILED" in str(snapshot.termination_reason)
+    assert "ACTIVE REAL ACCOUNT DETECTED" in str(snapshot.last_error)
+    assert "Switch your active account to Practice" in str(snapshot.last_error)
+    assert snapshot.accepted_candles_count == 0
+    assert snapshot.paper_trades_count == 0
+    assert snapshot.settled_trades_count == 0

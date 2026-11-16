@@ -223,6 +223,7 @@ class BotStatusMonitor:
         time_remaining_seconds: float | None = None,
         termination_reason: str | None = None,
         subscription_state: str = "none",
+        last_error: str | None = None,
     ) -> BotStatusSnapshot:
         """Create an immutable status snapshot for CLI dashboards or monitoring."""
         now = current_ts if current_ts is not None else time.time()
@@ -249,7 +250,7 @@ class BotStatusMonitor:
             session_pnl=session_pnl,
             max_drawdown_pct=max_drawdown_pct,
             circuit_breaker_state=circuit_breaker_state,
-            last_error=self._last_error,
+            last_error=last_error if last_error is not None else self._last_error,
             feed_health=feed_health,
             feed_gaps_count=feed_gaps_count,
             rejected_candles_count=rejected_candles_count,

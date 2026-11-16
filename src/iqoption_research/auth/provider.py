@@ -269,8 +269,123 @@ class IQOptionAuthProvider(AuthProvider):
                     redact_dict(payload or {}),
                 )
 
+                # 1. Attempt SSID extraction from cookies or JSON payload
+                extracted_ssid: str | None = None
+                ssid_cookie = response.cookies.get("ssid")
+                if ssid_cookie is not None and ssid_cookie.value:
+                    extracted_ssid = ssid_cookie.value
+                elif isinstance(payload, dict):
+                    data_obj = payload.get("data")
+                    if isinstance(data_obj, dict) and data_obj.get("ssid"):
+                        extracted_ssid = str(data_obj["ssid"])
+                    elif payload.get("ssid"):
+                        extracted_ssid = str(payload["ssid"])
+
+                # If successful and SSID obtained, return success immediately
+                if response.status == 200 and extracted_ssid:
+                    return AuthResult(
+                        success=True,
+                        ssid=extracted_ssid,
+                        status_code=200,
+                    )
+
+                # 2. Check for 2FA verification challenge in response payload
+                if isinstance(payload, dict):
+                    code_val = str(payload.get("code", "")).lower()
+                    raw_data = payload.get("data")
+                    data_dict: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+                    data_code = str(data_dict.get("code", "")).lower()
+
+                    mfa_codes = {
+                        "verify",
+                        "verify_2fa",
+                        "2fa",
+                        "two_factor",
+                        "challenge_required",
+                    }
+                    if (
+                        code_val in mfa_codes
+                        or data_code in mfa_codes
+                        or "2fa" in code_val
+                        or code_val == "verify"
+                    ):
+                        raw_token = payload.get("token") or data_dict.get("token", "")
+                        raw_method = str(
+                            payload.get("method") or data_dict.get("method", "authenticator")
+                        ).lower()
+                        method = MFAMethod.AUTHENTICATOR
+                        if "sms" in raw_method:
+                            method = MFAMethod.SMS
+                        elif "email" in raw_method:
+                            method = MFAMethod.EMAIL
+
+                        msg = str(
+                            payload.get("message")
+                            or data_dict.get("message")
+                            or (
+                                "Two-factor authentication (2FA) verification code "
+                                "required by broker."
+                            )
+                        )
+                        challenge = MFAChallenge(
+                            token=str(raw_token),
+                            method=method,
+                            message=msg,
+                        )
+                        return AuthResult(
+                            success=False,
+                            mfa_challenge=challenge,
+                            status_code=response.status,
+                        )
+
+                    # Check for explicit invalid credentials codes
+                    cred_err_codes = {
+                        "invalid_credentials",
+                        "user_not_found",
+                        "invalid_password",
+                        "bad_credentials",
+                    }
+                    if code_val in cred_err_codes or data_code in cred_err_codes:
+                        err_msg = (
+                            payload.get("message")
+                            or data_dict.get("message")
+                            or "Invalid credentials: email or password rejected by broker."
+                        )
+                        return AuthResult(
+                            success=False,
+                            error_message=str(err_msg),
+                            status_code=response.status,
+                        )
+
+                # 3. Handle HTTP error status codes
+                if response.status == 429:
+                    return AuthResult(
+                        success=False,
+                        error_message=(
+                            "Broker rate limit exceeded: too many authentication attempts. "
+                            "Please wait before retrying."
+                        ),
+                        status_code=429,
+                    )
+                if response.status in (401, 403):
+                    err_msg = "Authentication rejected by broker. Please verify your credentials."
+                    if isinstance(payload, dict) and payload.get("message"):
+                        err_msg = str(payload["message"])
+                    return AuthResult(
+                        success=False,
+                        error_message=err_msg,
+                        status_code=response.status,
+                    )
+                if response.status >= 500:
+                    return AuthResult(
+                        success=False,
+                        error_message=(
+                            f"Broker authentication service unavailable (HTTP {response.status})."
+                        ),
+                        status_code=response.status,
+                    )
                 if response.status != 200:
-                    err_msg = "Authentication failed"
+                    err_msg = f"Authentication failed (HTTP {response.status})."
                     if isinstance(payload, dict) and payload.get("message"):
                         err_msg = str(payload["message"])
                     return AuthResult(
@@ -279,39 +394,16 @@ class IQOptionAuthProvider(AuthProvider):
                         status_code=response.status,
                     )
 
-                ssid_cookie = response.cookies.get("ssid")
-                if ssid_cookie is not None:
-                    return AuthResult(
-                        success=True,
-                        ssid=ssid_cookie.value,
-                        status_code=200,
-                    )
-
-                # Check for 2FA challenge
-                if isinstance(payload, dict) and payload.get("code") == "verify":
-                    method_str = str(payload.get("method", "authenticator")).lower()
-                    method = MFAMethod.AUTHENTICATOR
-                    if "sms" in method_str:
-                        method = MFAMethod.SMS
-                    elif "email" in method_str:
-                        method = MFAMethod.EMAIL
-
-                    challenge = MFAChallenge(
-                        token=str(payload.get("token", "")),
-                        method=method,
-                        message=str(payload.get("message", "Enter your 2FA verification code")),
-                    )
-                    return AuthResult(
-                        success=False,
-                        mfa_challenge=challenge,
-                        status_code=200,
-                    )
-
+                # 4. HTTP 200 without SSID or 2FA challenge
+                err_msg = (
+                    "Broker returned HTTP 200 but did not provide an SSID session "
+                    "token or challenge."
+                )
+                if isinstance(payload, dict) and payload.get("message"):
+                    err_msg = str(payload["message"])
                 return AuthResult(
                     success=False,
-                    error_message=(
-                        "Login returned HTTP 200 but no SSID cookie or challenge was present"
-                    ),
+                    error_message=err_msg,
                     status_code=200,
                 )
 
@@ -340,24 +432,43 @@ class IQOptionAuthProvider(AuthProvider):
                 )
 
             async with response:
+                payload: dict[str, Any] | None
+                try:
+                    payload = await response.json(content_type=None)
+                except (aiohttp.ContentTypeError, ValueError):
+                    payload = None
+
                 if response.status != 200:
+                    err_msg = f"2FA verification rejected (HTTP {response.status})"
+                    if isinstance(payload, dict) and payload.get("message"):
+                        err_msg = str(payload["message"])
                     return AuthResult(
                         success=False,
-                        error_message=f"2FA verification rejected (HTTP {response.status})",
+                        error_message=err_msg,
                         status_code=response.status,
                     )
 
+                extracted_ssid: str | None = None
                 ssid_cookie = response.cookies.get("ssid")
-                if ssid_cookie is not None:
+                if ssid_cookie is not None and ssid_cookie.value:
+                    extracted_ssid = ssid_cookie.value
+                elif isinstance(payload, dict):
+                    data_obj = payload.get("data")
+                    if isinstance(data_obj, dict) and data_obj.get("ssid"):
+                        extracted_ssid = str(data_obj["ssid"])
+                    elif payload.get("ssid"):
+                        extracted_ssid = str(payload["ssid"])
+
+                if extracted_ssid is not None:
                     return AuthResult(
                         success=True,
-                        ssid=ssid_cookie.value,
+                        ssid=extracted_ssid,
                         status_code=200,
                     )
 
                 return AuthResult(
                     success=False,
-                    error_message="2FA succeeded but no SSID cookie was issued",
+                    error_message="2FA succeeded but no SSID cookie or token was issued",
                     status_code=response.status,
                 )
 

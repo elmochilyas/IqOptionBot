@@ -127,7 +127,7 @@ class Balance:
         coercions, malformed strings, and unknown values.
         Sensitive/raw input values are NEVER included in validation error messages.
         """
-        raw_type = data.get("type")
+        raw_type = data.get("type") if data.get("type") is not None else data.get("balance_type")
         if raw_type is None:
             raise ValueError("Balance payload missing required 'type' field")
         if isinstance(raw_type, bool):
@@ -146,11 +146,16 @@ class Balance:
         except ValueError as exc:
             raise ValueError("Invalid or unknown account type") from exc
 
-        balance_id = str(data.get("id", "")).strip()
+        raw_id = data.get("id") if data.get("id") is not None else data.get("balance_id")
+        balance_id = str(raw_id or "").strip()
         if not balance_id:
             raise ValueError("Balance payload missing or empty 'id' field")
 
-        raw_amount = data.get("amount", 0.0)
+        raw_amount = data.get("amount")
+        if raw_amount is None:
+            raw_amount = data.get("balance")
+        if raw_amount is None:
+            raw_amount = 0.0
         if isinstance(raw_amount, bool):
             raise ValueError("Invalid balance amount: boolean not permitted")
 
@@ -289,6 +294,40 @@ class AccountStatus:
                 practice_balance = balance
             if balance.is_real and real_balance is None:
                 real_balance = balance
+
+        if not balances:
+            # Fallback: if server profile provided an authoritative active balance
+            # with both identifier and balance type, represent that balance safely
+            prof_bal_id = (
+                profile_data.get("balance_id")
+                or profile_data.get("balanceId")
+                or profile_data.get("active_balance_id")
+            )
+            prof_bal_type = (
+                profile_data.get("balance_type")
+                if profile_data.get("balance_type") is not None
+                else profile_data.get("type")
+            )
+            if prof_bal_id is not None and prof_bal_type is not None:
+                try:
+                    single_bal = Balance.from_raw(
+                        {
+                            "id": prof_bal_id,
+                            "type": prof_bal_type,
+                            "amount": profile_data.get("balance", 0.0),
+                            "currency": profile_data.get("currency", "USD"),
+                        },
+                        active_balance_id=active_balance_id or str(prof_bal_id),
+                    )
+                    balances.append(single_bal)
+                    if single_bal.is_active:
+                        active_balance = single_bal
+                    if single_bal.is_practice and practice_balance is None:
+                        practice_balance = single_bal
+                    if single_bal.is_real and real_balance is None:
+                        real_balance = single_bal
+                except (ValueError, TypeError, KeyError):
+                    pass
 
         return cls(
             profile=profile,

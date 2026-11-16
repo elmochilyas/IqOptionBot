@@ -800,6 +800,28 @@ class IQOptionWebSocketClient:
             nested_balances.get("balances"), list
         ):
             self._apply_balances(nested_balances["balances"])
+        elif not self._balances and self._active_balance_id is not None:
+            prof_type = (
+                raw_profile.get("balance_type")
+                if raw_profile.get("balance_type") is not None
+                else raw_profile.get("type")
+            )
+            if prof_type is not None:
+                try:
+                    single_bal = Balance.from_raw(
+                        {
+                            "id": self._active_balance_id,
+                            "type": prof_type,
+                            "amount": raw_profile.get("balance", 0.0),
+                            "currency": raw_profile.get("currency", "USD"),
+                        },
+                        active_balance_id=self._active_balance_id,
+                    )
+                    self._balances = [single_bal]
+                    self._balances_event.set()
+                    self._diagnostics.record_balances_status(True)
+                except (ValueError, TypeError, KeyError):
+                    pass
 
     def _extract_profile_payload(self, message: dict[str, Any]) -> dict[str, Any] | None:
         msg = message.get("msg")

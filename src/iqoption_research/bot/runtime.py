@@ -24,6 +24,7 @@ from typing import Final
 
 from iqoption_research.auth.manager import AuthenticationManager
 from iqoption_research.auth.provider import IQOptionAuthProvider, MockAuthProvider
+from iqoption_research.auth.state import AuthStatus
 from iqoption_research.bot.controller import BotConfig, BotController, BotMode
 from iqoption_research.bot.monitor import BotStatusSnapshot
 from iqoption_research.connectors.iqoption.client import AsyncIQOption
@@ -182,10 +183,25 @@ class ContinuousBotRuntime:
             logger.info("Authenticating interactively...")
             success = await self.auth_manager.login_interactive(email=email, password=password)
 
-        if not success:
+        if (
+            not success
+            or self.auth_manager.session is None
+            or not self.auth_manager.session.is_active
+            or (
+                self.auth_manager.config.require_practice_verification
+                and self.auth_manager.state_machine.current_state == AuthStatus.ACCOUNT_UNVERIFIED
+            )
+        ):
             self.state = RuntimeState.ERROR
-            self._last_error = self.auth_manager.last_error or "Authentication failed"
+            auth_err = (
+                self.auth_manager.last_error
+                or "Authentication failed: no active session established."
+            )
+            self._last_error = auth_err
+            self._termination_reason = f"AUTH_FAILED: {auth_err}"
             self.client = None  # Clear any stale client reference from partial initialization
+            if self._controller is not None:
+                self._controller.fail(auth_err)
             return False
 
         self.state = RuntimeState.AUTHENTICATED
@@ -314,8 +330,17 @@ class ContinuousBotRuntime:
         except Exception as exc:
             logger.error("Error in continuous runtime loop: %s", exc)
             self.state = RuntimeState.ERROR
-            self._last_error = str(exc)
-            self._termination_reason = f"ERROR: {exc}"
+            err_msg = self._last_error or str(exc)
+            self._last_error = err_msg
+            is_auth_err = "Authentication failed" in str(exc) or "AUTH_FAILED" in str(
+                self._termination_reason
+            )
+            if not self._termination_reason or self._termination_reason.startswith("ERROR:"):
+                self._termination_reason = (
+                    f"AUTH_FAILED: {err_msg}" if is_auth_err else f"ERROR: {err_msg}"
+                )
+            if self._controller is not None:
+                self._controller.fail(err_msg)
             self._shutdown_event.set()
             raise
         finally:
@@ -485,13 +510,52 @@ class ContinuousBotRuntime:
 
         # Start interactive session if not already authenticated
         if self.auth_manager.session is None or not self.auth_manager.session.is_active:
-            await self.start_interactive_session()
+            # Explicitly diagnose expired session via public validity check
+            is_valid, session_diag = self.auth_manager.check_session_validity()
+            if not is_valid and session_diag and "expired" in session_diag.lower():
+                auth_err = (
+                    "Authenticated session expired (TTL exceeded). Re-authentication required."
+                )
+                self.state = RuntimeState.ERROR
+                self._last_error = auth_err
+                self._termination_reason = f"AUTH_FAILED: {auth_err}"
+                if self._controller is not None:
+                    self._controller.fail(auth_err)
+                self._shutdown_event.set()
+                raise RuntimeError(f"Authentication failed: {auth_err}")
+
+            auth_ok = await self.start_interactive_session()
+            if (
+                not auth_ok
+                or self.auth_manager.session is None
+                or not self.auth_manager.session.is_active
+            ):
+                auth_err = (
+                    self._last_error
+                    or self.auth_manager.last_error
+                    or "Authentication failed: no active session established."
+                )
+                self.state = RuntimeState.ERROR
+                self._last_error = auth_err
+                self._termination_reason = f"AUTH_FAILED: {auth_err}"
+                if self._controller is not None:
+                    self._controller.fail(auth_err)
+                self._shutdown_event.set()
+                raise RuntimeError(f"Authentication failed: {auth_err}")
+
+        session = self.auth_manager.session
+        if session is None or not session.is_active:
+            auth_err = self._last_error or "No active session available for live observation."
+            self.state = RuntimeState.ERROR
+            self._last_error = auth_err
+            self._termination_reason = f"AUTH_FAILED: {auth_err}"
+            if self._controller is not None:
+                self._controller.fail(auth_err)
+            self._shutdown_event.set()
+            raise RuntimeError(f"Authentication failed: {auth_err}")
 
         if self.client is None:
             # Initialize read-only client using active authenticated session
-            session = self.auth_manager.session
-            if session is None or not session.is_active:
-                raise RuntimeError("No active session available for live observation.")
             self.client = AsyncIQOption(
                 ssid=session.ssid,
                 offline=self.config.dev_mock,
@@ -612,9 +676,13 @@ class ContinuousBotRuntime:
         error_present = self.state == RuntimeState.ERROR
 
         if self._controller is not None:
-            self._controller.stop()
+            if error_present:
+                self._controller.fail(self._last_error or "Runtime error occurred")
+            else:
+                self._controller.stop()
             self._final_snapshot = (
-                self.get_status_snapshot() or self._controller.get_status_snapshot()
+                self.get_status_snapshot()
+                or self._controller.get_status_snapshot(last_error=self._last_error)
             )
             snapshot = self._final_snapshot
 
@@ -697,5 +765,6 @@ class ContinuousBotRuntime:
                 connection_status=conn_status,
                 reconnection_attempts=reconnect_attempts,
                 last_message_time=last_msg_iso,
+                last_error=self._last_error,
             )
         return self._final_snapshot

@@ -155,6 +155,11 @@ class AuthenticationManager:
         if result.mfa_challenge is not None:
             result = await self._resolve_mfa_challenge(result.mfa_challenge, mfa_callback)
             if not result.success:
+                if not self._last_error:
+                    self._last_error = (
+                        result.error_message
+                        or "Two-factor authentication (2FA) verification failed or was cancelled."
+                    )
                 return False
 
         # 5. Process result
@@ -218,6 +223,11 @@ class AuthenticationManager:
         if result.mfa_challenge is not None:
             result = await self._resolve_mfa_challenge(result.mfa_challenge, mfa_callback)
             if not result.success:
+                if not self._last_error:
+                    self._last_error = (
+                        result.error_message
+                        or "Two-factor authentication (2FA) verification failed or was cancelled."
+                    )
                 return False
 
         return await self._process_auth_result(result, email)
@@ -291,7 +301,44 @@ class AuthenticationManager:
 
         # Probe profile and verify PRACTICE status
         await self._discover_account_profile()
+        if (
+            self.config.require_practice_verification
+            and self.state_machine.current_state == AuthStatus.ACCOUNT_UNVERIFIED
+            and not self._last_error
+        ):
+            self._last_error = (
+                "Account practice verification failed: "
+                "session is not verified for PRACTICE trading."
+            )
+
         return True
+
+    def check_session_validity(self) -> tuple[bool, str | None]:
+        """Verify active session validity and return (is_valid, sanitized_reason)."""
+        if self._session is None:
+            return False, "No active session in memory. Authentication required."
+        if not self._session.is_valid:
+            return False, "Session has been invalidated or logged out."
+        if self._session.is_expired():
+            age = self._session.age_seconds()
+            ttl = self._session.ttl_seconds
+            return (
+                False,
+                f"Session expired ({age:.1f}s elapsed, TTL is {ttl:.0f}s).",
+            )
+        if (
+            self.config.require_practice_verification
+            and self.state_machine.current_state == AuthStatus.ACCOUNT_UNVERIFIED
+        ):
+            return (
+                False,
+                self._last_error
+                or (
+                    "Account practice verification failed: "
+                    "session is not verified for PRACTICE trading."
+                ),
+            )
+        return True, None
 
     async def _discover_account_profile(self) -> None:
         """Fetch server profile, assess PRACTICE verification, and transition state."""
@@ -304,32 +351,64 @@ class AuthenticationManager:
             logger.warning("Failed to discover profile: %s", exc)
             profile, balances = None, []
 
+        active_bal_id: str | None = None
         if profile is not None:
-            active_bal_id = str(profile.raw.get("balance_id", ""))
-            diag_report = self._account_diagnostic.evaluate(
-                profile=profile,
-                balances=balances,
-                active_balance_id=active_bal_id,
-                last_verification_ts=time.time(),
-            )
-            self._session.is_practice_verified = diag_report.is_practice_verified
-            self._session.active_balance_id = active_bal_id
-            matched_b = next((b for b in balances if str(b.id) == active_bal_id), None)
-            if matched_b is not None:
-                self._session.server_account_type = matched_b.type.name
-            else:
-                self._session.server_account_type = (
-                    "PRACTICE" if diag_report.is_practice_verified else "REAL"
-                )
+            for key in ("balance_id", "balanceId", "active_balance_id"):
+                if profile.raw.get(key) is not None:
+                    candidate = str(profile.raw[key]).strip()
+                    if candidate:
+                        active_bal_id = candidate
+                        break
+            if not active_bal_id:
+                cur = profile.raw.get("current_balance")
+                if isinstance(cur, dict) and cur.get("id") is not None:
+                    candidate = str(cur["id"]).strip()
+                    if candidate:
+                        active_bal_id = candidate
+        if not active_bal_id:
+            active_b = next((b for b in balances if b.is_active), None)
+            if active_b is not None:
+                active_bal_id = active_b.id
 
-            # If user requires PRACTICE verification and account is not verified practice:
-            if self.config.require_practice_verification and not diag_report.is_practice_verified:
-                self.state_machine.transition_to(
-                    AuthStatus.ACCOUNT_UNVERIFIED,
-                    reason="practice_verification_failed",
-                    details=diag_report.explanation,
-                )
-                return
+        diag_report = self._account_diagnostic.evaluate(
+            profile=profile,
+            balances=balances,
+            active_balance_id=active_bal_id,
+            last_verification_ts=time.time(),
+        )
+
+        has_practice = any(b.is_practice for b in balances)
+        matched_b = (
+            next((b for b in balances if str(b.id) == active_bal_id), None)
+            if active_bal_id
+            else None
+        )
+
+        self._session.is_practice_verified = diag_report.is_practice_verified
+        self._session.active_balance_id = active_bal_id
+        self._session.has_practice_balance = has_practice
+        self._session.practice_verification_status = diag_report.readiness.value
+        self._session.practice_verification_details = diag_report.explanation
+
+        if matched_b is not None:
+            self._session.server_account_type = matched_b.type.name
+        elif diag_report.active_account_type is not None:
+            self._session.server_account_type = diag_report.active_account_type.name
+        else:
+            self._session.server_account_type = (
+                "PRACTICE" if diag_report.is_practice_verified else "UNKNOWN"
+            )
+
+        # If user requires PRACTICE verification and account is not verified practice:
+        if self.config.require_practice_verification and not diag_report.is_practice_verified:
+            err_msg = f"Account practice verification failed: {diag_report.explanation}"
+            self._last_error = err_msg
+            self.state_machine.transition_to(
+                AuthStatus.ACCOUNT_UNVERIFIED,
+                reason="practice_verification_failed",
+                details=diag_report.explanation,
+            )
+            return
 
         # Transition to CONNECTED_READ_ONLY
         self.state_machine.transition_to(

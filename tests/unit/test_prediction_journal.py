@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+from typer.testing import CliRunner
 
 from iqoption_research.bot.journal import (
     PredictionDirection,
@@ -10,6 +13,7 @@ from iqoption_research.bot.journal import (
     PredictionOutcome,
     TradeEligibilityStatus,
 )
+from iqoption_research.cli.main import app
 from iqoption_research.models.market import Candle
 
 
@@ -184,6 +188,7 @@ def test_journal_resolves_outcomes_directional_and_hold(tmp_path: Path) -> None:
     assert resolved[0].actual_future_return is not None and resolved[0].actual_future_return > 0
 
     # 2. DOWN prediction at to_ts=1120, close=1.1510
+    # P(UP) = 0.42 <= 0.45 -> DOWN (PUT). Win prob side_probability = 1 - 0.42 = 0.58
     journal.record_inference(
         symbol="EURUSD",
         candle_size_seconds=60,
@@ -193,7 +198,7 @@ def test_journal_resolves_outcomes_directional_and_hold(tmp_path: Path) -> None:
         model_name="random_forest",
         model_version="1.0.0",
         model_provenance="authentic_trained",
-        calibrated_probability=0.58,
+        calibrated_probability=0.42,
         raw_probability=0.42,
         direction=PredictionDirection.DOWN.value,
         confidence=0.08,
@@ -203,6 +208,8 @@ def test_journal_resolves_outcomes_directional_and_hold(tmp_path: Path) -> None:
         trade_block_reason=None,
         paper_order_id="ord_down_loss",
         risk_state="active",
+        calibrated_prob_up=0.42,
+        side_probability=0.58,
     )
 
     # Candle 2 arrives at to_ts=1180, close=1.1520 (price rose: DOWN is incorrect)
@@ -231,6 +238,8 @@ def test_journal_resolves_outcomes_directional_and_hold(tmp_path: Path) -> None:
         trade_block_reason="UNCERTAIN_ZONE",
         paper_order_id=None,
         risk_state="active",
+        calibrated_prob_up=0.49,
+        side_probability=0.50,
     )
 
     # Candle 3 arrives at to_ts=1240, close=1.1520 (exact tie)
@@ -241,6 +250,7 @@ def test_journal_resolves_outcomes_directional_and_hold(tmp_path: Path) -> None:
     assert resolved[0].actual_future_close == 1.1520
 
     # 4. DOWN prediction at to_ts=1240, close=1.1520 with exact tie
+    # P(UP) = 0.44 <= 0.45 -> DOWN (PUT). Win prob side_probability = 1 - 0.44 = 0.56
     journal.record_inference(
         symbol="EURUSD",
         candle_size_seconds=60,
@@ -250,7 +260,7 @@ def test_journal_resolves_outcomes_directional_and_hold(tmp_path: Path) -> None:
         model_name="random_forest",
         model_version="1.0.0",
         model_provenance="authentic_trained",
-        calibrated_probability=0.56,
+        calibrated_probability=0.44,
         raw_probability=0.44,
         direction=PredictionDirection.DOWN.value,
         confidence=0.06,
@@ -260,6 +270,8 @@ def test_journal_resolves_outcomes_directional_and_hold(tmp_path: Path) -> None:
         trade_block_reason=None,
         paper_order_id="ord_down_tie",
         risk_state="active",
+        calibrated_prob_up=0.44,
+        side_probability=0.56,
     )
 
     # Candle 4 arrives with identical close -> TIE
@@ -458,3 +470,263 @@ def test_journal_summary_probability_distribution(tmp_path: Path) -> None:
     assert dist["p25"] <= dist["p50"] <= dist["p75"]
     assert summary.direction_counts["UP"] == 2
     assert summary.direction_counts["HOLD"] == 5
+
+
+def test_probability_to_direction_mapping_and_inversion_guards(tmp_path: Path) -> None:
+    """Audit probability-to-direction mapping and verify outcome evaluation cannot invert."""
+    journal = PredictionJournal(
+        session_id="test_inversion_guard",
+        journal_path=tmp_path / "j.jsonl",
+    )
+
+    # 1. Authentic UP prediction: Calibrated P(UP) = 0.58 >= 0.55 -> UP (CALL)
+    # Side probability = 0.58 (win probability for CALL)
+    r_up = journal.record_inference(
+        symbol="EURUSD",
+        candle_size_seconds=60,
+        candle_from_ts=1000,
+        candle_to_ts=1060,
+        candle_close=1.1500,
+        model_name="test_model",
+        model_version="1.0.0",
+        model_provenance="authentic_trained",
+        calibrated_probability=0.58,
+        raw_probability=0.57,
+        direction=PredictionDirection.UP.value,
+        confidence=0.08,
+        uncertainty=0.84,
+        abstention_reason=None,
+        trade_status=TradeEligibilityStatus.ELIGIBLE_OPENED.value,
+        trade_block_reason=None,
+        paper_order_id="ord_up",
+        risk_state="active",
+        calibrated_prob_up=0.58,
+        side_probability=0.58,
+    )
+    assert r_up.calibrated_prob_up == 0.58
+    assert r_up.calibrated_probability == 0.58
+    assert r_up.side_probability == 0.58
+    assert r_up.direction == "UP"
+
+    # Outcome evaluation for UP:
+    # If price rises (1.1500 -> 1.1510), outcome MUST be CORRECT
+    c_rise = _make_candle(to_ts=1120, close=1.1510)
+    resolved_up = journal.resolve_outcomes(c_rise)
+    assert len(resolved_up) == 1
+    assert resolved_up[0].outcome_status == PredictionOutcome.CORRECT.value
+
+    # 2. Authentic DOWN prediction: Calibrated P(UP) = 0.42 <= 0.45 -> DOWN (PUT)
+    # Side probability = 1.0 - 0.42 = 0.58 (contract win probability for PUT)
+    r_down = journal.record_inference(
+        symbol="EURUSD",
+        candle_size_seconds=60,
+        candle_from_ts=1060,
+        candle_to_ts=1120,
+        candle_close=1.1510,
+        model_name="test_model",
+        model_version="1.0.0",
+        model_provenance="authentic_trained",
+        calibrated_probability=0.42,
+        raw_probability=0.41,
+        direction=PredictionDirection.DOWN.value,
+        confidence=0.08,
+        uncertainty=0.84,
+        abstention_reason=None,
+        trade_status=TradeEligibilityStatus.ELIGIBLE_OPENED.value,
+        trade_block_reason=None,
+        paper_order_id="ord_down",
+        risk_state="active",
+        calibrated_prob_up=0.42,
+        side_probability=0.58,
+    )
+    assert r_down.calibrated_prob_up == 0.42
+    assert r_down.calibrated_probability == 0.42  # Canonical P(UP)
+    assert r_down.side_probability == 0.58  # Win probability for PUT
+    assert r_down.direction == "DOWN"
+
+    # Outcome evaluation for DOWN:
+    # If price falls (1.1510 -> 1.1502), outcome MUST be CORRECT
+    c_fall = _make_candle(to_ts=1180, close=1.1502)
+    resolved_down = journal.resolve_outcomes(c_fall)
+    assert len(resolved_down) == 1
+    assert resolved_down[0].outcome_status == PredictionOutcome.CORRECT.value
+
+    # If price rose instead (1.1510 -> 1.1520), outcome for DOWN MUST be INCORRECT
+    journal.record_inference(
+        symbol="EURUSD",
+        candle_size_seconds=60,
+        candle_from_ts=1120,
+        candle_to_ts=1180,
+        candle_close=1.1502,
+        model_name="test_model",
+        model_version="1.0.0",
+        model_provenance="authentic_trained",
+        calibrated_probability=0.40,
+        raw_probability=0.40,
+        direction=PredictionDirection.DOWN.value,
+        confidence=0.10,
+        uncertainty=0.80,
+        abstention_reason=None,
+        trade_status=TradeEligibilityStatus.ELIGIBLE_OPENED.value,
+        trade_block_reason=None,
+        paper_order_id="ord_down_2",
+        risk_state="active",
+        calibrated_prob_up=0.40,
+        side_probability=0.60,
+    )
+    c_rise2 = _make_candle(to_ts=1240, close=1.1515)
+    resolved_down2 = journal.resolve_outcomes(c_rise2)
+    assert len(resolved_down2) == 1
+    assert resolved_down2[0].outcome_status == PredictionOutcome.INCORRECT.value
+
+
+def test_append_only_crash_survival_and_deduplication(tmp_path: Path) -> None:
+    """Verify that append-only log updates survive abrupt crashes without duplicates."""
+    journal_path = tmp_path / "crash_test_journal.jsonl"
+    journal = PredictionJournal(session_id="test_crash_session", journal_path=journal_path)
+
+    # 1. Record 3 inferences (indices 0, 1, 2)
+    journal.record_inference(
+        symbol="EURUSD",
+        candle_size_seconds=60,
+        candle_from_ts=1000,
+        candle_to_ts=1060,
+        candle_close=1.1500,
+        model_name="rf",
+        model_version="1.0",
+        model_provenance="authentic_trained",
+        calibrated_probability=0.60,
+        raw_probability=0.60,
+        direction="UP",
+        confidence=0.10,
+        uncertainty=0.80,
+        abstention_reason=None,
+        trade_status="eligible_opened",
+        trade_block_reason=None,
+        paper_order_id="ord_0",
+        risk_state="active",
+        calibrated_prob_up=0.60,
+        side_probability=0.60,
+    )
+    journal.record_inference(
+        symbol="EURUSD",
+        candle_size_seconds=60,
+        candle_from_ts=1060,
+        candle_to_ts=1120,
+        candle_close=1.1510,
+        model_name="rf",
+        model_version="1.0",
+        model_provenance="authentic_trained",
+        calibrated_probability=0.40,
+        raw_probability=0.40,
+        direction="DOWN",
+        confidence=0.10,
+        uncertainty=0.80,
+        abstention_reason=None,
+        trade_status="eligible_opened",
+        trade_block_reason=None,
+        paper_order_id="ord_1",
+        risk_state="active",
+        calibrated_prob_up=0.40,
+        side_probability=0.60,
+    )
+    journal.record_inference(
+        symbol="EURUSD",
+        candle_size_seconds=60,
+        candle_from_ts=1120,
+        candle_to_ts=1180,
+        candle_close=1.1505,
+        model_name="rf",
+        model_version="1.0",
+        model_provenance="authentic_trained",
+        calibrated_probability=0.48,
+        raw_probability=0.48,
+        direction="HOLD",
+        confidence=0.02,
+        uncertainty=0.96,
+        abstention_reason="UNCERTAIN_ZONE",
+        trade_status="none_hold",
+        trade_block_reason="UNCERTAIN_ZONE",
+        paper_order_id=None,
+        risk_state="active",
+        calibrated_prob_up=0.48,
+        side_probability=0.50,
+    )
+
+    # 2. Resolve inferences 0 and 1 with incoming candles
+    c1 = _make_candle(to_ts=1120, close=1.1510)  # Close rose: UP (rec 0) is CORRECT
+    journal.resolve_outcomes(c1)
+
+    c2 = _make_candle(to_ts=1180, close=1.1505)  # Close fell: DOWN (rec 1) is CORRECT
+    journal.resolve_outcomes(c2)
+
+    # In-flight file on disk now has 5 lines:
+    # 3 pending lines + 2 resolved lines appended incrementally
+    raw_lines = journal_path.read_text(encoding="utf-8").strip().split("\n")
+    assert len(raw_lines) == 5
+
+    # 3. Simulate sudden crash:
+    # Process exits immediately without calling journal.save_jsonl()!
+
+    # 4. Crash Recovery:
+    # A new journal instance restores from the uncompacted append-only file
+    restored_journal = PredictionJournal.from_jsonl(journal_path)
+
+    # Verify deduplication and resolution state
+    assert restored_journal.total_records == 3
+    records = restored_journal.records
+    assert len(records) == 3
+
+    assert records[0].record_index == 0
+    assert records[0].outcome_status == PredictionOutcome.CORRECT.value
+    assert records[0].actual_future_close == 1.1510
+
+    assert records[1].record_index == 1
+    assert records[1].outcome_status == PredictionOutcome.CORRECT.value
+    assert records[1].actual_future_close == 1.1505
+
+    assert records[2].record_index == 2
+    assert records[2].outcome_status == PredictionOutcome.PENDING.value
+
+    # 5. Subsequent clean save compacts the file
+    restored_journal.save_jsonl()
+    compacted_lines = journal_path.read_text(encoding="utf-8").strip().split("\n")
+    assert len(compacted_lines) == 3
+
+
+def test_legacy_session_unverified_status(tmp_path: Path) -> None:
+    """Verify that legacy sessions without journal files report decisions 1-29 as UNVERIFIED."""
+    sessions_dir = tmp_path / "bot_sessions"
+    sessions_dir.mkdir()
+
+    # Create legacy session summary without a matching _journal.jsonl file
+    legacy_summary = {
+        "session_id": "session_1794842044",
+        "mode": "live",
+        "symbol": "EURUSD",
+        "closed_at_utc": "2026-11-16T15:30:00Z",
+        "termination_reason": "CLEAN_SHUTDOWN",
+        "snapshot": {
+            "prediction_count": 30,
+            "last_prediction_direction": "HOLD",
+            "last_prediction_prob": 0.4620388625,
+            "confidence": 0.0379611375,
+            "abstention_reason": "UNCERTAIN_ZONE: probability 0.4620 within [0.45, 0.55]",
+            "paper_trades_count": 0,
+            "settled_trades_count": 0,
+            "session_pnl": 0.0,
+        },
+    }
+    (sessions_dir / "session_1794842044_summary.json").write_text(
+        json.dumps(legacy_summary, indent=2), encoding="utf-8"
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["bot", "journal", "--session", "session_1794842044", "--storage", str(sessions_dir)],
+    )
+    assert res.exit_code == 0
+    # Must report UNVERIFIED for historical decisions 1-29
+    assert "UNVERIFIED" in res.output
+    assert "unrecoverable" in res.output

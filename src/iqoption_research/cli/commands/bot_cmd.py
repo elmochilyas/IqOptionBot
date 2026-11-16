@@ -269,10 +269,18 @@ def journal_command(
         p_val = float(snap.get("last_prediction_prob", 0.5))
         c_val = float(snap.get("confidence", 0.0))
         p_count = int(snap.get("prediction_count", 0))
+        unverified_count = max(0, p_count - 1)
         diag = {
             "total_predictions": p_count,
-            "direction_counts": {last_dir: p_count},
-            "hold_reasons": {abst_key: p_count} if last_dir == "HOLD" else {},
+            "direction_counts": {
+                "UP": 0,
+                "DOWN": 0,
+                "HOLD": 1 if last_dir == "HOLD" else 0,
+                "UNVERIFIED": unverified_count,
+            },
+            "hold_reasons": (
+                {f"{abst_key} (observed on #{p_count})": 1} if last_dir == "HOLD" else {}
+            ),
             "probability_distribution": {
                 "min": p_val,
                 "max": p_val,
@@ -308,9 +316,11 @@ def journal_command(
                 "simulated_pnl": float(snap.get("session_pnl", 0.0)),
             },
             "zero_trades_reasons": [
-                f"Legacy session summary (no per-candle journal file recorded). "
-                f"All {p_count} inferences resulted in HOLD with final prediction "
-                f"abstention: {abst}."
+                f"UNVERIFIED: Legacy session summary for {resolved_sid} only preserved "
+                f"the final inference (#{p_count}: {last_dir}, P(UP)={p_val:.4f}, "
+                f"abstention: {abst}). "
+                f"Historical inferences 1 through {unverified_count} were held in a "
+                "transient queue deallocated upon process exit and are unrecoverable."
             ],
         }
 
@@ -321,10 +331,14 @@ def journal_command(
 
         diag_table.add_row("Total Predictions", str(diag.get("total_predictions", 0)))
         dirs = diag.get("direction_counts", {})
-        diag_table.add_row(
-            "Direction Counts",
-            f"UP: {dirs.get('UP', 0)} | DOWN: {dirs.get('DOWN', 0)} | HOLD: {dirs.get('HOLD', 0)}",
-        )
+        dir_parts = [
+            f"UP: {dirs.get('UP', 0)}",
+            f"DOWN: {dirs.get('DOWN', 0)}",
+            f"HOLD: {dirs.get('HOLD', 0)}",
+        ]
+        if dirs.get("UNVERIFIED", 0) > 0:
+            dir_parts.append(f"UNVERIFIED (legacy): {dirs['UNVERIFIED']}")
+        diag_table.add_row("Direction Counts", " | ".join(dir_parts))
         hr = diag.get("hold_reasons", {})
         hr_str = ", ".join(f"{k}: {v}" for k, v in hr.items()) or "None"
         diag_table.add_row("HOLD Reason Breakdown", hr_str)
@@ -385,7 +399,8 @@ def journal_command(
         rec_table.add_column("Candle To TS", style="bold white")
         rec_table.add_column("Close", style="cyan")
         rec_table.add_column("Direction", style="bold")
-        rec_table.add_column("Cal Prob", justify="right")
+        rec_table.add_column("Cal P(UP)", justify="right")
+        rec_table.add_column("Side Prob", justify="right")
         rec_table.add_column("Conf", justify="right")
         rec_table.add_column("Trade Status", style="yellow")
         rec_table.add_column("Outcome", style="green")
@@ -415,7 +430,8 @@ def journal_command(
                 str(r.candle_to_ts),
                 f"{r.candle_close:.5f}",
                 f"[{dir_style}]{r.direction}[/{dir_style}]",
-                f"{r.calibrated_probability:.3f}",
+                f"{r.calibrated_prob_up:.3f}",
+                f"{r.side_probability:.3f}",
                 f"{r.confidence:.3f}",
                 r.trade_status,
                 f"[{out_style}]{r.outcome_status}[/{out_style}]",

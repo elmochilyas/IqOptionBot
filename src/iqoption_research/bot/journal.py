@@ -84,6 +84,8 @@ class JournalRecord:
     actual_future_return: float | None = None
     actual_future_ts: int | None = None
     horizon_bars: int = 1
+    calibrated_prob_up: float = 0.5
+    side_probability: float = 0.5
 
     def to_dict(self) -> dict[str, Any]:
         """Convert record to a JSON-serializable dictionary."""
@@ -92,6 +94,9 @@ class JournalRecord:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> JournalRecord:
         """Construct record from a dictionary."""
+        cal_prob = float(data["calibrated_probability"])
+        cal_up = float(data.get("calibrated_prob_up", cal_prob))
+        side_prob = float(data.get("side_probability", cal_prob))
         return cls(
             session_id=str(data["session_id"]),
             record_index=int(data["record_index"]),
@@ -104,8 +109,8 @@ class JournalRecord:
             model_name=str(data["model_name"]),
             model_version=str(data.get("model_version", "unknown")),
             model_provenance=str(data.get("model_provenance", "unknown")),
-            calibrated_probability=float(data["calibrated_probability"]),
-            raw_probability=float(data.get("raw_probability", data["calibrated_probability"])),
+            calibrated_probability=cal_prob,
+            raw_probability=float(data.get("raw_probability", cal_prob)),
             direction=str(data["direction"]),
             confidence=float(data.get("confidence", 0.0)),
             uncertainty=float(data.get("uncertainty", 0.0)),
@@ -129,6 +134,8 @@ class JournalRecord:
                 int(data["actual_future_ts"]) if data.get("actual_future_ts") is not None else None
             ),
             horizon_bars=int(data.get("horizon_bars", 1)),
+            calibrated_prob_up=cal_up,
+            side_probability=side_prob,
         )
 
 
@@ -220,6 +227,8 @@ class PredictionJournal:
         risk_state: str,
         horizon_bars: int = 1,
         prediction_ts: str | None = None,
+        calibrated_prob_up: float | None = None,
+        side_probability: float | None = None,
     ) -> JournalRecord:
         """Record an inference event exactly once per completed candle.
 
@@ -237,6 +246,8 @@ class PredictionJournal:
 
         record_idx = len(self._records)
         ts_str = prediction_ts if prediction_ts is not None else datetime.now(UTC).isoformat()
+        prob_up = calibrated_prob_up if calibrated_prob_up is not None else calibrated_probability
+        side_prob = side_probability if side_probability is not None else calibrated_probability
 
         record = JournalRecord(
             session_id=self.session_id,
@@ -250,7 +261,7 @@ class PredictionJournal:
             model_name=model_name,
             model_version=model_version,
             model_provenance=model_provenance,
-            calibrated_probability=calibrated_probability,
+            calibrated_probability=prob_up,
             raw_probability=raw_probability,
             direction=direction,
             confidence=confidence,
@@ -262,6 +273,8 @@ class PredictionJournal:
             risk_state=risk_state,
             outcome_status=PredictionOutcome.PENDING.value,
             horizon_bars=horizon_bars,
+            calibrated_prob_up=prob_up,
+            side_probability=side_prob,
         )
 
         self._records.append(record)
@@ -321,8 +334,12 @@ class PredictionJournal:
                     pending.outcome_status = PredictionOutcome.NOT_APPLICABLE_HOLD.value
 
                 resolved.append(pending)
+                self._append_to_disk(pending)
             else:
                 still_pending.append(pending)
+
+        self._pending_queue = still_pending
+        return resolved
 
         self._pending_queue = still_pending
         return resolved
@@ -360,11 +377,15 @@ class PredictionJournal:
 
     @classmethod
     def load_from_jsonl(cls, path: Path | str) -> list[JournalRecord]:
-        """Read journal records from a JSONL file."""
+        """Read journal records from an append-only JSONL file.
+
+        Deduplicates by record_index so that later resolved updates
+        supersede earlier pending records without duplicate or contradictory entries.
+        """
         target = Path(path)
         if not target.is_file():
             return []
-        records: list[JournalRecord] = []
+        records_by_idx: dict[int, JournalRecord] = {}
         with target.open("r", encoding="utf-8") as f:
             for line_no, line in enumerate(f, 1):
                 stripped = line.strip()
@@ -372,7 +393,8 @@ class PredictionJournal:
                     continue
                 try:
                     data = json.loads(stripped)
-                    records.append(JournalRecord.from_dict(data))
+                    rec = JournalRecord.from_dict(data)
+                    records_by_idx[rec.record_index] = rec
                 except (json.JSONDecodeError, KeyError, ValueError) as exc:
                     logger.warning(
                         "Skipping malformed journal line %d in %s: %s",
@@ -380,7 +402,20 @@ class PredictionJournal:
                         target,
                         exc,
                     )
-        return records
+        return [records_by_idx[idx] for idx in sorted(records_by_idx.keys())]
+
+    @classmethod
+    def from_jsonl(cls, path: Path | str) -> PredictionJournal:
+        """Instantiate a PredictionJournal from an existing JSONL file."""
+        target = Path(path)
+        records = cls.load_from_jsonl(target)
+        session_id = records[0].session_id if records else target.stem.replace("_journal", "")
+        journal = cls(session_id=session_id, journal_path=target)
+        for r in records:
+            journal.add_record(r)
+            if r.outcome_status == PredictionOutcome.PENDING.value:
+                journal._pending_queue.append(r)
+        return journal
 
     def build_summary(
         self,
@@ -403,8 +438,8 @@ class PredictionJournal:
                 key = reason.split(":")[0].strip() if ":" in reason else reason
                 hold_reasons[key] = hold_reasons.get(key, 0) + 1
 
-        # Probability distribution
-        probs = [r.calibrated_probability for r in self._records]
+        # Probability distribution over canonical P(UP)
+        probs = [r.calibrated_prob_up for r in self._records]
         if probs:
             p_sorted = sorted(probs)
             p_min = min(probs)

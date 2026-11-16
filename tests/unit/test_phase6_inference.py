@@ -115,6 +115,9 @@ def test_model_inference_pipeline_predictions(
     assert result.direction in {SignalDirection.CALL, SignalDirection.PUT, SignalDirection.HOLD}
     assert 0.0 <= result.calibrated_probability <= 1.0
     assert 0.0 <= result.raw_probability <= 1.0
+    assert 0.0 <= result.calibrated_prob_up <= 1.0
+    assert 0.0 <= result.side_probability <= 1.0
+    assert result.calibrated_probability == result.calibrated_prob_up
     assert result.latency_ms > 0.0
     assert result.candle_timestamp == test_row.available_at_ts
     assert result.model_name == "logistic_regression"

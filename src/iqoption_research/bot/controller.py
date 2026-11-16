@@ -200,9 +200,11 @@ class BotController:
                         candle_timestamp=res.candle_timestamp,
                         model_name=res.model_name,
                         feature_count=res.feature_count,
+                        calibrated_prob_up=0.5,
+                        side_probability=0.5,
                     )
                 self.session.record_prediction(res)
-                return res.direction, res.calibrated_probability
+                return res.direction, res.side_probability
             res = InferenceResult(
                 direction=SignalDirection.HOLD,
                 calibrated_probability=0.5,
@@ -213,6 +215,8 @@ class BotController:
                 candle_timestamp=feature_row.available_at_ts,
                 model_name=self.model_name,
                 feature_count=len(feature_row.features),
+                calibrated_prob_up=0.5,
+                side_probability=0.5,
             )
             self.session.record_prediction(res)
             return SignalDirection.HOLD, 0.5
@@ -442,6 +446,8 @@ class BotController:
                     paper_order_id=order_id,
                     risk_state=step_result.circuit_state.value,
                     horizon_bars=1,
+                    calibrated_prob_up=pred.calibrated_prob_up,
+                    side_probability=pred.side_probability,
                 )
 
         # Periodically persist snapshot to maintain live telemetry

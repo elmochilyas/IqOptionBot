@@ -15,6 +15,7 @@ from iqoption_research.cli.commands.data_cmd import app as data_app
 from iqoption_research.cli.commands.execution_cmd import (
     execution_app,
     practice_diagnostics_command,
+    practice_select_command,
     practice_test_command,
 )
 from iqoption_research.cli.commands.ml_cmd import ml_app
@@ -44,6 +45,10 @@ app.command(
     "practice-diagnostics",
     help="Operator-run READ-ONLY diagnostics for IQ Option Practice account (no orders).",
 )(practice_diagnostics_command)
+app.command(
+    "practice-select",
+    help="Explicit operator authorization to select PRACTICE balance for the current session.",
+)(practice_select_command)
 app.command(
     "practice-test",
     help="Operator-supervised verification workflow for a single Practice test order.",

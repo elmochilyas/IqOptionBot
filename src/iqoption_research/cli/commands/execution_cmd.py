@@ -788,6 +788,311 @@ def practice_diagnostics_command(
 
 
 @execution_app.command(
+    "practice-select",
+    help="Explicit operator authorization to select PRACTICE balance for the current session.",
+)
+def practice_select_command(
+    offline_mock: bool = typer.Option(
+        False, "--offline-mock", help="Run via offline mock simulation (default: False)"
+    ),
+    live: bool = typer.Option(
+        False, "--live", help="Connect to live IQ Option broker to select balance (default: False)"
+    ),
+    auto_confirm: bool = typer.Option(
+        False, "--yes", "-y", help="Skip confirmation prompt (operator pre-authorization)"
+    ),
+) -> None:
+    """Explicitly select the PRACTICE balance within the bot's session.
+
+    Guarantees:
+    - Never modifies balance automatically.
+    - Requires explicit operator authorization before sending change_balance.
+    - Strictly restricts selection to Practice balances (AccountType.PRACTICE / type 4).
+    - Hard-blocks selection of REAL balances fail-closed.
+    - Never submits orders or transmits trade frames during balance selection.
+    - Confirms post-selection state against fresh server profile and balances.
+    - Warns operator that selection is session-scoped (invalidated on disconnect/reconnect).
+    """
+    console.print(
+        Panel.fit(
+            "[bold cyan]IQ Option Practice Account — Explicit Session Selection[/bold cyan]\n"
+            "[dim]Allows explicit operator authorization to switch the current session's "
+            "active balance to PRACTICE (type 4).\n"
+            "REAL trading remains permanently disabled in software.[/dim]",
+            border_style="cyan",
+        )
+    )
+
+    if not live and not offline_mock:
+        console.print(
+            "[yellow]Notice:[/yellow] By default, practice-select operates with network guards. "
+            "To connect to the live broker, pass [bold]--live[/bold]. "
+            "To run an offline synthetic selection, pass [bold]--offline-mock[/bold]."
+        )
+        run_live = typer.confirm("Connect to live IQ Option broker now?", default=False)
+        if not run_live:
+            console.print("[dim]Aborted. No network connections were initiated.[/dim]")
+            raise typer.Abort()
+        live = True
+
+    if offline_mock:
+        console.print(
+            "[bold yellow]Running offline simulated practice session selection...[/bold yellow]"
+        )
+        mock_transport = MockBrokerPracticeTransport(
+            initial_active_balance_id="200",
+            practice_balance_id="101",
+            virtual_amount=10000.0,
+        )
+
+        # Audit Table Preview
+        preview_table = Table(
+            title="[bold yellow]Offline Practice Selection — Pre-Selection Audit[/bold yellow]"
+        )
+        preview_table.add_column("Account Entity / Property", style="cyan")
+        preview_table.add_column("Discovered Value", style="bold white")
+        preview_table.add_column("Status", justify="center")
+
+        preview_table.add_row(
+            "Account Email", "mock_operator@example.com (redacted)", "[dim]Simulated[/dim]"
+        )
+        preview_table.add_row(
+            "Discovered Practice Balance",
+            "ID: 101 | $10,000.00 USD",
+            "[bold green]ELIGIBLE (PRACTICE)[/bold green]",
+        )
+        preview_table.add_row(
+            "Discovered REAL Balance",
+            "ID: 200 | $500.00 USD",
+            "[yellow]BLOCKED FROM SELECTION[/yellow]",
+        )
+        preview_table.add_row(
+            "Current Active Session Balance",
+            "ID: 200 (Default REAL)",
+            "[bold red]NOT VERIFIED PRACTICE[/bold red]",
+        )
+        preview_table.add_row(
+            "Real Trading Enforcement",
+            "Permanently Disabled in Software",
+            "[bold green]PROTECTED[/bold green]",
+        )
+        console.print(preview_table)
+
+        if not auto_confirm:
+            confirmed = typer.confirm(
+                "Authorise switching this session's active balance to Practice ID 101?",
+                default=False,
+            )
+            if not confirmed:
+                console.print(
+                    "[yellow]Selection cancelled by operator. "
+                    "No balance modification frames were sent.[/yellow]"
+                )
+                raise typer.Abort()
+
+        # Execute simulated selection
+        verified_bal = mock_transport.select_practice_balance(operator_authorized=True)
+
+        res_table = Table(
+            title="[bold green]Offline Practice Session Selection Result[/bold green]"
+        )
+        res_table.add_column("Property", style="cyan")
+        res_table.add_column("Verified Value", style="bold white")
+
+        res_table.add_row("Session Identifier", mock_transport.session_id)
+        res_table.add_row("Active Session Balance ID", str(verified_bal.id))
+        res_table.add_row(
+            "Account Type", f"{verified_bal.type.name} (type {verified_bal.type.value})"
+        )
+        res_table.add_row(
+            "Available Virtual Funds", f"${verified_bal.amount:,.2f} {verified_bal.currency}"
+        )
+        res_table.add_row(
+            "Practice Session Verification",
+            "[bold green]VERIFIED ACTIVE PRACTICE[/bold green]",
+        )
+        res_table.add_row(
+            "Order Submission Count",
+            f"{len(mock_transport.dispatched_frames) - 1} orders (Zero orders sent)",
+        )
+        console.print(res_table)
+
+        scope_msg = (
+            "[bold green]Practice Session Selection Complete: VERIFIED[/bold green]\n\n"
+            f"[bold white]Session ID:[/bold white] {mock_transport.session_id}\n"
+            f"[bold white]Active Balance ID:[/bold white] {verified_bal.id} (PRACTICE)\n\n"
+            "[bold yellow]IMPORTANT LIFETIME & SESSION NOTICE:[/bold yellow]\n"
+            "• IQ Option balance selection is strictly SESSION-SCOPED.\n"
+            "• This authorization applies solely to this active WebSocket session.\n"
+            "• Reconnecting or closing the connection resets the session to REAL.\n"
+            "• REAL trading remains permanently disabled in software.\n"
+            "• Zero orders were submitted."
+        )
+        console.print(Panel.fit(scope_msg, border_style="green"))
+        return
+
+    # Live broker selection
+    console.print("[bold yellow]Initiating secure live practice balance selection...[/bold yellow]")
+    email = os.environ.get("IQOPTION_EMAIL")
+    password = os.environ.get("IQOPTION_PASSWORD")
+    if not email or not password:
+        console.print(
+            "[dim]Credentials not found in environment (IQOPTION_EMAIL / IQOPTION_PASSWORD).[/dim]"
+        )
+        email = typer.prompt("IQ Option Account Email")
+        password = typer.prompt("IQ Option Password", hide_input=True)
+
+    credentials = Credentials(email=email, password=password)
+    transport = IQOptionLivePracticeTransport(credentials=credentials)
+
+    async def _async_select() -> None:
+        try:
+            with console.status(
+                "[bold green]Connecting to IQ Option and retrieving account state..."
+            ):
+                # require_practice=False allows inspecting and selecting without pre-flight abort
+                await transport.async_connect(require_practice=False)
+        except Exception as exc:
+            console.print(f"[bold red]Failed to connect to IQ Option broker: {exc}[/bold red]")
+            raise typer.Exit(code=1) from exc
+
+        try:
+            profile = transport.profile
+            balances = transport.balances
+
+            if profile is None or not balances:
+                console.print(
+                    "[bold red]Failed to retrieve profile or balances from broker.[/bold red]"
+                )
+                raise typer.Exit(code=1)
+
+            practice_bal = next(
+                (b for b in balances if b.type == AccountType.PRACTICE and b.is_practice),
+                None,
+            )
+            real_bal = next(
+                (b for b in balances if b.type == AccountType.REAL or not b.is_practice),
+                None,
+            )
+
+            if practice_bal is None:
+                console.print(
+                    "[bold red]No PRACTICE balance found on this account. Available balances: "
+                    f"{[b.type.name for b in balances]}[/bold red]"
+                )
+                raise typer.Exit(code=1)
+
+            current_active_id = transport.active_balance_id or str(
+                profile.raw.get("balance_id", "unknown")
+            )
+
+            # Display Pre-Selection Audit Table
+            audit_table = Table(
+                title="[bold yellow]Practice Balance Selection — Pre-Selection Audit[/bold yellow]"
+            )
+            audit_table.add_column("Account Entity / Property", style="cyan")
+            audit_table.add_column("Discovered Value", style="bold white")
+            audit_table.add_column("Status", justify="center")
+
+            user_disp = redact_email(profile.email)
+            audit_table.add_row(
+                "Account Email",
+                f"{user_disp} (User ID: {profile.user_id})",
+                "[bold green]AUTHENTICATED[/bold green]",
+            )
+            audit_table.add_row(
+                "Discovered Practice Balance",
+                f"ID: {practice_bal.id} | ${practice_bal.amount:,.2f} {practice_bal.currency}",
+                "[bold green]ELIGIBLE (PRACTICE)[/bold green]",
+            )
+            if real_bal:
+                audit_table.add_row(
+                    "Discovered REAL Balance",
+                    f"ID: {real_bal.id} | ${real_bal.amount:,.2f} {real_bal.currency}",
+                    "[yellow]BLOCKED FROM SELECTION[/yellow]",
+                )
+            audit_table.add_row(
+                "Current Active Session Balance",
+                f"ID: {current_active_id}",
+                (
+                    "[bold green]PRACTICE[/bold green]"
+                    if str(current_active_id) == str(practice_bal.id)
+                    else "[bold red]REAL (Default)[/bold red]"
+                ),
+            )
+            audit_table.add_row(
+                "Real Trading Enforcement",
+                "Permanently Disabled in Software",
+                "[bold green]PROTECTED[/bold green]",
+            )
+            console.print(audit_table)
+
+            if not auto_confirm:
+                confirmed = typer.confirm(
+                    f"Authorise switching this session's active balance to Practice ID "
+                    f"{practice_bal.id}?",
+                    default=False,
+                )
+                if not confirmed:
+                    console.print(
+                        "[yellow]Selection cancelled by operator. "
+                        "No balance modification frames were sent.[/yellow]"
+                    )
+                    return
+
+            # Dispatch explicit selection
+            with console.status(
+                "[bold green]Transmitting change_balance and verifying post-selection state..."
+            ):
+                verified_bal = await transport.async_select_practice_balance(
+                    operator_authorized=True
+                )
+
+            res_table = Table(
+                title="[bold green]Live Practice Session Selection Result[/bold green]"
+            )
+            res_table.add_column("Property", style="cyan")
+            res_table.add_column("Verified Value", style="bold white")
+
+            res_table.add_row("Session Identifier", str(transport.session_id))
+            res_table.add_row("Active Session Balance ID", str(verified_bal.id))
+            res_table.add_row(
+                "Account Type", f"{verified_bal.type.name} (type {verified_bal.type.value})"
+            )
+            res_table.add_row(
+                "Available Virtual Funds", f"${verified_bal.amount:,.2f} {verified_bal.currency}"
+            )
+            res_table.add_row(
+                "Practice Session Verification",
+                "[bold green]VERIFIED ACTIVE PRACTICE[/bold green]",
+            )
+            res_table.add_row(
+                "Order Transmission Status",
+                "[bold green]ZERO ORDERS SUBMITTED[/bold green]",
+            )
+            console.print(res_table)
+
+            scope_msg = (
+                "[bold green]Live Practice Session Selection Complete: VERIFIED[/bold green]\n\n"
+                f"[bold white]Session ID:[/bold white] {transport.session_id}\n"
+                f"[bold white]Active Balance ID:[/bold white] {verified_bal.id} (PRACTICE)\n\n"
+                "[bold yellow]IMPORTANT LIFETIME & SESSION NOTICE:[/bold yellow]\n"
+                "• IQ Option balance selection is strictly SESSION-SCOPED.\n"
+                "• This authorization applies solely to this active WebSocket session.\n"
+                "• Reconnecting, restarting the bot, or network interruption resets the "
+                "broker session to REAL.\n"
+                "• REAL trading remains permanently disabled in software.\n"
+                "• Zero orders were submitted."
+            )
+            console.print(Panel.fit(scope_msg, border_style="green"))
+
+        finally:
+            await transport.async_close()
+
+    asyncio.run(_async_select())
+
+
+@execution_app.command(
     "practice-test",
     help="Operator-supervised verification workflow for a single Practice test order.",
 )
@@ -799,6 +1104,11 @@ def practice_test_command(
     ),
     offline_mock: bool = typer.Option(
         True, "--offline-mock/--live-socket", help="Run via offline mock transport (default: True)"
+    ),
+    select_practice: bool = typer.Option(
+        False,
+        "--select-practice",
+        help="Prompt operator to explicitly switch session balance to Practice if unverified",
     ),
 ) -> None:
     """Supervised Practice test workflow requiring explicit operator authorization."""
@@ -853,27 +1163,64 @@ def practice_test_command(
 
         try:
             with console.status(
-                "[bold green]Connecting to IQ Option and verifying Practice account..."
+                "[bold green]Connecting to IQ Option and checking Practice account..."
             ):
-                transport.start()
+                transport.start(require_practice=not select_practice)
         except (RealAccountExecutionBlockedError, AccountSelectionUnverifiedError) as exc:
-            console.print(
-                Panel.fit(
-                    f"[bold red]CRITICAL SAFETY BLOCK: {exc}[/bold red]\n\n"
-                    "Automatic balance switching is disabled to eliminate risk of accidental live "
-                    "execution.\n"
-                    "IQ Option balances are session-scoped; the session defaulted to the primary "
-                    "server wallet and lacked authoritative session-level practice verification.\n"
-                    "Zero orders were dispatched.",
-                    border_style="red",
+            if not select_practice:
+                console.print(
+                    Panel.fit(
+                        f"[bold red]CRITICAL SAFETY BLOCK: {exc}[/bold red]\n\n"
+                        "Automatic balance switching is disabled to eliminate risk of accidental "
+                        "live execution.\n"
+                        "IQ Option balances are session-scoped; the session defaulted to the "
+                        "primary server wallet and lacked authoritative session-level practice "
+                        "verification.\n"
+                        "Pass '--select-practice' or invoke 'practice-select --live' to explicitly "
+                        "authorize session selection.\n"
+                        "Zero orders were dispatched.",
+                        border_style="red",
+                    )
                 )
-            )
-            raise typer.Exit(code=1) from exc
+                raise typer.Exit(code=1) from exc
         except Exception as exc:
             console.print(
                 f"[bold red]Failed to connect or verify practice transport: {exc}[/bold red]"
             )
             raise typer.Exit(code=1) from exc
+
+        # If select_practice requested and session is not yet practice-verified
+        if not transport.is_practice_verified:
+            practice_bal = next(
+                (b for b in transport.balances if b.type == AccountType.PRACTICE and b.is_practice),
+                None,
+            )
+            if practice_bal is None:
+                console.print("[bold red]No PRACTICE balance found on this account.[/bold red]")
+                transport.close()
+                raise typer.Exit(code=1)
+
+            console.print(
+                f"[yellow]Active session balance ({transport.active_balance_id}) "
+                "is not verified PRACTICE.[/yellow]"
+            )
+            confirmed_switch = typer.confirm(
+                f"Authorise explicitly switching session active balance to Practice ID "
+                f"{practice_bal.id}?",
+                default=False,
+            )
+            if not confirmed_switch:
+                console.print(
+                    "[yellow]Aborted by operator. "
+                    "No balance switch or orders were dispatched.[/yellow]"
+                )
+                transport.close()
+                raise typer.Abort()
+
+            with console.status(
+                "[bold green]Switching session balance to Practice and verifying..."
+            ):
+                transport.select_practice_balance(operator_authorized=True)
 
         try:
             live_bal = transport.active_balance_id

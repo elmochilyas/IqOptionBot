@@ -17,6 +17,7 @@ from iqoption_research.cli.main import app
 from iqoption_research.market_data.collector import (
     DataAcquisitionError,
     HistoricalDataCollector,
+    _conflicting_market_fields,
 )
 from iqoption_research.market_data.forward_sync import (
     ForwardState,
@@ -980,3 +981,295 @@ def test_rejected_raw_page_diagnostic_does_not_copy_payload(tmp_path: Path) -> N
         job._validate_page(result, seen={})
     assert f"from_ts={start}" in str(exc.value)
     assert "PRIVATE_MARKER" not in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 Regression Tests: at_ts Duplicate Handling and Market Conflicts
+# ---------------------------------------------------------------------------
+
+
+def test_conflicting_market_fields_distinguishes_at_ts_metadata_from_market_data() -> None:
+    base = _candle(1794607140)
+    # 1. Identical candle -> no conflicts
+    assert _conflicting_market_fields(base, base) == ()
+
+    # 2. Identical candle with different at_ts (broker response metadata) -> no conflicts
+    variant_at = replace(base, at_ts=base.at_ts + 500_000_000)
+    assert _conflicting_market_fields(base, variant_at) == ()
+
+    # 3. Conflicting OHLC prices
+    assert _conflicting_market_fields(base, replace(base, open=base.open + 0.001)) == ("open",)
+    assert _conflicting_market_fields(base, replace(base, high=base.high + 0.001)) == ("high",)
+    assert _conflicting_market_fields(base, replace(base, low=base.low - 0.001)) == ("low",)
+    assert _conflicting_market_fields(base, replace(base, close=base.close + 0.001)) == ("close",)
+
+    # 4. Conflicting volume
+    assert _conflicting_market_fields(base, replace(base, volume=base.volume + 50)) == ("volume",)
+
+    # 5. Conflicting bid/ask
+    assert _conflicting_market_fields(base, replace(base, bid=base.bid + 0.001)) == ("bid",)
+    assert _conflicting_market_fields(base, replace(base, ask=base.ask + 0.001)) == ("ask",)
+
+    # 6. Conflicting completion status
+    assert _conflicting_market_fields(base, replace(base, is_complete=False)) == ("is_complete",)
+
+    # 7. Conflicting active ID, timeframe, symbol, from/to timestamps
+    assert _conflicting_market_fields(base, replace(base, active_id=99)) == ("active_id",)
+    assert _conflicting_market_fields(base, replace(base, size=CandleSize(300))) == ("size",)
+    assert _conflicting_market_fields(base, replace(base, symbol="GBPUSD")) == ("symbol",)
+    assert _conflicting_market_fields(base, replace(base, from_ts=base.from_ts + 60)) == (
+        "from_ts",
+    )
+    assert _conflicting_market_fields(base, replace(base, to_ts=base.to_ts + 60)) == ("to_ts",)
+
+    # 8. Invalid at_ts (negative or non-int) -> flagged as conflict
+    assert _conflicting_market_fields(base, replace(base, at_ts=-1)) == ("at_ts",)
+    assert _conflicting_market_fields(base, replace(base, at_ts=1.5)) == ("at_ts",)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_forward_sync_accepts_identical_completed_candle_with_different_at_ts(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "datasets"
+    start = 1794607140 - 240  # 4 previous candles + boundary candle at 1794607140
+    initial = _series(start, 5)
+    collector = _persist(root, initial)
+
+    boundary_candle = initial[-1]
+    assert boundary_candle.from_ts == 1794607140
+
+    # Record original partition bytes, checksums, and catalog metadata
+    dataset_entries = collector.catalog.find_datasets(symbol="EURUSD", candle_size_seconds=60)
+    assert len(dataset_entries) == 1
+    original_entry = dataset_entries[0]
+    original_path = root / original_entry.file_path
+    original_bytes = original_path.read_bytes()
+    original_sha256 = original_entry.sha256_checksum
+    original_meta_sha256 = original_entry.metadata_sha256
+
+    # Broker returns overlapping boundary candle with DIFFERENT at_ts (broker generation metadata)
+    future = _series(boundary_candle.to_ts, 3)
+    candidate_boundary = replace(boundary_candle, at_ts=boundary_candle.at_ts + 123_456_789)
+    broker_batch = [candidate_boundary, *future]
+
+    plan = build_forward_sync_plan(root, page_size=10, max_requests=5, now_ts=future[-1].to_ts)
+    job = create_forward_sync_job(
+        collector=collector,
+        plan=plan,
+        job_id="forward-at-ts-diff",
+        client=ForwardBroker(broker_batch),
+    )
+
+    result = await job.run()
+
+    # Verified: forward sync succeeded and skipped the duplicate
+    assert result.state == ForwardState.COMPLETED
+    assert result.duplicates_skipped == 1
+    assert result.new_records_saved == 3
+
+    # Verified: original Parquet partition file bytes, checksums, and catalog metadata are untouched
+    assert original_path.read_bytes() == original_bytes
+    refreshed_entry = collector.catalog.get_dataset(original_entry.dataset_id)
+    assert refreshed_entry is not None
+    assert refreshed_entry.sha256_checksum == original_sha256
+    assert refreshed_entry.metadata_sha256 == original_meta_sha256
+
+    # Verified: loaded candles preserve the original persisted candle including its original at_ts
+    all_candles = collector.load_dataset("EURUSD", 60)
+    assert len(all_candles) == 8
+    persisted_boundary = next(c for c in all_candles if c.from_ts == boundary_candle.from_ts)
+    assert persisted_boundary.at_ts == boundary_candle.at_ts
+    assert persisted_boundary.at_ts != candidate_boundary.at_ts
+
+
+@pytest.mark.asyncio
+async def test_forward_sync_accepts_genuine_identical_duplicate(tmp_path: Path) -> None:
+    root = tmp_path / "datasets"
+    start = 1794607140
+    initial = _series(start, 3)
+    collector = _persist(root, initial)
+    future = _series(initial[-1].to_ts, 2)
+    # Exact duplicate including same at_ts
+    broker_batch = [initial[-1], *future]
+
+    plan = build_forward_sync_plan(root, page_size=10, max_requests=5, now_ts=future[-1].to_ts)
+    job = create_forward_sync_job(
+        collector=collector,
+        plan=plan,
+        job_id="forward-genuine-duplicate",
+        client=ForwardBroker(broker_batch),
+    )
+
+    result = await job.run()
+    assert result.state == ForwardState.COMPLETED
+    assert result.duplicates_skipped == 1
+    assert result.new_records_saved == 2
+    assert len(collector.load_dataset("EURUSD", 60)) == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("conflict_field", "override_fn"),
+    [
+        ("open", lambda c: replace(c, open=c.close)),
+        ("high", lambda c: replace(c, high=c.high + 0.00005)),
+        ("low", lambda c: replace(c, low=c.low - 0.00005)),
+        ("close", lambda c: replace(c, close=c.open)),
+        ("volume", lambda c: replace(c, volume=c.volume + 50)),
+    ],
+)
+async def test_forward_sync_rejects_market_data_conflicts(
+    tmp_path: Path, conflict_field: str, override_fn: Any
+) -> None:
+    root = tmp_path / "datasets"
+    start = 1794607140
+    initial = _series(start, 3)
+    collector = _persist(root, initial)
+    future = _series(initial[-1].to_ts, 2)
+
+    conflicting_boundary = override_fn(initial[-1])
+    broker_batch = [conflicting_boundary, *future]
+
+    plan = build_forward_sync_plan(root, page_size=10, max_requests=5, now_ts=future[-1].to_ts)
+    job = create_forward_sync_job(
+        collector=collector,
+        plan=plan,
+        job_id=f"forward-conflict-{conflict_field}",
+        client=ForwardBroker(broker_batch),
+    )
+
+    with pytest.raises(
+        DataAcquisitionError,
+        match=f"Conflicting forward duplicate at {initial[-1].from_ts}:.*{conflict_field}",
+    ):
+        await job.run()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fault", "override"),
+    [
+        ("active_id", {"active_id": 99}),
+        ("timeframe", {"size": CandleSize(300)}),
+    ],
+)
+async def test_forward_sync_rejects_wrong_active_id_or_timeframe(
+    tmp_path: Path, fault: str, override: dict[str, Any]
+) -> None:
+    root = tmp_path / "datasets"
+    start = 1794607140
+    initial = _series(start, 3)
+    collector = _persist(root, initial)
+    future = _series(initial[-1].to_ts, 2)
+
+    invalid_boundary = replace(initial[-1], **override)
+    broker_batch = [invalid_boundary, *future]
+
+    plan = build_forward_sync_plan(root, page_size=10, max_requests=5, now_ts=future[-1].to_ts)
+    job = create_forward_sync_job(
+        collector=collector,
+        plan=plan,
+        job_id=f"forward-invalid-{fault}",
+        client=ForwardBroker(broker_batch),
+    )
+
+    with pytest.raises(DataAcquisitionError, match=f"invariant={fault}"):
+        await job.run()
+
+
+@pytest.mark.asyncio
+async def test_partially_completed_forward_sync_resumes_safely_after_conflict(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "datasets"
+    start = 1794607140 - 120
+    initial = _series(start, 3)  # boundary at 1794607140
+    collector = _persist(root, initial)
+
+    boundary = initial[-1]
+    future = _series(boundary.to_ts, 4)
+
+    # Initial partition files
+    initial_entries = collector.catalog.find_datasets(symbol="EURUSD", candle_size_seconds=60)
+    initial_path = root / initial_entries[0].file_path
+    initial_bytes = initial_path.read_bytes()
+
+    # Step 1: Multi-page forward sync where page 1 succeeds (saving future[2:])
+    # and page 2 encounters a conflict at boundary (e.g. conflicting volume),
+    # halting the sync with ForwardState.PARTIAL.
+    class TwoPageFailingBroker(ForwardBroker):
+        async def get_candles(self, *args: Any, **kwargs: Any) -> FakeFetchResult:
+            self.calls += 1
+            if self.calls == 1:
+                # Page 1: newest 2 candles
+                return FakeFetchResult(future[2:])
+            # Page 2: conflicting volume at boundary
+            conflicting = replace(boundary, volume=99999)
+            return FakeFetchResult([conflicting, *future[:2]])
+
+    plan = build_forward_sync_plan(root, page_size=2, max_requests=10, now_ts=future[-1].to_ts)
+    job_id = "monday-resume-job"
+    failing_job = create_forward_sync_job(
+        collector=collector,
+        plan=plan,
+        job_id=job_id,
+        client=TwoPageFailingBroker([]),
+    )
+
+    with pytest.raises(DataAcquisitionError, match=r"Conflicting forward duplicate.*volume"):
+        await failing_job.run()
+
+    # Confirm checkpoint is PARTIAL and page 1 was committed
+    partial_checkpoint = load_forward_checkpoint(root, job_id)
+    assert partial_checkpoint.state == ForwardState.PARTIAL
+    assert partial_checkpoint.new_records_saved == 2
+    assert len(partial_checkpoint.committed_dataset_ids) == 1
+    page1_dataset_id = partial_checkpoint.committed_dataset_ids[0]
+    page1_entry = collector.catalog.get_dataset(page1_dataset_id)
+    assert page1_entry is not None
+    page1_path = root / page1_entry.file_path
+    page1_bytes = page1_path.read_bytes()
+    page1_sha256 = page1_entry.sha256_checksum
+
+    # Step 2: Resume with the SAME job_id using a broker that returns the legitimate
+    # overlapping boundary candle with differing at_ts (broker metadata variation).
+    class TwoPageResumingBroker(ForwardBroker):
+        async def get_candles(self, *args: Any, **kwargs: Any) -> FakeFetchResult:
+            self.calls += 1
+            # Resumed run continues from next_endtime, fetching page 2
+            # Legitimate boundary with differing at_ts (non-price metadata)
+            variant_boundary = replace(boundary, at_ts=boundary.at_ts + 999_999)
+            return FakeFetchResult([variant_boundary, *future[:2]])
+
+    resumed_job = create_forward_sync_job(
+        collector=collector,
+        plan=plan,
+        job_id=job_id,
+        client=TwoPageResumingBroker([]),
+    )
+
+    resumed_result = await resumed_job.run()
+
+    # Resumed job completed successfully!
+    assert resumed_result.state == ForwardState.COMPLETED
+    assert resumed_result.duplicates_skipped >= 1
+    assert resumed_result.new_records_saved == 4
+
+    # Final checkpoint is COMPLETED
+    final_checkpoint = load_forward_checkpoint(root, job_id)
+    assert final_checkpoint.state == ForwardState.COMPLETED
+    assert final_checkpoint.cumulative_records_saved == 4
+
+    # Initial partition and page 1 partition are completely preserved
+    assert initial_path.read_bytes() == initial_bytes
+    assert page1_path.read_bytes() == page1_bytes
+    refreshed_page1 = collector.catalog.get_dataset(page1_dataset_id)
+    assert refreshed_page1 is not None
+    assert refreshed_page1.sha256_checksum == page1_sha256
+
+    # All candles exist, deduplicated, boundary candle preserves original at_ts
+    all_candles = collector.load_dataset("EURUSD", 60)
+    assert len(all_candles) == 7
+    stored_boundary = next(c for c in all_candles if c.from_ts == boundary.from_ts)
+    assert stored_boundary.at_ts == boundary.at_ts

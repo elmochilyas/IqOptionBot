@@ -56,7 +56,6 @@ MARKET_DATA_FIELDS: Final[tuple[str, ...]] = (
     "size",
     "from_ts",
     "to_ts",
-    "at_ts",
     "open",
     "high",
     "low",
@@ -73,8 +72,10 @@ def _market_data_values(candle: Candle) -> tuple[object, ...]:
 
     Transport payload details (``raw``), collection labels (``provenance``), and
     identity audit labels (``identity_provenance``) are intentionally excluded:
-    the Parquet schema does not preserve them losslessly. Instrument identity,
-    timeframe, timestamps, prices, volume, quotes, and completeness remain strict.
+    the Parquet schema does not preserve them losslessly. Broker server generation
+    timestamp (``at_ts``) is excluded because it varies across broker responses for
+    identical completed market candles. Instrument identity, timeframe, window
+    timestamps, prices, volume, quotes, and completeness remain strict.
     """
     return (
         candle.active_id,
@@ -82,7 +83,6 @@ def _market_data_values(candle: Candle) -> tuple[object, ...]:
         candle.size,
         candle.from_ts,
         candle.to_ts,
-        candle.at_ts,
         candle.open,
         candle.high,
         candle.low,
@@ -95,8 +95,19 @@ def _market_data_values(candle: Candle) -> tuple[object, ...]:
 
 
 def _conflicting_market_fields(existing: Candle, candidate: Candle) -> tuple[str, ...]:
-    """Name persisted market fields whose values conflict for duplicate candles."""
-    return tuple(
+    """Name persisted market fields whose values conflict for duplicate candles.
+
+    Enforces strict equality across all market data fields: symbol, active ID,
+    timeframe, opening/closing timestamps, OHLC prices, volume, bid/ask quotes,
+    and completion status.
+
+    Broker server timestamp (``at_ts``) is treated as non-price broker metadata:
+    if the only difference between candidate and existing duplicate is ``at_ts``,
+    it is treated as a duplicate as long as ``at_ts`` satisfies timestamp validity
+    (non-negative integer). If ``at_ts`` has an invalid type or negative value,
+    it is reported as a conflicting field.
+    """
+    conflicts = [
         field_name
         for field_name, old_value, new_value in zip(
             MARKET_DATA_FIELDS,
@@ -105,7 +116,15 @@ def _conflicting_market_fields(existing: Candle, candidate: Candle) -> tuple[str
             strict=True,
         )
         if old_value != new_value
-    )
+    ]
+    if (
+        type(candidate.at_ts) is not int
+        or candidate.at_ts < 0
+        or type(existing.at_ts) is not int
+        or existing.at_ts < 0
+    ):
+        conflicts.append("at_ts")
+    return tuple(conflicts)
 
 
 class DataAcquisitionError(RuntimeError):

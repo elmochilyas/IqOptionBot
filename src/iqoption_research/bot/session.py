@@ -64,6 +64,7 @@ class TradingSession:
         self.initial_balance = initial_balance
 
         self._candles_processed = 0
+        self._predictions_count = 0
         self._predictions: deque[InferenceResult] = deque(maxlen=prediction_buffer_size)
         self._settled_orders: list[PaperOrder] = []
         self._open_orders: list[PaperOrder] = []
@@ -85,7 +86,18 @@ class TradingSession:
 
     @property
     def prediction_count(self) -> int:
+        """Lifetime total number of predictions generated during this session."""
+        return self._predictions_count
+
+    @property
+    def buffered_prediction_count(self) -> int:
+        """Number of predictions currently held in the bounded memory ring buffer."""
         return len(self._predictions)
+
+    @property
+    def prediction_buffer_capacity(self) -> int | None:
+        """Maximum capacity of the in-memory telemetry ring buffer."""
+        return self._predictions.maxlen
 
     @property
     def latest_prediction(self) -> InferenceResult | None:
@@ -108,7 +120,8 @@ class TradingSession:
         self._candles_processed += 1
 
     def record_prediction(self, prediction: InferenceResult) -> None:
-        """Store prediction in the telemetry ring buffer."""
+        """Store prediction in ring buffer and increment lifetime prediction count."""
+        self._predictions_count += 1
         self._predictions.append(prediction)
 
     def record_new_order(self, order: PaperOrder) -> None:
@@ -151,7 +164,7 @@ class TradingSession:
             max_drawdown_amount=max_drawdown_amount,
             max_drawdown_pct=max_drawdown_pct * 100.0,
             total_candles_processed=self._candles_processed,
-            predictions_generated=len(self._predictions),
+            predictions_generated=self._predictions_count,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -162,7 +175,9 @@ class TradingSession:
             "started_at_utc": self.started_at_utc,
             "initial_balance": self.initial_balance,
             "candles_processed": self._candles_processed,
-            "predictions_count": len(self._predictions),
+            "predictions_count": self._predictions_count,
+            "buffered_predictions_count": len(self._predictions),
+            "prediction_buffer_capacity": self._predictions.maxlen,
             "settled_orders_count": len(self._settled_orders),
             "open_orders_count": len(self._open_orders),
             "journal_records_count": self.journal.total_records,
@@ -197,6 +212,7 @@ class TradingSession:
             session.started_at_ts = float(data.get("started_at_ts", time.time()))
             session.started_at_utc = str(data.get("started_at_utc", datetime.now(UTC).isoformat()))
             session._candles_processed = int(data.get("candles_processed", 0))
+            session._predictions_count = int(data.get("predictions_count", 0))
             return session
         except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError) as exc:
             logger.warning("Failed to restore session from %s: %s", target, exc)

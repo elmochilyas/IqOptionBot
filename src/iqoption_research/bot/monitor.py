@@ -52,6 +52,7 @@ class BotStatusSnapshot:
     accepted_candles_count: int = 0
     reconnection_attempts: int = 0
     prediction_count: int = 0
+    buffered_prediction_count: int = 0
     paper_trades_count: int = 0
     forming_candles_count: int = 0
     duplicate_candles_count: int = 0
@@ -101,6 +102,7 @@ class BotStatusSnapshot:
             "accepted_candles_count": self.accepted_candles_count,
             "reconnection_attempts": self.reconnection_attempts,
             "prediction_count": self.prediction_count,
+            "buffered_prediction_count": self.buffered_prediction_count,
             "paper_trades_count": self.paper_trades_count,
             "forming_candles_count": self.forming_candles_count,
             "duplicate_candles_count": self.duplicate_candles_count,
@@ -152,6 +154,9 @@ class BotStatusSnapshot:
             accepted_candles_count=int(data.get("accepted_candles_count", 0)),
             reconnection_attempts=int(data.get("reconnection_attempts", 0)),
             prediction_count=int(data.get("prediction_count", 0)),
+            buffered_prediction_count=int(
+                data.get("buffered_prediction_count", data.get("prediction_count", 0))
+            ),
             paper_trades_count=int(data.get("paper_trades_count", 0)),
             forming_candles_count=int(data.get("forming_candles_count", 0)),
             duplicate_candles_count=int(data.get("duplicate_candles_count", 0)),
@@ -229,6 +234,7 @@ class BotStatusMonitor:
         accepted_candles_count: int = 0,
         reconnection_attempts: int = 0,
         prediction_count: int = 0,
+        buffered_prediction_count: int = 0,
         paper_trades_count: int = 0,
         forming_candles_count: int = 0,
         duplicate_candles_count: int = 0,
@@ -282,6 +288,7 @@ class BotStatusMonitor:
             accepted_candles_count=accepted_candles_count,
             reconnection_attempts=reconnection_attempts,
             prediction_count=prediction_count,
+            buffered_prediction_count=buffered_prediction_count,
             paper_trades_count=paper_trades_count,
             forming_candles_count=forming_candles_count,
             duplicate_candles_count=duplicate_candles_count,

@@ -105,7 +105,12 @@ def _render_snapshot_table(snapshot: BotStatusSnapshot, title: str) -> None:
     table.add_row("Subscription State", getattr(snapshot, "subscription_state", "none"))
     table.add_row("Trained Model", snapshot.model_name)
     table.add_row("Latest Prediction", pred_str)
-    table.add_row("Total Predictions", str(getattr(snapshot, "prediction_count", 0)))
+    pred_total = getattr(snapshot, "prediction_count", 0)
+    pred_buf = getattr(snapshot, "buffered_prediction_count", pred_total)
+    pred_display = (
+        f"{pred_total} (buffer: {pred_buf})" if pred_buf < pred_total else str(pred_total)
+    )
+    table.add_row("Total Predictions", pred_display)
     table.add_row("Model Confidence", f"{snapshot.confidence:.3f}")
     table.add_row("Prediction Uncertainty", f"{snapshot.uncertainty:.3f}")
     table.add_row("Reason for HOLD", str(snapshot.abstention_reason or "None"))
@@ -236,6 +241,11 @@ def journal_command(
             target_journal.stem.replace("_journal", "") if target_journal else "unknown",
         )
     )
+    term_reason = (
+        summary_data.get("termination_reason")
+        or summary_data.get("snapshot", {}).get("termination_reason")
+        or "N/A"
+    )
     console.print(
         Panel(
             f"[bold cyan]AI Prediction Journal & Performance Diagnostics[/bold cyan]\n"
@@ -243,7 +253,7 @@ def journal_command(
             f"Mode: {summary_data.get('mode', 'N/A')} | "
             f"Symbol: {summary_data.get('symbol', 'EURUSD')}\n"
             f"Closed At: {summary_data.get('closed_at_utc', 'N/A')} | "
-            f"Termination: {summary_data.get('termination_reason', 'N/A')}",
+            f"Termination: {term_reason}",
             title="Session Overview",
             border_style="cyan",
         )

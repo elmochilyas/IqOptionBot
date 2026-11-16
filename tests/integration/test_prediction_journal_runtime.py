@@ -89,6 +89,9 @@ async def test_continuous_runtime_creates_journal_and_performance_diagnostics(
     summary_data = json.loads(summary_file.read_text(encoding="utf-8"))
     assert "performance_diagnostics" in summary_data
     assert "prediction_journal" in summary_data
+    assert summary_data["termination_reason"] is not None
+    assert "REPLAY_COMPLETED" in summary_data["termination_reason"]
+    assert summary_data["snapshot"]["prediction_count"] == len(records)
     diag = summary_data["performance_diagnostics"]
     assert diag["total_predictions"] == len(records)
     assert "direction_counts" in diag
@@ -148,3 +151,73 @@ def test_cli_bot_journal_command(tmp_path: Path) -> None:
     assert "session_1794842044" in res_legacy.output
     assert "Performance Diagnostics Summary" in res_legacy.output
     assert "UNCERTAIN_ZONE" in res_legacy.output
+
+
+@pytest.mark.asyncio
+async def test_runtime_reconciles_lifetime_prediction_counts_and_termination_reason(
+    tmp_path: Path,
+) -> None:
+    """Verify runtime snapshot and summary distinguish lifetime count from bounded ring buffer."""
+    candles = _generate_test_candles(35)
+    sessions_dir = tmp_path / "sessions"
+    cfg = RuntimeConfig(
+        symbol="EURUSD",
+        candle_size_seconds=60,
+        mode=BotMode.OFFLINE_REPLAY,
+        initial_balance=10000.0,
+        fixed_stake=100.0,
+        payout_rate=0.85,
+        max_runtime_seconds=10.0,
+    )
+
+    auth_mgr = AuthenticationManager(provider=MockAuthProvider())
+    runtime = ContinuousBotRuntime(
+        config=cfg,
+        auth_manager=auth_mgr,
+        sessions_dir=sessions_dir,
+    )
+
+    # Inject controller with small prediction_buffer_size = 5 to test bounded ring buffer
+    controller = runtime.build_controller(session_id="test_bounded_buffer")
+    # Replace session with bounded buffer
+    from iqoption_research.bot.session import TradingSession
+
+    controller.session = TradingSession(
+        session_id="test_bounded_buffer",
+        initial_balance=10000.0,
+        prediction_buffer_size=5,
+        sessions_dir=sessions_dir,
+    )
+    runtime._controller = controller
+    runtime._session_id = "test_bounded_buffer"
+
+    snap = await runtime.run(candles_iterable=candles)
+    assert runtime.state == RuntimeState.STOPPED
+
+    # 35 candles with 20 warmup bars produces 15 predictions
+    # Lifetime prediction count must be 15, while bounded buffer must be 5
+    assert snap.prediction_count == 15
+    assert snap.buffered_prediction_count == 5
+    assert snap.journal_records_count == 15
+
+    # Termination reason must be set to REPLAY_COMPLETED, never None
+    assert snap.termination_reason is not None
+    assert "REPLAY_COMPLETED" in snap.termination_reason
+
+    # Summary JSON must match
+    summary_file = sessions_dir / "test_bounded_buffer_summary.json"
+    assert summary_file.is_file()
+    summary_data = json.loads(summary_file.read_text(encoding="utf-8"))
+    assert summary_data["termination_reason"] == snap.termination_reason
+    assert summary_data["snapshot"]["prediction_count"] == 15
+    assert summary_data["snapshot"]["buffered_prediction_count"] == 5
+
+    # CLI journal command output must show Termination reason, not None
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["bot", "journal", "--session", "test_bounded_buffer", "--storage", str(sessions_dir)],
+    )
+    assert res.exit_code == 0
+    assert "REPLAY_COMPLETED" in res.output
+    assert "Termination: None" not in res.output

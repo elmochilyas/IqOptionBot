@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Final
 
 from iqoption_research.bot.monitor import BotStatusMonitor, BotStatusSnapshot
-from iqoption_research.bot.session import TradingSession
+from iqoption_research.bot.session import DEFAULT_PREDICTION_BUFFER_SIZE, TradingSession
 from iqoption_research.execution.engine import (
     EngineStepResult,
     PaperTradingConfig,
@@ -109,6 +109,8 @@ class BotController:
         observation_adapter: MarketObservationAdapter | None = None,
         allow_actionable_signals: bool | None = None,
         session: TradingSession | None = None,
+        session_id: str | None = None,
+        prediction_buffer_size: int = DEFAULT_PREDICTION_BUFFER_SIZE,
     ) -> None:
         self.config = config or BotConfig()
         self._state = BotState.IDLE
@@ -120,7 +122,9 @@ class BotController:
         sessions_path = Path(self.config.sessions_dir)
         sessions_path.mkdir(parents=True, exist_ok=True)
         self.session = session or TradingSession(
+            session_id=session_id,
             initial_balance=self.config.initial_balance,
+            prediction_buffer_size=prediction_buffer_size,
             sessions_dir=sessions_path,
         )
         self.monitor = BotStatusMonitor()
@@ -537,6 +541,7 @@ class BotController:
             invalid_candles_count=self.observation_adapter.invalid_count,
             reconnection_attempts=reconnection_attempts,
             prediction_count=self.session.prediction_count,
+            buffered_prediction_count=self.session.buffered_prediction_count,
             paper_trades_count=self.engine.portfolio.total_trades,
             time_remaining_seconds=time_remaining_seconds,
             termination_reason=termination_reason,

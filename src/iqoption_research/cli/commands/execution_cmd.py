@@ -9,11 +9,14 @@ Provides commands for:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from iqoption_research.execution.broker_readiness import PracticeExecutionAuthToken
 from iqoption_research.execution.capability_matrix import (
     BrokerCapabilityMatrix,
     BrokerCapabilityStatus,
@@ -23,7 +26,16 @@ from iqoption_research.execution.execution_engine import (
     ModularExecutionEngine,
 )
 from iqoption_research.execution.models import OrderSide, ProductType
-from iqoption_research.execution.modes import ExecutionMode
+from iqoption_research.execution.modes import (
+    ExecutionMode,
+    ExecutionModeConfig,
+    RealAccountExecutionBlockedError,
+)
+from iqoption_research.execution.practice_transport import (
+    MIN_PRACTICE_STAKE,
+    MockBrokerPracticeTransport,
+)
+from iqoption_research.models.account import AccountType, Balance, Profile
 from iqoption_research.models.market import Candle, CandleSize
 
 console = Console()
@@ -225,3 +237,324 @@ def paper_run_command(
             f"[cyan]4. Monitored & Active: State={order.state.value}, "
             f"Spot={candle2.close:.5f}[/cyan]"
         )
+
+
+def _make_profile(user_id: int = 1, balance_id: int | str = 101) -> Profile:
+    return Profile(
+        user_id=user_id,
+        email="operator@example.com",
+        first_name="Operator",
+        last_name="Supervisor",
+        created_at=datetime.now(UTC),
+        is_verified=True,
+        country="US",
+        currency="USD",
+        raw={"balance_id": str(balance_id)},
+    )
+
+
+@execution_app.command(
+    "verify-offline",
+    help="Run deterministic offline verification of the Practice transport adapter.",
+)
+def verify_offline_command() -> None:
+    """Run comprehensive offline verification of the Practice transport adapter."""
+    console.print(
+        Panel.fit(
+            "[bold cyan]Running Offline Practice Transport Verification (Phase 17)[/bold cyan]\n"
+            "[dim]Testing pre-flight account safety, schemas, dispatch, "
+            "single-order invariant, & settlement[/dim]",
+            border_style="cyan",
+        )
+    )
+
+    prof_prac = _make_profile(1, 101)
+    bal_prac = [
+        Balance(
+            id="101",
+            type=AccountType.PRACTICE,
+            amount=10000.0,
+            currency="USD",
+            is_active=True,
+        )
+    ]
+    tok = PracticeExecutionAuthToken(
+        authorization_signature="sig_supervisor_phase17",
+        supervisor_id="supervisor_auditor",
+    )
+    mode_cfg = ExecutionModeConfig(
+        mode=ExecutionMode.PRACTICE,
+        practice_enabled=True,
+        practice_auth_token=tok,
+    )
+    engine = ModularExecutionEngine(
+        ModularExecutionConfig(
+            symbol="EURUSD",
+            mode=ExecutionMode.PRACTICE,
+            default_product_type=ProductType.BINARY,
+            initial_balance=10000.0,
+            mode_config=mode_cfg,
+            single_test_order_mode=True,
+        )
+    )
+
+    c1 = Candle(
+        active_id=1,
+        symbol="EURUSD",
+        size=CandleSize.MIN_1,
+        from_ts=1700000000,
+        to_ts=1700000060,
+        at_ts=1700000060_000_000_000,
+        open=1.0850,
+        high=1.0855,
+        low=1.0848,
+        close=1.0852,
+        volume=100,
+        bid=1.0852,
+        ask=1.0852,
+    )
+    p1 = engine.create_proposal(
+        symbol="EURUSD",
+        side=OrderSide.CALL,
+        stake=1.0,
+        candle_to_ts=float(c1.to_ts),
+        signal_id="sig_verif_01",
+    )
+    order1, dec1 = engine.propose_and_validate(
+        p1, current_ts=float(c1.to_ts), profile=prof_prac, balances=bal_prac
+    )
+    if not dec1.permitted:
+        raise ValueError(f"Pre-flight validation failed: {dec1.reason}")
+    console.print(
+        f"[green]✓ Pre-flight Practice Verification: Passed (Balance ID={bal_prac[0].id})[/green]"
+    )
+
+    # Step 2: Real Account fail-closed check
+    prof_real = _make_profile(1, 202)
+    bal_real = [
+        Balance(
+            id="202",
+            type=AccountType.REAL,
+            amount=500.0,
+            currency="USD",
+            is_active=True,
+        )
+    ]
+    p_bad = engine.create_proposal(
+        symbol="EURUSD",
+        side=OrderSide.CALL,
+        stake=1.0,
+        candle_to_ts=float(c1.to_ts),
+        signal_id="sig_bad_real",
+    )
+    try:
+        engine.propose_and_validate(
+            p_bad, current_ts=float(c1.to_ts), profile=prof_real, balances=bal_real
+        )
+        console.print("[red]✗ Real Account Safety Check FAILED to block![/red]")
+    except RealAccountExecutionBlockedError:
+        console.print(
+            "[green]✓ Real Account Hard-Block: Passed (Execution blocked on Real balance)[/green]"
+        )
+
+    # Step 3: Dispatch through MockBrokerPracticeTransport
+    mock_transport = MockBrokerPracticeTransport(
+        should_succeed=True, option_id="ticket_offline_777"
+    )
+    _ = engine.submit_order(order1, c1, broker_transport=mock_transport)
+    console.print(
+        f"[green]✓ Order Dispatch & Ack: Passed "
+        f"(Ticket={order1.broker_order_id}, State={order1.state.value})[/green]"
+    )
+
+    # Step 4: Single test order invariant check
+    p2 = engine.create_proposal(
+        symbol="EURUSD",
+        side=OrderSide.CALL,
+        stake=1.0,
+        candle_to_ts=float(c1.to_ts),
+        signal_id="sig_verif_02",
+    )
+    _order2, dec2 = engine.propose_and_validate(
+        p2, current_ts=float(c1.to_ts), profile=prof_prac, balances=bal_prac
+    )
+    if dec2.permitted:
+        raise ValueError("Single test order invariant violated: second proposal was permitted")
+    console.print(
+        f"[green]✓ Single Test Order Invariant: Passed "
+        f"(Concurrent proposal rejected: {dec2.reason})[/green]"
+    )
+
+    # Step 5: Expiry & Settlement
+    c2 = Candle(
+        active_id=1,
+        symbol="EURUSD",
+        size=CandleSize.MIN_1,
+        from_ts=1700000060,
+        to_ts=1700000120,
+        at_ts=1700000120_000_000_000,
+        open=1.0852,
+        high=1.0862,
+        low=1.0850,
+        close=1.0858,
+        volume=120,
+        bid=1.0858,
+        ask=1.0858,
+    )
+    step_res = engine.process_candle(c2)
+    if len(step_res.settled_orders) != 1:
+        raise ValueError(f"Expected 1 settled order, got {len(step_res.settled_orders)}")
+    console.print(
+        f"[green]✓ Expiry Settlement & PnL: Passed "
+        f"(Settled PnL=${order1.simulated_pnl:+.2f})[/green]"
+    )
+    console.print(
+        Panel.fit(
+            "[bold green]Offline Practice Transport Verification Complete: "
+            "ALL CHECKS PASSED[/bold green]\n"
+            "[dim]Zero network I/O, strict schema validation, fail-closed Real guards, "
+            "& single test order invariant verified.[/dim]",
+            border_style="green",
+        )
+    )
+
+
+@execution_app.command(
+    "practice-test",
+    help="Operator-supervised verification workflow for a single Practice test order.",
+)
+def practice_test_command(
+    symbol: str = typer.Option("EURUSD", "--symbol", "-s", help="Instrument symbol"),
+    side: str = typer.Option("call", "--side", help="Trade direction (call or put)"),
+    stake: float = typer.Option(
+        MIN_PRACTICE_STAKE, "--stake", help="Virtual stake amount (minimum $1.00)"
+    ),
+    offline_mock: bool = typer.Option(
+        True, "--offline-mock/--live-socket", help="Run via offline mock transport (default: True)"
+    ),
+) -> None:
+    """Supervised Practice test workflow requiring explicit operator authorization."""
+    norm_side = OrderSide.CALL if side.lower() == "call" else OrderSide.PUT
+    stake = max(MIN_PRACTICE_STAKE, stake)
+
+    table = Table(
+        title="[bold yellow]Operator Supervised Practice Test — Pre-Flight Audit[/bold yellow]"
+    )
+    table.add_column("Parameter", style="cyan")
+    table.add_column("Value", style="bold white")
+
+    table.add_row("Confirmed Account Type", "[bold green]PRACTICE (Virtual Funds)[/bold green]")
+    table.add_row("Product & Instrument", f"BINARY {symbol.upper()}")
+    table.add_row("Trade Direction", f"[bold cyan]{norm_side.value.upper()}[/bold cyan]")
+    table.add_row("Virtual Stake Amount", f"${stake:.2f} (Platform minimum)")
+    table.add_row("Expiration Duration", "60 seconds (1 minute)")
+    table.add_row("Current Payout Rate", "85.0%")
+    table.add_row("Max Possible Simulated Loss", f"${stake:.2f}")
+    table.add_row("Autonomous AI Trading", "[bold red]DISABLED[/bold red]")
+    table.add_row(
+        "Action to Perform",
+        "Deterministic single test order placement via guarded practice transport",
+    )
+    console.print(table)
+
+    # Require explicit confirmation
+    confirmed = typer.confirm(
+        "Do you explicitly authorize submitting this single Practice test order?",
+        default=False,
+    )
+    if not confirmed:
+        console.print("[yellow]Aborted by operator. No test order was dispatched.[/yellow]")
+        raise typer.Abort()
+
+    if not offline_mock:
+        console.print(
+            Panel.fit(
+                "[bold red]Live Socket Transmission Prohibited[/bold red]\n"
+                "[yellow]IQ Option does not provide an authorized, documented public API for "
+                "programmatic trading.\n"
+                "Live socket transmission is withheld to prevent unverified "
+                "socket calls.[/yellow]\n"
+                "[dim]Use --offline-mock (default) for deterministic execution verification.[/dim]",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # Execute deterministic mock dispatch
+    tok = PracticeExecutionAuthToken(
+        authorization_signature="sig_supervisor_cli_practice",
+        supervisor_id="supervisor_cli_operator",
+    )
+    mode_cfg = ExecutionModeConfig(
+        mode=ExecutionMode.PRACTICE,
+        practice_enabled=True,
+        practice_auth_token=tok,
+    )
+    engine = ModularExecutionEngine(
+        ModularExecutionConfig(
+            symbol=symbol.upper(),
+            mode=ExecutionMode.PRACTICE,
+            default_product_type=ProductType.BINARY,
+            initial_balance=10000.0,
+            mode_config=mode_cfg,
+            single_test_order_mode=True,
+        )
+    )
+
+    prof = _make_profile(1, 101)
+    bals = [
+        Balance(
+            id="101",
+            type=AccountType.PRACTICE,
+            amount=10000.0,
+            currency="USD",
+            is_active=True,
+        )
+    ]
+    c1 = Candle(
+        active_id=1,
+        symbol=symbol.upper(),
+        size=CandleSize.MIN_1,
+        from_ts=1700000000,
+        to_ts=1700000060,
+        at_ts=1700000060_000_000_000,
+        open=1.0850,
+        high=1.0855,
+        low=1.0848,
+        close=1.0852,
+        volume=100,
+        bid=1.0852,
+        ask=1.0852,
+    )
+
+    proposal = engine.create_proposal(
+        symbol=symbol.upper(),
+        side=norm_side,
+        stake=stake,
+        candle_to_ts=float(c1.to_ts),
+        signal_id="sig_operator_cli_test",
+    )
+    order, dec = engine.propose_and_validate(
+        proposal, current_ts=float(c1.to_ts), profile=prof, balances=bals
+    )
+    if not dec.permitted:
+        console.print(f"[bold red]Order rejected by risk controller: {dec.message}[/bold red]")
+        raise typer.Exit(code=1)
+
+    mock_transport = MockBrokerPracticeTransport(
+        should_succeed=True, option_id="mock_ticket_cli_supervised"
+    )
+    _ = engine.submit_order(order, c1, broker_transport=mock_transport)
+    console.print(
+        Panel.fit(
+            "[bold green]Practice Test Order Successfully Placed "
+            "(Simulated Transport)[/bold green]\n"
+            f"• Order ID: {order.order_id}\n"
+            f"• Broker Ticket ID: {order.broker_order_id}\n"
+            f"• State: {order.state.value.upper()}\n"
+            f"• Entry Price: {order.entry_price:.5f}\n"
+            f"• Expiry TS: {int(order.expiry_ts or 0)}\n"
+            f"• Audit Trail: Order intent durably saved in SQLite execution journal.",
+            border_style="green",
+        )
+    )

@@ -103,6 +103,8 @@ VALID_ORDER_TRANSITIONS: dict[OrderState, set[OrderState]] = {
         OrderState.UNKNOWN,
         OrderState.CANCELLED,
         OrderState.REJECTED,
+        OrderState.OPEN,
+        OrderState.SETTLED,
     },
     OrderState.UNKNOWN: {
         OrderState.RECONCILING,

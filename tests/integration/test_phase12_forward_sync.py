@@ -376,7 +376,7 @@ async def test_forward_sync_rejects_incomplete_candle(tmp_path: Path) -> None:
         client=ForwardBroker(initial + bad_future),
     )
 
-    with pytest.raises(DataAcquisitionError, match="invalid identity, timeframe, or status"):
+    with pytest.raises(DataAcquisitionError, match="incomplete_inside_completed_window"):
         await job.run()
 
 
@@ -467,7 +467,15 @@ async def test_forward_sync_idempotent_repeated_execution(tmp_path: Path) -> Non
     assert files_after_cycle2 == files_after_cycle1
 
 
-def test_forward_cli_plan_and_status_and_noop(tmp_path: Path) -> None:
+def test_forward_cli_plan_and_status_and_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class WeekendClock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return datetime(2026, 11, 14, 12, tzinfo=UTC).astimezone(tz)
+
+    monkeypatch.setattr("iqoption_research.market_data.forward_sync.datetime", WeekendClock)
     root = tmp_path / "datasets"
     friday = int(datetime(2026, 11, 13, 21, 59, tzinfo=UTC).timestamp())
     initial = [_candle(friday)]
@@ -713,3 +721,262 @@ def test_forward_status_first_run_without_checkpoint(tmp_path: Path) -> None:
     assert payload["message"] == "No forward collection has been required yet"
     assert payload["coverage"]["base"]["unique_candles"] == 500
     assert not checkpoint_file.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("server_offset", [-1, 0, 30, 120])
+async def test_inclusive_boundary_with_server_clock(tmp_path: Path, server_offset: int) -> None:
+    from iqoption_research.market_data.candles import normalize_candle
+
+    start = int(datetime(2026, 11, 16, 10, tzinfo=UTC).timestamp())
+    initial = _series(start, 3)
+    future = _series(initial[-1].to_ts, 7)
+    boundary = future[-1].to_ts
+    collector = _persist(tmp_path, initial)
+    original_files = {p: p.read_bytes() for p in tmp_path.glob("*.parquet")}
+    raw = {
+        "from": boundary,
+        "to": boundary + 60,
+        "open": 1.1,
+        "close": 1.1,
+        "min": 1.09,
+        "max": 1.11,
+        "volume": 1,
+    }
+    newest = normalize_candle(
+        raw,
+        symbol="EURUSD",
+        active_id=1,
+        size=60,
+        server_time_ns=(boundary + server_offset) * 1_000_000_000,
+    )
+    plan = build_forward_sync_plan(tmp_path, page_size=5, now_ts=boundary)
+    job = create_forward_sync_job(
+        collector=collector,
+        plan=plan,
+        job_id="boundary",
+        client=ForwardBroker(initial + future + [newest]),
+    )
+    result = await job.run()
+    stored = collector.load_dataset("EURUSD", 60)
+    assert [c.from_ts for c in stored] == [c.from_ts for c in initial + future]
+    assert result.new_records_saved == len(future)
+    assert result.unresolved_gap_count == 0
+    assert all(p.read_bytes() == content for p, content in original_files.items())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changes", "invariant"),
+    [
+        ({"active_id": 76}, "active_id"),
+        ({"symbol": "EURUSD-OTC"}, "instrument"),
+        ({"size": CandleSize.MIN_5}, "timeframe"),
+        ({"identity_provenance": "unknown"}, "identity_provenance"),
+        ({"provenance": "synthetic"}, "historical_provenance"),
+        ({"is_complete": False}, "incomplete_inside_completed_window"),
+        ({"high": float("nan")}, "ohlc"),
+    ],
+)
+async def test_rejected_page_resume_is_atomic(
+    tmp_path: Path, changes: dict[str, Any], invariant: str
+) -> None:
+    start = int(datetime(2026, 11, 16, 10, tzinfo=UTC).timestamp())
+    initial = _series(start, 3)
+    future = _series(initial[-1].to_ts, 8)
+    collector = _persist(tmp_path, initial)
+    broken = [replace(c, **changes) if c == future[1] else c for c in future]
+    plan = build_forward_sync_plan(tmp_path, page_size=5, now_ts=future[-1].to_ts)
+    job = create_forward_sync_job(
+        collector=collector, plan=plan, job_id="reject", client=ForwardBroker(initial + broken)
+    )
+    with pytest.raises(DataAcquisitionError, match=f"invariant={invariant}") as exc:
+        await job.run()
+    assert f"from_ts={future[1].from_ts}" in str(exc.value)
+    checkpoint = load_forward_checkpoint(tmp_path, "reject")
+    assert checkpoint.state == ForwardState.PARTIAL
+    assert checkpoint.requests_made == 2
+    assert checkpoint.new_records_saved == 5
+    assert checkpoint.next_endtime == future[3].from_ts - 1
+    original_files = {p: p.read_bytes() for p in tmp_path.glob("*.parquet")}
+    broker = ForwardBroker(initial + future)
+    resumed = create_forward_sync_job(
+        collector=collector, plan=plan, job_id="reject", client=broker
+    )
+    await resumed.run()
+    assert broker.endtimes[0] == checkpoint.next_endtime
+    assert [c.from_ts for c in collector.load_dataset("EURUSD", 60)] == [
+        c.from_ts for c in initial + future
+    ]
+    assert all(p.read_bytes() == content for p, content in original_files.items())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("at_boundary", [False, True])
+@pytest.mark.parametrize("fault", ["duration", "timestamp_alignment", "instrument"])
+async def test_invalid_candles_are_not_filtered(
+    tmp_path: Path, at_boundary: bool, fault: str
+) -> None:
+    start = int(datetime(2026, 11, 16, 10, tzinfo=UTC).timestamp())
+    initial = _series(start, 3)
+    future = _series(initial[-1].to_ts, 3)
+    boundary = future[-1].to_ts
+    candle = _candle(boundary if at_boundary else future[1].from_ts)
+    if fault == "duration":
+        candle = replace(candle, to_ts=candle.to_ts + 1)
+    elif fault == "timestamp_alignment":
+        candle = replace(candle, from_ts=candle.from_ts - 1, to_ts=candle.to_ts - 1)
+    else:
+        candle = replace(candle, symbol="EURUSD-OTC")
+    collector = _persist(tmp_path, initial)
+    plan = build_forward_sync_plan(tmp_path, page_size=20, now_ts=boundary)
+    job = create_forward_sync_job(
+        collector=collector,
+        plan=plan,
+        job_id="invalid",
+        client=ForwardBroker(initial + future + [candle]),
+    )
+    with pytest.raises(DataAcquisitionError, match=f"invariant={fault}"):
+        await job.run()
+    assert len(collector.load_dataset("EURUSD", 60)) == len(initial)
+
+
+@pytest.mark.parametrize("clock_offset", [-60, -1, 0, 60])
+def test_server_clock_controls_completeness(clock_offset: int) -> None:
+    from iqoption_research.market_data.candles import normalize_candle
+
+    start = 1794821400
+    raw = {"from": start, "to": start + 60, "open": 1.1, "close": 1.1, "min": 1.09, "max": 1.11}
+    candle = normalize_candle(
+        raw, symbol="EURUSD", size=60, server_time_ns=(start + 60 + clock_offset) * 1_000_000_000
+    )
+    assert candle.is_complete is (clock_offset >= 0)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"size": 300},
+        {"size": 61},
+        {"active_id": 76},
+        {"symbol": "EURUSD-OTC"},
+        {"to": 1794821461},
+        {"from": 1794821400001, "to": 1794821460001},
+    ],
+)
+def test_raw_broker_metadata_not_overridden(changes: dict[str, Any]) -> None:
+    from iqoption_research.market_data.candles import normalize_candles
+
+    raw = {
+        "from": 1794821400,
+        "to": 1794821460,
+        "open": 1.1,
+        "close": 1.1,
+        "min": 1.09,
+        "max": 1.11,
+        **changes,
+    }
+    candles, errors = normalize_candles([raw], symbol="EURUSD", active_id=1, size=60)
+    assert not candles
+    assert len(errors) == 1
+    assert errors[0].from_ts is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clock_offset", [-1, 30])
+async def test_mocked_client_clock_diagnostic(tmp_path: Path, clock_offset: int) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from iqoption_research.connectors.iqoption.client import AsyncIQOption
+
+    start = 1794821400
+    collector = _persist(tmp_path, [_candle(start - 60)])
+    boundary = start + 60
+    raw = [
+        {"from": ts, "to": ts + 60, "open": 1.1, "close": 1.1, "min": 1.09, "max": 1.11}
+        for ts in (start, boundary)
+    ]
+    response = {
+        "name": "candles",
+        "request_id": "candles-1",
+        "msg": {"active_id": 1, "candles": raw},
+    }
+    clock = (boundary + clock_offset) * 1_000_000_000
+    client = AsyncIQOption(offline=True)
+    client._ws = SimpleNamespace(  # type: ignore[assignment]
+        is_ready=True, server_time_ns=clock, send_and_wait=AsyncMock(return_value=response)
+    )
+    result = await client.get_candles("EURUSD", 60, 5, endtime=boundary)
+    assert result.completion_clock_ns == clock
+    assert not result.errors
+    plan = build_forward_sync_plan(tmp_path, now_ts=boundary)
+    job = create_forward_sync_job(collector=collector, plan=plan, job_id="clock", client=client)
+    if clock_offset < 0:
+        with pytest.raises(DataAcquisitionError, match="incomplete_inside_completed_window") as exc:
+            job._validate_page(result, seen={})
+        assert f"completion_clock_ns={clock}" in str(exc.value)
+    else:
+        page, _, _ = job._validate_page(result, seen={})
+        assert [c.from_ts for c in page] == [start]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflict", [False, True])
+async def test_overlapping_broker_pages(tmp_path: Path, conflict: bool) -> None:
+    start = 1794821400
+    initial = _series(start, 3)
+    future = _series(initial[-1].to_ts, 6)
+    collector = _persist(tmp_path, initial)
+
+    class OverlapBroker(ForwardBroker):
+        async def get_candles(self, *args: Any, **kwargs: Any) -> FakeFetchResult:
+            self.calls += 1
+            if self.calls == 1:
+                return FakeFetchResult(future[2:])
+            overlap = replace(future[2], volume=1) if conflict else future[2]
+            return FakeFetchResult(initial[-1:] + future[:2] + [overlap])
+
+    plan = build_forward_sync_plan(tmp_path, now_ts=future[-1].to_ts)
+    job = create_forward_sync_job(
+        collector=collector, plan=plan, job_id="overlap", client=OverlapBroker([])
+    )
+    if conflict:
+        with pytest.raises(DataAcquisitionError, match="Conflicting forward duplicate"):
+            await job.run()
+        assert len(collector.load_dataset("EURUSD", 60)) == 7
+    else:
+        result = await job.run()
+        assert result.new_records_saved == 6
+        assert result.duplicates_skipped == 2
+        assert [c.from_ts for c in collector.load_dataset("EURUSD", 60)] == [
+            c.from_ts for c in initial + future
+        ]
+
+
+def test_rejected_raw_page_diagnostic_does_not_copy_payload(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from iqoption_research.market_data.candles import normalize_candles
+
+    start = 1794821400
+    collector = _persist(tmp_path, [_candle(start - 60)])
+    raw = {
+        "from": start,
+        "to": start + 61,
+        "open": 1.1,
+        "close": 1.1,
+        "min": 1.09,
+        "max": 1.11,
+        "password": "PRIVATE_MARKER",
+    }
+    candles, errors = normalize_candles([raw], symbol="EURUSD", size=60)
+    plan = build_forward_sync_plan(tmp_path, now_ts=start + 60)
+    job = create_forward_sync_job(
+        collector=collector, plan=plan, job_id="raw", client=ForwardBroker([])
+    )
+    result = SimpleNamespace(source="iqoption", candle_list=candles, errors=errors)
+    with pytest.raises(DataAcquisitionError, match="invariant=duration") as exc:
+        job._validate_page(result, seen={})
+    assert f"from_ts={start}" in str(exc.value)
+    assert "PRIVATE_MARKER" not in str(exc.value)

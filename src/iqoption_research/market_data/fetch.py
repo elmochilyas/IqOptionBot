@@ -28,6 +28,7 @@ class CandleFetchResult:
     fetched_at: datetime
     raw_count: int
     source: str
+    completion_clock_ns: int | None = None
 
     @property
     def candle_list(self) -> list[Candle]:

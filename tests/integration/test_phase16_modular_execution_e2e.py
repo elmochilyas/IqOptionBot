@@ -352,7 +352,10 @@ def test_cli_execution_commands_e2e() -> None:
     assert res_matrix.exit_code == 0
     assert "IQ Option Broker Capability Matrix" in res_matrix.output
     assert "Summary of Operations:" in res_matrix.output
-    assert "Implemented & Verified" in res_matrix.output
+    assert (
+        "Read-Only Broker-Verified" in res_matrix.output
+        or "Implemented & Verified" in res_matrix.output
+    )
 
     # 2. audit command
     res_audit = runner.invoke(app, ["execution", "audit"])

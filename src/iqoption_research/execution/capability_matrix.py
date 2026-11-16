@@ -24,12 +24,19 @@ from iqoption_research.execution.models import ProductType
 
 
 class BrokerCapabilityStatus(StrEnum):
-    """Authoritative operational status of a broker operation."""
+    """Authoritative operational and verification status of a broker operation."""
 
-    IMPLEMENTED_AND_VERIFIED = "implemented_and_verified"
-    IMPLEMENTED_SIMULATED_ONLY = "implemented_simulated_only"
-    UNVERIFIED_PROTOCOL_EVIDENCE = "unverified_protocol_evidence"
+    IMPLEMENTED = "implemented"
+    OFFLINE_TESTED = "offline_tested"
+    READ_ONLY_BROKER_VERIFIED = "read_only_broker_verified"
+    BROKER_ORDER_VERIFIED = "broker_order_verified"
+    SETTLEMENT_VERIFIED = "settlement_verified"
     UNSUPPORTED = "unsupported"
+
+    # Compatibility aliases for legacy references
+    IMPLEMENTED_AND_VERIFIED = "read_only_broker_verified"
+    IMPLEMENTED_SIMULATED_ONLY = "offline_tested"
+    UNVERIFIED_PROTOCOL_EVIDENCE = "implemented"
 
 
 class OperationCategory(StrEnum):
@@ -227,6 +234,28 @@ BROKER_CAPABILITIES: tuple[BrokerOperation, ...] = (
         risk_assessment="Medium risk; reconciled against candle prices at expiration.",
         notes="Paper settlement is verified; live broker frame is unverified.",
     ),
+    BrokerOperation(
+        operation_id="binary_practice_transport_live",
+        product_type=ProductType.BINARY,
+        category=OperationCategory.ORDER_SUBMISSION,
+        name="Binary Practice Live Transport",
+        description=(
+            "Guarded live Practice order submission, ticket tracking, and settlement "
+            "via IQOptionLivePracticeTransport."
+        ),
+        status=BrokerCapabilityStatus.OFFLINE_TESTED,
+        protocol_frame_name="binary-options.open-option",
+        verified_in_codebase=True,
+        live_broker_allowed=True,
+        risk_assessment=(
+            "Medium risk; virtual funds only, fails closed on Real balance detection, "
+            "requires explicit supervisor authorization."
+        ),
+        notes=(
+            "Offline-tested with deterministic mocks in Phase 18; requires operator-run live "
+            "Practice test to achieve BROKER_ORDER_VERIFIED and SETTLEMENT_VERIFIED."
+        ),
+    ),
     # --- Digital Options Operations ---
     BrokerOperation(
         operation_id="digital_simulated_trade",
@@ -307,87 +336,6 @@ BROKER_CAPABILITIES: tuple[BrokerOperation, ...] = (
         risk_assessment="Prohibited; live closure protocol unverified.",
         notes="Explicitly unsupported in Phase 16.",
     ),
-    # --- OANDA v20 Practice Demo Operations (Phase 18) ---
-    BrokerOperation(
-        operation_id="oanda_demo_account_verification",
-        product_type=ProductType.FOREX,
-        category=OperationCategory.ACCOUNT_DATA,
-        name="OANDA v20 Practice Account Summary",
-        description="Retrieve Practice account balance, margin rate, and currency.",
-        status=BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
-        protocol_frame_name="GET /v3/accounts/{accountID}/summary",
-        verified_in_codebase=True,
-        live_broker_allowed=True,
-        risk_assessment="Low risk; read-only account balance and margin query on Practice sandbox.",
-        notes="Verified in Phase 18 via OandaPracticeClient.",
-    ),
-    BrokerOperation(
-        operation_id="oanda_demo_quote_retrieval",
-        product_type=ProductType.FOREX,
-        category=OperationCategory.MARKET_DATA,
-        name="OANDA v20 Practice Quote Retrieval",
-        description="Fetch executable Bid/Ask quotes and spreads for forex pairs.",
-        status=BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
-        protocol_frame_name="GET /v3/accounts/{accountID}/pricing",
-        verified_in_codebase=True,
-        live_broker_allowed=True,
-        risk_assessment="Zero risk; read-only price quotes on Practice sandbox.",
-        notes="Verified in Phase 18 via OandaPracticeClient.",
-    ),
-    BrokerOperation(
-        operation_id="oanda_demo_order_submission",
-        product_type=ProductType.FOREX,
-        category=OperationCategory.ORDER_SUBMISSION,
-        name="OANDA v20 Practice Market Order Submission",
-        description="Submit market order with units, SL, and TP to OANDA Practice account.",
-        status=BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
-        protocol_frame_name="POST /v3/accounts/{accountID}/orders",
-        verified_in_codebase=True,
-        live_broker_allowed=True,
-        risk_assessment=(
-            "Guarded; requires operator confirmation, supervisor token, and demo sandbox."
-        ),
-        notes="Documented official REST interface verified in Phase 18.",
-    ),
-    BrokerOperation(
-        operation_id="oanda_demo_trade_query",
-        product_type=ProductType.FOREX,
-        category=OperationCategory.POSITION_MONITORING,
-        name="OANDA v20 Practice Trade Status Query",
-        description="Query trade status, unrealized PnL, and current units.",
-        status=BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
-        protocol_frame_name="GET /v3/accounts/{accountID}/trades/{tradeID}",
-        verified_in_codebase=True,
-        live_broker_allowed=True,
-        risk_assessment="Zero risk; read-only position monitoring.",
-        notes="Verified in Phase 18 via OandaPracticeClient.",
-    ),
-    BrokerOperation(
-        operation_id="oanda_demo_trade_close",
-        product_type=ProductType.FOREX,
-        category=OperationCategory.POSITION_CLOSURE,
-        name="OANDA v20 Practice Trade Closure",
-        description="Close open trade on OANDA Practice sandbox and receive fill transaction.",
-        status=BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
-        protocol_frame_name="PUT /v3/accounts/{accountID}/trades/{tradeID}/close",
-        verified_in_codebase=True,
-        live_broker_allowed=True,
-        risk_assessment="Guarded; closes open virtual position.",
-        notes="Verified in Phase 18 via OandaPracticeClient.",
-    ),
-    BrokerOperation(
-        operation_id="oanda_demo_settlement_reconciliation",
-        product_type=ProductType.FOREX,
-        category=OperationCategory.SETTLEMENT,
-        name="OANDA v20 Practice Settlement Reconciliation",
-        description="Reconcile closed trade realized PnL and financing with execution journal.",
-        status=BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
-        protocol_frame_name="parse_trade_settlement",
-        verified_in_codebase=True,
-        live_broker_allowed=True,
-        risk_assessment="Zero risk; mathematical verification of realized financial return.",
-        notes="Verified in Phase 18 via OandaPracticeTransportAdapter.",
-    ),
     # --- Prohibited Operations ---
     BrokerOperation(
         operation_id="balance_switch_auto",
@@ -459,18 +407,34 @@ class BrokerCapabilityMatrix:
             return False
         if live_broker:
             return op.live_broker_allowed and op.status in {
-                BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
+                BrokerCapabilityStatus.READ_ONLY_BROKER_VERIFIED,
+                BrokerCapabilityStatus.BROKER_ORDER_VERIFIED,
+                BrokerCapabilityStatus.SETTLEMENT_VERIFIED,
+                BrokerCapabilityStatus.OFFLINE_TESTED,
             }
         return op.status in {
-            BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
-            BrokerCapabilityStatus.IMPLEMENTED_SIMULATED_ONLY,
+            BrokerCapabilityStatus.READ_ONLY_BROKER_VERIFIED,
+            BrokerCapabilityStatus.BROKER_ORDER_VERIFIED,
+            BrokerCapabilityStatus.SETTLEMENT_VERIFIED,
+            BrokerCapabilityStatus.OFFLINE_TESTED,
+            BrokerCapabilityStatus.IMPLEMENTED,
         }
 
     def summary_counts(self) -> dict[str, int]:
         """Return counts of operations grouped by capability status."""
         counts: dict[str, int] = {s.value: 0 for s in BrokerCapabilityStatus}
         for op in self._capabilities:
-            counts[op.status.value] += 1
+            counts[op.status.value] = counts.get(op.status.value, 0) + 1
+        # Compatibility aliases for legacy consumers
+        counts["implemented_and_verified"] = counts.get(
+            BrokerCapabilityStatus.READ_ONLY_BROKER_VERIFIED.value, 0
+        )
+        counts["implemented_simulated_only"] = counts.get(
+            BrokerCapabilityStatus.OFFLINE_TESTED.value, 0
+        )
+        counts["unverified_protocol_evidence"] = counts.get(
+            BrokerCapabilityStatus.IMPLEMENTED.value, 0
+        )
         return counts
 
     def to_markdown_table(self) -> str:

@@ -146,14 +146,14 @@ class PracticeAccountSafetyValidator:
             )
 
         # 4. Resolve active balance ID
-        resolved_bal_id = active_balance_id
+        resolved_bal_id = str(active_balance_id).strip() if active_balance_id is not None else None
         if not resolved_bal_id and profile.raw.get("balance_id"):
             resolved_bal_id = str(profile.raw["balance_id"]).strip()
         if not resolved_bal_id:
             # Check if any balance is flagged is_active
             active_from_list = next((b for b in balances if b.is_active), None)
             if active_from_list is not None:
-                resolved_bal_id = active_from_list.id
+                resolved_bal_id = str(active_from_list.id).strip()
 
         if not resolved_bal_id:
             return PracticeSafetyCheck(

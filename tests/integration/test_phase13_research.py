@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -469,7 +470,7 @@ def test_monday_operator_checklist_cli_offline() -> None:
     res_audit = runner.invoke(app, ["data", "coverage-audit", "--output-dir", storage])
     assert res_audit.exit_code == 0
     assert "Authentic Historical Coverage" in res_audit.output
-    assert "Unique candles:" in res_audit.output
+    assert re.search(r"Unique candles:\s*\d+", res_audit.output)
 
     # Step 2: Forward status (confirms weekend boundary)
     res_status = runner.invoke(app, ["data", "forward-status", "--output-dir", storage])

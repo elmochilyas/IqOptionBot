@@ -56,9 +56,12 @@ class BaseExecutionAdapter(ABC):
         self,
         product_type: ProductType,
         execution_mode: ExecutionMode = ExecutionMode.PAPER,
+        *,
+        broker_transport: Any = None,
     ) -> None:
         self.product_type = product_type
         self.execution_mode = execution_mode
+        self.broker_transport = broker_transport
 
     @abstractmethod
     def validate_proposal(self, proposal: OrderProposal) -> None:

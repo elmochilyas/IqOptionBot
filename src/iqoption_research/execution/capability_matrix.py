@@ -24,12 +24,19 @@ from iqoption_research.execution.models import ProductType
 
 
 class BrokerCapabilityStatus(StrEnum):
-    """Authoritative operational status of a broker operation."""
+    """Authoritative operational and verification status of a broker operation."""
 
-    IMPLEMENTED_AND_VERIFIED = "implemented_and_verified"
-    IMPLEMENTED_SIMULATED_ONLY = "implemented_simulated_only"
-    UNVERIFIED_PROTOCOL_EVIDENCE = "unverified_protocol_evidence"
+    IMPLEMENTED = "implemented"
+    OFFLINE_TESTED = "offline_tested"
+    READ_ONLY_BROKER_VERIFIED = "read_only_broker_verified"
+    BROKER_ORDER_VERIFIED = "broker_order_verified"
+    SETTLEMENT_VERIFIED = "settlement_verified"
     UNSUPPORTED = "unsupported"
+
+    # Compatibility aliases for legacy references
+    IMPLEMENTED_AND_VERIFIED = "read_only_broker_verified"
+    IMPLEMENTED_SIMULATED_ONLY = "offline_tested"
+    UNVERIFIED_PROTOCOL_EVIDENCE = "implemented"
 
 
 class OperationCategory(StrEnum):
@@ -236,7 +243,7 @@ BROKER_CAPABILITIES: tuple[BrokerOperation, ...] = (
             "Guarded live Practice order submission, ticket tracking, and settlement "
             "via IQOptionLivePracticeTransport."
         ),
-        status=BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
+        status=BrokerCapabilityStatus.OFFLINE_TESTED,
         protocol_frame_name="binary-options.open-option",
         verified_in_codebase=True,
         live_broker_allowed=True,
@@ -244,7 +251,10 @@ BROKER_CAPABILITIES: tuple[BrokerOperation, ...] = (
             "Medium risk; virtual funds only, fails closed on Real balance detection, "
             "requires explicit supervisor authorization."
         ),
-        notes="Verified in Phase 18 via dedicated IQOptionLivePracticeTransport.",
+        notes=(
+            "Offline-tested with deterministic mocks in Phase 18; requires operator-run live "
+            "Practice test to achieve BROKER_ORDER_VERIFIED and SETTLEMENT_VERIFIED."
+        ),
     ),
     # --- Digital Options Operations ---
     BrokerOperation(
@@ -397,18 +407,34 @@ class BrokerCapabilityMatrix:
             return False
         if live_broker:
             return op.live_broker_allowed and op.status in {
-                BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
+                BrokerCapabilityStatus.READ_ONLY_BROKER_VERIFIED,
+                BrokerCapabilityStatus.BROKER_ORDER_VERIFIED,
+                BrokerCapabilityStatus.SETTLEMENT_VERIFIED,
+                BrokerCapabilityStatus.OFFLINE_TESTED,
             }
         return op.status in {
-            BrokerCapabilityStatus.IMPLEMENTED_AND_VERIFIED,
-            BrokerCapabilityStatus.IMPLEMENTED_SIMULATED_ONLY,
+            BrokerCapabilityStatus.READ_ONLY_BROKER_VERIFIED,
+            BrokerCapabilityStatus.BROKER_ORDER_VERIFIED,
+            BrokerCapabilityStatus.SETTLEMENT_VERIFIED,
+            BrokerCapabilityStatus.OFFLINE_TESTED,
+            BrokerCapabilityStatus.IMPLEMENTED,
         }
 
     def summary_counts(self) -> dict[str, int]:
         """Return counts of operations grouped by capability status."""
         counts: dict[str, int] = {s.value: 0 for s in BrokerCapabilityStatus}
         for op in self._capabilities:
-            counts[op.status.value] += 1
+            counts[op.status.value] = counts.get(op.status.value, 0) + 1
+        # Compatibility aliases for legacy consumers
+        counts["implemented_and_verified"] = counts.get(
+            BrokerCapabilityStatus.READ_ONLY_BROKER_VERIFIED.value, 0
+        )
+        counts["implemented_simulated_only"] = counts.get(
+            BrokerCapabilityStatus.OFFLINE_TESTED.value, 0
+        )
+        counts["unverified_protocol_evidence"] = counts.get(
+            BrokerCapabilityStatus.IMPLEMENTED.value, 0
+        )
         return counts
 
     def to_markdown_table(self) -> str:

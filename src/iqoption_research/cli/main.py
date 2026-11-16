@@ -12,7 +12,11 @@ import typer
 from iqoption_research.cli.commands.auth_cmd import auth_app
 from iqoption_research.cli.commands.bot_cmd import bot_app
 from iqoption_research.cli.commands.data_cmd import app as data_app
-from iqoption_research.cli.commands.execution_cmd import execution_app
+from iqoption_research.cli.commands.execution_cmd import (
+    execution_app,
+    practice_diagnostics_command,
+    practice_test_command,
+)
 from iqoption_research.cli.commands.ml_cmd import ml_app
 from iqoption_research.cli.commands.paper_cmd import paper_app
 from iqoption_research.cli.commands.probe import probe_command
@@ -36,6 +40,14 @@ app.command("simulate", help="Offline connection simulation (no network).")(simu
 app.command("security-check", help="Offline TLS/endpoint/read-only checks.")(security_check_command)
 app.command("validate-data", help="Offline candle validation.")(validate_command)
 app.command("probe", help="Explicit read-only live probe (requires --live).")(probe_command)
+app.command(
+    "practice-diagnostics",
+    help="Operator-run READ-ONLY diagnostics for IQ Option Practice account (no orders).",
+)(practice_diagnostics_command)
+app.command(
+    "practice-test",
+    help="Operator-supervised verification workflow for a single Practice test order.",
+)(practice_test_command)
 app.add_typer(research_app, name="research")
 app.add_typer(ml_app, name="ml")
 app.add_typer(paper_app, name="paper")

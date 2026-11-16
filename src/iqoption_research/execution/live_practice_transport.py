@@ -74,7 +74,6 @@ class IQOptionLivePracticeTransportConfig:
     request_timeout: float = 10.0
     settlement_timeout: float = 90.0
     max_verification_age: float = 10.0
-    auto_switch_to_practice: bool = True
 
 
 class IQOptionLivePracticeTransport:
@@ -264,7 +263,10 @@ class IQOptionLivePracticeTransport:
         self._verified_at = time.time()
 
     async def _verify_practice_account_guard(self) -> None:
-        """Run authoritative pre-flight safety check, switching balance if necessary."""
+        """Run authoritative pre-flight safety check.
+
+        Fails closed if active account is REAL or unverified.
+        """
         if self._profile is None or not self._balances:
             raise PracticeAuthorizationError("Incomplete account data received from broker.")
 
@@ -279,54 +281,15 @@ class IQOptionLivePracticeTransport:
             verified_session_id=self._session_id,
         )
 
-        # Handle Real account detection
+        # Handle Real account detection: STRICT FAIL-CLOSED (Zero automatic switching)
         if check.verdict == PracticeSafetyVerdict.BLOCKED_ACTIVE_REAL:
-            if not self.config.auto_switch_to_practice:
-                raise RealAccountExecutionBlockedError(
-                    f"CRITICAL SAFETY GUARD: Active account is REAL "
-                    f"(id={check.active_balance_id}). "
-                    "Auto-switching is disabled. Live execution halted."
-                )
-
-            # Attempt to switch to practice balance
-            practice_bal = next(
-                (b for b in self._balances if b.is_practice and b.type == AccountType.PRACTICE),
-                None,
+            raise RealAccountExecutionBlockedError(
+                f"CRITICAL SAFETY GUARD: Active account on broker is REAL "
+                f"(id={check.active_balance_id}). "
+                "Automatic balance switching is strictly prohibited. "
+                "The operator must manually select the PRACTICE account in the "
+                "official IQ Option trading interface before running any execution tests."
             )
-            if practice_bal is None:
-                raise RealAccountExecutionBlockedError(
-                    "CRITICAL SAFETY GUARD: Active account is REAL and no Practice balance exists. "
-                    "Execution halted."
-                )
-
-            logger.warning(
-                "Active account is REAL (%s). Initiating explicit switch to Practice balance (%s)",
-                check.active_balance_id,
-                practice_bal.id,
-            )
-            await self._switch_to_balance(practice_bal.id)
-            await self.async_refresh_account_state()
-
-            # Re-verify post-switch
-            recheck = self._safety_validator.evaluate_pre_flight(
-                self._profile,
-                self._balances,
-                active_balance_id=self._active_balance_id,
-                last_verification_ts=self._verified_at,
-                current_ts=time.time(),
-                current_session_id=self._session_id,
-                verified_session_id=self._session_id,
-            )
-            if not recheck.is_safe_to_execute:
-                if recheck.verdict == PracticeSafetyVerdict.BLOCKED_ACTIVE_REAL:
-                    raise RealAccountExecutionBlockedError(
-                        "CRITICAL: Failed to switch to Practice balance. Account remains REAL."
-                    )
-                raise PracticeAuthorizationError(
-                    f"Practice verification failed after switch: {recheck.message}"
-                )
-            self._active_balance_id = recheck.active_balance_id
-            return
 
         if not check.is_safe_to_execute:
             raise PracticeAuthorizationError(
@@ -337,25 +300,6 @@ class IQOptionLivePracticeTransport:
         logger.info(
             "Authoritative Practice account verified: active_balance_id=%s", self._active_balance_id
         )
-
-    async def _switch_to_balance(self, target_balance_id: str | int) -> None:
-        """Send explicit change_balance message to switch active balance."""
-        if self._ws is None:
-            raise ConnectionError("WebSocket is not connected.")
-
-        req_id = f"switch_{next(self._request_counter)}"
-        frame = {
-            "name": "sendMessage",
-            "msg": {
-                "name": "change_balance",
-                "version": "2.0",
-                "body": {"balance_id": int(target_balance_id)},
-            },
-            "request_id": req_id,
-        }
-        await self._ws.send(json.dumps(frame))
-        # Allow short propagation time
-        await asyncio.sleep(0.5)
 
     # -----------------------------------------------------------------------
     # Order Dispatch & Settlement Handling
@@ -373,7 +317,24 @@ class IQOptionLivePracticeTransport:
                 f"({self._active_ticket_id}) is currently pending."
             )
 
-        # Active balance guard
+        # Active balance guard: ensure we are strictly on a verified Practice balance
+        if not self._active_balance_id:
+            raise PracticeAuthorizationError("No verified active Practice balance ID available.")
+
+        matched_bal = next(
+            (b for b in self._balances if str(b.id) == str(self._active_balance_id)),
+            None,
+        )
+        if (
+            matched_bal is None
+            or matched_bal.type != AccountType.PRACTICE
+            or not matched_bal.is_practice
+        ):
+            raise RealAccountExecutionBlockedError(
+                f"CRITICAL SAFETY GUARD: Active balance ({self._active_balance_id}) "
+                "is not a verified PRACTICE balance. Order transmission strictly prohibited."
+            )
+
         msg_body = frame.get("msg", {}).get("body", {})
         order_balance_id = str(msg_body.get("user_balance_id", "")).strip()
         if order_balance_id != str(self._active_balance_id).strip():

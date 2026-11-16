@@ -13,6 +13,7 @@ import pytest
 from typer.testing import CliRunner
 
 from iqoption_research.cli.commands.execution_cmd import execution_app
+from iqoption_research.cli.main import app
 from iqoption_research.execution.broker_readiness import PracticeExecutionAuthToken
 from iqoption_research.execution.execution_engine import (
     ModularExecutionConfig,
@@ -430,3 +431,57 @@ def test_single_test_order_invariant_blocks_second_order() -> None:
             assert "Single test order invariant" in dec2.message
         finally:
             journal.close()
+
+
+def test_cli_practice_diagnostics_offline_mock() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["practice-diagnostics", "--offline-mock", "--asset", "EURUSD"],
+    )
+    assert result.exit_code == 0
+    assert "Read-Only Diagnostics" in result.stdout
+    assert "PRACTICE (type 4 - Verified)" in result.stdout
+    assert "Zero Orders / Zero State Changes" in result.stdout
+    assert "ALL CHECKS PASSED" in result.stdout
+
+
+def test_cli_practice_test_top_level_command_with_asset_alias() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "practice-test",
+            "--offline-mock",
+            "--asset",
+            "EURUSD",
+            "--side",
+            "call",
+            "--stake",
+            "1.0",
+        ],
+        input="y\n",
+    )
+    assert result.exit_code == 0
+    assert "Operator Supervised Practice Test" in result.stdout
+    assert "mock_ticket_cli_supervised" in result.stdout
+
+
+def test_cli_execution_subcommand_aliases() -> None:
+    runner = CliRunner()
+    # Test execution practice-diagnostics
+    res_diag = runner.invoke(
+        app,
+        ["execution", "practice-diagnostics", "--offline-mock"],
+    )
+    assert res_diag.exit_code == 0
+    assert "Offline Diagnostic Findings" in res_diag.stdout
+
+    # Test execution practice-test
+    res_test = runner.invoke(
+        app,
+        ["execution", "practice-test", "--offline-mock"],
+        input="y\n",
+    )
+    assert res_test.exit_code == 0
+    assert "Practice Test Order Successfully Placed" in res_test.stdout

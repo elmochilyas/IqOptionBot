@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -18,6 +19,7 @@ from iqoption_research.execution.live_practice_transport import (
 from iqoption_research.execution.models import OrderSide, PaperOrder
 from iqoption_research.execution.modes import (
     ExecutionMode,
+    PracticeAuthorizationError,
     RealAccountExecutionBlockedError,
 )
 from iqoption_research.execution.practice_transport import (
@@ -232,9 +234,7 @@ async def test_practice_transport_real_account_hard_blocks_execution() -> None:
 
     transport = IQOptionLivePracticeTransport(
         ssid="test_mock_ssid",
-        config=IQOptionLivePracticeTransportConfig(
-            request_timeout=2.0, auto_switch_to_practice=False
-        ),
+        config=IQOptionLivePracticeTransportConfig(request_timeout=2.0),
         connect_factory=fake_connect,
     )
 
@@ -245,7 +245,7 @@ async def test_practice_transport_real_account_hard_blocks_execution() -> None:
 
 
 @pytest.mark.asyncio
-async def test_practice_transport_real_account_auto_switches_to_practice() -> None:
+async def test_practice_transport_real_account_fails_closed_without_auto_switching() -> None:
     # Initial: Real (type 1) active, but Practice (type 4) exists in balances
     initial_messages = [
         json.dumps({"name": "authenticated", "msg": True}),
@@ -269,18 +269,63 @@ async def test_practice_transport_real_account_auto_switches_to_practice() -> No
 
     transport = IQOptionLivePracticeTransport(
         ssid="test_mock_ssid",
-        config=IQOptionLivePracticeTransportConfig(
-            request_timeout=2.0, auto_switch_to_practice=True
-        ),
+        config=IQOptionLivePracticeTransportConfig(request_timeout=2.0),
         connect_factory=fake_connect,
     )
 
     try:
-        await transport.async_connect()
-        assert transport.active_balance_id == "202"
-        # Confirm change_balance frame was sent
+        with pytest.raises(RealAccountExecutionBlockedError, match=r"CRITICAL SAFETY GUARD.*REAL"):
+            await transport.async_connect()
+
+        # Confirm NO change_balance frame was ever sent
         sent_change = any("change_balance" in s for s in mock_ws.sent_messages)
-        assert sent_change is True
+        assert sent_change is False, "change_balance frame must never be transmitted"
+    finally:
+        await transport.async_close()
+
+
+@pytest.mark.asyncio
+async def test_practice_transport_order_submission_with_mismatched_balance_id_fails_closed() -> (
+    None
+):
+    mock_ws = MockWebSocket(make_standard_handshake_messages())
+
+    async def fake_connect() -> MockWebSocket:
+        return mock_ws
+
+    transport = IQOptionLivePracticeTransport(
+        ssid="test_mock_ssid",
+        config=IQOptionLivePracticeTransportConfig(request_timeout=2.0),
+        connect_factory=fake_connect,
+    )
+
+    await transport.async_connect()
+    try:
+        # Verified practice balance is "101"
+        assert transport.active_balance_id == "101"
+
+        # Attempt to send order with user_balance_id 999
+        mismatched_frame = {
+            "name": "sendMessage",
+            "msg": {
+                "name": "binary-options.open-option",
+                "version": "1.0",
+                "body": {
+                    "user_balance_id": 999,
+                    "active_id": 1,
+                    "option_type_id": 3,
+                    "direction": "call",
+                    "expired": int(time.time()) + 60,
+                    "price": 1.0,
+                    "time": int(time.time()),
+                },
+            },
+        }
+
+        with pytest.raises(
+            PracticeAuthorizationError, match="does not match verified Practice balance"
+        ):
+            await transport.async_send_order_frame(mismatched_frame)
     finally:
         await transport.async_close()
 

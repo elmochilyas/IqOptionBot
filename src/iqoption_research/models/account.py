@@ -28,6 +28,7 @@ class PracticeStatus(Enum):
     ACTIVE_UNKNOWN = "active_unknown"
     NO_PRACTICE_BALANCE = "no_practice_balance"
     NO_BALANCES = "no_balances"
+    ACCOUNT_SELECTION_UNVERIFIED = "account_selection_unverified"
 
     # Backward compatibility alias
     PRACTICE_PRESENT_ACTIVE_UNVERIFIED = "practice_present_active_unverified"
@@ -45,6 +46,7 @@ class PracticeVerification:
     message: str
     active_balance_id: str | None = None
     practice_balance_ids: tuple[str, ...] = ()
+    decision_path: tuple[str, ...] = ()
 
     @property
     def is_verified(self) -> bool:
@@ -57,6 +59,7 @@ class PracticeVerification:
             "message": self.message,
             "active_balance_id": self.active_balance_id,
             "practice_balance_ids": list(self.practice_balance_ids),
+            "decision_path": list(self.decision_path),
         }
 
 
@@ -99,6 +102,8 @@ class Balance:
     amount: float
     currency: str
     is_active: bool = False
+    raw_is_active: bool | None = None
+    is_default: bool | None = None
 
     @property
     def is_practice(self) -> bool:
@@ -170,12 +175,26 @@ class Balance:
         currency = str(data.get("currency") or "USD").strip()
         is_active = active_balance_id is not None and str(active_balance_id).strip() == balance_id
 
+        raw_is_active: bool | None = None
+        if "is_active" in data:
+            raw_is_active = bool(data["is_active"])
+        elif "active" in data:
+            raw_is_active = bool(data["active"])
+
+        is_default: bool | None = None
+        if "is_default" in data:
+            is_default = bool(data["is_default"])
+        elif "default" in data:
+            is_default = bool(data["default"])
+
         return cls(
             id=balance_id,
             type=account_type,
             amount=amount,
             currency=currency,
             is_active=is_active,
+            raw_is_active=raw_is_active,
+            is_default=is_default,
         )
 
     def __repr__(self) -> str:
@@ -354,8 +373,18 @@ class AccountStatus:
             and self.active_balance.type == AccountType.PRACTICE
         )
 
-    def practice_verification(self) -> PracticeVerification:
-        """Classify practice status without ever assuming/ switching."""
+    def practice_verification(
+        self,
+        *,
+        has_authoritative_indicator: bool = True,
+    ) -> PracticeVerification:
+        """Classify practice status without ever assuming or switching.
+
+        If ``has_authoritative_indicator`` is False, the broker has not provided an
+        authoritative session-specific active account indicator (e.g., the session merely
+        defaulted to the user's primary registration wallet), so we return
+        PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED and fail closed.
+        """
         practice_ids = tuple(
             b.id for b in self.balances if b.is_practice and b.type == AccountType.PRACTICE
         )
@@ -363,12 +392,35 @@ class AccountStatus:
             return PracticeVerification(
                 status=PracticeStatus.NO_BALANCES,
                 message="No balances were returned by the server.",
+                decision_path=("Evaluated balances: empty payload returned from server.",),
             )
         if not practice_ids:
             return PracticeVerification(
                 status=PracticeStatus.NO_PRACTICE_BALANCE,
                 message="Account has no PRACTICE balance.",
                 active_balance_id=(self.active_balance.id if self.active_balance else None),
+                decision_path=(
+                    f"Evaluated {len(self.balances)} balance(s); zero PRACTICE balances found.",
+                ),
+            )
+        if not has_authoritative_indicator:
+            active_id = self.active_balance.id if self.active_balance else None
+            return PracticeVerification(
+                status=PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED,
+                message=(
+                    "A PRACTICE balance exists, but the broker did not provide an authoritative "
+                    "session-specific active account indicator. The session defaulted to the "
+                    "server's primary wallet. Account selection is UNVERIFIED; live execution "
+                    "is blocked."
+                ),
+                active_balance_id=active_id,
+                practice_balance_ids=practice_ids,
+                decision_path=(
+                    f"Discovered {len(practice_ids)} PRACTICE balance(s).",
+                    f"Observed server default balance '{active_id}'.",
+                    "Broker lacks an authoritative session-specific active balance indicator.",
+                    "Classified as ACCOUNT_SELECTION_UNVERIFIED (fail closed).",
+                ),
             )
         if self.practice_verified:
             active = self.active_balance
@@ -381,6 +433,11 @@ class AccountStatus:
                 ),
                 active_balance_id=active.id,
                 practice_balance_ids=practice_ids,
+                decision_path=(
+                    f"Discovered PRACTICE balance '{active.id}'.",
+                    "Authoritative active balance confirmed as PRACTICE (type 4).",
+                    "Classified as VERIFIED_ACTIVE_PRACTICE.",
+                ),
             )
         if self.active_balance is not None and self.active_balance.is_real:
             return PracticeVerification(
@@ -392,6 +449,14 @@ class AccountStatus:
                 ),
                 active_balance_id=self.active_balance.id,
                 practice_balance_ids=practice_ids,
+                decision_path=(
+                    f"Discovered {len(practice_ids)} PRACTICE balance(s).",
+                    (
+                        f"Authoritative active balance confirmed as REAL "
+                        f"(id='{self.active_balance.id}', type=1)."
+                    ),
+                    "Classified as ACTIVE_REAL (fail closed).",
+                ),
             )
         return PracticeVerification(
             status=PracticeStatus.ACTIVE_UNKNOWN,
@@ -402,6 +467,11 @@ class AccountStatus:
             ),
             active_balance_id=(self.active_balance.id if self.active_balance else None),
             practice_balance_ids=practice_ids,
+            decision_path=(
+                f"Discovered {len(practice_ids)} PRACTICE balance(s).",
+                "Active trading balance ID unresolved or unverified.",
+                "Classified as ACTIVE_UNKNOWN (fail closed).",
+            ),
         )
 
     def __repr__(self) -> str:

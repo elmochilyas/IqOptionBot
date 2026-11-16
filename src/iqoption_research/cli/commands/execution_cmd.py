@@ -22,6 +22,10 @@ from rich.table import Table
 
 from iqoption_research.config.settings import Settings
 from iqoption_research.connectors.iqoption.client import AsyncIQOption
+from iqoption_research.execution.account_diagnostics import (
+    AccountReadinessResult,
+    BrokerAccountDiagnostic,
+)
 from iqoption_research.execution.broker_readiness import PracticeExecutionAuthToken
 from iqoption_research.execution.capability_matrix import (
     BrokerCapabilityMatrix,
@@ -42,9 +46,10 @@ from iqoption_research.execution.practice_transport import (
     MIN_PRACTICE_STAKE,
     MockBrokerPracticeTransport,
 )
-from iqoption_research.models.account import AccountType, Balance, PracticeStatus, Profile
+from iqoption_research.execution.safety import AccountSelectionUnverifiedError
+from iqoption_research.models.account import AccountType, Balance, Profile
 from iqoption_research.models.market import Candle, CandleSize
-from iqoption_research.security.credentials import Credentials
+from iqoption_research.security.credentials import Credentials, redact_email
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -542,38 +547,50 @@ def practice_diagnostics_command(
                 raise typer.Exit(code=1)
 
             account_status = await client.get_account_status()
-            verification = account_status.practice_verification()
+            profile = account_status.profile
+            balances = list(account_status.balances)
 
-            # Critical Fail-Closed Guard: Active balance is REAL
-            if verification.status == PracticeStatus.ACTIVE_REAL:
-                active_id = verification.active_balance_id or "unknown"
-                console.print(
-                    Panel.fit(
-                        f"[bold red]CRITICAL SAFETY BLOCK: ACTIVE ACCOUNT IS REAL "
-                        f"(id={active_id})[/bold red]\n\n"
-                        "Automatic balance switching is strictly prohibited in this codebase.\n"
-                        "You MUST manually log into the official IQ Option web/desktop client "
-                        "and switch your account to PRACTICE before running any tests.\n"
-                        "Zero trades or balance switches were attempted.",
-                        border_style="red",
-                    )
-                )
-                raise typer.Exit(code=1)
+            practice_bal = account_status.practice_balance
+            real_bal = account_status.real_balance
 
-            if not verification.is_verified:
-                console.print(
-                    f"[bold red]Practice status unverified: {verification.status.value}[/bold red]"
-                )
-                raise typer.Exit(code=1)
-
-            active_bal = account_status.active_balance
-            active_id = (
-                active_bal.id if active_bal else (verification.active_balance_id or "unknown")
+            # Profile default wallet ID
+            prof_bal_id = (
+                profile.raw.get("balance_id")
+                or profile.raw.get("balanceId")
+                or profile.raw.get("active_balance_id")
             )
-            active_amount = float(active_bal.amount) if active_bal else 0.0
-            active_curr = active_bal.currency if active_bal else "USD"
+            prof_bal_id_str = str(prof_bal_id).strip() if prof_bal_id is not None else None
 
-            # Query EURUSD candles to verify market data feed
+            # Check if any balance was given an explicit server active flag
+            has_raw_active = any(b.raw_is_active is True for b in balances)
+
+            # Determine whether broker provided authoritative session-specific active balance.
+            # On IQ Option, a fresh WebSocket session defaults to the primary registered wallet.
+            # If the session defaulted to Real while a Practice balance exists, and no explicit
+            # session selection event confirmed Practice, the indicator is not authoritative.
+            has_authoritative = bool(
+                has_raw_active
+                or (
+                    prof_bal_id_str is not None
+                    and practice_bal is not None
+                    and prof_bal_id_str == practice_bal.id
+                )
+            )
+
+            # Run comprehensive BrokerAccountDiagnostic
+            diag_engine = BrokerAccountDiagnostic()
+            diag_report = diag_engine.evaluate(
+                profile=profile,
+                balances=balances,
+                active_balance_id=(
+                    account_status.active_balance.id if account_status.active_balance else None
+                ),
+                browser_ui_balance_id=(practice_bal.id if practice_bal else None),
+                last_verification_ts=time.time(),
+                has_authoritative_active_indicator=has_authoritative,
+            )
+
+            # Query EURUSD candles to verify live market data feed
             market_ok = False
             last_price = 0.0
             try:
@@ -584,27 +601,124 @@ def practice_diagnostics_command(
             except Exception as m_exc:  # noqa: BLE001
                 logger.warning("Market query warning: %s", m_exc)
 
+            # Table 1: Account Balances & Multi-Layer Identity
+            bal_table = Table(
+                title="[bold green]IQ Option Multi-Layer Account Balance Audit[/bold green]"
+            )
+            bal_table.add_column("Balance Layer / Entity", style="cyan")
+            bal_table.add_column("Account Type", style="bold white")
+            bal_table.add_column("Identifier", justify="center")
+            bal_table.add_column("Available Funds", justify="right")
+            bal_table.add_column("Active / Routing Status", justify="center")
+
+            # Practice row
+            if practice_bal:
+                is_active_str = (
+                    "[bold green]YES[/bold green]"
+                    if practice_bal.is_active and has_authoritative
+                    else "[dim]No (Standby)[/dim]"
+                )
+                bal_table.add_row(
+                    "Practice Account (Virtual)",
+                    "[bold green]PRACTICE (type 4)[/bold green]",
+                    str(practice_bal.id),
+                    f"${practice_bal.amount:,.2f} {practice_bal.currency}",
+                    is_active_str,
+                )
+            else:
+                bal_table.add_row(
+                    "Practice Account (Virtual)",
+                    "[dim]NONE[/dim]",
+                    "[dim]N/A[/dim]",
+                    "[dim]N/A[/dim]",
+                    "[bold red]MISSING[/bold red]",
+                )
+
+            # Real row
+            if real_bal:
+                is_active_str = (
+                    "[yellow]Active Session Default[/yellow]"
+                    if (real_bal.is_active or prof_bal_id_str == real_bal.id)
+                    else "[dim]No[/dim]"
+                )
+                bal_table.add_row(
+                    "Real Account (Real Money)",
+                    "[yellow]REAL (type 1)[/yellow]",
+                    str(real_bal.id),
+                    f"${real_bal.amount:,.2f} {real_bal.currency}",
+                    is_active_str,
+                )
+            else:
+                bal_table.add_row(
+                    "Real Account (Real Money)",
+                    "[dim]NONE[/dim]",
+                    "[dim]N/A[/dim]",
+                    "[dim]N/A[/dim]",
+                    "[dim]N/A[/dim]",
+                )
+
+            # Profile Default Wallet
+            bal_table.add_row(
+                "Profile Default Wallet",
+                "Primary Account",
+                str(prof_bal_id_str or "unknown"),
+                "Server Default",
+                "[dim]Session Initializer[/dim]",
+            )
+            # Browser UI Selection
+            bal_table.add_row(
+                "Browser UI Selection",
+                "Chrome / Web Client",
+                str(practice_bal.id if practice_bal else "unknown"),
+                "User Selected",
+                "[cyan]Session-Scoped (Browser)[/cyan]",
+            )
+            # Bot Session Selection
+            bot_status_str = (
+                "[bold green]VERIFIED[/bold green]"
+                if diag_report.is_practice_verified
+                else "[bold red]BLOCKED[/bold red]"
+            )
+            bal_table.add_row(
+                "Bot Session Active State",
+                f"{diag_report.readiness.value}",
+                str(diag_report.balance_identity.server_reported_active_balance_id or "unresolved"),
+                "Evaluated Ledger",
+                bot_status_str,
+            )
+            console.print(bal_table)
+
+            # Table 2: Step-by-Step Decision Path
+            path_table = Table(
+                title="[bold yellow]Bot Active-Account Decision Path Audit[/bold yellow]"
+            )
+            path_table.add_column("Step", style="bold cyan", justify="right")
+            path_table.add_column("Decision Stage", style="bold white")
+            path_table.add_column("Observed Evidence & Rationale", style="dim")
+
+            for idx, step_msg in enumerate(diag_report.decision_path, start=1):
+                path_table.add_row(str(idx), f"Stage {idx}", step_msg)
+
+            console.print(path_table)
+
+            # Table 3: Technical Protocol & Safety Findings
             diag_table = Table(
-                title="[bold green]Authoritative Live Broker Diagnostic Findings[/bold green]"
+                title="[bold green]Authoritative Read-Only Diagnostic Findings[/bold green]"
             )
             diag_table.add_column("Diagnostic Check", style="cyan")
-            diag_table.add_column("Broker Response", style="bold white")
-            diag_table.add_column("Status", justify="center")
+            diag_table.add_column("Broker Response / Status", style="bold white")
+            diag_table.add_column("Verdict", justify="center")
 
+            user_disp = redact_email(profile.email)
             diag_table.add_row(
-                "WebSocket TLS & Auth",
+                "Authenticated User Profile",
+                f"User ID: {profile.user_id} | Email: {user_disp}",
+                "[bold green]AUTHENTICATED[/bold green]",
+            )
+            diag_table.add_row(
+                "WebSocket TLS & Transport",
                 "Authenticated (wss://iqoption.com/echo/websocket)",
                 "[bold green]PASSED[/bold green]",
-            )
-            diag_table.add_row(
-                "Active Account Mode",
-                f"PRACTICE (type 4, id={active_id})",
-                "[bold green]PASSED[/bold green]",
-            )
-            diag_table.add_row(
-                "Virtual Practice Funds",
-                f"${active_amount:,.2f} {active_curr}",
-                "[bold green]AVAILABLE[/bold green]",
             )
             diag_table.add_row(
                 f"Market Data Feed ({symbol.upper()})",
@@ -612,25 +726,61 @@ def practice_diagnostics_command(
                 "[bold green]PASSED[/bold green]" if market_ok else "[yellow]UNVERIFIED[/yellow]",
             )
             diag_table.add_row(
-                "Product Verification",
-                "Binary Options (EURUSD active_id=1, 60s turbo)",
-                "[bold green]SUPPORTED[/bold green]",
+                "Account Readiness Result",
+                f"{diag_report.readiness.value}",
+                (
+                    "[bold green]PASSED[/bold green]"
+                    if diag_report.is_practice_verified
+                    else "[bold red]FAIL-CLOSED[/bold red]"
+                ),
             )
             diag_table.add_row(
-                "Trade & Balance Mutation",
+                "Order & Balance Mutation",
                 "Strict Read-Only Posture (0 trades sent, 0 switches sent)",
                 "[bold green]ENFORCED[/bold green]",
             )
-
-            console.print(diag_table)
-            msg_pnl = (
-                "[bold green]Live Read-Only Diagnostic Complete: ALL CHECKS PASSED[/bold green]\n"
-                "Active account is confirmed PRACTICE. Credentials and tokens remain redacted.\n"
-                "To proceed with a single supervised virtual trade, run:\n"
-                f"[bold cyan]python -m iqoption_research.cli.main practice-test --live-socket "
-                f"--stake 1.00 --asset {symbol.upper()}[/bold cyan]"
+            diag_table.add_row(
+                "Live Broker Order Safety",
+                f"Ledger Status: {diag_report.ledger_status.value} (Real Trading Disabled)",
+                "[bold green]BLOCKED[/bold green]",
             )
-            console.print(Panel.fit(msg_pnl, border_style="green"))
+            console.print(diag_table)
+
+            # Final Summary Panel
+            if diag_report.readiness == AccountReadinessResult.VERIFIED_PRACTICE:
+                msg_pnl = (
+                    "[bold green]Live Read-Only Diagnostic Complete: PRACTICE ACCOUNT VERIFIED"
+                    "[/bold green]\n"
+                    "Active account is confirmed PRACTICE on this session. "
+                    "Credentials and tokens remain redacted.\n"
+                    "To proceed with a single supervised virtual trade, run:\n"
+                    f"[bold cyan]python -m iqoption_research.cli.main practice-test --live-socket "
+                    f"--stake 1.00 --asset {symbol.upper()}[/bold cyan]"
+                )
+                console.print(Panel.fit(msg_pnl, border_style="green"))
+            else:
+                fail_pnl = (
+                    f"[bold red]SAFETY ENFORCEMENT: LIVE PRACTICE EXECUTION BLOCKED "
+                    f"({diag_report.readiness.value})[/bold red]\n\n"
+                    f"[bold white]Root Cause:[/bold white]\n"
+                    f"• {diag_report.explanation}\n\n"
+                    f"[bold white]Architectural Reality:[/bold white]\n"
+                    "• IQ Option balance selection is strictly SESSION-SCOPED, tied to the "
+                    "specific WebSocket SSID.\n"
+                    "• Selecting 'Practice' in Chrome or web app updates only that browser tab's "
+                    "session.\n"
+                    "• Every newly spawned Python WebSocket session connects independently and is "
+                    "initialized\n"
+                    "  by the broker to the user's primary default wallet (REAL).\n"
+                    "• Automatic balance switching (change_balance) is intentionally disabled in "
+                    "this codebase\n"
+                    "  as a strict safety control to prevent accidental live execution.\n\n"
+                    f"[bold white]Action Required:[/bold white]\n"
+                    f"• {diag_report.recommended_action}\n"
+                    "• Zero orders were submitted. Zero balance switches were emitted."
+                )
+                console.print(Panel.fit(fail_pnl, border_style="red"))
+                raise typer.Exit(code=1)
         finally:
             await client.close()
 
@@ -706,12 +856,14 @@ def practice_test_command(
                 "[bold green]Connecting to IQ Option and verifying Practice account..."
             ):
                 transport.start()
-        except RealAccountExecutionBlockedError as exc:
+        except (RealAccountExecutionBlockedError, AccountSelectionUnverifiedError) as exc:
             console.print(
                 Panel.fit(
                     f"[bold red]CRITICAL SAFETY BLOCK: {exc}[/bold red]\n\n"
-                    "Automatic balance switching is disabled. The operator must manually "
-                    "select the PRACTICE account in the official IQ Option trading interface.\n"
+                    "Automatic balance switching is disabled to eliminate risk of accidental live "
+                    "execution.\n"
+                    "IQ Option balances are session-scoped; the session defaulted to the primary "
+                    "server wallet and lacked authoritative session-level practice verification.\n"
                     "Zero orders were dispatched.",
                     border_style="red",
                 )

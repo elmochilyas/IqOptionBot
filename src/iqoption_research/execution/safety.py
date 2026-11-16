@@ -33,6 +33,7 @@ class PracticeSafetyVerdict(StrEnum):
     BLOCKED_CONFLICTING_BALANCES = "blocked_conflicting_balances"
     BLOCKED_MISSING_ACCOUNT_DATA = "blocked_missing_account_data"
     BLOCKED_BROKER_TRANSMISSION_DISABLED = "blocked_broker_transmission_disabled"
+    BLOCKED_ACCOUNT_SELECTION_UNVERIFIED = "blocked_account_selection_unverified"
 
 
 class PracticeSafetyError(RuntimeError):
@@ -41,6 +42,10 @@ class PracticeSafetyError(RuntimeError):
 
 class RealAccountExecutionBlockedError(PracticeSafetyError):
     """Safety exception raised when execution is attempted on an active REAL balance."""
+
+
+class AccountSelectionUnverifiedError(PracticeSafetyError):
+    """Safety exception raised when broker active account indicator is unverified or ambiguous."""
 
 
 class StaleVerificationBlockedError(PracticeSafetyError):
@@ -95,6 +100,7 @@ class PracticeAccountSafetyValidator:
         current_ts: float | None = None,
         current_session_id: str | None = None,
         verified_session_id: str | None = None,
+        has_authoritative_active_indicator: bool = True,
     ) -> PracticeSafetyCheck:
         """Evaluate pre-flight safety before any simulated or future execution step."""
         now = current_ts if current_ts is not None else time.time()
@@ -178,7 +184,23 @@ class PracticeAccountSafetyValidator:
                 message=f"Active balance_id {resolved_bal_id} not found in account balances list.",
             )
 
-        # 5. Active REAL balance check (CRITICAL)
+        # 5. Authoritative indicator check
+        if not has_authoritative_active_indicator:
+            return PracticeSafetyCheck(
+                verdict=PracticeSafetyVerdict.BLOCKED_ACCOUNT_SELECTION_UNVERIFIED,
+                is_safe_to_execute=False,
+                status=PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED,
+                active_balance_id=resolved_bal_id,
+                active_balance_type=int(matched_bal.type.value),
+                verification_age_seconds=age,
+                message=(
+                    "ACCOUNT SELECTION UNVERIFIED: Broker does not provide an authoritative "
+                    "active account indicator for this session. The session defaulted to "
+                    "the primary server wallet. Live Practice execution is BLOCKED."
+                ),
+            )
+
+        # 6. Active REAL balance check (CRITICAL)
         if matched_bal.type != AccountType.PRACTICE or not matched_bal.is_practice:
             return PracticeSafetyCheck(
                 verdict=PracticeSafetyVerdict.BLOCKED_ACTIVE_REAL,

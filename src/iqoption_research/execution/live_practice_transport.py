@@ -47,6 +47,7 @@ from iqoption_research.execution.practice_transport import (
     PracticeSettlementResult,
 )
 from iqoption_research.execution.safety import (
+    AccountSelectionUnverifiedError,
     PracticeAccountSafetyValidator,
     PracticeSafetyVerdict,
 )
@@ -280,6 +281,14 @@ class IQOptionLivePracticeTransport:
             current_session_id=self._session_id,
             verified_session_id=self._session_id,
         )
+
+        # Handle unverified account selection: STRICT FAIL-CLOSED
+        if check.verdict == PracticeSafetyVerdict.BLOCKED_ACCOUNT_SELECTION_UNVERIFIED:
+            raise AccountSelectionUnverifiedError(
+                f"ACCOUNT SELECTION UNVERIFIED: Active session balance "
+                f"{check.active_balance_id} is not authoritatively established as PRACTICE. "
+                "Automatic switching is prohibited. Live execution blocked fail-closed."
+            )
 
         # Handle Real account detection: STRICT FAIL-CLOSED (Zero automatic switching)
         if check.verdict == PracticeSafetyVerdict.BLOCKED_ACTIVE_REAL:

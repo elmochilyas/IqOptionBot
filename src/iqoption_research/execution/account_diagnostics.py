@@ -54,6 +54,7 @@ class AccountReadinessResult(StrEnum):
     STALE_VERIFICATION = "STALE VERIFICATION"
     SESSION_MISMATCH = "SESSION MISMATCH"
     UNSUPPORTED_PROTOCOL = "UNSUPPORTED PROTOCOL"
+    ACCOUNT_SELECTION_UNVERIFIED = "ACCOUNT_SELECTION_UNVERIFIED"
 
 
 class BrokerLedgerStatus(StrEnum):
@@ -73,6 +74,9 @@ class BalanceIdentityAudit:
     server_reported_active_balance_id: str | None
     session_specific_active_balance_id: str | None
     actual_transaction_ledger_balance_id: str | None = None
+    has_authoritative_active_indicator: bool = False
+    profile_default_balance_id: str | None = None
+    raw_active_flags: dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +87,9 @@ class BalanceIdentityAudit:
             "server_reported_active_balance_id": self.server_reported_active_balance_id,
             "session_specific_active_balance_id": self.session_specific_active_balance_id,
             "actual_transaction_ledger_balance_id": self.actual_transaction_ledger_balance_id,
+            "has_authoritative_active_indicator": self.has_authoritative_active_indicator,
+            "profile_default_balance_id": self.profile_default_balance_id,
+            "raw_active_flags": dict(self.raw_active_flags),
         }
 
 
@@ -100,6 +107,7 @@ class AccountDiagnosticReport:
     discrepancy_detected: bool
     explanation: str
     recommended_action: str
+    decision_path: tuple[str, ...] = ()
     evaluated_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def to_dict(self) -> dict[str, Any]:
@@ -116,6 +124,7 @@ class AccountDiagnosticReport:
             "discrepancy_detected": self.discrepancy_detected,
             "explanation": self.explanation,
             "recommended_action": self.recommended_action,
+            "decision_path": list(self.decision_path),
             "evaluated_at_utc": self.evaluated_at_utc,
         }
 
@@ -142,6 +151,7 @@ class BrokerAccountDiagnostic:
         verified_session_id: str | None = None,
         last_verification_ts: float | None = None,
         current_ts: float | None = None,
+        has_authoritative_active_indicator: bool | None = None,
     ) -> AccountDiagnosticReport:
         """Run deep diagnostic audit on account profile, balances, and session metadata.
 
@@ -157,13 +167,50 @@ class BrokerAccountDiagnostic:
         age = (now - last_verification_ts) if last_verification_ts is not None else float("inf")
 
         existing_bals = tuple(balances) if balances else ()
+        prof_default_id: str | None = None
+        if profile is not None:
+            for key in ("balance_id", "balanceId", "active_balance_id"):
+                if profile.raw.get(key) is not None:
+                    candidate = str(profile.raw[key]).strip()
+                    if candidate:
+                        prof_default_id = candidate
+                        break
+
+        raw_active_flags = {
+            b.id: b.raw_is_active for b in (balances or []) if b.raw_is_active is not None
+        }
+
+        # Resolve server-reported active balance early for identity audit
+        resolved_bal_id = active_balance_id
+        if not resolved_bal_id and profile is not None:
+            resolved_bal_id = prof_default_id
+        if not resolved_bal_id and profile is not None:
+            cur = profile.raw.get("current_balance")
+            if isinstance(cur, dict) and cur.get("id") is not None:
+                candidate = str(cur["id"]).strip()
+                if candidate:
+                    resolved_bal_id = candidate
+        if not resolved_bal_id and balances:
+            active_from_list = next((b for b in balances if b.is_active), None)
+            if active_from_list is not None:
+                resolved_bal_id = active_from_list.id
+
+        is_authoritative = (
+            has_authoritative_active_indicator
+            if has_authoritative_active_indicator is not None
+            else True
+        )
+
         identity = BalanceIdentityAudit(
             existing_balances=existing_bals,
             locally_selected_balance_id=locally_selected_balance_id,
             browser_ui_balance_id=browser_ui_balance_id,
-            server_reported_active_balance_id=active_balance_id,
-            session_specific_active_balance_id=active_balance_id,
+            server_reported_active_balance_id=resolved_bal_id,
+            session_specific_active_balance_id=resolved_bal_id,
             actual_transaction_ledger_balance_id=None,
+            has_authoritative_active_indicator=is_authoritative,
+            profile_default_balance_id=prof_default_id,
+            raw_active_flags=raw_active_flags,
         )
 
         # 1. Unsupported protocol check: missing or structurally invalid objects
@@ -185,6 +232,7 @@ class BrokerAccountDiagnostic:
                     "Verify read-only protocol schema compliance. Re-authenticate over "
                     "WebSocket and await explicit profile and balances frames."
                 ),
+                decision_path=("Account profile or balance frames missing or invalid.",),
             )
 
         # 2. Session mismatch check: current session does not match verified session
@@ -211,6 +259,9 @@ class BrokerAccountDiagnostic:
                     "Invalidate cached account state and re-verify profile and balances "
                     "within the active session."
                 ),
+                decision_path=(
+                    f"Session identity mismatch ({current_session_id} != {verified_session_id}).",
+                ),
             )
 
         # 3. Staleness check: verification exceeds maximum allowed age
@@ -230,6 +281,9 @@ class BrokerAccountDiagnostic:
                 ),
                 recommended_action=(
                     "Request fresh get-profile and get-balances frames from the broker."
+                ),
+                decision_path=(
+                    f"Verification age ({age:.1f}s) exceeded limit ({self.max_age_seconds:.1f}s).",
                 ),
             )
 
@@ -289,6 +343,9 @@ class BrokerAccountDiagnostic:
                 recommended_action=(
                     "Inspect server profile payload structure; verify active balance identifier."
                 ),
+                decision_path=(
+                    "Server profile and balance list did not establish active balance ID.",
+                ),
             )
 
         matched_bal = next((b for b in effective_balances if str(b.id) == resolved_bal_id), None)
@@ -309,6 +366,9 @@ class BrokerAccountDiagnostic:
                 recommended_action=(
                     "Re-query balances; investigate potential broker multi-currency profile."
                 ),
+                decision_path=(
+                    f"Active balance_id '{resolved_bal_id}' not found in balances list.",
+                ),
             )
 
         # Check for discrepancy between Browser UI balance and Server-reported session balance
@@ -316,16 +376,70 @@ class BrokerAccountDiagnostic:
         if browser_ui_balance_id and browser_ui_balance_id != resolved_bal_id:
             discrepancy = True
 
-        # 5. Check if active balance is REAL
+        has_practice = any(b.is_practice for b in effective_balances)
+        practice_ids = [b.id for b in effective_balances if b.is_practice]
+
+        decision_steps: tuple[str, ...]
+
+        # 5. Authoritative session indicator check:
+        # If the broker does not provide an authoritative active-session indicator,
+        # fail closed and report ACCOUNT_SELECTION_UNVERIFIED.
+        if not is_authoritative and has_practice:
+            decision_steps = (
+                f"Discovered {len(practice_ids)} PRACTICE balance(s): {practice_ids}.",
+                (
+                    f"Server profile provided default wallet ID '{resolved_bal_id}' "
+                    f"(type={matched_bal.type.name})."
+                ),
+                (
+                    "Broker lacks an authoritative session-specific active account indicator "
+                    "for this session."
+                ),
+                (
+                    "IQ Option active balance state is session-scoped; browser selection "
+                    "does not propagate to API sessions."
+                ),
+                "Automatic balance switching is prohibited by strict safety policy.",
+                "Readiness classified as ACCOUNT_SELECTION_UNVERIFIED (fail closed).",
+                "Live broker order transmission is BLOCKED.",
+            )
+            explanation_msg = (
+                f"ACCOUNT SELECTION UNVERIFIED: Account contains PRACTICE balance(s) "
+                f"{practice_ids}, but the broker did not provide an authoritative "
+                f"session-specific active balance indicator. The session defaulted to primary "
+                f"wallet '{resolved_bal_id}' ({matched_bal.type.name}). "
+                "Because balance selection is session-scoped, selecting Practice in an external "
+                "browser does not alter the active balance of an independent API session. "
+                "Live execution is BLOCKED fail-closed."
+            )
+            rec_action = (
+                "DO NOT PLACE ORDERS. Balance selection on IQ Option is session-specific. "
+                "Without an authoritative session-level practice selection, trading is blocked "
+                "fail-closed. Automatic balance switching is disabled to prevent accidental "
+                "live execution."
+            )
+            return AccountDiagnosticReport(
+                readiness=AccountReadinessResult.ACCOUNT_SELECTION_UNVERIFIED,
+                ledger_status=BrokerLedgerStatus.BLOCKED,
+                is_practice_verified=False,
+                is_safe_for_practice_execution=False,
+                balance_identity=identity,
+                active_account_type=matched_bal.type,
+                verification_age_seconds=age,
+                discrepancy_detected=discrepancy,
+                explanation=explanation_msg,
+                recommended_action=rec_action,
+                decision_path=decision_steps,
+            )
+
+        # 6. Check if active balance is REAL
         if matched_bal.type != AccountType.PRACTICE or not matched_bal.is_practice:
-            has_practice = any(b.is_practice for b in effective_balances)
             explanation_msg = (
                 f"ACTIVE REAL ACCOUNT DETECTED: Active balance ID '{resolved_bal_id}' is "
                 f"type {matched_bal.type.name} "
                 f"(amount: {matched_bal.amount} {matched_bal.currency}). "
             )
             if has_practice:
-                practice_ids = [b.id for b in effective_balances if b.is_practice]
                 explanation_msg += (
                     f"A PRACTICE balance exists in the account ({practice_ids}), but the active "
                     f"WebSocket session is routed to REAL. Switch your active account to Practice "
@@ -341,12 +455,23 @@ class BrokerAccountDiagnostic:
             explanation_msg += "Live broker trading is strictly forbidden."
 
             rec_action = (
-                "DO NOT PLACE ORDERS. Log in to IQ Option (web or mobile app), switch your "
-                "active account balance to 'Practice Account', and re-run. "
+                "DO NOT PLACE ORDERS. Session is confirmed routed to REAL account. "
                 "Live broker order transmission must remain permanently disabled."
                 if has_practice
                 else "DO NOT PLACE ORDERS. This account has no practice balance. "
                 "Live broker order transmission must remain permanently disabled."
+            )
+
+            decision_steps = (
+                f"Server reported active balance '{resolved_bal_id}'.",
+                (
+                    f"Balance confirmed as REAL (type={matched_bal.type.name}, "
+                    f"amount={matched_bal.amount} {matched_bal.currency})."
+                ),
+                f"PRACTICE balance present: {has_practice}.",
+                f"Session discrepancy with browser UI: {discrepancy}.",
+                "Readiness classified as ACTIVE_REAL (fail closed).",
+                "Live broker order transmission strictly forbidden.",
             )
 
             return AccountDiagnosticReport(
@@ -360,9 +485,10 @@ class BrokerAccountDiagnostic:
                 discrepancy_detected=discrepancy,
                 explanation=explanation_msg,
                 recommended_action=rec_action,
+                decision_path=decision_steps,
             )
 
-        # 6. Active balance is confirmed PRACTICE (type 4)
+        # 7. Active balance is confirmed PRACTICE (type 4)
         # Note: Even though active balance is confirmed PRACTICE in read-only frames,
         # the actual transaction ledger cannot be established safely without placing orders.
         # Thus, practice execution readiness is BLOCKED for live broker execution,
@@ -382,6 +508,17 @@ class BrokerAccountDiagnostic:
             "PRACTICE broker execution is BLOCKED."
         )
 
+        decision_steps = (
+            f"Server reported active balance '{resolved_bal_id}'.",
+            (
+                f"Balance verified as PRACTICE (type 4, "
+                f"amount={matched_bal.amount} {matched_bal.currency})."
+            ),
+            "Read-only market observation permitted.",
+            "Broker execution ledger routing remains unverified without live order frames.",
+            "PRACTICE broker execution marked BLOCKED.",
+        )
+
         return AccountDiagnosticReport(
             readiness=AccountReadinessResult.VERIFIED_PRACTICE,
             ledger_status=BrokerLedgerStatus.BLOCKED,
@@ -397,4 +534,5 @@ class BrokerAccountDiagnostic:
                 "Do not transmit live broker orders until a separately authorized "
                 "PRACTICE-only execution harness is formally approved."
             ),
+            decision_path=decision_steps,
         )

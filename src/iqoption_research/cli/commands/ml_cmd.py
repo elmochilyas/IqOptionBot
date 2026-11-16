@@ -514,6 +514,131 @@ def phase14_research_command(
     console.print(f"[green]JSON evidence saved to: {json_path.resolve()}[/green]")
 
 
+@ml_app.command(
+    "phase15-research",
+    help="Execute Phase 15 Opportunity Detection and New Predictive Targets research.",
+)
+def phase15_research_command(
+    storage_dir: Path = typer.Option(
+        Path("data/datasets"), "--storage", help="Authentic dataset storage directory"
+    ),
+    confirmation_state: Path = typer.Option(
+        Path("data/phase11/confirmation_state.json"),
+        "--confirmation-state",
+        help="Path to phase 11 confirmation state file",
+    ),
+    report_path: Path = typer.Option(
+        Path("data/phase15/research_report.md"), "--report", help="Markdown research report path"
+    ),
+    json_path: Path = typer.Option(
+        Path("data/phase15/phase15_results.json"),
+        "--json",
+        help="JSON evidence output path",
+    ),
+    folds: int = typer.Option(
+        4, "--folds", min=2, max=8, help="Number of purged walk-forward folds"
+    ),
+) -> None:
+    from iqoption_research.ml.phase15 import run_phase15_research
+
+    result = run_phase15_research(
+        storage_dir=storage_dir,
+        confirmation_state_path=confirmation_state,
+        output_report_path=report_path,
+        output_json_path=json_path,
+        n_folds=folds,
+    )
+
+    cov = result.coverage_audit
+    console.print(
+        Panel(
+            f"Dataset: {cov.development_candles:,} authentic development candles "
+            f"({cov.dev_calendar_days:.2f} calendar days)\n"
+            f"Target 90d Coverage: Missing {cov.missing_calendar_days:.2f} days "
+            f"(requires start <= {cov.target_oldest_utc[:10]})\n"
+            f"Holdout Reservation: {cov.holdout_cutoff_utc} "
+            f"({cov.holdout_candles:,} candles preserved strictly untouched)\n"
+            f"Final Recommendation: [bold red]{result.recommendation.value}[/bold red]",
+            title="Phase 15 — Opportunity Detection & Predictive Targets Audit",
+            border_style="red" if result.recommendation.value == "STOP_STRATEGY" else "cyan",
+        )
+    )
+
+    # Table 1: Experiment A
+    t1 = Table(title="Experiment A: Significant Movement Classification")
+    t1.add_column("Horizon")
+    t1.add_column("Hurdle")
+    t1.add_column("Model")
+    t1.add_column("Accuracy", justify="right")
+    t1.add_column("Precision", justify="right")
+    t1.add_column("Recall", justify="right")
+    t1.add_column("ROC-AUC", justify="right")
+    t1.add_column("Brier", justify="right")
+
+    for r in result.experiment_a_results:
+        t1.add_row(
+            f"{r.horizon_bars}m",
+            f">={r.threshold_pips:.1f}p",
+            r.model_name,
+            f"{r.accuracy:.2%}",
+            f"{r.precision:.2%}",
+            f"{r.recall:.2%}",
+            f"{r.roc_auc:.4f}",
+            f"{r.brier_score:.4f}",
+        )
+    console.print(t1)
+
+    # Table 2: Experiment B
+    t2 = Table(title="Experiment B: Triple-Barrier Model Accuracy")
+    t2.add_column("Config")
+    t2.add_column("Model")
+    t2.add_column("Samples", justify="right")
+    t2.add_column("Accuracy", justify="right")
+    t2.add_column("ROC-AUC", justify="right")
+    t2.add_column("Win Rate (95% CI)", justify="right")
+    t2.add_column("Spot Net PnL", justify="right")
+
+    for m in result.experiment_b_models:
+        ci_s = f"{m.win_rate:.2%} [{m.win_rate_ci.ci_lower:.1%}-{m.win_rate_ci.ci_upper:.1%}]"
+        t2.add_row(
+            m.barrier_config,
+            m.model_name,
+            f"{m.sample_count:,}",
+            f"{m.accuracy:.2%}",
+            f"{m.roc_auc:.4f}",
+            ci_s,
+            f"{m.spot_net_pnl_pips:+,.1f}p",
+        )
+    console.print(t2)
+
+    # Table 3: Experiment C
+    t3 = Table(title="Experiment C: Two-Stage Opportunity Pipeline")
+    t3.add_column("Opp Gate")
+    t3.add_column("Dir Gate")
+    t3.add_column("Trades", justify="right")
+    t3.add_column("Win Rate (95% CI)", justify="right")
+    t3.add_column("Binary PnL", justify="right")
+    t3.add_column("Gross Spot", justify="right")
+    t3.add_column("Net Spot PnL", justify="right")
+    t3.add_column("PF", justify="right")
+
+    for c in result.experiment_c_results:
+        ci_s = f"{c.win_rate:.2%} [{c.win_rate_ci.ci_lower:.1%}-{c.win_rate_ci.ci_upper:.1%}]"
+        t3.add_row(
+            f">={c.opp_threshold:.2f}",
+            f">={c.dir_threshold:.2f}",
+            f"{c.trade_count:,}",
+            ci_s,
+            f"${c.binary_net_pnl:+,.0f}",
+            f"{c.spot_gross_pnl_pips:+,.1f}p",
+            f"{c.spot_net_pnl_pips:+,.1f}p",
+            f"{c.spot_profit_factor:.3f}",
+        )
+    console.print(t3)
+    console.print(f"[green]Markdown report saved to: {report_path.resolve()}[/green]")
+    console.print(f"[green]JSON evidence saved to: {json_path.resolve()}[/green]")
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

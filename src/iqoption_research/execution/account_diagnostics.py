@@ -235,12 +235,45 @@ class BrokerAccountDiagnostic:
 
         # 4. Resolve server-reported active balance
         resolved_bal_id = active_balance_id
-        if not resolved_bal_id and profile.raw.get("balance_id"):
-            resolved_bal_id = str(profile.raw["balance_id"]).strip()
+        if not resolved_bal_id:
+            for key in ("balance_id", "balanceId", "active_balance_id"):
+                if profile.raw.get(key) is not None:
+                    candidate = str(profile.raw[key]).strip()
+                    if candidate:
+                        resolved_bal_id = candidate
+                        break
+        if not resolved_bal_id:
+            cur = profile.raw.get("current_balance")
+            if isinstance(cur, dict) and cur.get("id") is not None:
+                candidate = str(cur["id"]).strip()
+                if candidate:
+                    resolved_bal_id = candidate
         if not resolved_bal_id:
             active_from_list = next((b for b in balances if b.is_active), None)
             if active_from_list is not None:
                 resolved_bal_id = active_from_list.id
+
+        effective_balances = list(balances)
+        if not effective_balances and resolved_bal_id:
+            prof_bal_type = (
+                profile.raw.get("balance_type")
+                if profile.raw.get("balance_type") is not None
+                else profile.raw.get("type")
+            )
+            if prof_bal_type is not None:
+                try:
+                    single_bal = Balance.from_raw(
+                        {
+                            "id": resolved_bal_id,
+                            "type": prof_bal_type,
+                            "amount": profile.raw.get("balance", 0.0),
+                            "currency": profile.raw.get("currency", "USD"),
+                        },
+                        active_balance_id=resolved_bal_id,
+                    )
+                    effective_balances.append(single_bal)
+                except (ValueError, TypeError, KeyError):
+                    pass
 
         if not resolved_bal_id:
             return AccountDiagnosticReport(
@@ -258,7 +291,7 @@ class BrokerAccountDiagnostic:
                 ),
             )
 
-        matched_bal = next((b for b in balances if str(b.id) == resolved_bal_id), None)
+        matched_bal = next((b for b in effective_balances if str(b.id) == resolved_bal_id), None)
         if matched_bal is None:
             return AccountDiagnosticReport(
                 readiness=AccountReadinessResult.UNKNOWN,
@@ -285,23 +318,36 @@ class BrokerAccountDiagnostic:
 
         # 5. Check if active balance is REAL
         if matched_bal.type != AccountType.PRACTICE or not matched_bal.is_practice:
-            has_practice = any(b.is_practice for b in balances)
+            has_practice = any(b.is_practice for b in effective_balances)
             explanation_msg = (
                 f"ACTIVE REAL ACCOUNT DETECTED: Active balance ID '{resolved_bal_id}' is "
                 f"type {matched_bal.type.name} "
                 f"(amount: {matched_bal.amount} {matched_bal.currency}). "
             )
             if has_practice:
+                practice_ids = [b.id for b in effective_balances if b.is_practice]
                 explanation_msg += (
-                    "A PRACTICE balance exists in the account, but the active WebSocket session "
-                    "is routed to REAL. "
+                    f"A PRACTICE balance exists in the account ({practice_ids}), but the active "
+                    f"WebSocket session is routed to REAL. Switch your active account to Practice "
+                    f"in the IQ Option app/web portal. "
                 )
+            else:
+                explanation_msg += "No PRACTICE balance exists for this account on the broker. "
             if discrepancy:
                 explanation_msg += (
                     f"Browser UI was displaying balance '{browser_ui_balance_id}', but the "
                     f"independent WebSocket session authenticated to '{resolved_bal_id}' (REAL). "
                 )
             explanation_msg += "Live broker trading is strictly forbidden."
+
+            rec_action = (
+                "DO NOT PLACE ORDERS. Log in to IQ Option (web or mobile app), switch your "
+                "active account balance to 'Practice Account', and re-run. "
+                "Live broker order transmission must remain permanently disabled."
+                if has_practice
+                else "DO NOT PLACE ORDERS. This account has no practice balance. "
+                "Live broker order transmission must remain permanently disabled."
+            )
 
             return AccountDiagnosticReport(
                 readiness=AccountReadinessResult.ACTIVE_REAL,
@@ -313,11 +359,7 @@ class BrokerAccountDiagnostic:
                 verification_age_seconds=age,
                 discrepancy_detected=discrepancy,
                 explanation=explanation_msg,
-                recommended_action=(
-                    "DO NOT PLACE ORDERS. In a browser, verify the account mode. "
-                    "Python sessions do NOT inherit browser mode automatically. "
-                    "Live broker order transmission must remain permanently disabled."
-                ),
+                recommended_action=rec_action,
             )
 
         # 6. Active balance is confirmed PRACTICE (type 4)

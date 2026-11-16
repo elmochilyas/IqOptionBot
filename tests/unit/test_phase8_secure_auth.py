@@ -38,7 +38,13 @@ from iqoption_research.auth.vault import (
     WindowsCredentialVault,
 )
 from iqoption_research.execution.account_diagnostics import BrokerLedgerStatus
-from iqoption_research.models.account import AccountType, Balance, Profile
+from iqoption_research.models.account import (
+    AccountStatus,
+    AccountType,
+    Balance,
+    PracticeStatus,
+    Profile,
+)
 from iqoption_research.security.credentials import (
     Credentials,
     redact_email,
@@ -631,3 +637,165 @@ def test_authentication_manager_check_session_validity() -> None:
     is_valid, reason = manager.check_session_validity()
     assert is_valid is False
     assert "expired" in str(reason).lower()
+
+
+# ===========================================================================
+# 10. Account Practice Verification & Balance Routing Diagnostics
+# ===========================================================================
+
+
+def _sample_profile(balance_id: int | str = 100) -> Profile:
+    return Profile.from_raw({
+        "user_id": 12345,
+        "email": "trader@example.com",
+        "balance_id": balance_id,
+        "first_name": "Mock",
+        "last_name": "Trader",
+    })
+
+
+def test_balance_from_raw_field_aliases() -> None:
+    """Balance.from_raw accepts standard fields and broker alias variants."""
+    # Standard fields
+    b1 = Balance.from_raw({"id": "101", "type": 4, "amount": 10000.0, "currency": "USD"})
+    assert b1.id == "101"
+    assert b1.type == AccountType.PRACTICE
+    assert b1.amount == 10000.0
+    assert b1.is_practice is True
+
+    # Alias fields: balance_id, balance_type, balance
+    b2 = Balance.from_raw({
+        "balance_id": 202,
+        "balance_type": 1,
+        "balance": 250.50,
+        "currency": "EUR",
+    })
+    assert b2.id == "202"
+    assert b2.type == AccountType.REAL
+    assert b2.amount == 250.50
+    assert b2.currency == "EUR"
+    assert b2.is_real is True
+
+    # Rejection of invalid types
+    with pytest.raises(ValueError, match="Invalid account type"):
+        Balance.from_raw({"id": "1", "type": True, "amount": 100.0})
+
+    with pytest.raises(ValueError, match="Invalid or unknown account type"):
+        Balance.from_raw({"id": "1", "type": 99, "amount": 100.0})
+
+    with pytest.raises(ValueError, match="Invalid balance amount"):
+        Balance.from_raw({"id": "1", "type": 4, "amount": True})
+
+
+@pytest.mark.asyncio
+async def test_account_practice_verification_valid_practice() -> None:
+    """Authenticated account with active PRACTICE balance reaches CONNECTED_READ_ONLY."""
+    profile = _sample_profile(balance_id=100)
+    balances = [
+        Balance(id="100", type=AccountType.PRACTICE, amount=10000.0, currency="USD"),
+        Balance(id="200", type=AccountType.REAL, amount=50.0, currency="USD"),
+    ]
+    provider = MockAuthProvider(mock_profile=profile, mock_balances=balances)
+    manager = AuthenticationManager(provider=provider)
+
+    success = await manager.login_interactive(
+        email="trader@example.com", password="mock_secret_123"
+    )
+    assert success is True
+    assert manager.current_state == AuthStatus.CONNECTED_READ_ONLY
+    assert manager.session is not None
+    assert manager.session.is_practice_verified is True
+    assert manager.session.server_account_type == "PRACTICE"
+    assert manager.session.active_balance_id == "100"
+    assert manager.session.has_practice_balance is True
+    assert manager.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_account_practice_verification_real_with_practice_available() -> None:
+    """Active REAL with existing PRACTICE transitions to ACCOUNT_UNVERIFIED with advice."""
+    profile = _sample_profile(balance_id=200)
+    balances = [
+        Balance(id="100", type=AccountType.PRACTICE, amount=10000.0, currency="USD"),
+        Balance(id="200", type=AccountType.REAL, amount=250.0, currency="USD"),
+    ]
+    provider = MockAuthProvider(mock_profile=profile, mock_balances=balances)
+    manager = AuthenticationManager(provider=provider)
+
+    success = await manager.login_interactive(
+        email="trader@example.com", password="mock_secret_123"
+    )
+    assert success is True
+    assert manager.current_state == AuthStatus.ACCOUNT_UNVERIFIED
+    assert manager.session is not None
+    assert manager.session.is_practice_verified is False
+    assert manager.session.server_account_type == "REAL"
+    assert manager.session.active_balance_id == "200"
+    assert manager.session.has_practice_balance is True
+    # Last error must contain actionable diagnostic explanation
+    assert "ACTIVE REAL ACCOUNT DETECTED" in str(manager.last_error)
+    assert "Switch your active account to Practice" in str(manager.last_error)
+
+    # Validity check reflects this specific diagnostic error
+    is_valid, reason = manager.check_session_validity()
+    assert is_valid is False
+    assert "ACTIVE REAL ACCOUNT DETECTED" in str(reason)
+
+
+@pytest.mark.asyncio
+async def test_account_practice_verification_real_only_no_practice() -> None:
+    """Authenticated account with NO PRACTICE balance reports clear absence of practice access."""
+    profile = _sample_profile(balance_id=300)
+    balances = [
+        Balance(id="300", type=AccountType.REAL, amount=500.0, currency="USD"),
+    ]
+    provider = MockAuthProvider(mock_profile=profile, mock_balances=balances)
+    manager = AuthenticationManager(provider=provider)
+
+    success = await manager.login_interactive(
+        email="trader@example.com", password="mock_secret_123"
+    )
+    assert success is True
+    assert manager.current_state == AuthStatus.ACCOUNT_UNVERIFIED
+    assert manager.session is not None
+    assert manager.session.is_practice_verified is False
+    assert manager.session.server_account_type == "REAL"
+    assert manager.session.has_practice_balance is False
+    assert "No PRACTICE balance exists" in str(manager.last_error)
+
+
+@pytest.mark.asyncio
+async def test_account_practice_verification_missing_metadata_unsupported_protocol() -> None:
+    """Missing profile and balances payload fails closed with UNSUPPORTED_PROTOCOL."""
+    provider = MockAuthProvider()
+    provider.get_profile_and_balances = AsyncMock(return_value=(None, []))
+    manager = AuthenticationManager(provider=provider)
+
+    success = await manager.login_interactive(
+        email="trader@example.com", password="mock_secret_123"
+    )
+    assert success is True
+    assert manager.current_state == AuthStatus.ACCOUNT_UNVERIFIED
+    assert manager.session is not None
+    assert manager.session.is_practice_verified is False
+    assert "missing required protocol frames" in str(manager.last_error).lower()
+
+
+def test_account_status_authoritative_single_balance_fallback() -> None:
+    """AccountStatus.from_raw parses single active balance from profile if balances empty."""
+    profile_data = {
+        "user_id": 99999,
+        "email": "trader@example.com",
+        "balance_id": "404",
+        "balance_type": 4,
+        "balance": 10000.0,
+        "currency": "USD",
+    }
+    status = AccountStatus.from_raw(profile_data=profile_data, balances_data=[])
+    assert len(status.balances) == 1
+    assert status.balances[0].id == "404"
+    assert status.balances[0].type == AccountType.PRACTICE
+    assert status.practice_verified is True
+    verification = status.practice_verification()
+    assert verification.is_verified is True
+    assert verification.status == PracticeStatus.VERIFIED_ACTIVE_PRACTICE

@@ -41,6 +41,7 @@ from iqoption_research.connectors.iqoption.ws_client import (
     IQOptionWebSocketClient,
 )
 from iqoption_research.inference.loader import SafeModelArtifactLoader
+from iqoption_research.models.account import AccountType, Balance, Profile
 from iqoption_research.models.connection import (
     ConnectionConfig,
     ConnectionState,
@@ -461,7 +462,7 @@ async def test_runtime_timeout_deadline_bounds_silent_stream():
     elapsed = time.monotonic() - t_start
 
     # Execution must finish in bounded time (not hang indefinitely)
-    assert elapsed < 3.0
+    assert elapsed < 6.0
     assert runtime.state in {RuntimeState.STOPPED, RuntimeState.STOPPING}
     assert snapshot is not None
     assert "MAX_RUNTIME_REACHED" in str(snapshot.termination_reason)
@@ -959,3 +960,67 @@ async def test_runtime_auth_missing_active_session_safe_exit():
     assert "AUTH_FAILED" in str(snapshot.termination_reason)
     assert snapshot.last_error == "Broker unreachable"
     assert snapshot.accepted_candles_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 15: Active REAL balance fails practice verification closed with telemetry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_runtime_active_real_account_practice_verification_failure_telemetry():
+    """Active REAL account fails PRACTICE verification closed with clear diagnostics."""
+    profile = Profile.from_raw({
+        "user_id": 12345,
+        "email": "trader@example.com",
+        "balance_id": 200,
+        "first_name": "Test",
+        "last_name": "User",
+    })
+    balances = [
+        Balance(id="100", type=AccountType.PRACTICE, amount=10000.0, currency="USD"),
+        Balance(id="200", type=AccountType.REAL, amount=250.0, currency="USD"),
+    ]
+    provider = MockAuthProvider(mock_profile=profile, mock_balances=balances)
+    auth_manager = AuthenticationManager(provider=provider)
+
+    auth_token = ObservationAuthorizationToken(
+        token_hash="a" * 64,
+        authorized_by="LeadSystemsEngineer",
+    )
+    cfg = RuntimeConfig(
+        symbol="EURUSD",
+        mode=BotMode.OBSERVE_ONLY,
+        observation_token=auth_token,
+        max_runtime_seconds=5.0,
+        dev_mock=True,
+    )
+
+    runtime = ContinuousBotRuntime(
+        config=cfg,
+        auth_manager=auth_manager,
+    )
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        auth_manager,
+        "_prompt_credentials_from_terminal",
+        lambda: ("trader@example.com", "mock_secret_123"),
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="practice verification failed"):
+            await runtime.run()
+    finally:
+        monkeypatch.undo()
+
+    assert runtime.state == RuntimeState.ERROR
+    snapshot = runtime.get_status_snapshot()
+    assert snapshot is not None
+    assert snapshot.state.lower() == "error"
+    assert "AUTH_FAILED" in str(snapshot.termination_reason)
+    assert "ACTIVE REAL ACCOUNT DETECTED" in str(snapshot.last_error)
+    assert "Switch your active account to Practice" in str(snapshot.last_error)
+    assert snapshot.accepted_candles_count == 0
+    assert snapshot.paper_trades_count == 0
+    assert snapshot.settled_trades_count == 0

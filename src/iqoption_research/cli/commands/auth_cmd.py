@@ -16,6 +16,7 @@ from rich.table import Table
 from iqoption_research.auth.config import RuntimeSecurityConfig
 from iqoption_research.auth.manager import AuthenticationManager
 from iqoption_research.auth.provider import IQOptionAuthProvider, MockAuthProvider
+from iqoption_research.auth.state import AuthStatus
 from iqoption_research.auth.vault import InsecureKeyringBackendError, WindowsCredentialVault
 from iqoption_research.security.credentials import redact_email
 
@@ -199,23 +200,70 @@ def login_cmd(
         acct_display = redact_email(session.email) if session else "Authenticated"
         persistence_note = (
             "\n\n[bold yellow]Note on CLI Session Lifetime:[/bold yellow]\n"
-            "This in-memory session is active for the current process. Ephemeral CLI\n"
-            "commands terminate upon exit. To authenticate persistent bot operations\n"
-            "without manual password prompts, store credentials in Windows Vault:\n"
+            "This in-memory session is active for the current process only. Ephemeral CLI\n"
+            "commands terminate on exit, and session tokens (SSID) are never persisted to disk.\n"
+            "To authenticate persistent bot workflows without interactive password prompts,\n"
+            "store credentials encrypted-at-rest in the Windows Credential Vault:\n"
             "  [bold green]bot auth save-credentials --opt-in[/bold green]\n"
-            "and run bot workflows with saved vault credentials."
+            "and run bot workflows with [bold cyan]--saved[/bold cyan]."
         )
-        console.print(
-            Panel(
-                f"[bold green]Authentication Successful![/bold green]\n\n"
-                f"Account: {acct_display}\n"
-                f"Provider: {'Offline Mock Fixture' if dev_mock else 'Live HTTPS Broker'}\n"
-                f"State: {manager.current_state.value}\n"
-                f"PRACTICE Verified: {session.is_practice_verified if session else False}\n"
-                f"Session Memory: Active in process (Password discarded){persistence_note}",
-                border_style="green",
+        if manager.current_state == AuthStatus.ACCOUNT_UNVERIFIED:
+            explanation = manager.last_error or "Account is not verified for PRACTICE trading."
+            active_type = session.server_account_type if session else "UNKNOWN"
+            active_id = session.active_balance_id if session else "None"
+            has_practice = getattr(session, "has_practice_balance", False) if session else False
+
+            action_note = ""
+            if active_type == "REAL" and has_practice:
+                action_note = (
+                    "\n\n[bold yellow]Action Required:[/bold yellow]\n"
+                    "A PRACTICE balance exists in your account, but your broker session is\n"
+                    "currently routed to REAL. Log in to the IQ Option web or mobile app,\n"
+                    "switch your active balance to [bold green]Practice Account[/bold green],\n"
+                    "then re-run."
+                )
+            elif active_type == "REAL":
+                action_note = (
+                    "\n\n[bold yellow]Notice:[/bold yellow]\n"
+                    "This account has no PRACTICE balance on the broker. Live observation\n"
+                    "requires a verified PRACTICE account to guarantee read-only paper execution."
+                )
+
+            server_acct_type = session.server_account_type if session else "PRACTICE"
+            warn_title = (
+                "[bold yellow]⚠️ Credentials Authenticated — "
+                "Account Verification Pending[/bold yellow]"
             )
-        )
+            console.print(
+                Panel(
+                    f"{warn_title}\n\n"
+                    f"Account: {acct_display}\n"
+                    f"Provider: {'Offline Mock Fixture' if dev_mock else 'Live HTTPS Broker'}\n"
+                    f"State: [yellow]{manager.current_state.value}[/yellow]\n"
+                    f"Active Account Type: [bold red]{active_type}[/bold red] "
+                    f"(Balance ID: {active_id})\n"
+                    f"PRACTICE Verified: [bold yellow]False[/bold yellow]\n"
+                    f"PRACTICE Balance Available: {has_practice}\n"
+                    f"Details: {explanation}"
+                    f"{action_note}"
+                    f"{persistence_note}",
+                    border_style="yellow",
+                )
+            )
+        else:
+            server_acct_type = session.server_account_type if session else "PRACTICE"
+            console.print(
+                Panel(
+                    f"[bold green]Authentication Successful![/bold green]\n\n"
+                    f"Account: {acct_display}\n"
+                    f"Provider: {'Offline Mock Fixture' if dev_mock else 'Live HTTPS Broker'}\n"
+                    f"State: {manager.current_state.value}\n"
+                    f"Active Account Type: {server_acct_type}\n"
+                    f"PRACTICE Verified: {session.is_practice_verified if session else False}\n"
+                    f"Session Memory: Active in process (Password discarded){persistence_note}",
+                    border_style="green",
+                )
+            )
     else:
         failure_title = (
             "MOCK AUTHENTICATION FAILED" if dev_mock else "IQ OPTION BROKER AUTHENTICATION FAILED"
@@ -407,7 +455,9 @@ def check_connection_cmd(
     table.add_row("Session Validity", "Valid" if session.is_active else "Expired")
     table.add_row("Session Age", f"{session.age_seconds():.1f}s")
     table.add_row("Server Account Type", session.server_account_type)
+    table.add_row("Active Balance ID", str(session.active_balance_id or "None"))
     table.add_row("PRACTICE Verified", str(session.is_practice_verified))
+    table.add_row("PRACTICE Available", str(getattr(session, "has_practice_balance", False)))
     table.add_row("Broker Order Ledger", "[bold red]BLOCKED[/bold red]")
 
     console.print(table)

@@ -45,6 +45,7 @@ from iqoption_research.execution.risk import (
     OrderProposal,
     RiskConfig,
     RiskDecision,
+    RiskRejectionReason,
 )
 from iqoption_research.execution.safety import PracticeAccountSafetyValidator
 from iqoption_research.execution.state_machine import (
@@ -74,6 +75,7 @@ class ModularExecutionConfig:
     simulated_slippage: float = 0.0
     risk_config: RiskConfig = field(default_factory=RiskConfig)
     mode_config: ExecutionModeConfig = field(default_factory=ExecutionModeConfig)
+    single_test_order_mode: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +249,31 @@ class ModularExecutionEngine:
                 self._is_account_verified = safety_check.is_safe_to_execute
             else:
                 self._is_account_verified = False
+
+        # Single test order invariant: in verification mode, only one unresolved order permitted
+        if self.config.single_test_order_mode and len(self._open_positions) > 0:
+            unresolved_id = self._open_positions[0].order_id
+            order = self.state_machine.create_order(
+                signal_id=proposal.signal_id,
+                symbol=proposal.symbol,
+                side=proposal.side,
+                stake=proposal.proposed_stake,
+                payout_rate=proposal.payout_rate or self.config.default_payout_rate,
+                product_type=proposal.product_type,
+                expiry_horizon_bars=self.config.default_horizon_bars,
+                created_ts=current_ts,
+                execution_mode=self.config.mode,
+                idempotency_key=idempotency_key,
+            )
+            blocked_decision = RiskDecision(
+                permitted=False,
+                approved_stake=0.0,
+                reason=RiskRejectionReason.EXCEEDS_MAX_EXPOSURE,
+                message=f"Single test order invariant: unresolved order {unresolved_id} in-flight",
+                circuit_state=self.risk_manager.circuit_state,
+            )
+            self.state_machine.validate_order(order, blocked_decision, validated_ts=current_ts)
+            return order, blocked_decision
 
         # 4. Evaluate proposal against operational risk boundaries
         risk_decision = self.risk_manager.evaluate_proposal(

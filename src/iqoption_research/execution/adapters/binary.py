@@ -25,8 +25,8 @@ from iqoption_research.execution.models import (
     ProductType,
 )
 from iqoption_research.execution.modes import ExecutionMode, UnsupportedProductOperationError
+from iqoption_research.execution.practice_transport import PracticeBinaryTransportAdapter
 from iqoption_research.execution.risk import OrderProposal
-from iqoption_research.market_data.symbols import resolve_active_id
 from iqoption_research.models.market import Candle
 from iqoption_research.research.backtest.payoffs import BinaryPayoffModel
 
@@ -85,6 +85,9 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
         self.bar_duration_seconds = bar_duration_seconds
         self.simulated_slippage = simulated_slippage
         self.payoff_model = BinaryPayoffModel(payout_rate=default_payout_rate)
+        self.practice_transport = PracticeBinaryTransportAdapter(
+            default_payout_rate=default_payout_rate
+        )
 
     def validate_proposal(self, proposal: OrderProposal) -> None:
         """Validate binary proposal attributes."""
@@ -162,52 +165,60 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
                 )
 
             # Build documented protocol frame
-            active_id = resolve_active_id(order.symbol)
             expiry_ts = int(
                 current_candle.to_ts + (order.expiry_horizon_bars * self.bar_duration_seconds)
             )
-            frame = build_binary_order_frame(
-                active_id=active_id,
-                user_balance_id=order.metadata.get("active_balance_id", 0),
-                side=order.side,
-                stake=order.stake,
+            raw_bal_id = order.metadata.get("active_balance_id", 1)
+            user_balance_id = (
+                int(raw_bal_id) if str(raw_bal_id).isdigit() and int(raw_bal_id) > 0 else 1
+            )
+            frame = self.practice_transport.build_order_frame(
+                order,
+                user_balance_id=user_balance_id,
                 expiry_ts=expiry_ts,
-                request_id=order.order_id,
             )
 
-            # Dispatch through transport interface (e.g. MockBrokerTransport in tests)
+            # Dispatch through transport interface (e.g. MockBrokerPracticeTransport)
             if order.submitted_ts is None:
                 order.submitted_ts = current_candle.to_ts
             if order.state != OrderState.SUBMITTED:
                 order.transition_to(OrderState.SUBMITTED, reason="Dispatched to broker transport")
 
-            try:
-                response = broker_transport.send_order_frame(frame)
-                if response.get("status") == "success" or "id" in response:
-                    broker_id = str(response.get("id") or response.get("option_id") or "opt_mock")
-                    order.broker_order_id = broker_id
-                    order.acknowledged_ts = current_candle.to_ts
-                    order.transition_to(
-                        OrderState.ACKNOWLEDGED,
-                        reason=f"Broker ack received: id={broker_id}",
-                    )
-                    order.entry_price = current_candle.close
-                    order.entry_ts = float(current_candle.to_ts)
-                    order.expiry_ts = float(expiry_ts)
-                    return order.transition_to(
-                        OrderState.OPEN,
-                        reason=f"Order opened on Practice broker: id={broker_id}",
-                    )
-                rej_msg = str(
-                    response.get("message") or response.get("error") or "Broker rejection"
+            result = self.practice_transport.dispatch_order(
+                order, frame=frame, transport=broker_transport
+            )
+
+            if result.success and result.broker_order_id:
+                broker_id = result.broker_order_id
+                order.broker_order_id = broker_id
+                order.acknowledged_ts = current_candle.to_ts
+                order.transition_to(
+                    OrderState.ACKNOWLEDGED,
+                    reason=f"Broker ack received: id={broker_id}",
                 )
-                return order.transition_to(OrderState.REJECTED, reason=rej_msg)
-            except TimeoutError as exc:
+                order.entry_price = current_candle.close
+                order.entry_ts = float(current_candle.to_ts)
+                order.expiry_ts = float(expiry_ts)
+                return order.transition_to(
+                    OrderState.OPEN,
+                    reason=f"Order opened on Practice broker: id={broker_id}",
+                )
+            if result.is_timeout:
                 order.reconciliation_required = True
-                return order.transition_to(OrderState.TIMEOUT, reason=f"Submission timeout: {exc}")
-            except Exception as exc:  # noqa: BLE001
+                return order.transition_to(
+                    OrderState.TIMEOUT,
+                    reason=result.rejection_reason or "Broker dispatch timeout",
+                )
+            if result.is_unknown:
                 order.reconciliation_required = True
-                return order.transition_to(OrderState.UNKNOWN, reason=f"Transport exception: {exc}")
+                return order.transition_to(
+                    OrderState.UNKNOWN,
+                    reason=result.rejection_reason or "Transport exception / unknown response",
+                )
+            return order.transition_to(
+                OrderState.REJECTED,
+                reason=result.rejection_reason or "Broker order rejected",
+            )
 
         raise UnsupportedProductOperationError(
             f"Unsupported execution mode {self.execution_mode.value}"
@@ -295,8 +306,21 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
 
         if isinstance(broker_position_data, dict):
             # If position was found on broker
-            if "status" in broker_position_data:
-                status = broker_position_data["status"]
+            if "status" in broker_position_data or "msg" in broker_position_data:
+                settle_res = self.practice_transport.parse_settlement(order, broker_position_data)
+                if settle_res.settled:
+                    order.transition_to(
+                        OrderState.SETTLED,
+                        reason=(
+                            f"Reconciled: settled on broker as {settle_res.outcome} "
+                            f"(PnL={settle_res.net_pnl:.2f}, note={settle_res.consistency_note})"
+                        ),
+                    )
+                    order.simulated_pnl = settle_res.net_pnl
+                    order.reconciliation_required = False
+                    return True
+
+                status = broker_position_data.get("status")
                 if status == "open":
                     if order.state in {
                         OrderState.SUBMITTED,
@@ -306,14 +330,6 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
                         order.transition_to(
                             OrderState.OPEN, reason="Reconciled: position active on broker"
                         )
-                    order.reconciliation_required = False
-                    return True
-                if status in {"won", "lost", "equal", "closed"}:
-                    pnl = float(broker_position_data.get("pnl", 0.0))
-                    order.transition_to(
-                        OrderState.SETTLED, reason=f"Reconciled: settled on broker (PnL={pnl})"
-                    )
-                    order.simulated_pnl = pnl
                     order.reconciliation_required = False
                     return True
             elif broker_position_data.get("not_found", False):

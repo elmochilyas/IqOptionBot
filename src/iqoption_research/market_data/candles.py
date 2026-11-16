@@ -13,6 +13,7 @@ equals the local clock; candle completeness uses a supplied server time.
 
 from __future__ import annotations
 
+import contextlib
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -56,6 +57,23 @@ class CandleError:
     index: int
     reason: str
     detail: str
+    from_ts: int | None = None
+
+    @property
+    def invariant(self) -> str:
+        """Fixed diagnostic categories, never broker-controlled text."""
+        detail = self.detail.lower()
+        for invariant, markers in (
+            ("instrument", ("instrument", "active_id", "symbol")),
+            ("duration", ("candle window", "not after start")),
+            ("timeframe", ("size", "timeframe")),
+            ("timestamp", ("timestamp", "fractional seconds", "'from'", "'to'", "'at'")),
+            ("ohlc", ("ohlc", "high", "low", "'open'", "'close'", "'min'", "'max'")),
+            ("volume_or_spread", ("volume", "bid", "ask")),
+        ):
+            if any(marker in detail for marker in markers):
+                return invariant
+        return "normalization"
 
 
 class TimestampUnit(StrEnum):
@@ -295,12 +313,26 @@ def normalize_candle(
     size_candidate = size if size is not None else raw.get("size")
     if size_candidate is None:
         raise InvalidCandleError("Missing candle size")
-    resolved_size = CandleSize.from_seconds(int(size_candidate))
+    try:
+        resolved_size = CandleSize(size_candidate)
+    except ValueError as exc:
+        raise InvalidCandleError("Unsupported candle size") from exc
+    raw_size = _as_optional_int(raw, "size")
+    if raw_size is not None and raw_size != resolved_size.value:
+        raise InvalidCandleError("Candle size conflicts with requested timeframe")
+    if "symbol" in raw and raw["symbol"] != canonical_symbol:
+        raise InvalidCandleError("Candle symbol conflicts with verified instrument")
 
     # Time window
-    from_ts = normalize_timestamp_seconds(_as_int(raw, "from"))
+    from_ns = normalize_timestamp_ns(_as_int(raw, "from"))
+    if from_ns % 1_000_000_000:
+        raise InvalidCandleError("Candle start contains fractional seconds")
+    from_ts = from_ns // 1_000_000_000
     if "to" in raw and raw.get("to") is not None:
-        to_ts = normalize_timestamp_seconds(_as_int(raw, "to"))
+        to_ns = normalize_timestamp_ns(_as_int(raw, "to"))
+        if to_ns % 1_000_000_000:
+            raise InvalidCandleError("Candle end contains fractional seconds")
+        to_ts = to_ns // 1_000_000_000
     else:
         to_ts = from_ts + resolved_size.value
 
@@ -393,7 +425,15 @@ def normalize_candles(
                 )
             )
         except InvalidCandleError as exc:
-            errors.append(CandleError(index=index, reason="invalid_candle", detail=str(exc)))
+            # Timestamp only, never copy arbitrary raw fields into diagnostics.
+            timestamp = None
+            with contextlib.suppress(InvalidCandleError, AttributeError):
+                timestamp = normalize_timestamp_seconds(_as_int(raw, "from"))
+            errors.append(
+                CandleError(
+                    index=index, reason="invalid_candle", detail=str(exc), from_ts=timestamp
+                )
+            )
     return candles, errors
 
 

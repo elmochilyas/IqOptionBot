@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
+from iqoption_research.connectors.iqoption.exceptions import InvalidCandleError
+from iqoption_research.market_data.candles import CandleError, validate_ohlc
 from iqoption_research.market_data.collector import (
     BACKFILL_SOURCE,
     TRANSIENT_FETCH_ERRORS,
@@ -305,7 +307,15 @@ class ForwardSyncJob:
     ) -> tuple[list[Candle], int, int]:
         if str(getattr(result, "source", "")).lower() != "iqoption":
             raise DataAcquisitionError("Forward sync rejected non-IQ Option provenance.")
-        if getattr(result, "errors", ()):
+        errors = getattr(result, "errors", ())
+        if errors and isinstance(errors[0], CandleError):
+            error = errors[0]
+            timestamp = error.from_ts if type(error.from_ts) is int else "unavailable"
+            raise DataAcquisitionError(
+                f"Forward candle rejected: invariant={error.invariant}; "
+                f"from_ts={timestamp}; record_index={error.index}."
+            )
+        if errors:
             raise DataAcquisitionError("Forward sync broker response contained rejected records.")
         raw = list(getattr(result, "candle_list", ()))
         if any(not isinstance(candle, Candle) for candle in raw):
@@ -313,18 +323,67 @@ class ForwardSyncJob:
         page: dict[int, Candle] = {}
         duplicates = 0
         for candle in raw:
-            if (
-                candle.symbol != self.checkpoint.symbol
-                or candle.active_id != self.checkpoint.active_id
-                or candle.size.value != self.checkpoint.candle_size_seconds
-                or candle.to_ts - candle.from_ts != self.checkpoint.candle_size_seconds
-                or not candle.is_complete
-            ):
+
+            def reject(invariant: str, rejected: Candle = candle) -> None:
+                # Only fixed invariant names and integer time metadata; never raw payloads.
+                timestamp = rejected.from_ts if type(rejected.from_ts) is int else "invalid"
+                clock = getattr(result, "completion_clock_ns", None)
+                clock = clock if type(clock) is int else "unavailable"
                 raise DataAcquisitionError(
-                    "Forward sync rejected a candle with invalid identity, timeframe, or status."
+                    f"Forward candle rejected: invariant={invariant}; from_ts={timestamp}; "
+                    f"requested_end_ts={self.checkpoint.next_endtime}; "
+                    f"completed_end_ts={self.checkpoint.target_completed_end_ts}; "
+                    f"completion_clock_ns={clock}."
                 )
-            if candle.from_ts % self.checkpoint.candle_size_seconds:
-                raise DataAcquisitionError("Forward sync rejected a misaligned candle timestamp.")
+
+            size = self.checkpoint.candle_size_seconds
+            if candle.symbol != self.checkpoint.symbol:
+                reject("instrument")
+            if candle.active_id != self.checkpoint.active_id:
+                reject("active_id")
+            if candle.size != CandleSize(size):
+                reject("timeframe")
+            if candle.identity_provenance not in {
+                "explicit_broker_metadata",
+                "verified_correlated_request",
+            }:
+                reject("identity_provenance")
+            if candle.provenance != "historical":
+                reject("historical_provenance")
+            if any(
+                type(value) is not int or value < 0
+                for value in (candle.from_ts, candle.to_ts, candle.at_ts)
+            ):
+                reject("timestamp")
+            if candle.to_ts - candle.from_ts != size:
+                reject("duration")
+            if candle.from_ts % size:
+                reject("timestamp_alignment")
+            try:
+                validate_ohlc(candle.open, candle.high, candle.low, candle.close)
+            except InvalidCandleError:
+                reject("ohlc")
+            if (
+                type(candle.volume) is not int
+                or candle.volume < 0
+                or not math.isfinite(candle.bid)
+                or not math.isfinite(candle.ask)
+                or candle.bid <= 0
+                or candle.ask < candle.bid
+            ):
+                reject("volume_or_spread")
+            # Inclusive broker endpoints may return the candle opening exactly at
+            # the requested completed boundary. Validate structure/identity first,
+            # then exclude only that boundary candle, regardless of clock skew.
+            if candle.to_ts > self.checkpoint.target_completed_end_ts:
+                if (
+                    candle.from_ts == self.checkpoint.target_completed_end_ts
+                    and self.checkpoint.next_endtime == candle.from_ts
+                ):
+                    continue
+                reject("completed_window")
+            if candle.is_complete is not True:
+                reject("incomplete_inside_completed_window")
             existing = seen.get(candle.from_ts) or page.get(candle.from_ts)
             if existing is not None:
                 conflicts = _conflicting_market_fields(existing, candle)
@@ -336,8 +395,6 @@ class ForwardSyncJob:
                 duplicates += 1
                 continue
             if candle.from_ts <= self.checkpoint.baseline_latest_from_ts:
-                continue
-            if candle.to_ts > self.checkpoint.target_completed_end_ts:
                 continue
             page[candle.from_ts] = candle
         ordered = sorted(page.values(), key=lambda item: item.from_ts)
@@ -409,6 +466,7 @@ class ForwardSyncJob:
                     self.write_checkpoint()
                     return self._partial_result(seen)
                 raw = list(getattr(result, "candle_list", ()))
+                page, duplicates, _ = self._validate_page(result, seen=seen)
                 if not raw:
                     expected = _expected_open_candles(
                         self.checkpoint.symbol,
@@ -429,7 +487,6 @@ class ForwardSyncJob:
                 earliest_raw = min(candle.from_ts for candle in raw)
                 if earliest_raw > self.checkpoint.next_endtime:
                     raise DataAcquisitionError("Forward pagination moved in the wrong direction.")
-                page, duplicates, _ = self._validate_page(result, seen=seen)
                 dataset_ids = self.checkpoint.committed_dataset_ids
                 if page:
                     write_result = self.collector.persist_batch(

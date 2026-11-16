@@ -463,6 +463,7 @@ class AsyncIQOption:
             fetched_at=datetime.now(UTC),
             raw_count=len(raw_candles),
             source="iqoption",
+            completion_clock_ns=server_time_ns,
         )
 
     @staticmethod

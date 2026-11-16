@@ -431,6 +431,89 @@ def phase13_candidate_command(
     )
 
 
+@ml_app.command(
+    "phase14-research",
+    help="Execute multi-horizon (1m, 3m, 5m) and causal ATR volatility-aware AI research.",
+)
+def phase14_research_command(
+    storage_dir: Path = typer.Option(
+        Path("data/datasets"), "--storage", help="Authentic dataset storage directory"
+    ),
+    confirmation_state: Path = typer.Option(
+        Path("data/phase11/confirmation_state.json"),
+        "--confirmation-state",
+        help="Path to phase 11 confirmation state file",
+    ),
+    report_path: Path = typer.Option(
+        Path("data/phase14/research_report.md"), "--report", help="Markdown research report path"
+    ),
+    json_path: Path = typer.Option(
+        Path("data/phase14/multi_horizon_volatility_results.json"),
+        "--json",
+        help="JSON evidence output path",
+    ),
+    folds: int = typer.Option(
+        4, "--folds", min=2, max=8, help="Number of purged walk-forward folds"
+    ),
+) -> None:
+    from iqoption_research.ml.phase14 import run_phase14_multi_horizon_research
+
+    result = run_phase14_multi_horizon_research(
+        storage_dir=storage_dir,
+        confirmation_state_path=confirmation_state,
+        output_report_path=report_path,
+        output_json_path=json_path,
+        horizons=(1, 3, 5),
+        n_folds=folds,
+    )
+
+    console.print(
+        Panel(
+            f"Evaluated {result.dataset_rows:,} authentic development candles.\n"
+            f"Holdout cutoff: {result.holdout_cutoff_utc}\n"
+            f"Preserved holdout: {result.holdout_candles_preserved:,} candles\n"
+            f"Multi-horizon targets: 1m, 3m, 5m with strict h-bar purging.\n"
+            f"Final Recommendation: [bold red]{result.recommendation.value}[/bold red]",
+            title="Phase 14 — Multi-Horizon AI Research Audit",
+            border_style="red" if result.recommendation.value == "STOP_STRATEGY" else "cyan",
+        )
+    )
+
+    table = Table(title="Multi-Horizon Model Comparison (Walk-Forward OOS)")
+    table.add_column("Horizon")
+    table.add_column("Model")
+    table.add_column("Accuracy", justify="right")
+    table.add_column("Bal. Acc", justify="right")
+    table.add_column("ROC-AUC", justify="right")
+    table.add_column("Win Rate (95% CI)", justify="right")
+    table.add_column("Binary PnL", justify="right")
+    table.add_column("Net Spot PnL", justify="right")
+    table.add_column("PF", justify="right")
+
+    for h_str in ("1", "3", "5"):
+        if h_str not in result.models_by_horizon:
+            continue
+        for m_name, m_eval in result.models_by_horizon[h_str].items():
+            fin = m_eval.financial
+            ci_low = fin.win_rate_ci.ci_lower
+            ci_high = fin.win_rate_ci.ci_upper
+            ci_s = f"{fin.win_rate:.2%} [{ci_low:.1%}-{ci_high:.1%}]"
+            table.add_row(
+                f"{h_str}m",
+                m_name,
+                f"{m_eval.accuracy:.2%}",
+                f"{m_eval.balanced_accuracy:.2%}",
+                f"{m_eval.roc_auc:.4f}",
+                ci_s,
+                f"${fin.binary_net_pnl:+,.0f}",
+                f"{fin.spot_net_pnl_pips:+,.1f}p",
+                f"{fin.spot_profit_factor:.3f}",
+            )
+    console.print(table)
+    console.print(f"[green]Markdown report saved to: {report_path.resolve()}[/green]")
+    console.print(f"[green]JSON evidence saved to: {json_path.resolve()}[/green]")
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

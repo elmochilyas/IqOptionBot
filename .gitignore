@@ -44,6 +44,7 @@ htmlcov/
 # Generated research workspaces, agent state, and archives
 data/*
 !data/phase13/
+!data/phase14/
 .agents/
 *.zip
 

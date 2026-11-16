@@ -36,7 +36,9 @@ from iqoption_research.connectors.iqoption.protocol import (
     MSG_CANDLE_GENERATED,
     MSG_HEARTBEAT,
     MSG_PROFILE,
+    MSG_SUBSCRIBE,
     build_authenticate_frame,
+    build_candle_subscription_frame,
     build_get_balances_request_frame,
     build_get_profile_request_frame,
     build_heartbeat_frame,
@@ -128,7 +130,7 @@ class IQOptionWebSocketClient:
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
         self._pending: dict[str, _PendingRequest] = {}
-        self._subscriptions: dict[SubscriptionKey, asyncio.Queue[dict[str, Any]]] = {}
+        self._subscriptions: dict[SubscriptionKey, asyncio.Queue[Any]] = {}
 
         self._profile: Profile | None = None
         self._balances: list[Balance] = []
@@ -155,6 +157,7 @@ class IQOptionWebSocketClient:
         self._disconnect_epoch = 0
         self._fail_reason: DisconnectReason | None = None
         self._server_time_ns: int | None = None
+        self._server_time_synced_at: float | None = None
 
         self.messages_rx = 0
         self.messages_tx = 0
@@ -209,6 +212,10 @@ class IQOptionWebSocketClient:
         )
 
     @property
+    def is_failed(self) -> bool:
+        return self._state == ConnectionState.FAILED
+
+    @property
     def active_balance(self) -> Balance | None:
         """Return server-confirmed active balance, if any."""
         if self._active_balance_id is None:
@@ -229,9 +236,18 @@ class IQOptionWebSocketClient:
         return self._reconnect_attempts
 
     @property
+    def is_closed(self) -> bool:
+        return self._closed
+
+    @property
     def server_time_ns(self) -> int | None:
-        """Last server time observed via the ``timeSync`` message."""
-        return self._server_time_ns
+        """Estimated current server time in epoch nanoseconds, advancing with monotonic clock."""
+        if self._server_time_ns is not None and self._server_time_synced_at is not None:
+            elapsed_ns = int((time.monotonic() - self._server_time_synced_at) * 1_000_000_000)
+            return self._server_time_ns + elapsed_ns
+        if self._server_time_ns is not None:
+            return self._server_time_ns
+        return int(time.time() * 1_000_000_000)
 
     @property
     def profile_request_id(self) -> str | None:
@@ -374,7 +390,9 @@ class IQOptionWebSocketClient:
 
         # Prevent overlapping heartbeat tasks across reconnects
         await self._cancel_heartbeat()
-        self.last_heartbeat_at = time.monotonic()
+        now = time.monotonic()
+        self.last_heartbeat_at = now
+        self.last_message_at = now
         self._heartbeat_task = asyncio.create_task(
             self._heartbeat_loop(), name="iqoption-ws-heartbeat"
         )
@@ -426,6 +444,9 @@ class IQOptionWebSocketClient:
                     len(self._balances),
                 )
 
+        # Restore active subscriptions if reconnecting
+        await self._resubscribe_all()
+
     async def close(self, reason: DisconnectReason = DisconnectReason.USER_REQUESTED) -> None:
         """Gracefully close and release resources. Idempotent."""
         if self._closed:
@@ -447,6 +468,13 @@ class IQOptionWebSocketClient:
         self._receive_task = None
 
         await self._shutdown_transport(reason)
+        # Notify waiting subscriber queues on permanent closure
+        exc = ConnectionError(f"Connection closed: {reason.value}")
+        for queue in self._subscriptions.values():
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(exc)
+        self._subscriptions.clear()
+
         async with self._state_lock:
             self._state = ConnectionState.DISCONNECTED
         self._transition_monitor(ConnectionState.DISCONNECTED, reason=reason.value)
@@ -475,7 +503,7 @@ class IQOptionWebSocketClient:
             if not pending.future.done():
                 pending.future.set_exception(exc)
         self._pending.clear()
-        self._subscriptions.clear()
+        # Note: self._subscriptions is NOT cleared during transient reconnects.
 
     # ----- requests -----
 
@@ -513,9 +541,11 @@ class IQOptionWebSocketClient:
         """Fire-and-forget send (used for subscribe/unsubscribe)."""
         await self._send_raw({"name": name, "msg": msg, "request_id": request_id})
 
-    def subscribe_candles(self, active_id: int, size: int) -> asyncio.Queue[dict[str, Any]]:
+    def subscribe_candles(self, active_id: int, size: int) -> asyncio.Queue[Any]:
         key: SubscriptionKey = (MSG_CANDLE_GENERATED, active_id, size)
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1000)
+        if key in self._subscriptions:
+            return self._subscriptions[key]
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1000)
         self._subscriptions[key] = queue
         return queue
 
@@ -637,6 +667,7 @@ class IQOptionWebSocketClient:
             handled = True
             self._diagnostics.record_incoming(name, msg, handled=True)
             self._server_time_ns = _to_epoch_ns(message.get("msg"))
+            self._server_time_synced_at = time.monotonic()
             return
 
         # Correlated response for explicit get-profile request (exact outstanding ID only)
@@ -699,9 +730,13 @@ class IQOptionWebSocketClient:
             self._diagnostics.record_incoming(name, msg, handled=True)
             payload = message.get("msg")
             if isinstance(payload, dict):
-                active_id = payload.get("active_id")
-                size = payload.get("size")
-                if isinstance(active_id, int) and isinstance(size, int):
+                try:
+                    active_id = int(payload.get("active_id", 0))
+                    size = int(payload.get("size", 0))
+                except (ValueError, TypeError):
+                    active_id, size = 0, 0
+                if active_id > 0 and size > 0:
+                    self.reset_reconnect_attempts()
                     queue = self._subscriptions.get((MSG_CANDLE_GENERATED, active_id, size))
                     if queue is not None:
                         try:
@@ -869,6 +904,39 @@ class IQOptionWebSocketClient:
             for b in self._balances
         ]
 
+    def reset_reconnect_attempts(self) -> None:
+        """Reset reconnect attempts counter only upon verified live data reception."""
+        if self._reconnect_attempts > 0:
+            logger.info(
+                "Resetting reconnect counter after verified feed activity (was %d)",
+                self._reconnect_attempts,
+            )
+            self._reconnect_attempts = 0
+
+    async def _resubscribe_all(self) -> None:
+        """Re-issue subscription requests for all active subscriptions upon reconnection."""
+        for kind, active_id, size in list(self._subscriptions.keys()):
+            if kind == MSG_CANDLE_GENERATED:
+                try:
+                    sub_frame = build_candle_subscription_frame(active_id, size)
+                    await self._send_raw({
+                        "name": MSG_SUBSCRIBE,
+                        "msg": sub_frame,
+                        "request_id": "",
+                    })
+                    logger.info(
+                        "Restored candle subscription on reconnect for active_id=%d, size=%d",
+                        active_id,
+                        size,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to restore subscription for active_id=%d, size=%d: %s",
+                        active_id,
+                        size,
+                        exc,
+                    )
+
     async def _heartbeat_loop(self) -> None:
         interval = self._config.heartbeat_interval
         while not self._closed:
@@ -877,11 +945,16 @@ class IQOptionWebSocketClient:
                 if self._ws is None or self._closed:
                     return
                 stale_after = self._config.heartbeat_interval + self._config.heartbeat_timeout
-                if (
-                    self.last_heartbeat_at is not None
-                    and (time.monotonic() - self.last_heartbeat_at) > stale_after
-                ):
-                    logger.warning("Heartbeat stale; reconnecting")
+                last_activity = max(
+                    self.last_message_at or 0.0,
+                    self.last_heartbeat_at or 0.0,
+                )
+                if last_activity > 0.0 and (time.monotonic() - last_activity) > stale_after:
+                    logger.warning(
+                        "Heartbeat/transport idle for > %.1fs (stale_after=%.1fs); reconnecting",
+                        time.monotonic() - last_activity,
+                        stale_after,
+                    )
                     await self._handle_disconnect(DisconnectReason.TIMEOUT)
                     return
                 await self._send_raw(build_heartbeat_frame(""))
@@ -952,9 +1025,14 @@ class IQOptionWebSocketClient:
                 "Reconnection exhausted after %d attempts",
                 self._config.max_reconnect_attempts,
             )
-            raise ReconnectExhaustedError(
+            exhausted_exc = ReconnectExhaustedError(
                 f"Reconnection exhausted after {self._config.max_reconnect_attempts} attempts"
             )
+            for queue in self._subscriptions.values():
+                with contextlib.suppress(asyncio.QueueFull):
+                    queue.put_nowait(exhausted_exc)
+            self._subscriptions.clear()
+            raise exhausted_exc
 
 
 def _to_epoch_ns(value: Any) -> int | None:

@@ -100,8 +100,10 @@ def _render_snapshot_table(snapshot: BotStatusSnapshot, title: str) -> None:
     table.add_row("Model Provenance", snapshot.provenance)
     pred_str = f"{snapshot.last_prediction_direction} ({snapshot.last_prediction_prob:.1%})"
     table.add_row("Connection Status", snapshot.connection_status)
+    table.add_row("Subscription State", getattr(snapshot, "subscription_state", "none"))
     table.add_row("Trained Model", snapshot.model_name)
     table.add_row("Latest Prediction", pred_str)
+    table.add_row("Total Predictions", str(getattr(snapshot, "prediction_count", 0)))
     table.add_row("Model Confidence", f"{snapshot.confidence:.3f}")
     table.add_row("Prediction Uncertainty", f"{snapshot.uncertainty:.3f}")
     table.add_row("Reason for HOLD", str(snapshot.abstention_reason or "None"))
@@ -117,8 +119,20 @@ def _render_snapshot_table(snapshot: BotStatusSnapshot, title: str) -> None:
         table.add_row("Operational Risk Limits", limits_str)
     table.add_row("Circuit Breaker State", snapshot.circuit_breaker_state)
     table.add_row("Feed Health Status", snapshot.feed_health)
-    table.add_row("Feed Gaps Detected", str(snapshot.feed_gaps_count))
+    table.add_row("Accepted Candles", str(getattr(snapshot, "accepted_candles_count", 0)))
     table.add_row("Rejected Candles", str(snapshot.rejected_candles_count))
+    table.add_row("Feed Gaps Detected", str(snapshot.feed_gaps_count))
+    table.add_row("Reconnection Attempts", str(getattr(snapshot, "reconnection_attempts", 0)))
+    last_msg = getattr(snapshot, "last_message_time", None) or "None"
+    table.add_row("Last Received Message", str(last_msg))
+    last_valid = getattr(snapshot, "last_valid_candle_time", None) or "None"
+    table.add_row("Last Valid Candle", str(last_valid))
+    last_completed = getattr(snapshot, "last_completed_candle_time", None) or "None"
+    table.add_row("Last Completed Candle", str(last_completed))
+    if getattr(snapshot, "time_remaining_seconds", None) is not None:
+        table.add_row("Time Remaining", f"{snapshot.time_remaining_seconds:.1f}s")
+    if getattr(snapshot, "termination_reason", None):
+        table.add_row("Termination Reason", str(snapshot.termination_reason))
     table.add_row("Last Error", str(snapshot.last_error or "None"))
     if snapshot.error_history:
         table.add_row("Error History Count", str(len(snapshot.error_history)))
@@ -833,7 +847,12 @@ def run_cmd(
         _render_snapshot_table(snapshot, f"Continuous Session Concluded — {symbol}")
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutdown requested by user (Ctrl+C).[/yellow]")
-        runtime.request_stop()
+        term_snap = runtime.get_status_snapshot()
+        if term_snap is not None:
+            _render_snapshot_table(term_snap, f"Continuous Session Interrupted (Ctrl+C) — {symbol}")
     except Exception as exc:
         console.print(f"[bold red]Runtime stopped with error: {exc}[/bold red]")
+        err_snap = runtime.get_status_snapshot()
+        if err_snap is not None:
+            _render_snapshot_table(err_snap, f"Continuous Session Failed — {symbol}")
         raise typer.Exit(code=1) from exc

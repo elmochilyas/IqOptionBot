@@ -31,7 +31,9 @@ from iqoption_research.execution.risk import RiskConfig
 from iqoption_research.inference.loader import SafeModelArtifactLoader
 from iqoption_research.inference.pipeline import ModelInferencePipeline
 from iqoption_research.inference.validation import ModelIntegrityValidator
+from iqoption_research.market_data.collector import HistoricalDataCollector
 from iqoption_research.ml.tracking.artifacts import ModelBundle
+from iqoption_research.models.connection import ConnectionState, DisconnectReason
 from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.observation.adapter import (
     MarketObservationAdapter,
@@ -107,7 +109,10 @@ class ContinuousBotRuntime:
         self._started_at: float | None = None
         self._run_task: asyncio.Task[None] | None = None
         self._watchdog_task: asyncio.Task[None] | None = None
+        self._startup_grace_task: asyncio.Task[None] | None = None
+        self._max_runtime_task: asyncio.Task[None] | None = None
         self._first_candle_received: bool = False
+        self._termination_reason: str | None = None
 
     def _init_auth_manager(self) -> AuthenticationManager:
         provider = MockAuthProvider() if self.config.dev_mock else IQOptionAuthProvider()
@@ -275,22 +280,56 @@ class ContinuousBotRuntime:
         self.state = RuntimeState.RUNNING
 
         try:
-            # 5. Ingestion loop
-            if self.config.mode == BotMode.OFFLINE_REPLAY:
-                await self._run_replay_loop(candles_iterable or [])
+            # 5. Ingestion loop wrapped in absolute monotonic wall-clock deadline
+            if self.config.max_runtime_seconds is not None and self.config.max_runtime_seconds > 0:
+                async with asyncio.timeout(self.config.max_runtime_seconds):
+                    if self.config.mode == BotMode.OFFLINE_REPLAY:
+                        await self._run_replay_loop(candles_iterable or [])
+                    else:
+                        await self._run_live_observation_loop()
             else:
-                await self._run_live_observation_loop()
+                if self.config.mode == BotMode.OFFLINE_REPLAY:
+                    await self._run_replay_loop(candles_iterable or [])
+                else:
+                    await self._run_live_observation_loop()
+        except TimeoutError:
+            logger.info(
+                "Runtime reached monotonic deadline (%.1fs). Halting cleanly.",
+                self.config.max_runtime_seconds,
+            )
+            self._termination_reason = (
+                f"MAX_RUNTIME_REACHED: {self.config.max_runtime_seconds:.1f}s deadline elapsed"
+            )
+            self.state = RuntimeState.STOPPING
+            self._shutdown_event.set()
         except asyncio.CancelledError:
             logger.info("Runtime execution cancelled.")
+            self._termination_reason = "CANCELLED: Runtime execution cancelled"
+            self.state = RuntimeState.STOPPING
+            self._shutdown_event.set()
         except Exception as exc:
             logger.error("Error in continuous runtime loop: %s", exc)
             self.state = RuntimeState.ERROR
             self._last_error = str(exc)
+            self._termination_reason = f"ERROR: {exc}"
+            self._shutdown_event.set()
             raise
         finally:
             await self._cleanup()
 
-        return self._controller.get_status_snapshot()
+        snap = self.get_status_snapshot()
+        if snap is not None:
+            return snap
+        if self._controller is not None:
+            c_snap = self._controller.get_status_snapshot()
+            if c_snap is not None:
+                return c_snap
+        return BotStatusSnapshot(
+            session_id=self._session_id or "unknown",
+            symbol=self.config.symbol,
+            mode=self.config.mode.value,
+            state=self.state.value,
+        )
 
     async def _run_replay_loop(self, candles: list[Candle]) -> None:
         """Ingest historical/synthetic candle series in replay mode."""
@@ -321,13 +360,16 @@ class ContinuousBotRuntime:
         if self._controller is None:
             return
         watchdog = FeedHealthWatchdog(self._controller.observation_adapter)
+        last_logged_status: FeedHealthStatus | None = None
+        last_log_time: float = 0.0
+
         while not self._shutdown_event.is_set():
             try:
                 watchdog.poll(now_ts=time.time())
+                now = time.monotonic()
                 # If feed latched as stale/disconnected, block ingestion
                 if watchdog.is_latched and self._controller is not None:
                     ls = watchdog.latched_status
-                    # is_latched + controller not None means ingestion blocking is valid
                     if ls is not None and ls in {
                         FeedHealthStatus.STALE,
                         FeedHealthStatus.DISCONNECTED,
@@ -335,18 +377,97 @@ class ContinuousBotRuntime:
                         self._controller.block_ingestion(
                             f"Feed health {ls.value}: {watchdog.latched_reason}"
                         )
-                    logger.warning("Feed health issue latched: %s", watchdog.latched_reason)
-            except Exception as exc:  # noqa BL001
+                    # Rate-limit identical warnings to once per 60s or on status change
+                    if ls != last_logged_status or (now - last_log_time) >= 60.0:
+                        logger.warning("Feed health issue latched: %s", watchdog.latched_reason)
+                        last_logged_status = ls
+                        last_log_time = now
+
+                # Check if client connection has permanently failed or exhausted reconnects
+                if self.client is not None and (
+                    self.client.state == ConnectionState.FAILED
+                    or getattr(self.client, "is_closed", False)
+                ):
+                    fail_reason = getattr(self.client, "fail_reason", None)
+                    if (
+                        fail_reason == DisconnectReason.RECONNECT_EXHAUSTED
+                        or self.client.state == ConnectionState.FAILED
+                    ):
+                        logger.error(
+                            "Watchdog detected broker connection failure / reconnect "
+                            "exhausted; halting."
+                        )
+                        self.state = RuntimeState.ERROR
+                        self._last_error = "Broker connection failed / reconnect exhausted"
+                        self._termination_reason = "RECONNECT_EXHAUSTED: Reconnect budget exhausted"
+                        self._shutdown_event.set()
+                        break
+
+            except Exception as exc:  # noqa: BLE001
                 logger.error("Watchdog poll error: %s", exc)
                 if self._controller is not None:
                     self._controller.block_ingestion(f"Watchdog error: {exc}")
                 self.state = RuntimeState.ERROR
                 self._last_error = f"Watchdog poll error: {exc}"
+                self._termination_reason = f"WATCHDOG_ERROR: {exc}"
+                self._shutdown_event.set()
+                break
+
             # Poll every 5 seconds, respecting shutdown
             try:
                 await asyncio.wait_for(self._shutdown_event.wait(), timeout=5.0)
             except TimeoutError:
                 continue
+
+    async def _prewarm_feature_buffer(self) -> None:
+        """Causally pre-warm feature buffer with authentic historical candles.
+
+        Ensures model inference pipeline is ready to process the first live candle
+        without waiting 21+ bars or injecting synthetic data.
+        """
+        if self._controller is None:
+            return
+
+        lookback = 30
+        candles: list[Candle] = []
+
+        # 1. First attempt: fetch recent completed candles directly from broker
+        if self.client is not None and not self.config.dev_mock:
+            try:
+                result = await self.client.get_candles(
+                    self.config.symbol,
+                    size=CandleSize(self.config.candle_size_seconds),
+                    count=lookback,
+                )
+                if result.candles:
+                    candles = list(result.candles)
+                    logger.info("Retrieved %d authentic warm-up candles from broker", len(candles))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Broker candle warm-up fetch failed: %s; trying local storage", exc)
+
+        # 2. Second attempt: load from authentic local catalog if available
+        if not candles:
+            try:
+                collector = HistoricalDataCollector()
+                stored = collector.load_dataset(self.config.symbol, self.config.candle_size_seconds)
+                if stored:
+                    candles = list(stored[-lookback:])
+                    logger.info(
+                        "Loaded %d authentic warm-up candles from local dataset", len(candles)
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Local dataset warm-up failed: %s", exc)
+
+        if candles:
+            warm_count = self._controller.warm_up(candles)
+            buf_status = self._controller.engine.feature_buffer.status.value
+            logger.info(
+                "Feature buffer pre-warmed with %d candles (status=%s)",
+                warm_count,
+                buf_status,
+            )
+        else:
+            logger.info("No historical warm-up candles available; buffer will warm up live")
 
     async def _run_live_observation_loop(self) -> None:
         """Ingest live completed market candles from authorized read-only broker feed."""
@@ -373,21 +494,20 @@ class ContinuousBotRuntime:
         self.client.assert_read_only()
         await self.client.connect()
 
+        # Pre-warm feature buffer causally with authentic completed candles
+        await self._prewarm_feature_buffer()
+
         # Schedule the independent watchdog task for feed health monitoring
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
         # Bounded startup grace period supervised by an independent deadline task.
         # The deadline fires regardless of candle arrival; once the first valid candle
         # is accepted the task is cancelled so healthy subsequent candles are not rejected.
-        self._startup_grace_task: asyncio.Task[None] | None = asyncio.create_task(
-            self._startup_grace_period_timeout()
-        )
+        self._startup_grace_task = asyncio.create_task(self._startup_grace_period_timeout())
 
         # Independent max_runtime_seconds deadline task that fires regardless of candle arrival.
         # This ensures a silent WebSocket stream still triggers a timeout and halts execution.
-        self._max_runtime_task: asyncio.Task[None] | None = asyncio.create_task(
-            self._max_runtime_seconds_timeout()
-        )
+        self._max_runtime_task = asyncio.create_task(self._max_runtime_seconds_timeout())
 
         try:
             async for raw_candle in self.client.stream_candles(
@@ -401,9 +521,10 @@ class ContinuousBotRuntime:
                 # period task so later healthy candles are not incorrectly rejected.
                 if not self._first_candle_received:
                     self._first_candle_received = True
-                    self._startup_grace_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await self._startup_grace_task
+                    if self._startup_grace_task is not None:
+                        self._startup_grace_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await self._startup_grace_task
 
                 await self._pause_event.wait()
 
@@ -414,36 +535,46 @@ class ContinuousBotRuntime:
                 self._startup_grace_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._startup_grace_task
-            # Cancel the max_runtime task first, then the watchdog task, then close the client
+            # Cancel the max_runtime task, then the watchdog task, then close the client
             if self._max_runtime_task is not None:
                 self._max_runtime_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._max_runtime_task
-            self._watchdog_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._watchdog_task
-            await self.client.close()
+            if self._watchdog_task is not None:
+                self._watchdog_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._watchdog_task
+            if self.client is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(self.client.close(), timeout=5.0)
 
     async def _max_runtime_seconds_timeout(self) -> None:
-        """Fire ERROR state if the overall runtime exceeds max_runtime_seconds, regardless of candle
-        arrival.
+        """Fire state transition if the overall runtime exceeds max_runtime_seconds.
 
-            This task runs independently of the candle ingestion loop, so the timeout
-            can expire even when the stream is silent (no candles received).
+        Runs independently of the candle ingestion loop so the deadline can expire
+        even when the stream is silent.
         """
         try:
-            if self.config.max_runtime_seconds is None:
+            if self.config.max_runtime_seconds is None or self.config.max_runtime_seconds <= 0:
                 return
             await asyncio.sleep(self.config.max_runtime_seconds)
-            # Only act if we haven't already received a first candle or cancelled
-            if not self._first_candle_received and not self._shutdown_event.is_set():
-                logger.error("Max observation runtime exceeded; no valid candle received. Halting.")
-                self.state = RuntimeState.ERROR
-                self._last_error = "Max observation runtime exceeded; no valid candle received"
-                if self._controller is not None:
-                    self._controller.emergency_stop(reason="Max observation runtime exceeded")
+            if not self._shutdown_event.is_set():
+                logger.info(
+                    "Max observation runtime deadline (%.1fs) elapsed. Halting.",
+                    self.config.max_runtime_seconds,
+                )
+                self._termination_reason = (
+                    f"MAX_RUNTIME_REACHED: {self.config.max_runtime_seconds:.1f}s deadline elapsed"
+                )
+                if not self._first_candle_received:
+                    self.state = RuntimeState.ERROR
+                    self._last_error = "Max observation runtime exceeded; no valid candle received"
+                    if self._controller is not None:
+                        self._controller.emergency_stop(reason="Max observation runtime exceeded")
+                else:
+                    self.state = RuntimeState.STOPPING
+                self._shutdown_event.set()
         except asyncio.CancelledError:
-            # Task was cancelled because a candle arrived or shutdown was requested
             pass
 
     async def _startup_grace_period_timeout(self) -> None:
@@ -454,15 +585,17 @@ class ContinuousBotRuntime:
         """
         try:
             await asyncio.sleep(self.config.startup_grace_seconds)
-            # Only act if we haven't already received a first candle or cancelled
             if not self._first_candle_received and not self._shutdown_event.is_set():
                 logger.error("Startup grace period exceeded; no valid candle received. Halting.")
                 self.state = RuntimeState.ERROR
                 self._last_error = "Startup grace period exceeded; no valid candle received"
+                self._termination_reason = (
+                    "STARTUP_GRACE_EXCEEDED: No valid candle received within deadline"
+                )
                 if self._controller is not None:
                     self._controller.emergency_stop(reason="Startup grace period exceeded")
+                self._shutdown_event.set()
         except asyncio.CancelledError:
-            # Task was cancelled because a candle arrived while grace was waiting
             pass
 
     async def _cleanup(self) -> None:
@@ -470,12 +603,11 @@ class ContinuousBotRuntime:
         logger.info("Commencing clean runtime shutdown...")
 
         # Guard: preserve ERROR state through all cleanup paths.
-        # This ensures ERROR is never overwritten to STOPPED during shutdown.
         error_present = self.state == RuntimeState.ERROR
 
         if self._controller is not None:
             self._controller.stop()
-            snapshot = self._controller.get_status_snapshot()
+            snapshot = self.get_status_snapshot() or self._controller.get_status_snapshot()
 
             # Save post-session report
             session_id = f"session_{int(time.time())}"
@@ -488,6 +620,7 @@ class ContinuousBotRuntime:
                 "closed_at_utc": datetime.now(UTC).isoformat(),
                 "mode": self.config.mode.value,
                 "symbol": self.config.symbol,
+                "termination_reason": self._termination_reason,
                 "snapshot": snapshot.to_dict(),
                 "trades": [
                     {
@@ -512,12 +645,15 @@ class ContinuousBotRuntime:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watchdog_task
 
-        # Clear in-memory session on full stop
-        await self.auth_manager.logout()
+        # Bounded close of client
+        if self.client is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self.client.close(), timeout=5.0)
 
-        # Preserve ERROR state; only transition to STOPPED if not already in ERROR.
-        # This guard is the definitive state transition: ERROR survives cleanup;
-        # any other state transitions to STOPPED.
+        # Clear in-memory session on full stop (bounded)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self.auth_manager.logout(), timeout=5.0)
+
         if error_present:
             self.state = RuntimeState.ERROR
         else:
@@ -527,5 +663,26 @@ class ContinuousBotRuntime:
 
     def get_status_snapshot(self) -> BotStatusSnapshot | None:
         if self._controller is not None:
-            return self._controller.get_status_snapshot()
+            now = time.time()
+            rem = (
+                max(0.0, self.config.max_runtime_seconds - (now - self._started_at))
+                if self.config.max_runtime_seconds and self._started_at
+                else None
+            )
+            last_msg_iso = None
+            conn_status = "idle"
+            reconnect_attempts = 0
+            if self.client is not None:
+                conn_status = self.client.state.value
+                reconnect_attempts = self.client.reconnect_attempts
+                if self.client.ws is not None and self.client.ws.last_message_at is not None:
+                    elapsed = time.monotonic() - self.client.ws.last_message_at
+                    last_msg_iso = datetime.fromtimestamp(now - elapsed, tz=UTC).isoformat()
+            return self._controller.get_status_snapshot(
+                termination_reason=self._termination_reason,
+                time_remaining_seconds=rem,
+                connection_status=conn_status,
+                reconnection_attempts=reconnect_attempts,
+                last_message_time=last_msg_iso,
+            )
         return None

@@ -1,4 +1,4 @@
-"""Paper trading execution and safety control package (Phase 5)."""
+"""Paper trading and modular execution engine package (Phases 5 & 16)."""
 
 from iqoption_research.execution.account_diagnostics import (
     AccountDiagnosticReport,
@@ -7,14 +7,39 @@ from iqoption_research.execution.account_diagnostics import (
     BrokerAccountDiagnostic,
     BrokerLedgerStatus,
 )
+from iqoption_research.execution.adapters import (
+    BaseExecutionAdapter,
+    BinaryOptionsAdapter,
+    DigitalOptionsAdapter,
+    DigitalPayoffModel,
+    ForexCFDAdapter,
+    ForexPayoffModel,
+    SettlementOutcome,
+    SizingResult,
+    build_binary_order_frame,
+)
+from iqoption_research.execution.capability_matrix import (
+    BROKER_CAPABILITIES,
+    BrokerCapabilityMatrix,
+    BrokerCapabilityStatus,
+    BrokerOperation,
+    OperationCategory,
+)
 from iqoption_research.execution.engine import (
     EngineStepResult,
     PaperTradingConfig,
     PaperTradingEngine,
 )
+from iqoption_research.execution.execution_engine import (
+    ModularExecutionConfig,
+    ModularExecutionEngine,
+    ModularStepResult,
+)
 from iqoption_research.execution.models import (
     VALID_ORDER_TRANSITIONS,
     ExecutionEvent,
+    ExecutionMode,
+    ExecutionOrder,
     InvalidStateTransitionError,
     OrderSide,
     OrderState,
@@ -22,8 +47,17 @@ from iqoption_research.execution.models import (
     PaperPortfolio,
     ProductType,
 )
+from iqoption_research.execution.modes import (
+    ExecutionModeConfig,
+    ExecutionModeError,
+    ExecutionModeGuard,
+    PaperAirGapViolationError,
+    PracticeAuthorizationError,
+    UnsupportedProductOperationError,
+)
 from iqoption_research.execution.risk import (
     CircuitBreakerState,
+    EmergencyStopReport,
     OperationalRiskManager,
     OrderProposal,
     RiskConfig,
@@ -41,36 +75,61 @@ from iqoption_research.execution.safety import (
     StaleVerificationBlockedError,
 )
 from iqoption_research.execution.state_machine import (
+    DuplicateOrderError,
     DuplicateSignalError,
     ExecutionJournal,
     ExecutionStateMachine,
+    UncertainOrderRetryBlockedError,
 )
 
 __all__ = [
+    "BROKER_CAPABILITIES",
     "VALID_ORDER_TRANSITIONS",
     "AccountDiagnosticReport",
     "AccountReadinessResult",
     "BalanceIdentityAudit",
+    "BaseExecutionAdapter",
+    "BinaryOptionsAdapter",
     "BrokerAccountDiagnostic",
+    "BrokerCapabilityMatrix",
+    "BrokerCapabilityStatus",
     "BrokerExecutionForbiddenError",
     "BrokerLedgerStatus",
+    "BrokerOperation",
     "CircuitBreakerState",
+    "DigitalOptionsAdapter",
+    "DigitalPayoffModel",
     "DisabledBrokerExecutionAdapter",
+    "DuplicateOrderError",
     "DuplicateSignalError",
+    "EmergencyStopReport",
     "EngineStepResult",
     "ExecutionEvent",
     "ExecutionJournal",
+    "ExecutionMode",
+    "ExecutionModeConfig",
+    "ExecutionModeError",
+    "ExecutionModeGuard",
+    "ExecutionOrder",
     "ExecutionStateMachine",
+    "ForexCFDAdapter",
+    "ForexPayoffModel",
     "InvalidStateTransitionError",
+    "ModularExecutionConfig",
+    "ModularExecutionEngine",
+    "ModularStepResult",
+    "OperationCategory",
     "OperationalRiskManager",
     "OrderProposal",
     "OrderSide",
     "OrderState",
+    "PaperAirGapViolationError",
     "PaperOrder",
     "PaperPortfolio",
     "PaperTradingConfig",
     "PaperTradingEngine",
     "PracticeAccountSafetyValidator",
+    "PracticeAuthorizationError",
     "PracticeSafetyCheck",
     "PracticeSafetyError",
     "PracticeSafetyVerdict",
@@ -79,5 +138,10 @@ __all__ = [
     "RiskConfig",
     "RiskDecision",
     "RiskRejectionReason",
+    "SettlementOutcome",
+    "SizingResult",
     "StaleVerificationBlockedError",
+    "UncertainOrderRetryBlockedError",
+    "UnsupportedProductOperationError",
+    "build_binary_order_frame",
 ]

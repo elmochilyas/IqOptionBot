@@ -120,7 +120,12 @@ def _render_snapshot_table(snapshot: BotStatusSnapshot, title: str) -> None:
     table.add_row("Circuit Breaker State", snapshot.circuit_breaker_state)
     table.add_row("Feed Health Status", snapshot.feed_health)
     table.add_row("Accepted Candles", str(getattr(snapshot, "accepted_candles_count", 0)))
-    table.add_row("Rejected Candles", str(snapshot.rejected_candles_count))
+    table.add_row("Forming Updates (Ignored)", str(getattr(snapshot, "forming_candles_count", 0)))
+    table.add_row("Duplicate Candles", str(getattr(snapshot, "duplicate_candles_count", 0)))
+    inv_count = getattr(
+        snapshot, "invalid_candles_count", getattr(snapshot, "rejected_candles_count", 0)
+    )
+    table.add_row("Rejected Candles (Invalid)", str(inv_count))
     table.add_row("Feed Gaps Detected", str(snapshot.feed_gaps_count))
     table.add_row("Reconnection Attempts", str(getattr(snapshot, "reconnection_attempts", 0)))
     last_msg = getattr(snapshot, "last_message_time", None) or "None"

@@ -406,7 +406,7 @@ class BotController:
             circuit_breaker_state=self.risk_manager.circuit_state.value,
             feed_health=self.observation_adapter.evaluate_feed_health().status.value,
             feed_gaps_count=self.observation_adapter.gaps_count,
-            rejected_candles_count=self.observation_adapter.rejected_count,
+            rejected_candles_count=self.observation_adapter.invalid_count,
             data_source=(
                 "offline_replay"
                 if self.config.mode == BotMode.OFFLINE_REPLAY
@@ -420,6 +420,9 @@ class BotController:
             last_valid_candle_time=last_candle_iso,
             last_completed_candle_time=last_candle_iso,
             accepted_candles_count=self.observation_adapter.accepted_count,
+            forming_candles_count=self.observation_adapter.forming_count,
+            duplicate_candles_count=self.observation_adapter.duplicate_count,
+            invalid_candles_count=self.observation_adapter.invalid_count,
             reconnection_attempts=reconnection_attempts,
             prediction_count=self.session.prediction_count,
             paper_trades_count=self.engine.portfolio.total_trades,

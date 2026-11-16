@@ -147,6 +147,7 @@ class AsyncIQOption:
         self.monitor = ConnectionMonitor()
         self._started_at = time.monotonic()
         self._closed = False
+        self._last_message_at: float | None = None
 
     # ----- read-only guard -----
 
@@ -183,6 +184,12 @@ class AsyncIQOption:
     @property
     def reconnect_attempts(self) -> int:
         return self._ws.reconnect_attempts if self._ws is not None else 0
+
+    @property
+    def last_message_at(self) -> float | None:
+        if self._ws is not None and self._ws.last_message_at is not None:
+            return self._ws.last_message_at
+        return self._last_message_at
 
     @property
     def is_closed(self) -> bool:
@@ -318,6 +325,8 @@ class AsyncIQOption:
                 self.monitor.transition(ConnectionState.CLOSING, reason=reason)
 
         if self._ws is not None:
+            if self._ws.last_message_at is not None:
+                self._last_message_at = self._ws.last_message_at
             await self._ws.close(reason)
             self._ws = None
 

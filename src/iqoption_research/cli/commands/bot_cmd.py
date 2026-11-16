@@ -31,7 +31,7 @@ from iqoption_research.ml.authentic_training import AuthenticModelTrainer, Authe
 from iqoption_research.ml.calibration.calibrator import ProbabilityCalibrator
 from iqoption_research.ml.fixtures import SyntheticMarketConfig, generate_synthetic_candles
 from iqoption_research.ml.models.baselines import LogisticRegressionModel
-from iqoption_research.ml.tracking.artifacts import ModelBundle
+from iqoption_research.ml.tracking.artifacts import ModelBundle, load_model_bundle
 from iqoption_research.models.account import AccountType, Balance, Profile
 from iqoption_research.observation.adapter import (
     ObservationAuthorizationToken,
@@ -244,18 +244,31 @@ def replay_command(
     stake: float = typer.Option(100.0, "--stake", help="Fixed stake per order"),
     payout: float = typer.Option(0.85, "--payout", "-p", help="Binary option payout rate"),
     seed: int = typer.Option(42, "--seed", help="Random seed for synthetic fixture"),
+    storage: Path | None = typer.Option(
+        None, "--storage", help="Optional authentic dataset directory (e.g. data/datasets)"
+    ),
+    model_bundle: Path | None = typer.Option(
+        None, "--model-bundle", "-m", help="Optional path to saved model bundle directory"
+    ),
 ) -> None:
     """Execute historical/synthetic candle stream through BotController with trained ML."""
+    source_label = f"Authentic Dataset ({storage})" if storage else "Synthetic Fixture"
+    bundle_label = f"Custom Bundle ({model_bundle})" if model_bundle else "Synthetic Quick Bundle"
     console.print(
         Panel(
-            f"[bold green]IQ Option Phase 6 — Automated Bot Replay[/bold green]\n"
+            f"[bold green]IQ Option Phase 6/13 — Automated Bot Replay[/bold green]\n"
             f"Symbol: {symbol} | Replay Bars: {bars} | Stake: ${stake:.2f}\n"
-            f"Payout: {payout * 100:.0f}% | Mode: OFFLINE_REPLAY (Simulated execution)",
+            f"Payout: {payout * 100:.0f}% | Mode: OFFLINE_REPLAY (Simulated execution)\n"
+            f"Source: {source_label} | Model: {bundle_label}",
             border_style="green",
         )
     )
 
-    bundle = _train_quick_model_bundle()
+    if model_bundle is not None:
+        bundle = load_model_bundle(model_bundle, verify=True)
+    else:
+        bundle = _train_quick_model_bundle()
+
     cfg = BotConfig(
         symbol=symbol,
         mode=BotMode.OFFLINE_REPLAY,
@@ -266,20 +279,26 @@ def replay_command(
     bot = BotController(cfg, model_bundle=bundle)
     bot.start()
 
-    candles = list(
-        generate_synthetic_candles(
-            SyntheticMarketConfig(symbol=symbol, n_bars=bars, seed=seed)
-        ).candles
-    )
+    if storage is not None:
+        from iqoption_research.ml.phase10 import audit_authentic_datasets
 
-    console.print("[dim]Ingesting streaming candles through pipeline...[/dim]")
+        _, all_candles = audit_authentic_datasets(storage)
+        candles = list(all_candles[-bars:])
+    else:
+        candles = list(
+            generate_synthetic_candles(
+                SyntheticMarketConfig(symbol=symbol, n_bars=bars, seed=seed)
+            ).candles
+        )
+
+    console.print(f"[dim]Ingesting {len(candles)} streaming candles through pipeline...[/dim]")
     for c in candles:
         bot.process_candle(c)
 
     snapshot = bot.get_status_snapshot()
     bot.stop()
 
-    _render_snapshot_table(snapshot, f"Replay Completed — {symbol} ({bars} bars)")
+    _render_snapshot_table(snapshot, f"Replay Completed — {symbol} ({len(candles)} bars)")
 
 
 @bot_app.command("demo", help="Run multi-regime end-to-end Phase 6 demonstration.")
@@ -711,6 +730,22 @@ def run_cmd(
         "--impute-quotes",
         help="Impute missing quotes if model expects quotes",
     ),
+    model_bundle: Path | None = typer.Option(
+        None,
+        "--model-bundle",
+        "-m",
+        help="Optional path to verified model bundle directory",
+    ),
+    token: str | None = typer.Option(
+        None,
+        "--token",
+        help="Explicit observation authorization token string",
+    ),
+    storage: Path | None = typer.Option(
+        None,
+        "--storage",
+        help="Optional authentic dataset directory for offline replay",
+    ),
 ) -> None:
     """Run continuous bot loop with streaming inference and paper trading."""
     import asyncio
@@ -733,14 +768,21 @@ def run_cmd(
     )
 
     auth_token = None
+    token_str = (token.strip() if token else "") or os.environ.get(
+        "IQOPTION_OBSERVE_TOKEN", ""
+    ).strip()
     if live:
-        token_str = os.environ.get("IQOPTION_OBSERVE_TOKEN", "").strip()
         if not token_str:
             console.print(
                 "[bold red]Live observation requires an explicit authorization token.[/bold red]\n"
-                "Set environment variable: IQOPTION_OBSERVE_TOKEN='<token>'."
+                "Pass --token '<token>' or set env var IQOPTION_OBSERVE_TOKEN='<token>'."
             )
             raise typer.Exit(code=1)
+        auth_token = ObservationAuthorizationToken(
+            token_hash=token_str,
+            authorized_by="LeadSystemsEngineer",
+        )
+    elif token_str:
         auth_token = ObservationAuthorizationToken(
             token_hash=token_str,
             authorized_by="LeadSystemsEngineer",
@@ -751,6 +793,7 @@ def run_cmd(
         mode=BotMode.OBSERVE_ONLY if live else BotMode.OFFLINE_REPLAY,
         use_saved_credentials=saved_creds,
         dev_mock=not live,
+        model_path=model_bundle,
         observation_token=auth_token,
         max_runtime_seconds=max_seconds if max_seconds > 0 else None,
         impute_missing_quotes=impute_quotes,
@@ -761,23 +804,29 @@ def run_cmd(
     # In replay mode, load authentic or generate synthetic candles
     replay_candles = None
     if not live:
-        collector = HistoricalDataCollector()
-        try:
-            replay_candles = collector.load_dataset(symbol)
-        except UnsupportedInstrumentError:
-            replay_candles = None
-        if not replay_candles:
-            console.print(
-                f"[dim]No stored dataset for {symbol}; generating {bars} "
-                "synthetic bars for demonstration.[/dim]"
-            )
-            replay_candles = list(
-                generate_synthetic_candles(
-                    SyntheticMarketConfig(symbol=symbol, n_bars=bars, seed=42)
-                ).candles
-            )
+        if storage is not None:
+            from iqoption_research.ml.phase10 import audit_authentic_datasets
+
+            _, all_candles = audit_authentic_datasets(storage)
+            replay_candles = list(all_candles[-bars:])
         else:
-            replay_candles = replay_candles[:bars]
+            collector = HistoricalDataCollector()
+            try:
+                replay_candles = collector.load_dataset(symbol)
+            except UnsupportedInstrumentError:
+                replay_candles = None
+            if not replay_candles:
+                console.print(
+                    f"[dim]No stored dataset for {symbol}; generating {bars} "
+                    "synthetic bars for demonstration.[/dim]"
+                )
+                replay_candles = list(
+                    generate_synthetic_candles(
+                        SyntheticMarketConfig(symbol=symbol, n_bars=bars, seed=42)
+                    ).candles
+                )
+            else:
+                replay_candles = replay_candles[:bars]
 
     try:
         snapshot = asyncio.run(runtime.run(candles_iterable=replay_candles))

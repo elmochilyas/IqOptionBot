@@ -42,7 +42,8 @@ htmlcov/
 *.sqlite3
 
 # Generated research workspaces, agent state, and archives
-data/
+data/*
+!data/phase13/
 .agents/
 *.zip
 

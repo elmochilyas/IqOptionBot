@@ -1,0 +1,78 @@
+{
+  "bundle_format_version": "1.0",
+  "calibrator_method": "sigmoid",
+  "created_at_utc": "2026-11-14T14:41:11.118125+00:00",
+  "feature_names": [
+    "return_1",
+    "log_return_1",
+    "intrabar_return",
+    "sma_ratio_5",
+    "sma_ratio_20",
+    "volatility_10",
+    "volatility_20",
+    "candle_range",
+    "body_to_range",
+    "upper_shadow_ratio",
+    "lower_shadow_ratio",
+    "log_volume",
+    "volume_ratio_10"
+  ],
+  "has_calibrator": true,
+  "has_scaler": true,
+  "metadata": {
+    "created_at_utc": "2026-11-14T14:41:11.032779+00:00",
+    "dataset_candles": 62871,
+    "development_disclaimer": "EXPERIMENTAL DEVELOPMENT ARTIFACT ONLY. NOT A VALIDATED TRADING EDGE. DO NOT DEPLOY FOR REAL-MONEY TRADING OR CONSUME AS INDEPENDENT CONFIRMATION.",
+    "feature_count": 13,
+    "horizon_bars": 1,
+    "independent_confirmation_consumed": false,
+    "is_frozen": false,
+    "lifecycle_stage": "DEVELOPMENT_ONLY",
+    "model_family": "random_forest",
+    "model_provenance": "authentic_trained",
+    "protocol_version": "v2-development",
+    "source_dataset": "authentic_iqoption_eurusd_60s",
+    "stationary_features_only": true,
+    "training_rows": 37609,
+    "validation_rows": 6268
+  },
+  "model": {
+    "class_name": "RandomForestModel",
+    "classes": [
+      0,
+      1
+    ],
+    "feature_names": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio",
+      "log_volume",
+      "volume_ratio_10"
+    ],
+    "hyperparameters": {
+      "bootstrap": true,
+      "class_weight": "balanced_subsample",
+      "max_depth": 6,
+      "max_features": "sqrt",
+      "min_samples_leaf": 50,
+      "min_samples_split": 20,
+      "n_estimators": 100,
+      "n_jobs": 1,
+      "random_state": 42
+    },
+    "is_fitted": true,
+    "model_type": "tabular",
+    "name": "random_forest",
+    "saved_at_utc": "2026-11-14T14:41:11.118125+00:00",
+    "version": "1.0.0"
+  },
+  "security_note": "Trusted local artifact only. Do not load joblib/pickle artifacts from untrusted sources."
+}

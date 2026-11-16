@@ -209,6 +209,7 @@ class ModelPerformance:
     max_drawdown_amount: float
     max_drawdown_percent: float
     profitable: bool
+    profit_factor: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -594,6 +595,16 @@ class _TradingAccumulator:
     peak: float = 0.0
     max_drawdown: float = 0.0
     max_drawdown_pct: float = 0.0
+    gross_profit: float = 0.0
+    gross_loss: float = 0.0
+
+    @property
+    def profit_factor(self) -> float:
+        if self.gross_loss > 0.0:
+            return self.gross_profit / self.gross_loss
+        if self.gross_profit > 0.0:
+            return float("inf")
+        return 0.0
 
 
 def _simulate_trades(
@@ -646,8 +657,10 @@ def _simulate_trades(
         state.equity += net
         if net > 0:
             state.wins += 1
+            state.gross_profit += net
         else:
             state.losses += 1
+            state.gross_loss += abs(net)
         state.peak = max(state.peak, state.equity)
         drawdown = state.peak - state.equity
         state.max_drawdown = max(state.max_drawdown, drawdown)
@@ -714,6 +727,7 @@ def evaluate_clean_dataset(
             max_drawdown_amount=float(trading.max_drawdown),
             max_drawdown_percent=float(trading.max_drawdown_pct),
             profitable=bool(trading.net_pnl > 0.0),
+            profit_factor=float(trading.profit_factor),
         )
 
     baseline_names = [name for name in config.model_names if _model_is_baseline(name)]

@@ -1,0 +1,13 @@
+{
+  "method": "sigmoid",
+  "clip_eps": 1e-15,
+  "is_fitted": true,
+  "classes": [
+    0,
+    1
+  ],
+  "parameters": {
+    "slope": 3.955625234610571,
+    "intercept": -2.118668131156739
+  }
+}

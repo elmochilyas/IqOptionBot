@@ -54,6 +54,24 @@ class RiskRejectionReason(StrEnum):
     STALE_MARKET_DATA = "stale_market_data"
     DATA_QUALITY_FAILURE = "data_quality_failure"
     INSUFFICIENT_CAPITAL = "insufficient_capital"
+    DUPLICATE_ORDER = "duplicate_order"
+    DISCONNECTED_BROKER_SESSION = "disconnected_broker_session"
+    UNVERIFIED_ACCOUNT_TYPE = "unverified_account_type"
+    EMERGENCY_STOP_ACTIVE = "emergency_stop_active"
+
+
+@dataclass(frozen=True, slots=True)
+class EmergencyStopReport:
+    """Detailed audit report produced upon activating operator emergency stop."""
+
+    timestamp: float
+    reason: str
+    circuit_state: CircuitBreakerState
+    open_positions_count: int
+    total_open_exposure: float
+    open_positions_snapshot: tuple[dict[str, Any], ...]
+    portfolio_balance: float
+    new_orders_blocked: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,10 +251,43 @@ class OperationalRiskManager:
         current_ts: float,
         current_open_exposure: float = 0.0,
         is_replay: bool = False,
+        is_duplicate: bool = False,
+        is_broker_connected: bool | None = None,
+        is_account_verified: bool | None = None,
     ) -> RiskDecision:
         """Evaluate an order proposal against all risk boundaries in strict priority order."""
         if self._session_initial_balance is None:
             self._session_initial_balance = portfolio.initial_balance
+
+        # 0. Duplicate proposal check
+        if is_duplicate:
+            return RiskDecision(
+                permitted=False,
+                approved_stake=0.0,
+                reason=RiskRejectionReason.DUPLICATE_ORDER,
+                message=f"Duplicate order rejected for proposal {proposal.signal_id}.",
+                circuit_state=self._circuit_state,
+            )
+
+        # 0. Broker connection check (when evaluated for practice/live)
+        if is_broker_connected is False:
+            return RiskDecision(
+                permitted=False,
+                approved_stake=0.0,
+                reason=RiskRejectionReason.DISCONNECTED_BROKER_SESSION,
+                message="Proposal rejected: broker WebSocket session is disconnected.",
+                circuit_state=self._circuit_state,
+            )
+
+        # 0. Account verification check (when evaluated for practice/live)
+        if is_account_verified is False:
+            return RiskDecision(
+                permitted=False,
+                approved_stake=0.0,
+                reason=RiskRejectionReason.UNVERIFIED_ACCOUNT_TYPE,
+                message="Proposal rejected: active account type is unverified or not PRACTICE.",
+                circuit_state=self._circuit_state,
+            )
 
         # 1. Kill switch check
         if (
@@ -508,3 +559,51 @@ class OperationalRiskManager:
             self._halt_reason = (
                 f"Drawdown ({portfolio.max_drawdown_pct * 100:.1f}%) tripped circuit breaker."
             )
+
+    def emergency_stop(
+        self,
+        *,
+        reason: str = "Operator emergency stop activated",
+        open_orders: list[PaperOrder] | None = None,
+        portfolio: PaperPortfolio | None = None,
+        current_ts: float | None = None,
+    ) -> EmergencyStopReport:
+        """Immediately latch kill switch, halt new orders, and audit open positions.
+
+        Guarantees:
+        - Prevents all subsequent order submissions.
+        - Reports open positions honestly without assuming they are closed.
+        """
+        now = current_ts if current_ts is not None else 0.0
+        self.trigger_kill_switch(reason=reason)
+
+        orders = open_orders or []
+        open_exposure = sum(o.stake for o in orders if o.is_open)
+        snapshots = tuple(
+            {
+                "order_id": o.order_id,
+                "symbol": o.symbol,
+                "product_type": o.product_type.value,
+                "side": o.side.value,
+                "stake": o.stake,
+                "state": o.state.value,
+                "entry_price": o.entry_price,
+                "entry_ts": o.entry_ts,
+                "expiry_ts": o.expiry_ts,
+                "broker_order_id": o.broker_order_id,
+                "reconciliation_required": o.reconciliation_required,
+            }
+            for o in orders
+        )
+        balance = portfolio.current_balance if portfolio else 0.0
+
+        return EmergencyStopReport(
+            timestamp=now,
+            reason=reason,
+            circuit_state=self._circuit_state,
+            open_positions_count=len(orders),
+            total_open_exposure=open_exposure,
+            open_positions_snapshot=snapshots,
+            portfolio_balance=balance,
+            new_orders_blocked=True,
+        )

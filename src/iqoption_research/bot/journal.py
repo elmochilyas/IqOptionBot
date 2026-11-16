@@ -13,7 +13,7 @@ import math
 import statistics
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -86,6 +86,17 @@ class JournalRecord:
     horizon_bars: int = 1
     calibrated_prob_up: float = 0.5
     side_probability: float = 0.5
+    execution_mode: str = "PAPER"
+    order_state: str = ""
+    broker_status: str = ""
+    broker_order_id: str | None = None
+    entry_price: float | None = None
+    exit_price: float | None = None
+    settlement_pnl: float | None = None
+    slippage: float = 0.0
+    fees: float = 0.0
+    idempotency_key: str | None = None
+    signal_details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert record to a JSON-serializable dictionary."""
@@ -136,6 +147,19 @@ class JournalRecord:
             horizon_bars=int(data.get("horizon_bars", 1)),
             calibrated_prob_up=cal_up,
             side_probability=side_prob,
+            execution_mode=str(data.get("execution_mode", "PAPER")),
+            order_state=str(data.get("order_state", "")),
+            broker_status=str(data.get("broker_status", "")),
+            broker_order_id=data.get("broker_order_id"),
+            entry_price=float(data["entry_price"]) if data.get("entry_price") is not None else None,
+            exit_price=float(data["exit_price"]) if data.get("exit_price") is not None else None,
+            settlement_pnl=float(data["settlement_pnl"])
+            if data.get("settlement_pnl") is not None
+            else None,
+            slippage=float(data.get("slippage", 0.0)),
+            fees=float(data.get("fees", 0.0)),
+            idempotency_key=data.get("idempotency_key"),
+            signal_details=dict(data.get("signal_details", {})),
         )
 
 
@@ -229,6 +253,17 @@ class PredictionJournal:
         prediction_ts: str | None = None,
         calibrated_prob_up: float | None = None,
         side_probability: float | None = None,
+        execution_mode: str = "PAPER",
+        order_state: str = "",
+        broker_status: str = "",
+        broker_order_id: str | None = None,
+        entry_price: float | None = None,
+        exit_price: float | None = None,
+        settlement_pnl: float | None = None,
+        slippage: float = 0.0,
+        fees: float = 0.0,
+        idempotency_key: str | None = None,
+        signal_details: dict[str, Any] | None = None,
     ) -> JournalRecord:
         """Record an inference event exactly once per completed candle.
 
@@ -275,6 +310,17 @@ class PredictionJournal:
             horizon_bars=horizon_bars,
             calibrated_prob_up=prob_up,
             side_probability=side_prob,
+            execution_mode=execution_mode,
+            order_state=order_state,
+            broker_status=broker_status,
+            broker_order_id=broker_order_id,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            settlement_pnl=settlement_pnl,
+            slippage=slippage,
+            fees=fees,
+            idempotency_key=idempotency_key,
+            signal_details=signal_details or {},
         )
 
         self._records.append(record)
@@ -341,8 +387,54 @@ class PredictionJournal:
         self._pending_queue = still_pending
         return resolved
 
-        self._pending_queue = still_pending
-        return resolved
+    def update_order_execution(
+        self,
+        order_id: str,
+        *,
+        order_state: str | None = None,
+        broker_status: str | None = None,
+        broker_order_id: str | None = None,
+        entry_price: float | None = None,
+        exit_price: float | None = None,
+        settlement_pnl: float | None = None,
+        slippage: float | None = None,
+        fees: float | None = None,
+        trade_status: str | None = None,
+        trade_block_reason: str | None = None,
+    ) -> JournalRecord | None:
+        """Update execution and settlement details linked to a given paper_order_id."""
+        target_rec: JournalRecord | None = None
+        for rec in self._records:
+            if rec.paper_order_id == order_id:
+                target_rec = rec
+                break
+
+        if target_rec is None:
+            return None
+
+        if order_state is not None:
+            target_rec.order_state = order_state
+        if broker_status is not None:
+            target_rec.broker_status = broker_status
+        if broker_order_id is not None:
+            target_rec.broker_order_id = broker_order_id
+        if entry_price is not None:
+            target_rec.entry_price = entry_price
+        if exit_price is not None:
+            target_rec.exit_price = exit_price
+        if settlement_pnl is not None:
+            target_rec.settlement_pnl = settlement_pnl
+        if slippage is not None:
+            target_rec.slippage = slippage
+        if fees is not None:
+            target_rec.fees = fees
+        if trade_status is not None:
+            target_rec.trade_status = trade_status
+        if trade_block_reason is not None:
+            target_rec.trade_block_reason = trade_block_reason
+
+        self._append_to_disk(target_rec)
+        return target_rec
 
     def add_record(self, record: JournalRecord) -> None:
         """Add an existing JournalRecord into in-memory state without file append."""

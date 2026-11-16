@@ -59,6 +59,9 @@ class BotStatusSnapshot:
     time_remaining_seconds: float | None = None
     termination_reason: str | None = None
     subscription_state: str = "none"
+    journal_records_count: int = 0
+    unresolved_predictions_count: int = 0
+    directional_accuracy_pct: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -105,6 +108,9 @@ class BotStatusSnapshot:
             "time_remaining_seconds": self.time_remaining_seconds,
             "termination_reason": self.termination_reason,
             "subscription_state": self.subscription_state,
+            "journal_records_count": self.journal_records_count,
+            "unresolved_predictions_count": self.unresolved_predictions_count,
+            "directional_accuracy_pct": self.directional_accuracy_pct,
         }
 
     @classmethod
@@ -157,6 +163,13 @@ class BotStatusSnapshot:
             ),
             termination_reason=data.get("termination_reason"),
             subscription_state=str(data.get("subscription_state", "none")),
+            journal_records_count=int(data.get("journal_records_count", 0)),
+            unresolved_predictions_count=int(data.get("unresolved_predictions_count", 0)),
+            directional_accuracy_pct=(
+                float(data["directional_accuracy_pct"])
+                if data.get("directional_accuracy_pct") is not None
+                else None
+            ),
         )
 
 
@@ -224,6 +237,9 @@ class BotStatusMonitor:
         termination_reason: str | None = None,
         subscription_state: str = "none",
         last_error: str | None = None,
+        journal_records_count: int = 0,
+        unresolved_predictions_count: int = 0,
+        directional_accuracy_pct: float | None = None,
     ) -> BotStatusSnapshot:
         """Create an immutable status snapshot for CLI dashboards or monitoring."""
         now = current_ts if current_ts is not None else time.time()
@@ -273,4 +289,7 @@ class BotStatusMonitor:
             time_remaining_seconds=time_remaining_seconds,
             termination_reason=termination_reason,
             subscription_state=subscription_state,
+            journal_records_count=journal_records_count,
+            unresolved_predictions_count=unresolved_predictions_count,
+            directional_accuracy_pct=directional_accuracy_pct,
         )

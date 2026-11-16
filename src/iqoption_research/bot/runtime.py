@@ -286,6 +286,7 @@ class ContinuousBotRuntime:
             fixed_stake=self.config.fixed_stake,
             risk_config=self.config.risk_config,
             observation_token=self.config.observation_token,
+            sessions_dir=self.sessions_dir,
         )
         self._controller = BotController(
             config=bot_cfg,
@@ -686,9 +687,22 @@ class ContinuousBotRuntime:
             )
             snapshot = self._final_snapshot
 
-            # Save post-session report
+            # Save post-session report and prediction journal
             session_id = self._session_id or f"session_{int(time.time())}"
             summary_path = self.sessions_dir / f"{session_id}_summary.json"
+            journal_path = self.sessions_dir / f"{session_id}_journal.jsonl"
+
+            # Atomically sync full journal with resolved outcomes to disk
+            self._controller.session.journal.save_jsonl(journal_path)
+
+            # Compute comprehensive performance diagnostics summary
+            settled_count = len(self._controller.session.settled_orders)
+            sim_pnl = self._controller.engine.portfolio.total_pnl
+            journal_summary = self._controller.session.journal.build_summary(
+                settled_trades_count=settled_count,
+                simulated_pnl=sim_pnl,
+            )
+
             all_session_orders = (
                 self._controller.session.settled_orders + self._controller.session.open_orders
             )
@@ -712,9 +726,25 @@ class ContinuousBotRuntime:
                     }
                     for o in all_session_orders
                 ],
+                "prediction_journal": {
+                    "journal_file": str(journal_path.name),
+                    "journal_path": str(journal_path),
+                    "summary": journal_summary.to_dict(),
+                },
+                "performance_diagnostics": journal_summary.to_dict(),
+                "total_predictions": journal_summary.total_predictions,
+                "direction_counts": journal_summary.direction_counts,
+                "hold_reasons": journal_summary.hold_reasons,
+                "probability_distribution": journal_summary.probability_distribution,
+                "confidence_statistics": journal_summary.confidence_statistics,
+                "uncertainty_statistics": journal_summary.uncertainty_statistics,
+                "accuracy_metrics": journal_summary.accuracy_metrics,
+                "paper_trade_metrics": journal_summary.paper_trade_metrics,
+                "zero_trades_reasons": journal_summary.zero_trades_reasons,
             }
             summary_path.write_text(json.dumps(summary_data, indent=2), encoding="utf-8")
             logger.info("Session telemetry persisted to %s", summary_path)
+            logger.info("Prediction journal persisted to %s", journal_path)
 
         # Cancel the watchdog task first
         if self._watchdog_task is not None:

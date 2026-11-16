@@ -37,6 +37,8 @@ class InferenceResult:
     candle_timestamp: int
     model_name: str
     feature_count: int
+    calibrated_prob_up: float = 0.5
+    side_probability: float = 0.5
 
 
 class ModelInferencePipeline:
@@ -113,6 +115,8 @@ class ModelInferencePipeline:
                 candle_timestamp=candle_ts,
                 model_name=self._model_name,
                 feature_count=len(feature_row.features),
+                calibrated_prob_up=0.5,
+                side_probability=0.5,
             )
 
         try:
@@ -139,6 +143,10 @@ class ModelInferencePipeline:
                 cal_prob_up = raw_prob_up
 
             # 6. Directional decision & abstention zone
+            # cal_prob_up is canonical P(UP).
+            # call_threshold (0.55): cal_prob_up >= 0.55 -> CALL (UP)
+            # put_threshold (0.45): cal_prob_up <= 0.45 -> PUT (DOWN)
+            # otherwise -> HOLD (UNCERTAIN_ZONE)
             if cal_prob_up >= self.call_threshold:
                 direction = SignalDirection.CALL
                 effective_prob = cal_prob_up
@@ -160,7 +168,7 @@ class ModelInferencePipeline:
 
             return InferenceResult(
                 direction=direction,
-                calibrated_probability=effective_prob,
+                calibrated_probability=cal_prob_up,
                 raw_probability=raw_prob_up,
                 confidence=confidence,
                 abstention_reason=abstention,
@@ -168,6 +176,8 @@ class ModelInferencePipeline:
                 candle_timestamp=candle_ts,
                 model_name=self._model_name,
                 feature_count=len(self._feature_names),
+                calibrated_prob_up=cal_prob_up,
+                side_probability=effective_prob,
             )
 
         except Exception as exc:
@@ -183,4 +193,6 @@ class ModelInferencePipeline:
                 candle_timestamp=candle_ts,
                 model_name=self._model_name,
                 feature_count=len(self._feature_names),
+                calibrated_prob_up=0.5,
+                side_probability=0.5,
             )

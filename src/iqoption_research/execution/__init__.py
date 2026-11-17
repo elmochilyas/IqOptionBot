@@ -70,6 +70,7 @@ from iqoption_research.execution.practice_observer import (
     ObservedPracticeTradeRecord,
     ObservedSettlementEvent,
     PassivePracticeObserver,
+    SubscriptionStatus,
 )
 from iqoption_research.execution.practice_transport import (
     MIN_PRACTICE_STAKE,
@@ -193,6 +194,7 @@ __all__ = [
     "SettlementOutcome",
     "SizingResult",
     "StaleVerificationBlockedError",
+    "SubscriptionStatus",
     "UncertainOrderRetryBlockedError",
     "UnsupportedProductOperationError",
     "build_binary_order_frame",

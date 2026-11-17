@@ -16,6 +16,7 @@ import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -1976,6 +1977,11 @@ def practice_observe_command(
         "--offline-mock",
         help="Run against deterministic offline mock manual trade observation.",
     ),
+    probe_only: bool = typer.Option(
+        False,
+        "--probe-only",
+        help="Run read-only connection and subscription probe without awaiting trades.",
+    ),
     timeout: float = typer.Option(
         180.0,
         "--timeout",
@@ -2004,6 +2010,21 @@ def practice_observe_command(
         "--mock-timeout",
         help="[Mock only] Simulate timeout without any observed trade.",
     ),
+    mock_settle_mismatch: bool = typer.Option(
+        False,
+        "--mock-settle-mismatch",
+        help="[Mock only] Simulate settlement with mismatched ticket ID.",
+    ),
+    mock_unverified_real: bool = typer.Option(
+        False,
+        "--mock-unverified-real",
+        help="[Mock only] Simulate unverified post-settlement REAL balance response.",
+    ),
+    mock_missing_fields: bool = typer.Option(
+        False,
+        "--mock-missing-fields",
+        help="[Mock only] Simulate broker frames with missing optional fields.",
+    ),
 ) -> None:
     """Passively observe manual Practice transactions executed in the official IQ Option UI.
 
@@ -2028,6 +2049,99 @@ def practice_observe_command(
     )
     console.print(Panel.fit(banner, border_style="cyan"))
 
+    # Handle probe-only mode
+    if probe_only:
+        console.print(
+            "[bold cyan]Executing read-only connection and subscription probe...[/bold cyan]"
+        )
+        probe_res: dict[str, Any]
+        if offline_mock:
+            mock_obs = MockPassivePracticeObserver()
+            probe_res = mock_obs.probe()
+        else:
+            email = os.environ.get("IQOPTION_EMAIL")
+            password = os.environ.get("IQOPTION_PASSWORD")
+            if not email or not password:
+                console.print(
+                    "[dim]Credentials not found in environment "
+                    "(IQOPTION_EMAIL / IQOPTION_PASSWORD).[/dim]"
+                )
+                email = typer.prompt("IQ Option Account Email")
+                password = typer.prompt("IQ Option Password", hide_input=True)
+
+            credentials = Credentials(email=email, password=password)
+            observer = PassivePracticeObserver(credentials=credentials)
+
+            async def _run_probe() -> dict[str, Any]:
+                try:
+                    with console.status(
+                        "[bold green]Connecting and probing portfolio subscriptions..."
+                    ):
+                        return await observer.async_probe_connection_and_subscriptions()
+                finally:
+                    await observer.async_close()
+
+            try:
+                probe_res = asyncio.run(_run_probe())
+            except Exception as exc:
+                console.print(f"[bold red]Probe failed: {exc}[/bold red]")
+                raise typer.Exit(code=1) from exc
+
+        # Render Probe Table
+        probe_table = Table(
+            title="[bold green]IQ Option Passive Observer Probe Results[/bold green]"
+        )
+        probe_table.add_column("Probe Dimension", style="cyan")
+        probe_table.add_column("Result / Value", style="bold white")
+        probe_table.add_column("Status Verdict", style="bold")
+
+        is_auth = bool(probe_res.get("authenticated"))
+        probe_table.add_row(
+            "WebSocket Authentication",
+            "AUTHENTICATED" if is_auth else "FAILED",
+            "[bold green]VERIFIED[/bold green]" if is_auth else "[bold red]FAILED[/bold red]",
+        )
+        probe_table.add_row(
+            "Session Identifier",
+            str(probe_res.get("session_id")),
+            "[bold cyan]SESSION-SCOPED[/bold cyan]",
+        )
+        prac_amt = probe_res.get("practice_amount")
+        prac_amt_str = f"${prac_amt:,.2f}" if isinstance(prac_amt, (int, float)) else "N/A"
+        probe_table.add_row(
+            "Practice Wallet ID",
+            f"ID: {probe_res.get('practice_balance_id')} ({prac_amt_str})",
+            "[bold green]AVAILABLE[/bold green]",
+        )
+        real_amt = probe_res.get("real_amount")
+        real_amt_str = f"${real_amt:,.2f}" if isinstance(real_amt, (int, float)) else "N/A"
+        probe_table.add_row(
+            "REAL Wallet ID",
+            f"ID: {probe_res.get('real_balance_id')} ({real_amt_str})",
+            "[bold yellow]WATCHDOG ARMED[/bold yellow]",
+        )
+        sub_status = str(probe_res.get("subscription_status"))
+        probe_table.add_row(
+            "Portfolio Topic Subscription",
+            f"Status: {sub_status}",
+            (
+                "[bold green]ACCEPTED (BROKER ACK)[/bold green]"
+                if sub_status == "ACCEPTED"
+                else (
+                    "[bold yellow]STATUS_UNKNOWN (UNACKNOWLEDGED GATEWAY)[/bold yellow]"
+                    if sub_status == "STATUS_UNKNOWN"
+                    else "[bold red]REJECTED[/bold red]"
+                )
+            ),
+        )
+        probe_table.add_row(
+            "Order Submission Capability",
+            "Permanently Disabled in Software",
+            "[bold green]STRICT READ-ONLY (ZERO TRADES)[/bold green]",
+        )
+        console.print(probe_table)
+        return
+
     trade_record: ObservedPracticeTradeRecord | None = None
 
     if offline_mock:
@@ -2036,6 +2150,9 @@ def practice_observe_command(
             ticket_id="mock_manual_ticket_12345",
             simulate_real_trade_anomaly=mock_anomaly,
             simulate_timeout=mock_timeout,
+            simulate_settlement_mismatch=mock_settle_mismatch,
+            simulate_unverified_real=mock_unverified_real,
+            simulate_missing_fields=mock_missing_fields,
         )
 
         base_table = Table(title="[bold cyan]Baseline Account Balances (Observer)[/bold cyan]")
@@ -2050,10 +2167,12 @@ def practice_observe_command(
             f"${mock_obs.practice_balance.amount:,.2f} USD",
             "Target for Manual Trade",
         )
+        real_b = mock_obs.real_balance
+        real_amt_label = f"${real_b.amount:,.2f} USD" if real_b else "N/A"
         base_table.add_row(
             "REAL",
-            str(mock_obs.real_balance.id),
-            f"${mock_obs.real_balance.amount:,.2f} USD",
+            str(real_b.id if real_b else "None"),
+            real_amt_label,
             "[bold red]PROTECTED (MUST REMAIN UNTOUCHED)[/bold red]",
         )
         console.print(base_table)
@@ -2092,6 +2211,10 @@ def practice_observe_command(
             except Exception as exc:
                 console.print(f"[bold red]Failed to connect passive observer: {exc}[/bold red]")
                 raise typer.Exit(code=1) from exc
+
+            # Subscribe to portfolio updates
+            with console.status("[bold cyan]Subscribing to read-only portfolio updates..."):
+                await observer.async_subscribe_portfolio()
 
             # Print Baseline
             base_table = Table(
@@ -2174,19 +2297,41 @@ def practice_observe_command(
         trade_record.ticket_id,
         "[bold green]RECORDED[/bold green]",
     )
-    res_table.add_row(
-        "Asset / Symbol",
-        f"{trade_record.symbol} (active_id={trade_record.active_id})",
-        "[bold green]IDENTIFIED[/bold green]",
+    symbol_str = (
+        f"{trade_record.symbol} (active_id={trade_record.active_id})"
+        if trade_record.symbol
+        else (
+            f"active_id={trade_record.active_id}"
+            if trade_record.active_id is not None
+            else "N/A (Missing from broker frame)"
+        )
     )
-    res_table.add_row(
-        "Direction & Stake",
-        f"{trade_record.direction.upper()} | ${trade_record.stake:.2f}",
-        "[bold green]CONFIRMED[/bold green]",
+    sym_badge = (
+        "[bold green]IDENTIFIED[/bold green]"
+        if trade_record.symbol
+        else "[yellow]UNRESOLVED[/yellow]"
     )
+    res_table.add_row("Asset / Symbol", symbol_str, sym_badge)
+
+    dir_str = (
+        f"{trade_record.direction.upper()}"
+        if trade_record.direction
+        else "N/A (Missing from broker frame)"
+    )
+    stake_str = (
+        f"${trade_record.stake:.2f}"
+        if trade_record.stake is not None
+        else "N/A (Missing from broker frame)"
+    )
+    stake_badge = (
+        "[bold green]CONFIRMED[/bold green]"
+        if trade_record.stake is not None
+        else "[yellow]INCOMPLETE[/yellow]"
+    )
+    res_table.add_row("Direction & Stake", f"{dir_str} | {stake_str}", stake_badge)
     res_table.add_row(
         "Wire user_balance_id",
-        str(trade_record.user_balance_id),
+        str(trade_record.user_balance_id or "N/A"),
         (
             "[bold green]MATCHES PRACTICE WALLET[/bold green]"
             if trade_record.is_practice_balance
@@ -2198,57 +2343,79 @@ def practice_observe_command(
         trade_record.practice_balance_id,
         "[bold green]VERIFIED PRACTICE[/bold green]",
     )
+    res_table.add_row(
+        "Subscription Status",
+        trade_record.subscription_status,
+        (
+            "[bold green]EVENT RECEIVED[/bold green]"
+            if trade_record.subscription_status == "EVENT_RECEIVED"
+            else f"[yellow]{trade_record.subscription_status}[/yellow]"
+        ),
+    )
 
-    real_delta_str = (
-        f"Initial: ${trade_record.initial_real_amount:.2f} -> "
-        f"Final: ${trade_record.final_real_amount or trade_record.initial_real_amount:.2f}"
+    init_real_str = (
+        f"${trade_record.initial_real_amount:.2f}"
+        if trade_record.initial_real_amount is not None
+        else "N/A"
+    )
+    final_real_str = (
+        f"${trade_record.final_real_amount:.2f}"
+        if trade_record.final_real_amount is not None
+        else "N/A"
     )
     res_table.add_row(
-        "Real Wallet Untouched",
-        real_delta_str,
+        "Real Wallet Verification",
+        f"Initial: {init_real_str} -> Final: {final_real_str} ({trade_record.real_wallet_status})",
         (
             "[bold green]VERIFIED UNTOUCHED[/bold green]"
-            if trade_record.real_wallet_untouched
-            else "[bold red]CRITICAL SAFETY BREACH[/bold red]"
+            if trade_record.real_wallet_status == "VERIFIED_UNTOUCHED"
+            else (
+                "[bold red]CRITICAL SAFETY BREACH (MUTATED)[/bold red]"
+                if trade_record.real_wallet_status == "MUTATED"
+                else "[bold yellow]UNVERIFIED (NO FRESH SNAPSHOT)[/bold yellow]"
+            )
         ),
     )
 
     post_open_val = trade_record.post_open_practice_amount or trade_record.initial_practice_amount
     final_prac_val = trade_record.final_practice_amount or trade_record.initial_practice_amount
-    prac_lifecycle_str = (
-        f"Before: ${trade_record.initial_practice_amount:.2f} -> "
-        f"Post-Open: ${post_open_val:.2f} -> "
-        f"Final: ${final_prac_val:.2f}"
-    )
     prac_delta = final_prac_val - trade_record.initial_practice_amount
     res_table.add_row(
         "Practice Balance Lifecycle",
-        prac_lifecycle_str,
+        f"Before: ${trade_record.initial_practice_amount:.2f} -> "
+        f"Post-Open: ${post_open_val:.2f} -> "
+        f"Final: ${final_prac_val:.2f}",
         f"[bold cyan]Delta: ${prac_delta:+.2f}[/bold cyan]",
     )
 
-    settle_str = (
-        f"Status: {trade_record.settlement_status or 'N/A'} | "
-        f"Profit: ${trade_record.settlement_profit or 0.0:+.2f}"
+    profit_str = (
+        f"${trade_record.settlement_profit:+.2f}"
+        if trade_record.settlement_profit is not None
+        else "N/A"
     )
     res_table.add_row(
         "Settlement Status & Profit",
-        settle_str,
+        f"Status: {trade_record.settlement_status or 'N/A'} | Profit: {profit_str}",
         (
             "[bold green]SETTLED[/bold green]"
             if trade_record.settlement_status
             else "[yellow]PENDING[/yellow]"
         ),
     )
-    res_table.add_row(
-        "Correlation Verdict",
-        trade_record.correlation_verdict,
-        (
-            "[bold green]PASS (SAFE)[/bold green]"
-            if trade_record.is_practice_balance and trade_record.real_wallet_untouched
-            else "[bold red]FAIL (SAFETY ALERT)[/bold red]"
-        ),
+
+    is_safe_pass = (
+        trade_record.is_practice_balance
+        and trade_record.real_wallet_status == "VERIFIED_UNTOUCHED"
+        and trade_record.real_wallet_untouched
+        and trade_record.settlement_event is not None
+        and trade_record.settlement_event.ticket_id == trade_record.ticket_id
     )
+    verdict_badge = (
+        "[bold green]PASS (SAFE)[/bold green]"
+        if is_safe_pass
+        else "[bold red]FAIL (SAFETY ALERT)[/bold red]"
+    )
+    res_table.add_row("Correlation Verdict", trade_record.correlation_verdict, verdict_badge)
     console.print(res_table)
 
     # Save to record JSON if requested
@@ -2258,13 +2425,14 @@ def practice_observe_command(
         rec_path.write_text(json.dumps(trade_record.to_dict(), indent=2), encoding="utf-8")
         console.print(f"[bold green]Observed trade record saved to {rec_path}[/bold green]")
 
-    if not trade_record.is_practice_balance or not trade_record.real_wallet_untouched:
+    if not is_safe_pass:
         console.print(
             Panel.fit(
                 "[bold red]CRITICAL SAFETY VERDICT[/bold red]\n"
-                "The observed manual transaction affected the REAL account or did not route "
-                "to the expected Practice balance.\n"
-                "Real account protection has flagged a safety breach.",
+                "The observed manual transaction did not achieve verified Practice correlation:\n"
+                f"• Verdict: {trade_record.correlation_verdict}\n"
+                f"• Real Wallet Status: {trade_record.real_wallet_status}\n"
+                "Execution guards remain locked fail-closed.",
                 border_style="red",
             )
         )

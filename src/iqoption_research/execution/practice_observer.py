@@ -5,12 +5,17 @@ Provides:
 - Detection of position-opening frames (option-opened, socket-option-opened, portfolio events).
 - Verification of user_balance_id routing (Practice vs Real).
 - Live verification of Real wallet protection (confirms REAL wallet remains untouched).
-- Dynamic settlement tracking (option-closed, profit, status, balance-changed).
+- Dynamic settlement tracking (option-closed, profit, status, balance-changed)
+  correlated strictly by ticket ID.
+- Explicit subscription state tracking
+  (REQUEST_SENT, ACCEPTED, REJECTED, STATUS_UNKNOWN, EVENT_RECEIVED).
 - MockPassivePracticeObserver for offline deterministic testing with zero network I/O.
 
 Guarantees:
 - ZERO trading methods: observer cannot construct, propose, or transmit order frames.
-- Fails closed on any unexpected Real account mutation.
+- Fails closed on any unexpected Real account mutation or unverified balance state.
+- Zero synthetic field defaults: missing broker fields are reported explicitly as None / missing.
+- Privacy-preserving: JSON reports omit raw frames, SSIDs, tokens, credentials, and PII.
 - Fully compatible with official web and desktop interfaces.
 """
 
@@ -20,9 +25,11 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from websockets.asyncio.client import ClientConnection
@@ -42,10 +49,27 @@ from iqoption_research.execution.live_practice_transport import (
     DEFAULT_WSS_URL,
     PROTOCOL_VERSION,
 )
+from iqoption_research.market_data.instruments import InstrumentRegistry
 from iqoption_research.models.account import AccountType, Balance, Profile
 from iqoption_research.security.credentials import Credentials
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Subscription Lifecycle State
+# ---------------------------------------------------------------------------
+
+
+class SubscriptionStatus(StrEnum):
+    """Lifecycle status of a WebSocket topic subscription."""
+
+    NOT_SENT = "NOT_SENT"
+    REQUEST_SENT = "REQUEST_SENT"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    STATUS_UNKNOWN = "STATUS_UNKNOWN"
+    EVENT_RECEIVED = "EVENT_RECEIVED"
 
 
 # ---------------------------------------------------------------------------
@@ -58,16 +82,16 @@ class ObservedPositionEvent:
     """Parsed position-opening event observed from broker stream."""
 
     ticket_id: str
-    active_id: int
+    active_id: int | None
     symbol: str | None
-    direction: str
-    stake: float
-    exp_ts: int
-    exp_utc: str
-    user_balance_id: str
-    created_ts: float
+    direction: str | None
+    stake: float | None
+    exp_ts: int | None
+    exp_utc: str | None
+    user_balance_id: str | None
+    created_ts: float | None
     raw_frame_name: str
-    raw_payload: dict[str, Any]
+    sanitized_evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +105,7 @@ class ObservedPositionEvent:
             "user_balance_id": self.user_balance_id,
             "created_ts": self.created_ts,
             "raw_frame_name": self.raw_frame_name,
+            "sanitized_evidence": self.sanitized_evidence,
         }
 
 
@@ -89,11 +114,11 @@ class ObservedSettlementEvent:
     """Parsed settlement notification observed from broker stream."""
 
     ticket_id: str
-    profit: float
-    status: str
+    profit: float | None
+    status: str | None
     close_price: float | None
     close_time: int | None
-    raw_payload: dict[str, Any]
+    sanitized_evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -102,6 +127,7 @@ class ObservedSettlementEvent:
             "status": self.status,
             "close_price": self.close_price,
             "close_time": self.close_time,
+            "sanitized_evidence": self.sanitized_evidence,
         }
 
 
@@ -110,7 +136,7 @@ class ObservedBalanceMutation:
     """Recorded balance delta on a discovered account wallet."""
 
     balance_id: str
-    account_type: AccountType
+    account_type: AccountType | None
     amount_before: float
     amount_after: float
     delta: float
@@ -120,7 +146,7 @@ class ObservedBalanceMutation:
     def to_dict(self) -> dict[str, Any]:
         return {
             "balance_id": self.balance_id,
-            "account_type": self.account_type.name,
+            "account_type": self.account_type.name if self.account_type else "UNKNOWN",
             "amount_before": self.amount_before,
             "amount_after": self.amount_after,
             "delta": self.delta,
@@ -134,25 +160,27 @@ class ObservedPracticeTradeRecord:
     """Complete end-to-end audit record of an observed manual Practice trade."""
 
     ticket_id: str
-    active_id: int
-    symbol: str
-    direction: str
-    stake: float
-    exp_ts: int
-    exp_utc: str
-    user_balance_id: str
+    active_id: int | None
+    symbol: str | None
+    direction: str | None
+    stake: float | None
+    exp_ts: int | None
+    exp_utc: str | None
+    user_balance_id: str | None
     is_practice_balance: bool
     practice_balance_id: str
-    real_balance_id: str
+    real_balance_id: str | None
+    real_wallet_status: str  # "VERIFIED_UNTOUCHED" | "MUTATED" | "UNVERIFIED"
     real_wallet_untouched: bool
     initial_practice_amount: float
-    initial_real_amount: float
+    initial_real_amount: float | None
     post_open_practice_amount: float | None = None
     post_open_real_amount: float | None = None
     settlement_status: str | None = None
     settlement_profit: float | None = None
     final_practice_amount: float | None = None
     final_real_amount: float | None = None
+    subscription_status: str = SubscriptionStatus.STATUS_UNKNOWN.value
     position_event: ObservedPositionEvent | None = None
     settlement_event: ObservedSettlementEvent | None = None
     balance_mutations: tuple[ObservedBalanceMutation, ...] = ()
@@ -173,6 +201,7 @@ class ObservedPracticeTradeRecord:
             "is_practice_balance": self.is_practice_balance,
             "practice_balance_id": self.practice_balance_id,
             "real_balance_id": self.real_balance_id,
+            "real_wallet_status": self.real_wallet_status,
             "real_wallet_untouched": self.real_wallet_untouched,
             "initial_practice_amount": self.initial_practice_amount,
             "initial_real_amount": self.initial_real_amount,
@@ -182,6 +211,7 @@ class ObservedPracticeTradeRecord:
             "settlement_profit": self.settlement_profit,
             "final_practice_amount": self.final_practice_amount,
             "final_real_amount": self.final_real_amount,
+            "subscription_status": self.subscription_status,
             "position_event": self.position_event.to_dict() if self.position_event else None,
             "settlement_event": self.settlement_event.to_dict() if self.settlement_event else None,
             "balance_mutations": [m.to_dict() for m in self.balance_mutations],
@@ -218,10 +248,12 @@ class PassivePracticeObserver:
         self._balances: list[Balance] = []
         self._practice_balance: Balance | None = None
         self._real_balance: Balance | None = None
+        self._initial_real_balance: Balance | None = None
         self._closed: bool = False
         self._session_id: str = f"obs_sess_{int(time.time())}"
         self._request_counter: int = 1000
         self._pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._auth_future: asyncio.Future[dict[str, Any]] | None = None
         self._listener_task: asyncio.Task[None] | None = None
         self._observed_position: ObservedPositionEvent | None = None
         self._observed_settlement: ObservedSettlementEvent | None = None
@@ -229,6 +261,9 @@ class PassivePracticeObserver:
         self._received_frames: list[str] = []
         self._position_event = asyncio.Event()
         self._settlement_event = asyncio.Event()
+        self._asset_filter: str | None = None
+        self._portfolio_sub_status: SubscriptionStatus = SubscriptionStatus.NOT_SENT
+        self._portfolio_sub_req_id: str | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -249,6 +284,10 @@ class PassivePracticeObserver:
     @property
     def real_balance(self) -> Balance | None:
         return self._real_balance
+
+    @property
+    def portfolio_subscription_status(self) -> SubscriptionStatus:
+        return self._portfolio_sub_status
 
     async def async_connect(self) -> None:
         """Connect to broker and discover Practice and Real wallet baselines."""
@@ -276,6 +315,7 @@ class PassivePracticeObserver:
         self._request_counter += 1
         auth_fut = asyncio.get_running_loop().create_future()
         self._pending_requests[auth_req_id] = auth_fut
+        self._auth_future = auth_fut
 
         auth_frame = {
             "name": "authenticate",
@@ -284,11 +324,19 @@ class PassivePracticeObserver:
         }
         await self._ws.send(json.dumps(auth_frame))
         auth_resp = await asyncio.wait_for(auth_fut, timeout=10.0)
-        if auth_resp.get("msg") is not True and auth_resp.get("name") != "authenticated":
+
+        # Check authentication result
+        is_success = auth_resp.get("msg") is True or auth_resp.get("name") in {
+            "authenticated",
+            "profile",
+        }
+        if not is_success:
             raise LoginError(f"Observer WebSocket authentication failed: {auth_resp}")
 
         # Refresh initial account state
-        await self.async_refresh_account_state()
+        refreshed = await self.async_refresh_account_state()
+        if not refreshed:
+            raise ConnectionError("Failed to retrieve initial account balances from broker.")
 
         # Identify baseline practice and real balances
         self._practice_balance = next(
@@ -303,6 +351,8 @@ class PassivePracticeObserver:
         if self._practice_balance is None:
             raise ConnectionError("No Practice wallet discovered on this broker account.")
 
+        self._initial_real_balance = self._real_balance
+
         logger.info(
             "Observer connected. Baseline Practice ID=%s ($%.2f), Real ID=%s ($%.2f)",
             self._practice_balance.id,
@@ -311,14 +361,26 @@ class PassivePracticeObserver:
             self._real_balance.amount if self._real_balance else 0.0,
         )
 
-    async def async_subscribe_portfolio(self) -> None:
-        """Subscribe to permitted read-only portfolio updates for Practice balance."""
+    async def async_subscribe_portfolio(self) -> SubscriptionStatus:
+        """Subscribe to read-only portfolio updates for the Practice balance.
+
+        Distinguishes:
+        - ACCEPTED: Broker acknowledged subscription request
+        - REJECTED: Broker explicitly rejected subscription
+        - STATUS_UNKNOWN: Subscription frame sent, but gateway does not emit explicit ACK
+        - EVENT_RECEIVED: Updated dynamically when a stream event arrives
+        """
         if not self._ws or self._closed:
             raise ConnectionError("Observer not connected.")
         if not self._practice_balance:
             raise ConnectionError("No Practice balance discovered.")
 
         prac_id = int(self._practice_balance.id)
+        pos_req_id = f"obs_sub_pos_{self._request_counter}"
+        ord_req_id = f"obs_sub_ord_{self._request_counter}"
+        self._request_counter += 1
+        self._portfolio_sub_req_id = pos_req_id
+
         sub_frames = [
             {
                 "name": "subscribeMessage",
@@ -327,7 +389,7 @@ class PassivePracticeObserver:
                     "version": "2.0",
                     "params": {"routingFilters": {"user_balance_id": prac_id}},
                 },
-                "request_id": f"obs_sub_pos_{self._request_counter}",
+                "request_id": pos_req_id,
             },
             {
                 "name": "subscribeMessage",
@@ -336,18 +398,53 @@ class PassivePracticeObserver:
                     "version": "2.0",
                     "params": {"routingFilters": {"user_balance_id": prac_id}},
                 },
-                "request_id": f"obs_sub_ord_{self._request_counter}",
+                "request_id": ord_req_id,
             },
         ]
-        self._request_counter += 1
+
+        loop = asyncio.get_running_loop()
+        pos_fut = loop.create_future()
+        ord_fut = loop.create_future()
+        self._pending_requests[pos_req_id] = pos_fut
+        self._pending_requests[ord_req_id] = ord_fut
+        self._portfolio_sub_status = SubscriptionStatus.REQUEST_SENT
+
         for frame in sub_frames:
             await self._ws.send(json.dumps(frame))
-        logger.info("Subscribed to read-only portfolio position streams for balance %s", prac_id)
+        logger.info(
+            "Dispatched portfolio subscription frames for Practice balance %s (req_ids: %s, %s)",
+            prac_id,
+            pos_req_id,
+            ord_req_id,
+        )
 
-    async def async_refresh_account_state(self) -> None:
-        """Retrieve fresh profile and balances from broker."""
+        try:
+            responses = await asyncio.wait_for(asyncio.gather(pos_fut, ord_fut), timeout=3.0)
+            accepted = True
+            for resp in responses:
+                if resp.get("msg") is False or resp.get("status") in {"error", "rejected"}:
+                    accepted = False
+            self._portfolio_sub_status = (
+                SubscriptionStatus.ACCEPTED if accepted else SubscriptionStatus.REJECTED
+            )
+        except TimeoutError:
+            self._pending_requests.pop(pos_req_id, None)
+            self._pending_requests.pop(ord_req_id, None)
+            self._portfolio_sub_status = SubscriptionStatus.STATUS_UNKNOWN
+            logger.info(
+                "Subscription request completed with STATUS_UNKNOWN: "
+                "gateway does not return direct subscription ACK."
+            )
+
+        return self._portfolio_sub_status
+
+    async def async_refresh_account_state(self, timeout_seconds: float = 5.0) -> bool:
+        """Retrieve fresh profile and balances from broker.
+
+        Returns True if fresh balances were successfully received and parsed.
+        """
         if not self._ws or self._closed:
-            return
+            return False
 
         loop = asyncio.get_running_loop()
         prof_req_id = f"obs_prof_{self._request_counter}"
@@ -359,23 +456,68 @@ class PassivePracticeObserver:
         self._pending_requests[prof_req_id] = prof_fut
         self._pending_requests[bal_req_id] = bal_fut
 
-        await self._ws.send(
-            json.dumps({
-                "name": "sendMessage",
-                "msg": {"name": "get-profile", "version": "1.0"},
-                "request_id": prof_req_id,
-            })
-        )
-        await self._ws.send(
-            json.dumps({
-                "name": "sendMessage",
-                "msg": {"name": "get-balances", "version": "1.0"},
-                "request_id": bal_req_id,
-            })
-        )
+        try:
+            await self._ws.send(
+                json.dumps({
+                    "name": "sendMessage",
+                    "msg": {"name": "get-profile", "version": "1.0"},
+                    "request_id": prof_req_id,
+                })
+            )
+            await self._ws.send(
+                json.dumps({
+                    "name": "sendMessage",
+                    "msg": {"name": "get-balances", "version": "1.0"},
+                    "request_id": bal_req_id,
+                })
+            )
+            # bal_fut is the essential one for balance verification
+            await asyncio.wait_for(asyncio.gather(prof_fut, bal_fut), timeout=timeout_seconds)
+            return True
+        except TimeoutError:
+            self._pending_requests.pop(prof_req_id, None)
+            self._pending_requests.pop(bal_req_id, None)
+            logger.warning("Account state refresh timed out after %.1fs", timeout_seconds)
+            return False
+        except (ConnectionClosed, asyncio.CancelledError, OSError) as exc:
+            self._pending_requests.pop(prof_req_id, None)
+            self._pending_requests.pop(bal_req_id, None)
+            logger.warning("Account state refresh failed: %s", exc)
+            return False
 
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(asyncio.gather(prof_fut, bal_fut), timeout=5.0)
+    async def async_probe_connection_and_subscriptions(
+        self,
+        *,
+        timeout_seconds: float = 10.0,
+    ) -> dict[str, Any]:
+        """Execute a read-only live connection and subscription probe without awaiting trades.
+
+        Tests:
+        1. Authentication handshake.
+        2. Initial profile and balance retrieval.
+        3. Portfolio subscription dispatch and gateway acknowledgement behavior.
+        """
+        _ = timeout_seconds
+        await self.async_connect()
+        sub_status = await self.async_subscribe_portfolio()
+
+        prac = self.practice_balance
+        real = self.real_balance
+
+        return {
+            "authenticated": self.is_connected,
+            "session_id": self._session_id,
+            "profile_balance_id": (
+                str(self._profile.raw.get("balance_id")) if self._profile else None
+            ),
+            "practice_balance_id": str(prac.id) if prac else None,
+            "practice_amount": prac.amount if prac else None,
+            "real_balance_id": str(real.id) if real else None,
+            "real_amount": real.amount if real else None,
+            "subscription_status": sub_status.value,
+            "subscription_accepted": sub_status == SubscriptionStatus.ACCEPTED,
+            "frames_received": list(self._received_frames),
+        }
 
     async def _listen_loop(self) -> None:
         """Listen to incoming broker messages and dispatch to event handlers."""
@@ -407,6 +549,14 @@ class PassivePracticeObserver:
             if not fut.done():
                 fut.set_result(message)
 
+        # Handle un-correlated authentication responses (gateways may omit request_id)
+        if (
+            self._auth_future
+            and not self._auth_future.done()
+            and (name == "authenticated" or name in {"profile", "get-profile"})
+        ):
+            self._auth_future.set_result(message)
+
         # Handle profile frame
         if name in {"profile", "get-profile"}:
             raw_msg = message.get("msg")
@@ -424,6 +574,8 @@ class PassivePracticeObserver:
                 balances_list = raw_msg
             elif isinstance(raw_msg, dict) and "result" in raw_msg:
                 balances_list = raw_msg["result"] if isinstance(raw_msg["result"], list) else []
+            elif isinstance(raw_msg, dict) and "balances" in raw_msg:
+                balances_list = raw_msg["balances"] if isinstance(raw_msg["balances"], list) else []
             if balances_list:
                 parsed_bals: list[Balance] = []
                 for item in balances_list:
@@ -431,6 +583,18 @@ class PassivePracticeObserver:
                         parsed_bals.append(Balance.from_raw(item))
                 if parsed_bals:
                     self._balances = parsed_bals
+                    self._practice_balance = next(
+                        (
+                            b
+                            for b in parsed_bals
+                            if b.type == AccountType.PRACTICE and b.is_practice
+                        ),
+                        None,
+                    )
+                    self._real_balance = next(
+                        (b for b in parsed_bals if b.type == AccountType.REAL or not b.is_practice),
+                        None,
+                    )
 
         # Handle position opening (option-opened, socket-option-opened, portfolio.position-changed)
         if name in {"option-opened", "socket-option-opened"}:
@@ -447,128 +611,381 @@ class PassivePracticeObserver:
             self._handle_balance_changed_frame(message)
 
     def _handle_option_opened_frame(self, message: dict[str, Any], frame_name: str) -> None:
-        """Parse position opened frame from manual trade."""
+        """Parse position opened frame from manual trade without synthetic defaults."""
         msg_body = message.get("msg")
         body: dict[str, Any] = msg_body if isinstance(msg_body, dict) else message
         if "result" in body and isinstance(body["result"], dict):
             body = body["result"]
 
-        ticket_id = str(body.get("id") or body.get("option_id") or "").strip()
+        ticket_id = str(
+            body.get("id") or body.get("option_id") or body.get("position_id") or ""
+        ).strip()
         if not ticket_id:
             return
 
-        user_balance_id = str(body.get("user_balance_id") or "").strip()
-        active_id = int(body.get("active_id") or 1)
-        direction = str(body.get("direction") or "call").lower()
-        price = float(body.get("price") or 1.0)
-        exp = int(body.get("exp") or 0)
-        created = float(body.get("created") or time.time())
+        # Deduplication: ignore if we already observed this exact ticket
+        if self._observed_position is not None:
+            if self._observed_position.ticket_id == ticket_id:
+                return
+            logger.info(
+                "Secondary position opened (%s) while already observing (%s); ignoring.",
+                ticket_id,
+                self._observed_position.ticket_id,
+            )
+            return
 
-        exp_utc = (
-            datetime.fromtimestamp(exp, tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-            if exp > 0
-            else "unknown"
+        # Extract fields without synthetic defaults
+        user_balance_id = (
+            str(body.get("user_balance_id") or body.get("balance_id") or "").strip() or None
         )
 
-        event = ObservedPositionEvent(
+        raw_active_id = body.get("active_id") or body.get("act_id")
+        active_id: int | None = int(raw_active_id) if raw_active_id is not None else None
+
+        # Resolve symbol ONLY from active_id or explicit symbol field
+        symbol: str | None = None
+        if isinstance(body.get("active"), str) and body["active"]:
+            symbol = body["active"].upper()
+        elif isinstance(body.get("symbol"), str) and body["symbol"]:
+            symbol = body["symbol"].upper()
+        elif active_id is not None:
+            with contextlib.suppress(Exception):
+                symbol = InstrumentRegistry.get_by_active_id(active_id).symbol
+
+        raw_dir = body.get("direction") or body.get("dir") or body.get("type")
+        direction: str | None = str(raw_dir).lower() if raw_dir is not None else None
+
+        raw_price = (
+            body.get("price") or body.get("amount") or body.get("invest") or body.get("stake")
+        )
+        stake: float | None = float(raw_price) if raw_price is not None else None
+
+        raw_exp = (
+            body.get("exp")
+            or body.get("expire_at")
+            or body.get("expiration_time")
+            or body.get("expired")
+        )
+        exp_ts: int | None = int(raw_exp) if raw_exp is not None else None
+        exp_utc: str | None = None
+        if exp_ts is not None and exp_ts > 0:
+            exp_utc = datetime.fromtimestamp(exp_ts, tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        created_ts: float | None = None
+        raw_created = body.get("created") or body.get("created_at") or body.get("open_time")
+        if raw_created is not None:
+            created_ts = float(raw_created)
+            if created_ts > 1e12:
+                created_ts /= 1000.0
+
+        # Asset filter check
+        if self._asset_filter:
+            target_filter = self._asset_filter.upper().strip()
+            matches_symbol = symbol is not None and symbol == target_filter
+            matches_active = False
+            with contextlib.suppress(Exception):
+                expected_active = InstrumentRegistry.resolve_active_id(target_filter)
+                matches_active = active_id is not None and active_id == expected_active
+            if not (matches_symbol or matches_active):
+                logger.info(
+                    "Observed position %s (symbol=%s, active_id=%s) "
+                    "does not match filter %s; ignoring.",
+                    ticket_id,
+                    symbol,
+                    active_id,
+                    self._asset_filter,
+                )
+                return
+
+        sanitized = {
+            "ticket_id": ticket_id,
+            "active_id": active_id,
+            "symbol": symbol,
+            "direction": direction,
+            "stake": stake,
+            "exp_ts": exp_ts,
+            "user_balance_id": user_balance_id,
+            "raw_frame_name": frame_name,
+        }
+
+        self._observed_position = ObservedPositionEvent(
             ticket_id=ticket_id,
             active_id=active_id,
-            symbol="EURUSD",  # Default or resolved via active_id
+            symbol=symbol,
             direction=direction,
-            stake=price,
-            exp_ts=exp,
+            stake=stake,
+            exp_ts=exp_ts,
             exp_utc=exp_utc,
             user_balance_id=user_balance_id,
-            created_ts=created,
+            created_ts=created_ts,
             raw_frame_name=frame_name,
-            raw_payload=message,
+            sanitized_evidence=sanitized,
         )
-        self._observed_position = event
+        self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
         self._position_event.set()
         logger.info(
-            "OBSERVED_POSITION_OPENED: ticket=%s balance_id=%s stake=%.2f direction=%s",
+            "OBSERVED_POSITION_OPENED: ticket=%s balance_id=%s symbol=%s stake=%s direction=%s",
             ticket_id,
             user_balance_id,
-            price,
-            direction,
+            symbol or "unknown",
+            f"{stake:.2f}" if stake is not None else "unknown",
+            direction or "unknown",
         )
 
     def _handle_portfolio_position_frame(self, message: dict[str, Any]) -> None:
-        """Parse portfolio.position-changed push event."""
+        """Parse portfolio.position-changed push event without synthetic defaults."""
         raw_msg = message.get("msg")
         body: dict[str, Any] = raw_msg if isinstance(raw_msg, dict) else message
         status = str(body.get("status") or "").lower()
         ticket_id = str(body.get("id") or body.get("position_id") or "").strip()
-        user_balance_id = str(body.get("user_balance_id") or "").strip()
 
-        if status == "open" and self._observed_position is None and ticket_id:
-            raw_event = body.get("raw_event") or body
-            active_id = int(raw_event.get("active_id") or 1)
-            direction = str(raw_event.get("direction") or "call").lower()
-            price = float(raw_event.get("invest") or raw_event.get("price") or 1.0)
-            exp = int(raw_event.get("expire_at") or raw_event.get("exp") or 0)
-            exp_utc = (
-                datetime.fromtimestamp(exp, tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-                if exp > 0
-                else "unknown"
+        if status == "open":
+            if self._observed_position is not None:
+                if self._observed_position.ticket_id == ticket_id:
+                    return
+                logger.info(
+                    "Secondary position opened (%s) while already observing (%s); ignoring.",
+                    ticket_id,
+                    self._observed_position.ticket_id,
+                )
+                return
+
+            raw_event = body.get("raw_event")
+            event_dict: dict[str, Any] = raw_event if isinstance(raw_event, dict) else body
+
+            user_balance_id = (
+                str(
+                    body.get("user_balance_id")
+                    or event_dict.get("user_balance_id")
+                    or body.get("balance_id")
+                    or event_dict.get("balance_id")
+                    or ""
+                ).strip()
+                or None
             )
+
+            raw_active = event_dict.get("active_id") or body.get("active_id")
+            active_id: int | None = int(raw_active) if raw_active is not None else None
+
+            symbol: str | None = None
+            if isinstance(event_dict.get("active"), str) and event_dict["active"]:
+                symbol = event_dict["active"].upper()
+            elif isinstance(body.get("active"), str) and body["active"]:
+                symbol = body["active"].upper()
+            elif active_id is not None:
+                with contextlib.suppress(Exception):
+                    symbol = InstrumentRegistry.get_by_active_id(active_id).symbol
+
+            raw_dir = (
+                event_dict.get("direction")
+                or event_dict.get("dir")
+                or body.get("direction")
+                or body.get("dir")
+            )
+            direction: str | None = str(raw_dir).lower() if raw_dir is not None else None
+
+            raw_price = (
+                event_dict.get("invest")
+                or event_dict.get("price")
+                or event_dict.get("amount")
+                or body.get("invest")
+                or body.get("price")
+            )
+            stake: float | None = float(raw_price) if raw_price is not None else None
+
+            raw_exp = (
+                event_dict.get("expire_at")
+                or event_dict.get("exp")
+                or event_dict.get("expiration_time")
+                or body.get("expire_at")
+                or body.get("exp")
+            )
+            exp_ts: int | None = int(raw_exp) if raw_exp is not None else None
+            exp_utc: str | None = None
+            if exp_ts is not None and exp_ts > 0:
+                exp_utc = datetime.fromtimestamp(exp_ts, tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+            # Asset filter check
+            if self._asset_filter:
+                target_filter = self._asset_filter.upper().strip()
+                matches_symbol = symbol is not None and symbol == target_filter
+                matches_active = False
+                with contextlib.suppress(Exception):
+                    expected_active = InstrumentRegistry.resolve_active_id(target_filter)
+                    matches_active = active_id is not None and active_id == expected_active
+                if not (matches_symbol or matches_active):
+                    logger.info(
+                        "Observed portfolio position %s (symbol=%s, active_id=%s) "
+                        "does not match filter %s; ignoring.",
+                        ticket_id,
+                        symbol,
+                        active_id,
+                        self._asset_filter,
+                    )
+                    return
+
+            sanitized = {
+                "ticket_id": ticket_id,
+                "active_id": active_id,
+                "symbol": symbol,
+                "direction": direction,
+                "stake": stake,
+                "exp_ts": exp_ts,
+                "user_balance_id": user_balance_id,
+                "raw_frame_name": "portfolio.position-changed",
+            }
 
             self._observed_position = ObservedPositionEvent(
                 ticket_id=ticket_id,
                 active_id=active_id,
-                symbol="EURUSD",
+                symbol=symbol,
                 direction=direction,
-                stake=price,
-                exp_ts=exp,
+                stake=stake,
+                exp_ts=exp_ts,
                 exp_utc=exp_utc,
                 user_balance_id=user_balance_id,
                 created_ts=time.time(),
                 raw_frame_name="portfolio.position-changed",
-                raw_payload=message,
+                sanitized_evidence=sanitized,
             )
+            self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
             self._position_event.set()
-        elif status == "closed":
-            profit = float(body.get("win_amount") or body.get("profit") or 0.0)
-            st_str = "win" if profit > 0 else "loose"
+            logger.info(
+                "OBSERVED_PORTFOLIO_OPENED: ticket=%s balance_id=%s symbol=%s stake=%s",
+                ticket_id,
+                user_balance_id,
+                symbol or "unknown",
+                f"{stake:.2f}" if stake is not None else "unknown",
+            )
+
+        elif status in {"closed", "settled"}:
+            # Only correlate settlement with exact ticket
+            if self._observed_position is None:
+                logger.debug(
+                    "Received portfolio closed event for ticket %s before open event; ignoring.",
+                    ticket_id,
+                )
+                return
+
+            if not ticket_id or ticket_id != self._observed_position.ticket_id:
+                logger.debug(
+                    "Ignoring portfolio closed event for ticket '%s'; "
+                    "does not match observed ticket '%s'.",
+                    ticket_id,
+                    self._observed_position.ticket_id,
+                )
+                return
+
+            raw_profit = body.get("win_amount") or body.get("profit") or body.get("pnl")
+            profit: float | None = float(raw_profit) if raw_profit is not None else None
+
+            st_str: str | None = None
+            if isinstance(body.get("status"), str):
+                st_str = body["status"].lower()
+            elif profit is not None:
+                st_str = "win" if profit > 0 else "loose"
+
+            raw_close_rate = body.get("close_rate") or body.get("close_price")
+            close_price: float | None = (
+                float(raw_close_rate) if raw_close_rate is not None else None
+            )
+
+            raw_close_at = body.get("close_at") or body.get("close_time") or body.get("closed_at")
+            close_time: int | None = int(raw_close_at) if raw_close_at is not None else None
+
+            sanitized_settle = {
+                "ticket_id": ticket_id,
+                "profit": profit,
+                "status": st_str,
+                "close_price": close_price,
+                "close_time": close_time,
+            }
+
             self._observed_settlement = ObservedSettlementEvent(
-                ticket_id=ticket_id or "unknown",
+                ticket_id=ticket_id,
                 profit=profit,
                 status=st_str,
-                close_price=float(body.get("close_rate") or 0.0) or None,
-                close_time=int(body.get("close_at") or time.time()),
-                raw_payload=message,
+                close_price=close_price,
+                close_time=close_time,
+                sanitized_evidence=sanitized_settle,
             )
+            self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
             self._settlement_event.set()
+            logger.info(
+                "OBSERVED_PORTFOLIO_SETTLEMENT: ticket=%s status=%s profit=%s",
+                ticket_id,
+                st_str or "unknown",
+                f"{profit:.2f}" if profit is not None else "unknown",
+            )
 
     def _handle_option_closed_frame(self, message: dict[str, Any]) -> None:
-        """Parse option-closed settlement frame."""
+        """Parse option-closed settlement frame strictly matching observed ticket."""
         raw_msg = message.get("msg")
         body: dict[str, Any] = raw_msg if isinstance(raw_msg, dict) else message
         opt_id = str(body.get("option_id") or body.get("id") or "").strip()
-        status = str(body.get("status") or "closed").lower()
-        profit = float(body.get("profit") or 0.0)
-        close_price = float(body["close_price"]) if body.get("close_price") is not None else None
-        close_time = int(body["close_time"]) if body.get("close_time") is not None else None
+
+        # Only correlate settlement with exact ticket
+        if self._observed_position is None:
+            logger.debug("Received option-closed for %s before position opened; ignoring.", opt_id)
+            return
+
+        if not opt_id or opt_id != self._observed_position.ticket_id:
+            logger.debug(
+                "Ignoring option-closed for ticket '%s'; does not match observed ticket '%s'.",
+                opt_id,
+                self._observed_position.ticket_id,
+            )
+            return
+
+        raw_profit = body.get("profit") or body.get("win_amount")
+        profit: float | None = float(raw_profit) if raw_profit is not None else None
+
+        raw_status = body.get("status") or body.get("result")
+        status: str | None = str(raw_status).lower() if raw_status is not None else None
+
+        raw_close_price = body.get("close_price") or body.get("close_rate")
+        close_price: float | None = float(raw_close_price) if raw_close_price is not None else None
+
+        raw_close_time = body.get("close_time") or body.get("close_at")
+        close_time: int | None = int(raw_close_time) if raw_close_time is not None else None
+
+        sanitized_settle = {
+            "ticket_id": opt_id,
+            "profit": profit,
+            "status": status,
+            "close_price": close_price,
+            "close_time": close_time,
+        }
 
         self._observed_settlement = ObservedSettlementEvent(
-            ticket_id=opt_id or "unknown",
+            ticket_id=opt_id,
             profit=profit,
             status=status,
             close_price=close_price,
             close_time=close_time,
-            raw_payload=message,
+            sanitized_evidence=sanitized_settle,
         )
+        self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
         self._settlement_event.set()
-        logger.info("OBSERVED_SETTLEMENT: ticket=%s status=%s profit=%.2f", opt_id, status, profit)
+        logger.info(
+            "OBSERVED_SETTLEMENT: ticket=%s status=%s profit=%s",
+            opt_id,
+            status or "unknown",
+            f"{profit:.2f}" if profit is not None else "unknown",
+        )
 
     def _handle_balance_changed_frame(self, message: dict[str, Any]) -> None:
-        """Parse balance-changed event, update local balances, and record mutation."""
+        """Parse balance-changed event, update balances, and record mutation without assumptions."""
         raw_msg = message.get("msg")
         body: dict[str, Any] = raw_msg if isinstance(raw_msg, dict) else message
         curr_obj = body.get("current_balance")
         curr: dict[str, Any] = curr_obj if isinstance(curr_obj, dict) else body
 
         bal_id = str(curr.get("id") or body.get("id") or "").strip()
+        if not bal_id:
+            logger.debug("balance-changed frame missing balance ID; ignoring.")
+            return
+
         raw_amount = (
             curr.get("amount")
             or curr.get("balance")
@@ -578,19 +995,36 @@ class PassivePracticeObserver:
                 else None
             )
             or body.get("amount")
-            or 0.0
         )
-        amount = float(raw_amount)
-        raw_type = curr.get("type") or body.get("type")
-        acct_type: AccountType | None = None
-        if raw_type is not None:
-            with contextlib.suppress(ValueError, TypeError):
-                acct_type = AccountType(int(raw_type))
+        if raw_amount is None:
+            logger.warning("balance-changed frame for %s missing balance amount; ignoring.", bal_id)
+            return
+
+        try:
+            amount = float(raw_amount)
+            if not math.isfinite(amount):
+                logger.warning(
+                    "balance-changed frame for %s contains non-finite amount; ignoring.", bal_id
+                )
+                return
+        except (ValueError, TypeError):
+            logger.warning(
+                "balance-changed frame for %s contains invalid amount; ignoring.", bal_id
+            )
+            return
 
         # Find existing balance
         existing = next((b for b in self._balances if str(b.id) == bal_id), None)
         before_amount = float(existing.amount) if existing else amount
         delta = round(amount - before_amount, 6)
+
+        raw_type = curr.get("type") or body.get("type")
+        acct_type: AccountType | None = None
+        if raw_type is not None:
+            with contextlib.suppress(ValueError, TypeError):
+                acct_type = AccountType(int(raw_type))
+        elif existing:
+            acct_type = existing.type
 
         # Update balance list
         if existing:
@@ -614,6 +1048,7 @@ class PassivePracticeObserver:
                     type=self._practice_balance.type,
                     amount=amount,
                     currency=self._practice_balance.currency,
+                    is_active=self._practice_balance.is_active,
                 )
             if self._real_balance and str(self._real_balance.id) == bal_id:
                 self._real_balance = Balance(
@@ -621,12 +1056,13 @@ class PassivePracticeObserver:
                     type=self._real_balance.type,
                     amount=amount,
                     currency=self._real_balance.currency,
+                    is_active=self._real_balance.is_active,
                 )
 
         reason = "stake_decrement" if delta < 0 else "settlement_payout"
         mutation = ObservedBalanceMutation(
             balance_id=bal_id,
-            account_type=acct_type or AccountType.PRACTICE,
+            account_type=acct_type,  # Never default to PRACTICE
             amount_before=before_amount,
             amount_after=amount,
             delta=delta,
@@ -655,14 +1091,18 @@ class PassivePracticeObserver:
         if not self._practice_balance:
             raise ConnectionError("Practice balance not initialized.")
 
+        self._asset_filter = asset_filter
         init_prac = float(self._practice_balance.amount)
-        init_real = float(self._real_balance.amount) if self._real_balance else 0.0
+        init_real = float(self._real_balance.amount) if self._real_balance else None
         prac_id = str(self._practice_balance.id)
-        real_id = str(self._real_balance.id) if self._real_balance else "none"
+        real_id = str(self._real_balance.id) if self._real_balance else None
+
+        has_initial_real = self._real_balance is not None
 
         logger.info(
-            "Awaiting manual Practice trade on official interface (timeout=%.1fs)...",
+            "Awaiting manual Practice trade on official interface (timeout=%.1fs, filter=%s)...",
             timeout_seconds,
+            asset_filter or "ALL",
         )
 
         # 1. Wait for position opened event
@@ -676,24 +1116,14 @@ class PassivePracticeObserver:
         if pos is None:
             return None
 
-        # Filter check
-        if asset_filter and pos.symbol and pos.symbol.upper() != asset_filter.upper():
-            logger.info(
-                "Observed trade on %s does not match filter %s; continuing observation.",
-                pos.symbol,
-                asset_filter,
-            )
-
         post_open_prac = (
             float(self._practice_balance.amount) if self._practice_balance else init_prac
         )
         post_open_real = float(self._real_balance.amount) if self._real_balance else init_real
 
-        # Real account watchdog check: REAL balance MUST remain unchanged
-        real_untouched = abs(post_open_real - init_real) < 1e-4
-
         # 2. Wait for settlement event
-        settle_timeout = max(30.0, float(pos.exp_ts - int(time.time())) + 30.0)
+        exp_seconds = max(30.0, float((pos.exp_ts or int(time.time())) - int(time.time())) + 30.0)
+        settle_timeout = min(exp_seconds, 300.0)
         try:
             await asyncio.wait_for(self._settlement_event.wait(), timeout=settle_timeout)
         except TimeoutError:
@@ -703,39 +1133,72 @@ class PassivePracticeObserver:
                 settle_timeout,
             )
 
-        # Refresh balances post-settlement
-        await self.async_refresh_account_state()
+        # 3. Refresh balances post-settlement (Authoritative fresh broker response required)
+        fresh_balances_retrieved = await self.async_refresh_account_state()
+
         final_prac = (
             float(self._practice_balance.amount) if self._practice_balance else post_open_prac
         )
-        final_real = float(self._real_balance.amount) if self._real_balance else post_open_real
+        final_real = float(self._real_balance.amount) if self._real_balance else None
 
-        # Final real account watchdog verification
-        real_untouched = real_untouched and (abs(final_real - init_real) < 1e-4)
-        is_prac_balance = str(pos.user_balance_id).strip() == prac_id
+        # Determine REAL wallet status
+        real_wallet_status: str
+        real_untouched: bool
+        if (
+            not has_initial_real
+            or not fresh_balances_retrieved
+            or final_real is None
+            or init_real is None
+        ):
+            real_wallet_status = "UNVERIFIED"
+            real_untouched = False
+        else:
+            delta = abs(final_real - init_real)
+            if delta < 1e-4:
+                real_wallet_status = "VERIFIED_UNTOUCHED"
+                real_untouched = True
+            else:
+                real_wallet_status = "MUTATED"
+                real_untouched = False
+
+        # Verify user_balance_id
+        is_prac_balance = (
+            pos.user_balance_id is not None and str(pos.user_balance_id).strip() == prac_id
+        )
 
         settle = self._observed_settlement
 
         # Determine correlation verdict
-        if is_prac_balance and real_untouched:
+        if real_wallet_status == "MUTATED":
             verdict = (
-                "CORRELATED_PRACTICE_CONFIRMED: Official UI manual trade routed strictly to "
-                "Practice wallet. Real account remained completely untouched."
+                "CRITICAL_SAFETY_BREACH: Real account balance mutated during manual "
+                f"Practice trade! (Initial: ${init_real:.2f}, Final: ${final_real:.2f})"
             )
         elif not is_prac_balance:
             verdict = (
                 f"ROUTING_MISMATCH_ALERT: Observed user_balance_id ({pos.user_balance_id}) "
                 f"did not match Practice wallet ({prac_id})."
             )
+        elif real_wallet_status == "UNVERIFIED":
+            verdict = (
+                "UNCORRELATED_REAL_BALANCE_UNVERIFIED: Authoritative fresh post-settlement "
+                "REAL wallet verification could not be obtained from broker."
+            )
+        elif settle is None or settle.ticket_id != pos.ticket_id:
+            verdict = (
+                "UNCORRELATED_SETTLEMENT_MISSING: Settlement event was missing or did not "
+                f"match position ticket {pos.ticket_id}."
+            )
         else:
             verdict = (
-                "CRITICAL_SAFETY_BREACH: Real account balance mutated during Practice observation!"
+                "CORRELATED_PRACTICE_CONFIRMED: Official UI manual trade routed strictly to "
+                "Practice wallet. Real account verified completely untouched."
             )
 
         return ObservedPracticeTradeRecord(
             ticket_id=pos.ticket_id,
             active_id=pos.active_id,
-            symbol=pos.symbol or "EURUSD",
+            symbol=pos.symbol,
             direction=pos.direction,
             stake=pos.stake,
             exp_ts=pos.exp_ts,
@@ -744,6 +1207,7 @@ class PassivePracticeObserver:
             is_practice_balance=is_prac_balance,
             practice_balance_id=prac_id,
             real_balance_id=real_id,
+            real_wallet_status=real_wallet_status,
             real_wallet_untouched=real_untouched,
             initial_practice_amount=init_prac,
             initial_real_amount=init_real,
@@ -753,6 +1217,7 @@ class PassivePracticeObserver:
             settlement_profit=settle.profit if settle else None,
             final_practice_amount=final_prac,
             final_real_amount=final_real,
+            subscription_status=self._portfolio_sub_status.value,
             position_event=pos,
             settlement_event=settle,
             balance_mutations=tuple(self._balance_mutations),
@@ -767,6 +1232,12 @@ class PassivePracticeObserver:
             self._listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._listener_task
+
+        for fut in self._pending_requests.values():
+            if not fut.done():
+                fut.cancel()
+        self._pending_requests.clear()
+
         if self._ws:
             with contextlib.suppress(Exception):
                 await self._ws.close()
@@ -788,12 +1259,17 @@ class MockPassivePracticeObserver:
         practice_balance_id: str = "101",
         real_balance_id: str = "200",
         initial_practice_amount: float = 10000.0,
-        initial_real_amount: float = 50.0,
+        initial_real_amount: float | None = 50.0,
         ticket_id: str = "mock_manual_ticket_12345",
         stake: float = 1.00,
         profit: float = 1.85,
         simulate_real_trade_anomaly: bool = False,
         simulate_timeout: bool = False,
+        simulate_settlement_mismatch: bool = False,
+        simulate_unverified_real: bool = False,
+        simulate_missing_fields: bool = False,
+        simulate_unmatched_asset: bool = False,
+        subscription_status: SubscriptionStatus = SubscriptionStatus.STATUS_UNKNOWN,
     ) -> None:
         self.practice_balance_id = practice_balance_id
         self.real_balance_id = real_balance_id
@@ -804,6 +1280,11 @@ class MockPassivePracticeObserver:
         self.profit = profit
         self.simulate_real_trade_anomaly = simulate_real_trade_anomaly
         self.simulate_timeout = simulate_timeout
+        self.simulate_settlement_mismatch = simulate_settlement_mismatch
+        self.simulate_unverified_real = simulate_unverified_real
+        self.simulate_missing_fields = simulate_missing_fields
+        self.simulate_unmatched_asset = simulate_unmatched_asset
+        self.subscription_status = subscription_status
         self.is_connected = True
         self.closed = False
 
@@ -818,7 +1299,9 @@ class MockPassivePracticeObserver:
         )
 
     @property
-    def real_balance(self) -> Balance:
+    def real_balance(self) -> Balance | None:
+        if self.initial_real_amount is None:
+            return None
         return Balance(
             id=self.real_balance_id,
             type=AccountType.REAL,
@@ -826,6 +1309,21 @@ class MockPassivePracticeObserver:
             currency="USD",
             is_active=False,
         )
+
+    def probe(self) -> dict[str, Any]:
+        """Simulate connection and subscription probe."""
+        return {
+            "authenticated": True,
+            "session_id": "mock_probe_sess_100",
+            "profile_balance_id": self.real_balance_id,
+            "practice_balance_id": self.practice_balance_id,
+            "practice_amount": self.initial_practice_amount,
+            "real_balance_id": self.real_balance_id,
+            "real_amount": self.initial_real_amount,
+            "subscription_status": self.subscription_status.value,
+            "subscription_accepted": self.subscription_status == SubscriptionStatus.ACCEPTED,
+            "frames_received": ["authenticated", "profile", "balances"],
+        }
 
     def observe(
         self,
@@ -836,7 +1334,7 @@ class MockPassivePracticeObserver:
         """Simulate manual trade observation synchronously."""
         _ = timeout_seconds
         _ = asset_filter
-        if self.simulate_timeout:
+        if self.simulate_timeout or self.simulate_unmatched_asset:
             return None
 
         # Determine balance ID for opened position
@@ -850,43 +1348,73 @@ class MockPassivePracticeObserver:
             self.initial_practice_amount - self.stake if is_prac else self.initial_practice_amount
         )
         post_open_real = (
-            self.initial_real_amount - self.stake
-            if self.simulate_real_trade_anomaly
+            (self.initial_real_amount - self.stake)
+            if (self.simulate_real_trade_anomaly and self.initial_real_amount is not None)
             else self.initial_real_amount
         )
 
         # Balances after settlement
         final_prac = post_open_prac + self.profit if is_prac else post_open_prac
         final_real = (
-            post_open_real + self.profit if self.simulate_real_trade_anomaly else post_open_real
+            (post_open_real + self.profit)
+            if (self.simulate_real_trade_anomaly and post_open_real is not None)
+            else post_open_real
         )
 
-        real_untouched = not self.simulate_real_trade_anomaly
+        # Real wallet verification status
+        real_wallet_status: str
+        real_untouched: bool
+        if self.simulate_unverified_real or self.initial_real_amount is None:
+            real_wallet_status = "UNVERIFIED"
+            real_untouched = False
+        elif self.simulate_real_trade_anomaly:
+            real_wallet_status = "MUTATED"
+            real_untouched = False
+        else:
+            real_wallet_status = "VERIFIED_UNTOUCHED"
+            real_untouched = True
 
-        exp_ts = int(time.time()) + 60
-        exp_utc = datetime.fromtimestamp(exp_ts, tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        exp_ts = None if self.simulate_missing_fields else int(time.time()) + 60
+        exp_utc = (
+            None
+            if exp_ts is None
+            else datetime.fromtimestamp(exp_ts, tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        )
 
         pos_event = ObservedPositionEvent(
             ticket_id=self.ticket_id,
-            active_id=1,
-            symbol="EURUSD",
-            direction="call",
-            stake=self.stake,
+            active_id=None if self.simulate_missing_fields else 1,
+            symbol=None if self.simulate_missing_fields else "EURUSD",
+            direction=None if self.simulate_missing_fields else "call",
+            stake=None if self.simulate_missing_fields else self.stake,
             exp_ts=exp_ts,
             exp_utc=exp_utc,
             user_balance_id=target_balance_id,
             created_ts=time.time(),
             raw_frame_name="option-opened",
-            raw_payload={"id": self.ticket_id, "user_balance_id": int(target_balance_id)},
+            sanitized_evidence={
+                "ticket_id": self.ticket_id,
+                "user_balance_id": target_balance_id,
+            },
         )
 
+        settle_ticket = (
+            "unmatched_settle_ticket_999" if self.simulate_settlement_mismatch else self.ticket_id
+        )
+        settle_status: str | None = None
+        if not self.simulate_missing_fields:
+            settle_status = "win" if self.profit > 0 else "loose"
+
         settle_event = ObservedSettlementEvent(
-            ticket_id=self.ticket_id,
-            profit=self.profit,
-            status="win" if self.profit > 0 else "loose",
-            close_price=1.08550,
+            ticket_id=settle_ticket,
+            profit=None if self.simulate_missing_fields else self.profit,
+            status=settle_status,
+            close_price=None if self.simulate_missing_fields else 1.08550,
             close_time=exp_ts,
-            raw_payload={"option_id": self.ticket_id, "profit": self.profit},
+            sanitized_evidence={
+                "ticket_id": settle_ticket,
+                "profit": self.profit,
+            },
         )
 
         mutations = [
@@ -894,9 +1422,9 @@ class MockPassivePracticeObserver:
                 balance_id=target_balance_id,
                 account_type=AccountType.PRACTICE if is_prac else AccountType.REAL,
                 amount_before=(
-                    self.initial_practice_amount if is_prac else self.initial_real_amount
+                    self.initial_practice_amount if is_prac else (self.initial_real_amount or 0.0)
                 ),
-                amount_after=post_open_prac if is_prac else post_open_real,
+                amount_after=post_open_prac if is_prac else (post_open_real or 0.0),
                 delta=-self.stake,
                 timestamp=time.time(),
                 reason="stake_decrement",
@@ -904,33 +1432,52 @@ class MockPassivePracticeObserver:
             ObservedBalanceMutation(
                 balance_id=target_balance_id,
                 account_type=AccountType.PRACTICE if is_prac else AccountType.REAL,
-                amount_before=post_open_prac if is_prac else post_open_real,
-                amount_after=final_prac if is_prac else final_real,
+                amount_before=post_open_prac if is_prac else (post_open_real or 0.0),
+                amount_after=final_prac if is_prac else (final_real or 0.0),
                 delta=self.profit,
                 timestamp=time.time() + 60,
                 reason="settlement_payout",
             ),
         ]
 
-        verdict = (
-            "CORRELATED_PRACTICE_CONFIRMED: Official UI manual trade routed strictly to "
-            "Practice wallet. Real account remained completely untouched."
-            if real_untouched and is_prac
-            else "CRITICAL_SAFETY_BREACH: Real account balance mutated during manual trade!"
-        )
+        if real_wallet_status == "MUTATED":
+            verdict = (
+                "CRITICAL_SAFETY_BREACH: Real account balance mutated during manual Practice trade!"
+            )
+        elif not is_prac:
+            verdict = (
+                f"ROUTING_MISMATCH_ALERT: Observed user_balance_id ({target_balance_id}) "
+                f"did not match Practice wallet ({self.practice_balance_id})."
+            )
+        elif real_wallet_status == "UNVERIFIED":
+            verdict = (
+                "UNCORRELATED_REAL_BALANCE_UNVERIFIED: Authoritative fresh post-settlement "
+                "REAL wallet verification could not be obtained from broker."
+            )
+        elif settle_event.ticket_id != self.ticket_id:
+            verdict = (
+                "UNCORRELATED_SETTLEMENT_MISSING: Settlement event was missing or did not "
+                f"match position ticket {self.ticket_id}."
+            )
+        else:
+            verdict = (
+                "CORRELATED_PRACTICE_CONFIRMED: Official UI manual trade routed strictly to "
+                "Practice wallet. Real account verified completely untouched."
+            )
 
         return ObservedPracticeTradeRecord(
             ticket_id=self.ticket_id,
-            active_id=1,
-            symbol="EURUSD",
-            direction="call",
-            stake=self.stake,
-            exp_ts=exp_ts,
-            exp_utc=exp_utc,
+            active_id=pos_event.active_id,
+            symbol=pos_event.symbol,
+            direction=pos_event.direction,
+            stake=pos_event.stake,
+            exp_ts=pos_event.exp_ts,
+            exp_utc=pos_event.exp_utc,
             user_balance_id=target_balance_id,
             is_practice_balance=is_prac,
             practice_balance_id=self.practice_balance_id,
             real_balance_id=self.real_balance_id,
+            real_wallet_status=real_wallet_status,
             real_wallet_untouched=real_untouched,
             initial_practice_amount=self.initial_practice_amount,
             initial_real_amount=self.initial_real_amount,
@@ -940,6 +1487,7 @@ class MockPassivePracticeObserver:
             settlement_profit=settle_event.profit,
             final_practice_amount=final_prac,
             final_real_amount=final_real,
+            subscription_status=self.subscription_status.value,
             position_event=pos_event,
             settlement_event=settle_event,
             balance_mutations=tuple(mutations),

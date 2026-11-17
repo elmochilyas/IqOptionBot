@@ -24,7 +24,9 @@ from iqoption_research.config.settings import Settings
 from iqoption_research.connectors.iqoption.client import AsyncIQOption
 from iqoption_research.execution.account_diagnostics import (
     AccountReadinessResult,
+    AccountStateClassification,
     BrokerAccountDiagnostic,
+    RoutingAuditResult,
 )
 from iqoption_research.execution.broker_readiness import PracticeExecutionAuthToken
 from iqoption_research.execution.capability_matrix import (
@@ -828,6 +830,18 @@ def practice_select_command(
         )
     )
 
+    if live and auto_confirm:
+        console.print(
+            Panel.fit(
+                "[bold red]CRITICAL SAFETY BLOCK: Non-interactive confirmation is forbidden "
+                "for live broker operations.[/bold red]\n"
+                "[dim]The '--yes' / '-y' flag cannot be combined with '--live'. "
+                "Explicit interactive operator authorization is required.[/dim]",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=1)
+
     if not live and not offline_mock:
         console.print(
             "[yellow]Notice:[/yellow] By default, practice-select operates with network guards. "
@@ -839,6 +853,17 @@ def practice_select_command(
             console.print("[dim]Aborted. No network connections were initiated.[/dim]")
             raise typer.Abort()
         live = True
+        if auto_confirm:
+            console.print(
+                Panel.fit(
+                    "[bold red]CRITICAL SAFETY BLOCK: Non-interactive confirmation is forbidden "
+                    "for live broker operations.[/bold red]\n"
+                    "[dim]The '--yes' / '-y' flag cannot be combined with live broker connection. "
+                    "Explicit interactive operator authorization is required.[/dim]",
+                    border_style="red",
+                )
+            )
+            raise typer.Exit(code=1)
 
     if offline_mock:
         console.print(
@@ -1118,6 +1143,142 @@ def practice_select_command(
     asyncio.run(_async_select())
 
 
+def _render_routing_diagnostic_table(audit: RoutingAuditResult) -> Table:
+    """Render the comprehensive Practice Balance Routing & Diagnostic Audit table."""
+    table = Table(
+        title=(
+            "[bold yellow]IQ Option Practice Balance Routing & "
+            "Pre-Flight Diagnostic Audit[/bold yellow]"
+        )
+    )
+    table.add_column("Audit Parameter / Entity", style="cyan")
+    table.add_column("Observed Value / Wire State", style="bold white")
+    table.add_column("Diagnostic Classification / Status", justify="center")
+
+    # 1. Profile balance ID & semantics
+    prof_id = audit.profile_balance_id or "Not Reported"
+    table.add_row(
+        "Profile Reported Balance ID",
+        prof_id,
+        (
+            "[bold yellow]PROFILE_DEFAULT_REAL[/bold yellow]"
+            if AccountStateClassification.PROFILE_DEFAULT_REAL in audit.classifications
+            else "[dim]Verified Practice[/dim]"
+        ),
+    )
+    table.add_row(
+        "Profile Balance Semantics",
+        audit.profile_balance_semantics,
+        "[dim]Static Broker Server Registration[/dim]",
+    )
+
+    # 2. Discovered Balance Entities
+    prac_str = f"ID: {audit.discovered_practice_id or 'None'}"
+    real_str = f"ID: {audit.discovered_real_id or 'None'}"
+    table.add_row(
+        "Discovered Balance Entities",
+        f"Practice: {prac_str} | Real: {real_str}",
+        (
+            "[bold green]PRACTICE_BALANCE_AVAILABLE[/bold green]"
+            if AccountStateClassification.PRACTICE_BALANCE_AVAILABLE in audit.classifications
+            else "[bold red]MISSING PRACTICE[/bold red]"
+        ),
+    )
+
+    # 3. Authoritative Active Indicator
+    table.add_row(
+        "Authoritative Active Indicator",
+        "ABSENT (broker responses omit active session indicator)",
+        "[bold red]UNVERIFIED[/bold red]",
+    )
+
+    # 4. Selection Frame Transmitted
+    frame_status = (
+        f"Transmitted: {audit.selection_frame_name}"
+        if audit.selection_frame_transmitted
+        else "None"
+    )
+    table.add_row(
+        "Selection Frame Transmitted",
+        frame_status,
+        (
+            "[bold green]TRANSMITTED (1 Frame)[/bold green]"
+            if audit.selection_frame_transmitted
+            else "[dim]NOT TRANSMITTED[/dim]"
+        ),
+    )
+
+    # 5. Selection Frame Gateway Ack
+    if audit.selection_frame_acknowledged is True:
+        ack_str = "YES (Directly acknowledged by broker)"
+        ack_status = "[bold green]ACKNOWLEDGED[/bold green]"
+    elif audit.selection_frame_acknowledged is False:
+        ack_str = "NO (Unacknowledged / Ignored by Gateway)"
+        ack_status = "[bold red]SESSION_SELECTION_UNVERIFIED[/bold red]"
+    else:
+        ack_str = "N/A (No selection frame sent)"
+        ack_status = "[dim]NOT APPLICABLE[/dim]"
+    table.add_row("Selection Frame Gateway Ack", ack_str, ack_status)
+
+    # 6. Push Events
+    table.add_row(
+        "Balance-Changed Push Event",
+        (
+            "RECEIVED"
+            if audit.balance_changed_event_received
+            else "NO (No balance-changed notification pushed by server)"
+        ),
+        (
+            "[bold green]RECEIVED[/bold green]"
+            if audit.balance_changed_event_received
+            else "[bold yellow]ABSENT[/bold yellow]"
+        ),
+    )
+
+    # 7. Response Correlation
+    table.add_row(
+        "Response Query Correlation",
+        "get-profile (profile.balance_id) & get-balances (wallets)",
+        "[dim]Correlated[/dim]",
+    )
+
+    # 8. Evidence Classifications
+    classifications_str = " | ".join(c.value for c in audit.classifications)
+    table.add_row(
+        "Evidence-Based Classifications",
+        classifications_str,
+        (
+            "[bold green]PRACTICE_CONFIRMED[/bold green]"
+            if audit.is_routing_verified
+            else "[bold red]BALANCE_ROUTING_UNVERIFIED[/bold red]"
+        ),
+    )
+
+    # 9. Practice Order Routing Safety
+    table.add_row(
+        "Practice Order Routing Safety",
+        (
+            "VERIFIED — Safe virtual order dispatch permitted"
+            if audit.is_routing_verified
+            else "UNVERIFIED — Order dispatch safely blocked fail-closed"
+        ),
+        (
+            "[bold green]PERMITTED[/bold green]"
+            if audit.is_routing_verified
+            else "[bold red]FAIL-CLOSED SAFETY BLOCK[/bold red]"
+        ),
+    )
+
+    # 10. Execution Invariant
+    table.add_row(
+        "Execution Invariant",
+        "PRE-FLIGHT AUDIT ONLY: ZERO ORDERS DISPATCHED",
+        "[bold green]PROTECTED[/bold green]",
+    )
+
+    return table
+
+
 @execution_app.command(
     "practice-test",
     help="Operator-supervised verification workflow for a single Practice test order.",
@@ -1172,6 +1333,19 @@ def practice_test_command(
             "Live Practice test trade is strictly restricted to exactly $1.00 virtual money."
         )
 
+    # 2. Live safety guard: permanently forbid noninteractive confirmation with live socket
+    if not offline_mock and confirm:
+        console.print(
+            Panel.fit(
+                "[bold red]CRITICAL SAFETY BLOCK: Non-interactive confirmation is forbidden "
+                "for live broker operations.[/bold red]\n"
+                "[dim]The '--yes' / '-y' / '--confirm' flags are forbidden with '--live-socket'. "
+                "Explicit interactive operator authorization is required.[/dim]",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=1)
+
     norm_side = OrderSide.CALL if side.lower() == "call" else OrderSide.PUT
 
     # 2. Transport initialization
@@ -1195,7 +1369,10 @@ def practice_test_command(
                     )
                     raise typer.Abort()
             try:
-                transport.select_practice_balance(operator_authorized=True)
+                transport.select_practice_balance(
+                    operator_authorized=True,
+                    preflight_only=preflight_only,
+                )
             except (
                 PracticeAuthorizationError,
                 AccountSelectionUnverifiedError,
@@ -1203,21 +1380,24 @@ def practice_test_command(
                 TimeoutError,
                 ConnectionError,
             ) as exc:
-                console.print(
-                    Panel.fit(
-                        "[bold red]CRITICAL SAFETY BLOCK: Practice Balance Selection Failed"
-                        "[/bold red]\n\n"
-                        f"• Failure: {exc}\n"
-                        "• Verification: Active account could not be confirmed as PRACTICE.\n"
-                        "• Selection Request: change_balance was transmitted once.\n"
-                        "• Policy: Zero duplicate selection frames sent; zero automatic retries.\n"
-                        "• Order Submission: ZERO ORDERS DISPATCHED (Fail-Closed).\n"
-                        "• Teardown: Connection cleanly closed.",
-                        border_style="red",
+                if preflight_only:
+                    logger.info("Mock practice selection unverified in preflight-only: %s", exc)
+                else:
+                    console.print(
+                        Panel.fit(
+                            "[bold red]CRITICAL SAFETY BLOCK: Practice Balance Selection Failed"
+                            "[/bold red]\n\n"
+                            f"• Failure: {exc}\n"
+                            "• Verification: Active account could not be confirmed as PRACTICE.\n"
+                            "• Selection Request: change_balance was transmitted once.\n"
+                            "• Policy: Zero duplicate frames sent; zero automatic retries.\n"
+                            "• Order Submission: ZERO ORDERS DISPATCHED (Fail-Closed).\n"
+                            "• Teardown: Connection cleanly closed.",
+                            border_style="red",
+                        )
                     )
-                )
-                transport.close()
-                raise typer.Exit(code=1) from exc
+                    transport.close()
+                    raise typer.Exit(code=1) from exc
     else:
         console.print(
             "[bold yellow]Initiating live practice connection to IQ Option...[/bold yellow]"
@@ -1239,7 +1419,7 @@ def practice_test_command(
             with console.status(
                 "[bold green]Connecting to IQ Option and checking Practice account..."
             ):
-                transport.start(require_practice=not select_practice)
+                transport.start(require_practice=not select_practice and not preflight_only)
         except (RealAccountExecutionBlockedError, AccountSelectionUnverifiedError) as exc:
             if not select_practice:
                 console.print(
@@ -1296,7 +1476,10 @@ def practice_test_command(
                 with console.status(
                     "[bold green]Switching session balance to Practice and verifying..."
                 ):
-                    transport.select_practice_balance(operator_authorized=True)
+                    transport.select_practice_balance(
+                        operator_authorized=True,
+                        preflight_only=preflight_only,
+                    )
             except (
                 PracticeAuthorizationError,
                 AccountSelectionUnverifiedError,
@@ -1304,38 +1487,73 @@ def practice_test_command(
                 TimeoutError,
                 ConnectionError,
             ) as exc:
-                console.print(
-                    Panel.fit(
-                        "[bold red]CRITICAL SAFETY BLOCK: Practice Balance Selection Failed"
-                        "[/bold red]\n\n"
-                        f"• Failure: {exc}\n"
-                        "• Verification: Active account could not be confirmed as PRACTICE.\n"
-                        "• Selection Request: change_balance was transmitted once.\n"
-                        "• Policy: Zero duplicate selection frames sent; zero automatic retries.\n"
-                        "• Order Submission: ZERO ORDERS DISPATCHED (Fail-Closed).\n"
-                        "• Teardown: WebSocket connection cleanly closed.",
-                        border_style="red",
+                if preflight_only:
+                    logger.info("Live practice selection unverified in preflight-only: %s", exc)
+                else:
+                    console.print(
+                        Panel.fit(
+                            "[bold red]CRITICAL SAFETY BLOCK: Practice Balance Selection Failed"
+                            "[/bold red]\n\n"
+                            f"• Failure: {exc}\n"
+                            "• Verification: Active account could not be confirmed as PRACTICE.\n"
+                            "• Selection Request: change_balance was transmitted once.\n"
+                            "• Policy: Zero duplicate frames sent; zero automatic retries.\n"
+                            "• Order Submission: ZERO ORDERS DISPATCHED (Fail-Closed).\n"
+                            "• Teardown: WebSocket connection cleanly closed.",
+                            border_style="red",
+                        )
                     )
-                )
-                transport.close()
-                raise typer.Exit(code=1) from exc
+                    transport.close()
+                    raise typer.Exit(code=1) from exc
 
     try:
         # 3. Verify active practice account & balance
-        if not transport.is_practice_verified or not transport.is_connected:
+        routing_audit = transport.get_routing_audit()
+
+        if not transport.is_connected:
+            console.print("[bold red]Practice transport is not connected.[/bold red]")
+            raise typer.Exit(code=1)
+
+        if preflight_only:
+            console.print(_render_routing_diagnostic_table(routing_audit))
+
+        # In trade execution mode (not preflight-only), practice routing MUST be verified
+        if not preflight_only and (
+            not transport.is_practice_verified or not routing_audit.is_routing_verified
+        ):
             console.print(
-                "[bold red]Practice transport is not connected or practice account "
-                "is not verified.[/bold red]"
+                Panel.fit(
+                    "[bold red]CRITICAL SAFETY BLOCK: Practice Routing Unverified[/bold red]"
+                    "\n\n"
+                    f"• Diagnostic Classifications: "
+                    f"{', '.join(c.value for c in routing_audit.classifications)}\n"
+                    f"• Profile Balance ID: {routing_audit.profile_balance_id or 'none'} "
+                    f"({routing_audit.profile_balance_semantics})\n"
+                    "• Practice Order Routing: Cannot be verified without authoritative broker "
+                    "confirmation.\n"
+                    "• Automatic Retries: ZERO (duplicate frames forbidden).\n"
+                    "• Invariant: Order dispatch is strictly blocked fail-closed.\n"
+                    "• Zero orders were submitted to the broker.",
+                    border_style="red",
+                )
             )
+            transport.close()
             raise typer.Exit(code=1)
 
         initial_session_id = transport.session_id
-        active_bal_id = str(transport.active_balance_id)
+        active_bal_id = str(
+            transport.active_balance_id or routing_audit.discovered_practice_id or "unknown"
+        )
         current_amount = 0.0
         for b in transport.balances:
             if str(b.id) == active_bal_id:
                 current_amount = float(b.amount)
                 break
+        if abs(current_amount) < 1e-6:
+            for b in transport.balances:
+                if b.type == AccountType.PRACTICE:
+                    current_amount = float(b.amount)
+                    break
 
         # 4. Pre-Flight Verification & Expiry Drift Revalidation Loop
         spec = None
@@ -1529,6 +1747,56 @@ def practice_test_command(
 
             break
 
+        # Preflight-only mode: complete preflight audit, skip order creation & dispatch
+        if preflight_only:
+            payout_pct = spec.payout_rate * 100 if spec else 0.0
+            if routing_audit.is_routing_verified:
+                console.print(
+                    Panel.fit(
+                        "[bold green]LIVE PRE-FLIGHT VERIFICATION SUCCEEDED: ZERO ORDERS DISPATCHED"
+                        "[/bold green]\n\n"
+                        f"• Transport State: Connected ({transport.session_id})\n"
+                        f"• Verified Account: PRACTICE (Balance ID: {active_bal_id})\n"
+                        f"• Current Virtual Balance: ${current_amount:,.2f}\n"
+                        f"• Instrument Tradability: {symbol.upper()} Binary Option AVAILABLE\n"
+                        f"• Authoritative Broker Payout: {payout_pct:.1f}% "
+                        f"(Commission: {spec.commission_percent:.1f}%)\n"
+                        f"• Live Broker Quote: {current_candle.close:.5f} "
+                        f"(Midpoint: {current_candle.midpoint:.5f})\n"
+                        f"• Next Expiry Deadline: {expiry_ts} ({expiry_utc_str}, "
+                        f"{remaining_before_send}s remaining)\n"
+                        "• Pre-Flight Mode: Order proposal, creation, and submission "
+                        "completely BYPASSED.\n"
+                        "• Safety Invariant: Zero orders dispatched; clean teardown initiated.",
+                        border_style="green",
+                    )
+                )
+            else:
+                console.print(
+                    Panel.fit(
+                        "[bold yellow]PRE-FLIGHT ROUTING AUDIT COMPLETE: ZERO ORDERS DISPATCHED"
+                        "[/bold yellow]\n\n"
+                        f"• Diagnostic Classifications: "
+                        f"{', '.join(c.value for c in routing_audit.classifications)}\n"
+                        f"• Profile Balance ID: {routing_audit.profile_balance_id or 'none'} "
+                        f"({routing_audit.profile_balance_semantics})\n"
+                        f"• Discovered Wallets: Practice={routing_audit.discovered_practice_id}, "
+                        f"Real={routing_audit.discovered_real_id}\n"
+                        f"• Gateway Selection Frame: {routing_audit.selection_frame_name} "
+                        f"(transmitted={routing_audit.selection_frame_transmitted}, "
+                        f"acknowledged={routing_audit.selection_frame_acknowledged})\n"
+                        "• Practice Order Routing: UNVERIFIED — order dispatch blocked "
+                        "fail-closed.\n"
+                        f"• Market Status: {symbol.upper()} Binary Option "
+                        f"(Payout: {payout_pct:.1f}%, Expiry: {expiry_utc_str})\n"
+                        "• Pre-Flight Mode: Order proposal, creation, and submission "
+                        "completely BYPASSED.\n"
+                        "• Execution Invariant: ZERO ORDERS DISPATCHED; clean teardown initiated.",
+                        border_style="yellow",
+                    )
+                )
+            return
+
         # Pre-transmission connection & session continuity verification
         transport.refresh_account_state()
         if not transport.is_connected:
@@ -1550,31 +1818,6 @@ def practice_test_command(
                 "verification. Order blocked fail-closed.[/bold red]"
             )
             raise typer.Exit(code=1)
-
-        # Preflight-only mode: complete preflight audit, skip order creation & dispatch
-        if preflight_only:
-            payout_pct = spec.payout_rate * 100
-            console.print(
-                Panel.fit(
-                    "[bold green]LIVE PRE-FLIGHT VERIFICATION SUCCEEDED: ZERO ORDERS DISPATCHED"
-                    "[/bold green]\n\n"
-                    f"• Transport State: Connected ({transport.session_id})\n"
-                    f"• Verified Account: PRACTICE (Balance ID: {active_bal_id})\n"
-                    f"• Current Virtual Balance: ${current_amount:,.2f}\n"
-                    f"• Instrument Tradability: {symbol.upper()} Binary Option AVAILABLE\n"
-                    f"• Authoritative Broker Payout: {payout_pct:.1f}% "
-                    f"(Commission: {spec.commission_percent:.1f}%)\n"
-                    f"• Live Broker Quote: {current_candle.close:.5f} "
-                    f"(Midpoint: {current_candle.midpoint:.5f})\n"
-                    f"• Next Expiry Deadline: {expiry_ts} ({expiry_utc_str}, "
-                    f"{remaining_before_send}s remaining)\n"
-                    "• Pre-Flight Mode: Order proposal, creation, and submission "
-                    "completely BYPASSED.\n"
-                    "• Safety Invariant: Zero orders dispatched; clean teardown initiated.",
-                    border_style="green",
-                )
-            )
-            return
 
         # 9. Engine Execution & Order Dispatch
         tok = PracticeExecutionAuthToken(

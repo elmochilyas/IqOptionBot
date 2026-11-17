@@ -35,6 +35,10 @@ from iqoption_research.connectors.iqoption.exceptions import (
     RequestTimeoutError,
 )
 from iqoption_research.connectors.iqoption.http_auth import async_login
+from iqoption_research.execution.account_diagnostics import (
+    BrokerAccountDiagnostic,
+    RoutingAuditResult,
+)
 from iqoption_research.execution.models import OrderSide, PaperOrder
 from iqoption_research.execution.modes import (
     ContractAvailabilityUnverifiedError,
@@ -150,6 +154,12 @@ class IQOptionLivePracticeTransport:
         self._server_time_synced_at: float | None = None
         self._instrument_schedules: dict[str, BinaryInstrumentSchedule] = {}
         self._last_change_balance_ts: float | None = None
+        self._selection_frame_transmitted: bool = False
+        self._selection_frame_name: str | None = None
+        self._selection_frame_acknowledged: bool | None = None
+        self._broker_rejected_selection: bool = False
+        self._balance_changed_event_received: bool = False
+        self._routing_audit: RoutingAuditResult | None = None
 
     def __repr__(self) -> str:
         masked_ssid = "***" if self._ssid else "None"
@@ -217,6 +227,47 @@ class IQOptionLivePracticeTransport:
                 for b in self._balances
             )
         )
+
+    @property
+    def routing_audit(self) -> RoutingAuditResult | None:
+        """Cached routing diagnostic audit result."""
+        return self._routing_audit
+
+    @property
+    def selection_frame_transmitted(self) -> bool:
+        """Whether a balance selection frame was transmitted in this session."""
+        return self._selection_frame_transmitted
+
+    @property
+    def selection_frame_name(self) -> str | None:
+        """Name of the balance selection frame transmitted."""
+        return self._selection_frame_name
+
+    @property
+    def selection_frame_acknowledged(self) -> bool | None:
+        """Whether the balance selection frame received an affirmative broker ACK."""
+        return self._selection_frame_acknowledged
+
+    @property
+    def balance_changed_event_received(self) -> bool:
+        """Whether a balance-changed push notification was received from broker."""
+        return self._balance_changed_event_received
+
+    def get_routing_audit(self) -> RoutingAuditResult:
+        """Evaluate evidence-based account state and practice routing status."""
+        diag = BrokerAccountDiagnostic()
+        res = diag.evaluate_routing(
+            profile=self._profile,
+            balances=self._balances,
+            selection_frame_transmitted=self._selection_frame_transmitted,
+            selection_frame_name=self._selection_frame_name,
+            selection_frame_acknowledged=self._selection_frame_acknowledged,
+            broker_rejected_selection=self._broker_rejected_selection,
+            balance_changed_event_received=self._balance_changed_event_received,
+            has_authoritative_active_indicator=False,
+        )
+        self._routing_audit = res
+        return res
 
     # -----------------------------------------------------------------------
     # Asynchronous Core Lifecycle
@@ -329,6 +380,7 @@ class IQOptionLivePracticeTransport:
         operator_authorized: bool = False,
         verification_timeout: float = 10.0,
         retry_interval: float = 0.5,
+        preflight_only: bool = False,
     ) -> Balance:
         """Explicitly switch the session's active balance to the PRACTICE account.
 
@@ -402,6 +454,9 @@ class IQOptionLivePracticeTransport:
             req_id,
         )
 
+        self._selection_frame_transmitted = True
+        self._selection_frame_name = "change_balance"
+
         try:
             await self._ws.send(json.dumps(change_bal_frame))
             try:
@@ -413,10 +468,14 @@ class IQOptionLivePracticeTransport:
                     if resp.get("name") in {"error", "reject"} or (
                         isinstance(msg_body, dict) and msg_body.get("is_successful") is False
                     ):
+                        self._broker_rejected_selection = True
+                        self._selection_frame_acknowledged = False
                         raise PracticeAuthorizationError(
                             f"Broker rejected change_balance request: {resp}"
                         )
+                    self._selection_frame_acknowledged = True
             except TimeoutError:
+                self._selection_frame_acknowledged = False
                 logger.info(
                     "change_balance frame transmitted (no direct request_id echo expected; "
                     "proceeding to bounded read-only verification loop)."
@@ -507,6 +566,17 @@ class IQOptionLivePracticeTransport:
 
         if not confirmed_practice:
             elapsed = time.time() - transmission_ts
+            self._routing_audit = self.get_routing_audit()
+            if preflight_only:
+                logger.info(
+                    "PRACTICE_PREFLIGHT_ONLY: Practice balance selection unconfirmed by broker "
+                    "(elapsed=%.2fs, attempts=%d). Routing audit evaluated. Continuing preflight.",
+                    elapsed,
+                    attempt,
+                )
+                self._session_practice_selected = False
+                return practice_bal
+
             raise PracticeAuthorizationError(
                 f"Broker account state refresh failed to confirm Practice balance selection "
                 f"within {timeout_budget:.1f}s (elapsed={elapsed:.2f}s, {attempt} attempts). "
@@ -521,6 +591,7 @@ class IQOptionLivePracticeTransport:
 
         # Run authoritative safety guard to verify Practice status
         await self._verify_practice_account_guard()
+        self._routing_audit = self.get_routing_audit()
 
         return next(
             (b for b in self._balances if str(b.id) == str(practice_bal.id)),
@@ -533,6 +604,7 @@ class IQOptionLivePracticeTransport:
         operator_authorized: bool = False,
         verification_timeout: float = 10.0,
         retry_interval: float = 0.5,
+        preflight_only: bool = False,
     ) -> Balance:
         """Synchronously execute explicit practice balance selection."""
         if self._is_running_thread and self._loop is not None and self._thread is not None:
@@ -541,6 +613,7 @@ class IQOptionLivePracticeTransport:
                     operator_authorized=operator_authorized,
                     verification_timeout=verification_timeout,
                     retry_interval=retry_interval,
+                    preflight_only=preflight_only,
                 ),
                 self._loop,
             )
@@ -564,6 +637,7 @@ class IQOptionLivePracticeTransport:
                 operator_authorized=operator_authorized,
                 verification_timeout=verification_timeout,
                 retry_interval=retry_interval,
+                preflight_only=preflight_only,
             )
         )
 

@@ -27,6 +27,7 @@ Guarantees:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -62,6 +63,90 @@ class BrokerLedgerStatus(StrEnum):
 
     BLOCKED = "BLOCKED"
     UNVERIFIED_READ_ONLY = "UNVERIFIED_READ_ONLY"
+
+
+class AccountStateClassification(StrEnum):
+    """Evidence-based classification of broker account and balance routing state."""
+
+    PRACTICE_CONFIRMED = "PRACTICE_CONFIRMED"
+    REAL_CONFIRMED = "REAL_CONFIRMED"
+    PROFILE_DEFAULT_REAL = "PROFILE_DEFAULT_REAL"
+    PRACTICE_BALANCE_AVAILABLE = "PRACTICE_BALANCE_AVAILABLE"
+    SESSION_SELECTION_UNVERIFIED = "SESSION_SELECTION_UNVERIFIED"
+    BALANCE_ROUTING_UNVERIFIED = "BALANCE_ROUTING_UNVERIFIED"
+    BROKER_REJECTED_SELECTION = "BROKER_REJECTED_SELECTION"
+
+
+@dataclass(frozen=True, slots=True)
+class RoutingAuditResult:
+    """Comprehensive read-only diagnostic of broker routing evidence."""
+
+    profile_balance_id: str | None
+    profile_balance_type: AccountType | None
+    profile_semantics: str
+    available_balances: tuple[Balance, ...]
+    has_authoritative_active_indicator: bool
+    active_indicator_source: str | None
+    response_type_and_correlation: str
+    selection_frame_transmitted: bool
+    selection_frame_name: str | None
+    selection_frame_acknowledged: bool | None
+    balance_changed_event_received: bool
+    classifications: tuple[AccountStateClassification, ...]
+    is_routing_verified: bool
+    routing_status_summary: str
+    recommended_action: str
+    decision_path: tuple[str, ...] = ()
+
+    @property
+    def profile_balance_semantics(self) -> str:
+        return self.profile_semantics
+
+    @property
+    def discovered_practice_id(self) -> str | None:
+        for b in self.available_balances:
+            if b.type == AccountType.PRACTICE and b.is_practice:
+                return str(b.id)
+        return None
+
+    @property
+    def discovered_real_id(self) -> str | None:
+        for b in self.available_balances:
+            if b.type == AccountType.REAL or not b.is_practice:
+                return str(b.id)
+        return None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "profile_balance_id": self.profile_balance_id,
+            "profile_balance_type": (
+                self.profile_balance_type.name if self.profile_balance_type else None
+            ),
+            "profile_semantics": self.profile_semantics,
+            "available_balances_count": len(self.available_balances),
+            "available_balances": [
+                {
+                    "id": b.id,
+                    "type": b.type.name,
+                    "amount": b.amount,
+                    "currency": b.currency,
+                    "is_active": b.is_active,
+                }
+                for b in self.available_balances
+            ],
+            "has_authoritative_active_indicator": self.has_authoritative_active_indicator,
+            "active_indicator_source": self.active_indicator_source,
+            "response_type_and_correlation": self.response_type_and_correlation,
+            "selection_frame_transmitted": self.selection_frame_transmitted,
+            "selection_frame_name": self.selection_frame_name,
+            "selection_frame_acknowledged": self.selection_frame_acknowledged,
+            "balance_changed_event_received": self.balance_changed_event_received,
+            "classifications": [c.value for c in self.classifications],
+            "is_routing_verified": self.is_routing_verified,
+            "routing_status_summary": self.routing_status_summary,
+            "recommended_action": self.recommended_action,
+            "decision_path": list(self.decision_path),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +193,8 @@ class AccountDiagnosticReport:
     explanation: str
     recommended_action: str
     decision_path: tuple[str, ...] = ()
+    classifications: tuple[AccountStateClassification, ...] = ()
+    routing_audit: RoutingAuditResult | None = None
     evaluated_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def to_dict(self) -> dict[str, Any]:
@@ -125,6 +212,8 @@ class AccountDiagnosticReport:
             "explanation": self.explanation,
             "recommended_action": self.recommended_action,
             "decision_path": list(self.decision_path),
+            "classifications": [c.value for c in self.classifications],
+            "routing_audit": self.routing_audit.to_dict() if self.routing_audit else None,
             "evaluated_at_utc": self.evaluated_at_utc,
         }
 
@@ -535,4 +624,170 @@ class BrokerAccountDiagnostic:
                 "PRACTICE-only execution harness is formally approved."
             ),
             decision_path=decision_steps,
+        )
+
+    def evaluate_routing(
+        self,
+        *,
+        profile: Profile | None,
+        balances: list[Balance] | None,
+        selection_frame_transmitted: bool = False,
+        selection_frame_name: str | None = None,
+        selection_frame_acknowledged: bool | None = None,
+        broker_rejected_selection: bool = False,
+        balance_changed_event_received: bool = False,
+        correlation_info: str | None = None,
+        has_authoritative_active_indicator: bool = False,
+        active_indicator_source: str | None = None,
+    ) -> RoutingAuditResult:
+        """Evaluate evidence-based account state and practice routing status.
+
+        Replaces binary success/failure assumptions with observed broker states:
+        - PRACTICE_CONFIRMED
+        - REAL_CONFIRMED
+        - PROFILE_DEFAULT_REAL
+        - PRACTICE_BALANCE_AVAILABLE
+        - SESSION_SELECTION_UNVERIFIED
+        - BALANCE_ROUTING_UNVERIFIED
+        - BROKER_REJECTED_SELECTION
+        """
+        avail_bals = tuple(balances or [])
+        prof_bal_id: str | None = None
+        prof_bal_type: AccountType | None = None
+
+        if profile is not None and profile.raw:
+            for key in ("balance_id", "balanceId", "active_balance_id"):
+                if profile.raw.get(key) is not None:
+                    cand = str(profile.raw[key]).strip()
+                    if cand:
+                        prof_bal_id = cand
+                        break
+            if not prof_bal_id:
+                cur = profile.raw.get("current_balance")
+                if isinstance(cur, dict) and cur.get("id") is not None:
+                    prof_bal_id = str(cur["id"]).strip()
+
+        if prof_bal_id is not None:
+            matched = next((b for b in avail_bals if str(b.id) == prof_bal_id), None)
+            if matched is not None:
+                prof_bal_type = matched.type
+            elif profile is not None and profile.raw:
+                raw_type = profile.raw.get("balance_type") or profile.raw.get("type")
+                if raw_type is not None:
+                    with contextlib.suppress(ValueError, TypeError):
+                        prof_bal_type = AccountType(int(raw_type))
+
+        if prof_bal_type == AccountType.REAL:
+            prof_semantics = "Primary default account wallet registered on broker server"
+        elif prof_bal_type == AccountType.PRACTICE:
+            prof_semantics = "Practice wallet set as primary broker profile balance"
+        else:
+            prof_semantics = "Default account balance reported in broker profile frame"
+
+        has_practice = any(b.is_practice for b in avail_bals)
+
+        classifications: list[AccountStateClassification] = []
+        decision_steps: list[str] = []
+
+        # 1. Practice balance availability
+        if has_practice:
+            classifications.append(AccountStateClassification.PRACTICE_BALANCE_AVAILABLE)
+            decision_steps.append("Observed valid PRACTICE balance in broker get-balances.")
+
+        # 2. Profile default wallet type
+        if prof_bal_type == AccountType.REAL:
+            classifications.append(AccountStateClassification.PROFILE_DEFAULT_REAL)
+            decision_steps.append(
+                f"Broker profile reports default balance_id={prof_bal_id} (REAL)."
+            )
+
+        # 3. Selection rejection / lack of acknowledgement
+        if broker_rejected_selection:
+            classifications.append(AccountStateClassification.BROKER_REJECTED_SELECTION)
+            decision_steps.append("Broker gateway explicitly rejected balance selection.")
+        elif selection_frame_transmitted and (
+            selection_frame_acknowledged is False
+            or not balance_changed_event_received
+            or prof_bal_type == AccountType.REAL
+        ):
+            classifications.append(AccountStateClassification.SESSION_SELECTION_UNVERIFIED)
+            decision_steps.append(
+                f"Selection frame '{selection_frame_name}' was transmitted, but broker "
+                "did not provide authoritative session confirmation or balance-changed event."
+            )
+
+        # 4. Routing verification determination
+        # Practice order routing is confirmed ONLY IF:
+        # - Authoritative active session indicator confirms Practice
+        # - No conflicting real active balance exists
+        # - Practice selection is confirmed
+        has_active_real = any(
+            b.type == AccountType.REAL and (b.is_active or b.raw_is_active) for b in avail_bals
+        )
+        if (
+            has_authoritative_active_indicator
+            and prof_bal_type == AccountType.PRACTICE
+            and not has_active_real
+        ):
+            classifications.append(AccountStateClassification.PRACTICE_CONFIRMED)
+            decision_steps.append(
+                "Authoritative broker evidence confirms Practice session routing."
+            )
+        else:
+            classifications.append(AccountStateClassification.BALANCE_ROUTING_UNVERIFIED)
+            decision_steps.append(
+                "Broker evidence does not prove Practice order routing. An available Practice "
+                "balance ID alone is insufficient to guarantee non-real execution."
+            )
+
+        # Real confirmed check
+        if has_active_real and has_authoritative_active_indicator:
+            classifications.append(AccountStateClassification.REAL_CONFIRMED)
+            decision_steps.append("Authoritative broker evidence confirms REAL session routing.")
+
+        is_verified = (
+            AccountStateClassification.PRACTICE_CONFIRMED in classifications
+            and AccountStateClassification.BALANCE_ROUTING_UNVERIFIED not in classifications
+        )
+
+        status_summary = (
+            "PRACTICE_CONFIRMED: Broker verified Practice routing"
+            if is_verified
+            else "UNVERIFIED: Practice order routing unverified — live dispatch blocked fail-closed"
+        )
+
+        rec_action = (
+            "Practice order routing verified. Supervised single Practice trade permitted."
+            if is_verified
+            else "DO NOT SUBMIT ORDERS. Broker evidence does not confirm Practice order routing. "
+            "Live broker execution must remain blocked fail-closed."
+        )
+
+        corr = correlation_info or (
+            f"get-profile (balance_id={prof_bal_id or 'none'}), "
+            f"get-balances ({len(avail_bals)} balances)"
+        )
+        ind_source = active_indicator_source or (
+            "authoritative_server_push"
+            if has_authoritative_active_indicator
+            else "ABSENT (Broker does not provide active-session indicator in get-balances/profile)"
+        )
+
+        return RoutingAuditResult(
+            profile_balance_id=prof_bal_id,
+            profile_balance_type=prof_bal_type,
+            profile_semantics=prof_semantics,
+            available_balances=avail_bals,
+            has_authoritative_active_indicator=has_authoritative_active_indicator,
+            active_indicator_source=ind_source,
+            response_type_and_correlation=corr,
+            selection_frame_transmitted=selection_frame_transmitted,
+            selection_frame_name=selection_frame_name,
+            selection_frame_acknowledged=selection_frame_acknowledged,
+            balance_changed_event_received=balance_changed_event_received,
+            classifications=tuple(classifications),
+            is_routing_verified=is_verified,
+            routing_status_summary=status_summary,
+            recommended_action=rec_action,
+            decision_path=tuple(decision_steps),
         )

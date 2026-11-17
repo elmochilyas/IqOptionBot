@@ -3,9 +3,11 @@
 from iqoption_research.execution.account_diagnostics import (
     AccountDiagnosticReport,
     AccountReadinessResult,
+    AccountStateClassification,
     BalanceIdentityAudit,
     BrokerAccountDiagnostic,
     BrokerLedgerStatus,
+    RoutingAuditResult,
 )
 from iqoption_research.execution.adapters import (
     BaseExecutionAdapter,
@@ -106,6 +108,7 @@ __all__ = [
     "VALID_ORDER_TRANSITIONS",
     "AccountDiagnosticReport",
     "AccountReadinessResult",
+    "AccountStateClassification",
     "BalanceIdentityAudit",
     "BaseExecutionAdapter",
     "BinaryInstrumentSchedule",
@@ -170,6 +173,7 @@ __all__ = [
     "RiskConfig",
     "RiskDecision",
     "RiskRejectionReason",
+    "RoutingAuditResult",
     "SettlementOutcome",
     "SizingResult",
     "StaleVerificationBlockedError",

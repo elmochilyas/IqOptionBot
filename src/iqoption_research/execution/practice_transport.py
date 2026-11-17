@@ -18,6 +18,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from iqoption_research.execution.account_diagnostics import (
+    BrokerAccountDiagnostic,
+    RoutingAuditResult,
+)
 from iqoption_research.execution.models import (
     OrderSide,
     PaperOrder,
@@ -473,6 +477,7 @@ class MockBrokerPracticeTransport:
         virtual_amount: float = 10000.0,
         simulate_unverified_contract: bool = False,
         delayed_balance_propagation_steps: int = 0,
+        simulate_unacknowledged_selection: bool = False,
     ) -> None:
         self.should_succeed = should_succeed
         self.option_id = option_id
@@ -482,6 +487,7 @@ class MockBrokerPracticeTransport:
         self.malformed_response = malformed_response
         self.simulate_unverified_contract = simulate_unverified_contract
         self.delayed_balance_propagation_steps = delayed_balance_propagation_steps
+        self.simulate_unacknowledged_selection = simulate_unacknowledged_selection
         self._refresh_call_count = 0
         self.active_balance_id: str | None = (
             active_balance_id if active_balance_id is not None else initial_active_balance_id
@@ -493,6 +499,13 @@ class MockBrokerPracticeTransport:
         )
         self._session_id: str = "mock_sess_101"
         self._submitted_order_count: int = 0
+        self.selection_frame_transmitted: bool = False
+        self.selection_frame_name: str | None = None
+        self.selection_frame_acknowledged: bool | None = None
+        self.broker_rejected_selection: bool = False
+        self.balance_changed_event_received: bool = False
+        self.has_authoritative_active_indicator: bool = self._session_practice_selected
+        self._routing_audit: RoutingAuditResult | None = None
         self.dispatched_frames: list[dict[str, Any]] = []
         self._instrument_schedules: dict[str, BinaryInstrumentSchedule] = {
             "EURUSD": BinaryInstrumentSchedule(
@@ -557,6 +570,30 @@ class MockBrokerPracticeTransport:
             "balance_id": bal_int,
         })
 
+    @property
+    def submitted_order_count(self) -> int:
+        return self._submitted_order_count
+
+    @property
+    def routing_audit(self) -> RoutingAuditResult | None:
+        return self._routing_audit
+
+    def get_routing_audit(self) -> RoutingAuditResult:
+        """Evaluate evidence-based account state and practice routing status."""
+        diag = BrokerAccountDiagnostic()
+        res = diag.evaluate_routing(
+            profile=self.profile,
+            balances=self.balances,
+            selection_frame_transmitted=self.selection_frame_transmitted,
+            selection_frame_name=self.selection_frame_name,
+            selection_frame_acknowledged=self.selection_frame_acknowledged,
+            broker_rejected_selection=self.broker_rejected_selection,
+            balance_changed_event_received=self.balance_changed_event_received,
+            has_authoritative_active_indicator=self.has_authoritative_active_indicator,
+        )
+        self._routing_audit = res
+        return res
+
     def get_live_candle(self, symbol: str = "EURUSD", size: int = 60) -> Candle:
         """Return a simulated recent candle for offline testing."""
         now_ts = int(time.time())
@@ -619,6 +656,8 @@ class MockBrokerPracticeTransport:
         ):
             self.active_balance_id = self.practice_balance_id
             self._session_practice_selected = True
+            self.has_authoritative_active_indicator = True
+            self.balance_changed_event_received = True
 
     def select_practice_balance(
         self,
@@ -626,6 +665,7 @@ class MockBrokerPracticeTransport:
         operator_authorized: bool = False,
         verification_timeout: float = 10.0,
         retry_interval: float = 0.5,
+        preflight_only: bool = False,
     ) -> Balance:
         """Simulate manual operator-authorized practice session balance selection."""
         if not operator_authorized:
@@ -639,6 +679,9 @@ class MockBrokerPracticeTransport:
         if self.malformed_response:
             raise ValueError("Malformed balance selection response payload from broker")
         if not self.should_succeed:
+            self.broker_rejected_selection = True
+            self.selection_frame_acknowledged = False
+            self.get_routing_audit()
             raise PracticeAuthorizationError(self.rejection_message)
         if self.practice_balance_id == "200" or str(self.practice_balance_id).startswith("real"):
             raise RealAccountExecutionBlockedError(
@@ -646,6 +689,8 @@ class MockBrokerPracticeTransport:
                 "Selecting REAL balance is permanently forbidden."
             )
 
+        self.selection_frame_transmitted = True
+        self.selection_frame_name = "change_balance"
         self.dispatched_frames.append({
             "name": "sendMessage",
             "msg": {
@@ -655,7 +700,30 @@ class MockBrokerPracticeTransport:
             },
             "request_id": f"mock_chg_bal_{self.practice_balance_id}",
         })
+
+        if self.simulate_unacknowledged_selection:
+            self.selection_frame_acknowledged = False
+            self.active_balance_id = "200"
+            self._session_practice_selected = False
+            self.get_routing_audit()
+            if preflight_only:
+                return Balance(
+                    id=self.practice_balance_id,
+                    type=AccountType.PRACTICE,
+                    amount=self.virtual_amount,
+                    currency="USD",
+                    is_active=False,
+                    raw_is_active=False,
+                )
+            raise PracticeAuthorizationError(
+                "Broker account state refresh failed to confirm Practice balance selection. "
+                f"Fresh broker profile balance_id ({self.active_balance_id}) does not match "
+                f"requested Practice balance ID ({self.practice_balance_id}). "
+                "change_balance frame was transmitted once; zero retries were dispatched."
+            )
+
         if self.delayed_balance_propagation_steps > 0:
+            self.selection_frame_acknowledged = False
             deadline = time.time() + verification_timeout
             while True:
                 self.refresh_account_state()
@@ -663,8 +731,21 @@ class MockBrokerPracticeTransport:
                     self.active_balance_id == self.practice_balance_id
                     and self._session_practice_selected
                 ):
+                    self.selection_frame_acknowledged = True
+                    self.has_authoritative_active_indicator = True
+                    self.balance_changed_event_received = True
                     break
                 if time.time() >= deadline:
+                    self.get_routing_audit()
+                    if preflight_only:
+                        return Balance(
+                            id=self.practice_balance_id,
+                            type=AccountType.PRACTICE,
+                            amount=self.virtual_amount,
+                            currency="USD",
+                            is_active=False,
+                            raw_is_active=False,
+                        )
                     raise PracticeAuthorizationError(
                         "Broker account state refresh failed to confirm Practice balance "
                         f"selection. Fresh broker profile balance_id ({self.active_balance_id}) "
@@ -673,8 +754,13 @@ class MockBrokerPracticeTransport:
                     )
                 time.sleep(min(retry_interval, 0.05))
         else:
+            self.selection_frame_acknowledged = True
             self.active_balance_id = self.practice_balance_id
             self._session_practice_selected = True
+            self.has_authoritative_active_indicator = True
+            self.balance_changed_event_received = True
+
+        self.get_routing_audit()
         return Balance(
             id=self.practice_balance_id,
             type=AccountType.PRACTICE,

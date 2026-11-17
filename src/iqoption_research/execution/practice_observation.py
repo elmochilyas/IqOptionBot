@@ -650,28 +650,175 @@ class PracticeObservation:
         }
 
 
-def _active_practice_status(observer: PassivePracticeObserver) -> str:
-    """Classify the broker-reported active wallet without ever changing it."""
+_ACTIVE_ID_ALIASES = (
+    ("balance_id", "BALANCE_ID"),
+    ("balanceId", "BALANCE_ID_CAMEL"),
+    ("active_balance_id", "ACTIVE_BALANCE_ID"),
+)
+
+_ACTIVE_UNKNOWN = "ACTIVE_PRACTICE_UNVERIFIED"
+
+
+def _active_id(raw: dict[str, Any]) -> tuple[str | None, str, bool]:
+    """Return (normalized id, alias classification, aliases agree).
+
+    The alias label is a schema key name, never an identifier value.
+    """
+    present = [
+        (key, label, raw[key]) for key, label in _ACTIVE_ID_ALIASES if raw.get(key) is not None
+    ]
+    if not present:
+        return None, "ABSENT", False
+    normalized = [
+        (key, label, normalize_ticket_aliases({"id": value}, "id")) for key, label, value in present
+    ]
+    if any(value is None for _, _, value in normalized):
+        return None, "INVALID", False
+    values = {value for _, _, value in normalized}
+    if len(values) != 1:
+        return None, "ALIASES_CONFLICT", False
+    label = "MULTIPLE_AGREE" if len(present) > 1 else present[0][1]
+    return values.pop(), label, True
+
+
+def _profile_type(raw: dict[str, Any]) -> str:
+    value = raw.get("balance_type") if raw.get("balance_type") is not None else raw.get("type")
+    if value is None or isinstance(value, bool):
+        return "ABSENT"
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return "OTHER"
+    if parsed == AccountType.PRACTICE:
+        return "PRACTICE"
+    if parsed == AccountType.REAL:
+        return "REAL"
+    return "OTHER"
+
+
+def _flag_attribution(
+    balances: list[Balance], *, active: bool, practice_id: str | None, real_id: str | None
+) -> str:
+    """Classify which wallet explicit balance-entry flags point to."""
+    attributes: set[str] = set()
+    for balance in balances:
+        flag = balance.raw_is_active if active else balance.is_default
+        if flag is not True:
+            continue
+        balance_id = normalize_ticket_aliases({"id": balance.id}, "id")
+        if balance_id is not None and balance_id == practice_id:
+            attributes.add("PRACTICE")
+        elif balance_id is not None and real_id is not None and balance_id == real_id:
+            attributes.add("REAL")
+        else:
+            attributes.add("OTHER")
+    if not attributes:
+        return "ABSENT"
+    return attributes.pop() if len(attributes) == 1 else "CONFLICT"
+
+
+def assess_active_account(observer: PassivePracticeObserver) -> dict[str, str]:
+    """Classify active-account evidence with a fixed, privacy-safe vocabulary.
+
+    No identifier, amount, credential or raw response value is retained. An
+    uncertain result is always downgraded to ACTIVE_PRACTICE_UNVERIFIED; a
+    genuine REAL/other report is preserved only when the evidence agrees.
+    """
+    result: dict[str, str] = {
+        "practice_account_active": _ACTIVE_UNKNOWN,
+        "profile_source": "ABSENT",
+        "active_id_alias": "ABSENT",
+        "profile_balance_type": "ABSENT",
+        "active_id_relation": "UNVERIFIED",
+        "explicit_active_attribution": "ABSENT",
+        "default_attribution": "ABSENT",
+        "endpoint_consistency": "UNVERIFIED",
+        "classification_reason": "PROFILE_OR_WALLET_MISSING",
+    }
     profile = observer.profile
     practice = observer.practice_balance
     if profile is None or practice is None:
-        return "ACTIVE_PRACTICE_UNVERIFIED"
-    raw = profile.raw
-    active = next(
-        (
-            raw[key]
-            for key in ("balance_id", "balanceId", "active_balance_id")
-            if raw.get(key) is not None
-        ),
-        None,
+        return result
+
+    outcome = ""
+    verifier = getattr(observer, "profile_verification_diagnostics", None)
+    if callable(verifier):
+        outcome = str(verifier().get("profile_outcome", ""))
+    result["profile_source"] = (
+        "CORRELATED"
+        if outcome == "PROFILE_VERIFIED"
+        else "UNCORRELATED"
+        if outcome == "PROFILE_UNCORRELATED"
+        else "EARLIER_FRAME"
+        if outcome == "PROFILE_FROM_EARLIER_FRAME"
+        else "UNKNOWN"
     )
-    if active is None:
-        return "ACTIVE_PRACTICE_UNVERIFIED"
-    active_id = normalize_ticket_aliases({"id": active}, "id")
+
+    active_id, alias, aliases_agree = _active_id(profile.raw)
+    result["active_id_alias"] = alias
+    result["profile_balance_type"] = _profile_type(profile.raw)
+
     practice_id = normalize_ticket_aliases({"id": practice.id}, "id")
-    if active_id is None or practice_id is None:
-        return "ACTIVE_PRACTICE_UNVERIFIED"
-    return "ACTIVE_PRACTICE_CONFIRMED" if active_id == practice_id else "ACTIVE_REAL_OR_OTHER"
+    real = observer.real_balance
+    real_id = normalize_ticket_aliases({"id": real.id}, "id") if real is not None else None
+    if active_id is None:
+        relation = "UNVERIFIED"
+    elif practice_id is not None and active_id == practice_id:
+        relation = "MATCHES_PRACTICE"
+    elif real_id is not None and active_id == real_id:
+        relation = "MATCHES_REAL"
+    else:
+        relation = "MATCHES_NEITHER"
+    result["active_id_relation"] = relation
+
+    balances = list(observer.balances) if hasattr(observer, "balances") else []
+    result["explicit_active_attribution"] = _flag_attribution(
+        balances, active=True, practice_id=practice_id, real_id=real_id
+    )
+    result["default_attribution"] = _flag_attribution(
+        balances, active=False, practice_id=practice_id, real_id=real_id
+    )
+
+    opposite = {
+        "MATCHES_PRACTICE": "REAL",
+        "MATCHES_REAL": "PRACTICE",
+    }.get(relation)
+    explicit = result["explicit_active_attribution"]
+    if opposite is not None and (
+        result["profile_balance_type"] == opposite or explicit == opposite
+    ):
+        result["endpoint_consistency"] = "PROFILE_VS_BALANCE_CONFLICT"
+    elif relation in {"MATCHES_PRACTICE", "MATCHES_REAL"}:
+        expected = relation.removeprefix("MATCHES_")
+        if explicit in {"ABSENT", expected}:
+            result["endpoint_consistency"] = "CONSISTENT"
+    elif relation == "MATCHES_NEITHER" and result["profile_balance_type"] == "PRACTICE":
+        result["endpoint_consistency"] = "TYPE_ID_NAMESPACE_MISMATCH"
+
+    if not aliases_agree:
+        result["classification_reason"] = (
+            "ACTIVE_ID_ABSENT" if alias == "ABSENT" else f"ACTIVE_ID_{alias}"
+        )
+    elif result["profile_source"] != "CORRELATED":
+        result["classification_reason"] = f"PROFILE_{result['profile_source']}"
+    elif result["endpoint_consistency"] == "PROFILE_VS_BALANCE_CONFLICT":
+        result["classification_reason"] = "PROFILE_BALANCE_EVIDENCE_CONFLICT"
+    elif relation == "MATCHES_PRACTICE":
+        result["practice_account_active"] = "ACTIVE_PRACTICE_CONFIRMED"
+        result["classification_reason"] = "CORRELATED_PROFILE_MATCHES_PRACTICE"
+    elif relation == "MATCHES_REAL":
+        result["practice_account_active"] = "ACTIVE_REAL_OR_OTHER"
+        result["classification_reason"] = "CORRELATED_PROFILE_MATCHES_REAL"
+    elif relation == "MATCHES_NEITHER" and result["profile_balance_type"] == "PRACTICE":
+        result["classification_reason"] = "PRACTICE_TYPE_ID_NAMESPACE_MISMATCH"
+    else:
+        result["classification_reason"] = "ACTIVE_ID_NOT_A_KNOWN_WALLET"
+    return result
+
+
+def _active_practice_status(observer: PassivePracticeObserver) -> str:
+    """Conservative active-account status (kept as a small compatibility wrapper)."""
+    return assess_active_account(observer)["practice_account_active"]
 
 
 async def observe_practice(
@@ -683,6 +830,7 @@ async def observe_practice(
     seconds: float,
     history_limit: int = 100,
     reconnect_limit: int = 3,
+    active_account_diagnostics: bool = False,
 ) -> dict[str, Any]:
     """Authenticate and verify each session, then reconnect within the observation budget."""
     if (
@@ -703,6 +851,7 @@ async def observe_practice(
     wallet_verified = False
     same_wallet = True
     active_status = "ACTIVE_PRACTICE_UNVERIFIED"
+    active_assessment: dict[str, str] = {}
     observer: PassivePracticeObserver | None = None
 
     async def query(active: PassivePracticeObserver, reason: str) -> str:
@@ -735,7 +884,8 @@ async def observe_practice(
                         break
                     same_wallet = tracker.wallets(practice, current.real_balance)
                     wallet_verified = same_wallet
-                    active_status = _active_practice_status(current)
+                    active_assessment = assess_active_account(current)
+                    active_status = active_assessment["practice_account_active"]
                     if not same_wallet:
                         session["status"] = "PRACTICE_WALLET_CHANGED"
                         break
@@ -851,7 +1001,8 @@ async def observe_practice(
         if observer is not None:
             await observer.async_close()
     ended_at = time.time()
-    return {
+    final_active_status = active_status if wallet_verified else "ACTIVE_PRACTICE_UNVERIFIED"
+    report: dict[str, Any] = {
         **tracker.report(
             started_at_utc=started_at,
             ended_at_utc=ended_at,
@@ -860,9 +1011,7 @@ async def observe_practice(
         ),
         "websocket_authentication": "VERIFIED" if authentication_verified else "UNVERIFIED",
         "practice_wallet": "VERIFIED" if wallet_verified else "UNVERIFIED",
-        "practice_account_active": active_status
-        if wallet_verified
-        else "ACTIVE_PRACTICE_UNVERIFIED",
+        "practice_account_active": final_active_status,
         "connection_attempts": sessions,
         "reconnect_attempts": max(0, len(sessions) - 1),
         "observation_gaps": dict(Counter(gaps)),
@@ -874,3 +1023,9 @@ async def observe_practice(
             "digital-option": "LIVE_SCHEMA_UNVERIFIED",
         },
     }
+    if active_account_diagnostics:
+        report["active_account_diagnostics"] = {
+            **active_assessment,
+            "practice_account_active": final_active_status,
+        }
+    return report

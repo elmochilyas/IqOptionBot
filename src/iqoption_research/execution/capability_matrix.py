@@ -336,6 +336,23 @@ BROKER_CAPABILITIES: tuple[BrokerOperation, ...] = (
         risk_assessment="Prohibited; live closure protocol unverified.",
         notes="Explicitly unsupported in Phase 16.",
     ),
+    # --- Balance Management Operations ---
+    BrokerOperation(
+        operation_id="practice_balance_select_manual",
+        product_type=None,
+        category=OperationCategory.BALANCE_MANAGEMENT,
+        name="Explicit Operator Practice Session Selection",
+        description=(
+            "Explicit, operator-confirmed session balance selection strictly restricted "
+            "to PRACTICE accounts (type 4). Never selects REAL. Never runs automatically."
+        ),
+        status=BrokerCapabilityStatus.OFFLINE_TESTED,
+        protocol_frame_name="change_balance",
+        verified_in_codebase=True,
+        live_broker_allowed=True,
+        risk_assessment="Low risk; restricted strictly to Practice virtual balance.",
+        notes="Implemented in IQOptionLivePracticeTransport.select_practice_balance.",
+    ),
     # --- Prohibited Operations ---
     BrokerOperation(
         operation_id="balance_switch_auto",

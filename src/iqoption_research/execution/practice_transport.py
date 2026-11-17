@@ -32,7 +32,7 @@ from iqoption_research.execution.safety import (
     PracticeAccountSafetyValidator,
     PracticeSafetyVerdict,
 )
-from iqoption_research.models.account import Balance, Profile
+from iqoption_research.models.account import AccountType, Balance, Profile
 
 logger = logging.getLogger(__name__)
 
@@ -442,6 +442,9 @@ class MockBrokerPracticeTransport:
         simulate_timeout: bool = False,
         simulate_transport_error: bool = False,
         malformed_response: bool = False,
+        initial_active_balance_id: str | None = "200",
+        practice_balance_id: str = "101",
+        virtual_amount: float = 10000.0,
     ) -> None:
         self.should_succeed = should_succeed
         self.option_id = option_id
@@ -449,7 +452,68 @@ class MockBrokerPracticeTransport:
         self.simulate_timeout = simulate_timeout
         self.simulate_transport_error = simulate_transport_error
         self.malformed_response = malformed_response
+        self.active_balance_id: str | None = initial_active_balance_id
+        self.practice_balance_id = practice_balance_id
+        self.virtual_amount = virtual_amount
+        self._session_practice_selected: bool = False
+        self._session_id: str = "mock_sess_101"
         self.dispatched_frames: list[dict[str, Any]] = []
+
+    @property
+    def is_practice_verified(self) -> bool:
+        return (
+            self._session_practice_selected and self.active_balance_id == self.practice_balance_id
+        )
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    def select_practice_balance(self, *, operator_authorized: bool = False) -> Balance:
+        """Simulate manual operator-authorized practice session balance selection."""
+        if not operator_authorized:
+            raise PracticeAuthorizationError(
+                "Practice balance selection requires explicit operator authorization."
+            )
+        if self.simulate_timeout:
+            raise TimeoutError("Simulated balance selection timeout (5.0s)")
+        if self.simulate_transport_error:
+            raise ConnectionResetError("Simulated transport error during balance selection")
+        if self.malformed_response:
+            raise ValueError("Malformed balance selection response payload from broker")
+        if not self.should_succeed:
+            raise PracticeAuthorizationError(self.rejection_message)
+        if self.practice_balance_id == "200" or str(self.practice_balance_id).startswith("real"):
+            raise RealAccountExecutionBlockedError(
+                "CRITICAL SAFETY GUARD: Target balance is not PRACTICE. "
+                "Selecting REAL balance is permanently forbidden."
+            )
+
+        self.dispatched_frames.append({
+            "name": "sendMessage",
+            "msg": {
+                "name": "change_balance",
+                "version": "1.0",
+                "body": {"balance_id": int(self.practice_balance_id)},
+            },
+            "request_id": f"mock_chg_bal_{self.practice_balance_id}",
+        })
+        self.active_balance_id = self.practice_balance_id
+        self._session_practice_selected = True
+        return Balance(
+            id=self.practice_balance_id,
+            type=AccountType.PRACTICE,
+            amount=self.virtual_amount,
+            currency="USD",
+            is_active=True,
+            raw_is_active=True,
+        )
+
+    def close(self) -> None:
+        """Simulate connection close, invalidating session-scoped state."""
+        self._session_practice_selected = False
+        self.active_balance_id = None
+        self._session_id = "mock_closed_session"
 
     def send_order_frame(self, frame: dict[str, Any]) -> dict[str, Any]:
         """Simulate broker frame dispatch."""

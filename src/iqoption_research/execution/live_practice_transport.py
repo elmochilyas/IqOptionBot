@@ -47,6 +47,7 @@ from iqoption_research.execution.practice_transport import (
     PracticeSettlementResult,
 )
 from iqoption_research.execution.safety import (
+    AccountSelectionUnverifiedError,
     PracticeAccountSafetyValidator,
     PracticeSafetyVerdict,
 )
@@ -120,6 +121,7 @@ class IQOptionLivePracticeTransport:
         self._active_ticket_id: str | None = None
         self._session_id: str | None = None
         self._verified_at: float | None = None
+        self._session_practice_selected: bool = False
 
         self._request_counter = itertools.count(1)
         self._profile_event = asyncio.Event()
@@ -161,13 +163,33 @@ class IQOptionLivePracticeTransport:
     def active_ticket_id(self) -> str | None:
         return self._active_ticket_id
 
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
+
+    @property
+    def is_practice_verified(self) -> bool:
+        """True only if active session balance is verified as PRACTICE (type 4)."""
+        return (
+            self._session_practice_selected
+            and self._active_balance_id is not None
+            and any(
+                str(b.id) == str(self._active_balance_id)
+                and b.is_practice
+                and b.type == AccountType.PRACTICE
+                for b in self._balances
+            )
+        )
+
     # -----------------------------------------------------------------------
     # Asynchronous Core Lifecycle
     # -----------------------------------------------------------------------
 
-    async def async_connect(self) -> None:
+    async def async_connect(self, *, require_practice: bool = True) -> None:
         """Establish TLS WebSocket connection, authenticate, and verify Practice balance."""
         if self._ws is not None and not self._closed:
+            if require_practice and not self.is_practice_verified:
+                await self._verify_practice_account_guard()
             return
 
         # 1. Obtain SSID if credentials provided
@@ -195,6 +217,7 @@ class IQOptionLivePracticeTransport:
 
         self._session_id = f"sess_{int(time.time())}_{id(self._ws)}"
         self._closed = False
+        self._session_practice_selected = False
         self._receive_task = asyncio.create_task(self._receive_loop())
 
         # 3. Authenticate
@@ -222,8 +245,9 @@ class IQOptionLivePracticeTransport:
         else:
             self._verified_at = time.time()
 
-        # 5. Authoritative Safety Validation
-        await self._verify_practice_account_guard()
+        # 5. Authoritative Safety Validation (if require_practice is True)
+        if require_practice:
+            await self._verify_practice_account_guard()
 
     async def async_refresh_account_state(self) -> None:
         """Query get-profile and get-balances to refresh account state."""
@@ -262,6 +286,128 @@ class IQOptionLivePracticeTransport:
 
         self._verified_at = time.time()
 
+    async def async_select_practice_balance(self, *, operator_authorized: bool = False) -> Balance:
+        """Explicitly switch the session's active balance to the PRACTICE account.
+
+        Guards:
+        1. Requires explicit operator authorization flag (operator_authorized=True).
+        2. Strictly targets the Practice balance (type == AccountType.PRACTICE).
+        3. Rejects selection of REAL balance fail-closed.
+        4. Transmits verified wire protocol frame 'change_balance'.
+        5. Refreshes authoritative profile and balances.
+        6. Updates session state and executes pre-flight safety guard.
+        7. Invalidate on disconnect or reconnect.
+        """
+        if not operator_authorized:
+            raise PracticeAuthorizationError(
+                "Practice balance selection requires explicit operator authorization."
+            )
+
+        if self._closed or self._ws is None:
+            raise ConnectionError("Cannot select practice balance: transport is not connected.")
+
+        if not self._balances:
+            await self.async_refresh_account_state()
+
+        practice_bal = next(
+            (b for b in self._balances if b.type == AccountType.PRACTICE and b.is_practice),
+            None,
+        )
+        if practice_bal is None:
+            raise PracticeAuthorizationError(
+                "No PRACTICE balance found on this account. "
+                f"Available balances: {[b.type.name for b in self._balances]}"
+            )
+
+        # Safety check: target MUST be Practice
+        if practice_bal.type != AccountType.PRACTICE or not practice_bal.is_practice:
+            raise RealAccountExecutionBlockedError(
+                "CRITICAL SAFETY GUARD: Target balance is not PRACTICE. "
+                "Selecting REAL balance is permanently forbidden."
+            )
+
+        req_id = f"chg_bal_{next(self._request_counter)}"
+        change_bal_frame = {
+            "name": "sendMessage",
+            "msg": {
+                "name": "change_balance",
+                "version": "1.0",
+                "body": {"balance_id": int(practice_bal.id)},
+            },
+            "request_id": req_id,
+        }
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._pending_requests[req_id] = future
+
+        logger.info(
+            "Transmitting explicit change_balance frame for Practice balance %s (req_id=%s)",
+            practice_bal.id,
+            req_id,
+        )
+
+        try:
+            await self._ws.send(json.dumps(change_bal_frame))
+            try:
+                resp = await asyncio.wait_for(future, timeout=self.config.request_timeout)
+                if isinstance(resp, dict):
+                    msg_body = resp.get("msg")
+                    if resp.get("name") in {"error", "reject"} or (
+                        isinstance(msg_body, dict) and msg_body.get("is_successful") is False
+                    ):
+                        raise PracticeAuthorizationError(
+                            f"Broker rejected change_balance request: {resp}"
+                        )
+            except TimeoutError:
+                logger.info(
+                    "Explicit change_balance request_id not acknowledged directly; "
+                    "refreshing authoritative account state to verify mutation."
+                )
+        finally:
+            self._pending_requests.pop(req_id, None)
+
+        # Refresh authoritative state from broker
+        await self.async_refresh_account_state()
+
+        # Update active balance ID and session flag
+        self._active_balance_id = str(practice_bal.id)
+        self._session_practice_selected = True
+
+        # Run authoritative safety guard to verify Practice status
+        await self._verify_practice_account_guard()
+
+        return next(
+            (b for b in self._balances if str(b.id) == str(practice_bal.id)),
+            practice_bal,
+        )
+
+    def select_practice_balance(self, *, operator_authorized: bool = False) -> Balance:
+        """Synchronously execute explicit practice balance selection."""
+        if self._is_running_thread and self._loop is not None and self._thread is not None:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.async_select_practice_balance(operator_authorized=operator_authorized),
+                self._loop,
+            )
+            try:
+                return fut.result(timeout=self.config.request_timeout + 5.0)
+            except TimeoutError as exc:
+                raise TimeoutError(f"Synchronous practice selection timeout: {exc}") from exc
+
+        try:
+            running_loop = asyncio.get_running_loop()
+            if running_loop.is_running():
+                raise RuntimeError(
+                    "Cannot call synchronous select_practice_balance from an already running "
+                    "event loop. Use await transport.async_select_practice_balance() instead."
+                )
+        except RuntimeError:
+            pass
+
+        return asyncio.run(
+            self.async_select_practice_balance(operator_authorized=operator_authorized)
+        )
+
     async def _verify_practice_account_guard(self) -> None:
         """Run authoritative pre-flight safety check.
 
@@ -271,6 +417,14 @@ class IQOptionLivePracticeTransport:
             raise PracticeAuthorizationError("Incomplete account data received from broker.")
 
         now = time.time()
+        prof_bal_id = str(self._profile.raw.get("balance_id", "")).strip()
+        has_raw_active = any(b.raw_is_active is True for b in self._balances)
+        has_authoritative = bool(
+            self._session_practice_selected
+            or has_raw_active
+            or (prof_bal_id and any(str(b.id) == prof_bal_id for b in self._balances))
+        )
+
         check = self._safety_validator.evaluate_pre_flight(
             self._profile,
             self._balances,
@@ -279,7 +433,16 @@ class IQOptionLivePracticeTransport:
             current_ts=now,
             current_session_id=self._session_id,
             verified_session_id=self._session_id,
+            has_authoritative_active_indicator=has_authoritative,
         )
+
+        # Handle unverified account selection: STRICT FAIL-CLOSED
+        if check.verdict == PracticeSafetyVerdict.BLOCKED_ACCOUNT_SELECTION_UNVERIFIED:
+            raise AccountSelectionUnverifiedError(
+                f"ACCOUNT SELECTION UNVERIFIED: Active session balance "
+                f"{check.active_balance_id} is not authoritatively established as PRACTICE. "
+                "Automatic switching is prohibited. Live execution blocked fail-closed."
+            )
 
         # Handle Real account detection: STRICT FAIL-CLOSED (Zero automatic switching)
         if check.verdict == PracticeSafetyVerdict.BLOCKED_ACTIVE_REAL:
@@ -288,7 +451,8 @@ class IQOptionLivePracticeTransport:
                 f"(id={check.active_balance_id}). "
                 "Automatic balance switching is strictly prohibited. "
                 "The operator must manually select the PRACTICE account in the "
-                "official IQ Option trading interface before running any execution tests."
+                "official IQ Option trading interface or invoke practice-select "
+                "before running any execution tests."
             )
 
         if not check.is_safe_to_execute:
@@ -297,6 +461,7 @@ class IQOptionLivePracticeTransport:
             )
 
         self._active_balance_id = check.active_balance_id
+        self._session_practice_selected = True
         logger.info(
             "Authoritative Practice account verified: active_balance_id=%s", self._active_balance_id
         )
@@ -315,6 +480,13 @@ class IQOptionLivePracticeTransport:
             raise RuntimeError(
                 f"Single test order invariant violated: an unresolved Practice order "
                 f"({self._active_ticket_id}) is currently pending."
+            )
+
+        # Session Practice Selection guard: session must be explicitly verified
+        if not self._session_practice_selected:
+            raise AccountSelectionUnverifiedError(
+                "Cannot send order frame: active session has not been explicitly authorized "
+                "and selected as PRACTICE via select_practice_balance()."
             )
 
         # Active balance guard: ensure we are strictly on a verified Practice balance
@@ -438,6 +610,11 @@ class IQOptionLivePracticeTransport:
     async def async_close(self) -> None:
         """Cleanly close WebSocket connection and cancel listener tasks."""
         self._closed = True
+        self._session_practice_selected = False
+        self._active_balance_id = None
+        self._verified_at = None
+        self._session_id = None
+
         if self._receive_task is not None and not self._receive_task.done():
             self._receive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -482,10 +659,21 @@ class IQOptionLivePracticeTransport:
                     logger.warning("Error processing practice transport frame: %s", exc)
         except ConnectionClosed as exc:
             logger.info("Practice WebSocket closed (code=%s)", exc.code)
+            self._session_practice_selected = False
+            self._active_balance_id = None
+            self._session_id = None
+            self._verified_at = None
         except asyncio.CancelledError:
-            pass
+            self._session_practice_selected = False
+            self._active_balance_id = None
+            self._session_id = None
+            self._verified_at = None
         except Exception as exc:  # noqa: BLE001
             logger.error("Practice receive loop encountered fatal error: %s", exc)
+            self._session_practice_selected = False
+            self._active_balance_id = None
+            self._session_id = None
+            self._verified_at = None
 
     def _dispatch_message(self, message: dict[str, Any]) -> None:
         """Route incoming frames to authentication, account state, acks, or settlements."""
@@ -605,7 +793,7 @@ class IQOptionLivePracticeTransport:
     # Synchronous Transport Bridge (for BaseExecutionAdapter compatibility)
     # -----------------------------------------------------------------------
 
-    def start(self) -> None:
+    def start(self, *, require_practice: bool = True) -> None:
         """Start background loop and worker thread for synchronous usage."""
         if self._thread is not None and self._thread.is_alive():
             return
@@ -622,7 +810,7 @@ class IQOptionLivePracticeTransport:
                 return
             asyncio.set_event_loop(self._loop)
             try:
-                self._loop.run_until_complete(self.async_connect())
+                self._loop.run_until_complete(self.async_connect(require_practice=require_practice))
             except Exception as exc:  # noqa: BLE001
                 conn_error.append(exc)
             finally:
@@ -695,6 +883,11 @@ class IQOptionLivePracticeTransport:
 
     def close(self) -> None:
         """Synchronously shutdown the transport."""
+        self._session_practice_selected = False
+        self._active_balance_id = None
+        self._verified_at = None
+        self._session_id = None
+
         if self._is_running_thread and self._loop is not None and self._thread is not None:
             if not self._loop.is_closed():
                 fut = asyncio.run_coroutine_threadsafe(self.async_close(), self._loop)

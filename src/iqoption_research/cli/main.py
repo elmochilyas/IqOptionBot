@@ -22,6 +22,7 @@ from iqoption_research.cli.commands.execution_cmd import (
 )
 from iqoption_research.cli.commands.ml_cmd import ml_app
 from iqoption_research.cli.commands.paper_cmd import paper_app
+from iqoption_research.cli.commands.practice_watch import practice_watch_command
 from iqoption_research.cli.commands.probe import probe_command
 from iqoption_research.cli.commands.research_cmd import research_app
 from iqoption_research.cli.commands.security_check_cmd import security_check_command
@@ -61,6 +62,9 @@ app.command(
 )(practice_observe_command)
 app.command("practice-history", help="Read-only classic option history reconciliation.")(
     practice_history_command
+)
+app.command("practice-watch", help="Watch Practice activity and reconcile history read-only.")(
+    practice_watch_command
 )
 app.add_typer(research_app, name="research")
 app.add_typer(ml_app, name="ml")

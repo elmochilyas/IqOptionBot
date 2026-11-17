@@ -27,6 +27,7 @@ import json
 import logging
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -253,6 +254,7 @@ class PassivePracticeObserver:
         wss_url: str = DEFAULT_WSS_URL,
         balance_diagnostics: bool = False,
         history_only: bool = False,
+        event_handler: Callable[[str, dict[str, Any]], str | None] | None = None,
     ) -> None:
         self._credentials = credentials
         self._ssid = ssid
@@ -261,6 +263,8 @@ class PassivePracticeObserver:
         self._profile: Profile | None = None
         self._profile_event = asyncio.Event()
         self._history_only = history_only
+        self._event_handler = event_handler
+        self._disconnected = asyncio.Event()
         self._profile_request_id: str | None = None
         self._profile_correlated_outcome: str | None = None
         self._profile_uncorrelated_outcome: str | None = None
@@ -316,6 +320,19 @@ class PassivePracticeObserver:
     @property
     def is_connected(self) -> bool:
         return self._ws is not None and not self._closed and self._connection_error is None
+
+    @property
+    def practice_wallet_verified(self) -> bool:
+        return (
+            self.is_connected
+            and self._authenticated
+            and self._practice_identity_established
+            and self._practice_balance is not None
+            and self._practice_balance.is_practice
+        )
+
+    async def wait_disconnected(self) -> None:
+        await self._disconnected.wait()
 
     @property
     def profile(self) -> Profile | None:
@@ -447,6 +464,7 @@ class PassivePracticeObserver:
                 logger=wire_logger,
                 ssl=ssl_ctx,
                 open_timeout=15.0,
+                close_timeout=2.0,
                 ping_interval=20,
                 ping_timeout=10,
             )
@@ -499,7 +517,7 @@ class PassivePracticeObserver:
             "Observer connected; account snapshots received and Practice wallet identified."
         )
 
-    async def async_subscribe_portfolio(self) -> SubscriptionStatus:
+    async def async_subscribe_portfolio(self, *, ack_timeout: float = 3.0) -> SubscriptionStatus:
         """Subscribe to read-only portfolio updates for the Practice balance.
 
         Distinguishes:
@@ -508,17 +526,47 @@ class PassivePracticeObserver:
         - STATUS_UNKNOWN: Subscription frame sent, but gateway does not emit explicit ACK
         - EVENT_RECEIVED: Updated dynamically when a stream event arrives
         """
-        if not self._ws or self._closed:
+        ws = self._ws
+        practice = self._practice_balance
+        if not ws or self._closed:
             raise ConnectionError("Observer not connected.")
-        if not self._practice_balance:
+        if not practice or (self._event_handler is not None and not self.practice_wallet_verified):
             raise ConnectionError("No Practice balance discovered.")
 
         # Community client uses one subscription per product. These schemas are
         # unverified against this gateway; a missing ACK is never called acceptance.
-        loop = asyncio.get_running_loop()
         futures: list[asyncio.Future[dict[str, Any]]] = []
         self._subscriptions = []
         self._portfolio_sub_status = SubscriptionStatus.REQUEST_SENT
+        try:
+            await self._send_portfolio_subscriptions(ws, practice.id, futures)
+            await asyncio.wait(futures, timeout=ack_timeout)
+        finally:
+            for entry, future in zip(self._subscriptions, futures, strict=True):
+                self._pending_requests.pop(entry["request_id"], None)
+                if not future.done():
+                    future.cancel()
+        statuses = {entry["status"] for entry in self._subscriptions}
+        if (
+            self._observed_position is not None
+            and self._observed_position.raw_frame_name == "portfolio.position-changed"
+        ):
+            self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
+        elif "REJECTED" in statuses:
+            self._portfolio_sub_status = SubscriptionStatus.REJECTED
+        elif statuses == {"ACCEPTED"}:
+            self._portfolio_sub_status = SubscriptionStatus.ACCEPTED
+        else:
+            self._portfolio_sub_status = SubscriptionStatus.STATUS_UNKNOWN
+        return self._portfolio_sub_status
+
+    async def _send_portfolio_subscriptions(
+        self,
+        ws: ClientConnection,
+        practice_id: str,
+        futures: list[asyncio.Future[dict[str, Any]]],
+    ) -> None:
+        loop = asyncio.get_running_loop()
         for product in ("binary-option", "turbo-option"):
             for topic, version in (
                 ("portfolio.position-changed", "2.0"),
@@ -528,7 +576,7 @@ class PassivePracticeObserver:
                 self._request_counter += 1
                 filters: dict[str, Any] = {"instrument_type": product}
                 if topic == "portfolio.position-changed":
-                    filters["user_balance_id"] = int(self._practice_balance.id)
+                    filters["user_balance_id"] = int(practice_id)
                 frame = {
                     "name": "subscribeMessage",
                     "msg": {
@@ -549,34 +597,29 @@ class PassivePracticeObserver:
                     "response_correlated": False,
                     "status": "STATUS_UNKNOWN",
                 })
-                await self._ws.send(json.dumps(frame))
-        done, _ = await asyncio.wait(futures, timeout=3.0)
-        for entry, future in zip(self._subscriptions, futures, strict=True):
-            self._pending_requests.pop(entry["request_id"], None)
-            if future in done and not future.cancelled():
-                resp = future.result()
-                entry["response_correlated"] = True
-                msg = resp.get("msg")
-                status = resp.get("status")
-                if msg is False or status in ("error", "rejected"):
-                    entry["status"] = "REJECTED"
-                elif msg is True or status == 2000:
-                    entry["status"] = "ACCEPTED"
-            if not future.done():
-                future.cancel()
-        statuses = {entry["status"] for entry in self._subscriptions}
-        if (
-            self._observed_position is not None
-            and self._observed_position.raw_frame_name == "portfolio.position-changed"
+                await ws.send(json.dumps(frame))
+
+    def _subscription_response(self, message: dict[str, Any], req_id: str) -> bool:
+        entry = next((item for item in self._subscriptions if item["request_id"] == req_id), None)
+        if entry is None:
+            return True
+        if message.get("name") not in {"result", "response", "subscribed", "error"}:
+            return False
+        entry["response_correlated"] = True
+        body = message.get("msg")
+        accepted = body is True or (isinstance(body, dict) and body.get("success") is True)
+        if self._explicit_response_rejection(message) or (
+            isinstance(body, dict) and body.get("success") is False
         ):
-            self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
-        elif "REJECTED" in statuses:
-            self._portfolio_sub_status = SubscriptionStatus.REJECTED
-        elif statuses == {"ACCEPTED"}:
-            self._portfolio_sub_status = SubscriptionStatus.ACCEPTED
+            status = "REJECTED"
+        elif accepted or message.get("status") == 2000:
+            status = "ACCEPTED"
         else:
-            self._portfolio_sub_status = SubscriptionStatus.STATUS_UNKNOWN
-        return self._portfolio_sub_status
+            return True
+        if entry["status"] not in {"STATUS_UNKNOWN", status}:
+            entry["ack_conflict"] = True
+        entry["status"] = "STATUS_UNKNOWN" if entry.get("ack_conflict") else status
+        return True
 
     def diagnostics(self) -> dict[str, Any]:
         """Return bounded metadata, never broker payloads or arbitrary event names."""
@@ -1235,6 +1278,7 @@ class PassivePracticeObserver:
             self._connection_error = "CONNECTION_ERROR"
             logger.warning("Observer listener terminated unexpectedly")
         finally:
+            self._disconnected.set()
             if not self._closed:
                 self._connection_error = self._connection_error or "CONNECTION_CLOSED"
                 self._profile_event.set()
@@ -1290,7 +1334,11 @@ class PassivePracticeObserver:
                 if self._active_balance_attempt is not None:
                     self._active_balance_attempt["diagnostic_capture_errors"] += 1
         # Match pending request
-        if req_id and req_id in self._pending_requests:
+        if (
+            req_id
+            and self._subscription_response(message, req_id)
+            and req_id in self._pending_requests
+        ):
             fut = self._pending_requests.pop(req_id)
             if not fut.done():
                 fut.set_result(message)
@@ -1308,6 +1356,13 @@ class PassivePracticeObserver:
         # Uncorrelated balance snapshots are not proof of a fresh wallet selection.
         # A correlated snapshot is applied by async_refresh_account_state after validation.
 
+        if self._event_handler is not None:
+            product = self._event_handler(name, message) if self.practice_wallet_verified else None
+            if product and not req_id:
+                for entry in self._subscriptions:
+                    if entry["topic"] == name and entry["instrument_type"] == product:
+                        entry["event_received"] = True
+            return
         if name == "balance-changed":
             self._handle_balance_changed_frame(message)
         if self._history_only:
@@ -1350,11 +1405,7 @@ class PassivePracticeObserver:
         if self._observed_position is not None:
             if self._observed_position.ticket_id == ticket_id:
                 return
-            logger.info(
-                "Secondary position opened (%s) while already observing (%s); ignoring.",
-                ticket_id,
-                self._observed_position.ticket_id,
-            )
+            logger.info("Secondary position opened while already observing; ignoring.")
             return
 
         # Extract fields without synthetic defaults
@@ -1418,14 +1469,7 @@ class PassivePracticeObserver:
                 )
             if not (matches_symbol or matches_active):
                 self._filter_rejected += 1
-                logger.info(
-                    "Observed position %s (symbol=%s, active_id=%s) "
-                    "does not match filter %s; ignoring.",
-                    ticket_id,
-                    symbol,
-                    active_id,
-                    self._asset_filter,
-                )
+                logger.info("Observed position does not match filter; ignoring.")
                 return
 
         sanitized = {
@@ -1455,11 +1499,8 @@ class PassivePracticeObserver:
         )
         self._position_event.set()
         logger.info(
-            "OBSERVED_POSITION_OPENED: ticket=%s balance_id=%s symbol=%s stake=%s direction=%s",
-            ticket_id,
-            user_balance_id,
+            "OBSERVED_POSITION_OPENED: symbol=%s direction=%s",
             symbol or "unknown",
-            f"{stake:.2f}" if stake is not None else "unknown",
             direction or "unknown",
         )
 
@@ -1493,11 +1534,7 @@ class PassivePracticeObserver:
             if self._observed_position is not None:
                 if self._observed_position.ticket_id == ticket_id:
                     return
-                logger.info(
-                    "Secondary position opened (%s) while already observing (%s); ignoring.",
-                    ticket_id,
-                    self._observed_position.ticket_id,
-                )
+                logger.info("Secondary position opened while already observing; ignoring.")
                 return
 
             raw_event = body.get("raw_event")
@@ -1572,14 +1609,7 @@ class PassivePracticeObserver:
                     )
                 if not (matches_symbol or matches_active):
                     self._filter_rejected += 1
-                    logger.info(
-                        "Observed portfolio position %s (symbol=%s, active_id=%s) "
-                        "does not match filter %s; ignoring.",
-                        ticket_id,
-                        symbol,
-                        active_id,
-                        self._asset_filter,
-                    )
+                    logger.info("Observed portfolio position does not match filter; ignoring.")
                     return
 
             sanitized = {
@@ -1609,30 +1639,16 @@ class PassivePracticeObserver:
             )
             self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
             self._position_event.set()
-            logger.info(
-                "OBSERVED_PORTFOLIO_OPENED: ticket=%s balance_id=%s symbol=%s stake=%s",
-                ticket_id,
-                user_balance_id,
-                symbol or "unknown",
-                f"{stake:.2f}" if stake is not None else "unknown",
-            )
+            logger.info("OBSERVED_PORTFOLIO_OPENED: symbol=%s", symbol or "unknown")
 
         elif status in {"closed", "settled"}:
             # Only correlate settlement with exact ticket
             if self._observed_position is None:
-                logger.debug(
-                    "Received portfolio closed event for ticket %s before open event; ignoring.",
-                    ticket_id,
-                )
+                logger.debug("Received portfolio closed event before open event; ignoring.")
                 return
 
             if not ticket_id or ticket_id != self._observed_position.ticket_id:
-                logger.debug(
-                    "Ignoring portfolio closed event for ticket '%s'; "
-                    "does not match observed ticket '%s'.",
-                    ticket_id,
-                    self._observed_position.ticket_id,
-                )
+                logger.debug("Ignoring portfolio closed event that does not match observed ticket.")
                 return
 
             raw_profit = body.get("win_amount") or body.get("profit") or body.get("pnl")
@@ -1670,12 +1686,7 @@ class PassivePracticeObserver:
             )
             self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
             self._settlement_event.set()
-            logger.info(
-                "OBSERVED_PORTFOLIO_SETTLEMENT: ticket=%s status=%s profit=%s",
-                ticket_id,
-                st_str or "unknown",
-                f"{profit:.2f}" if profit is not None else "unknown",
-            )
+            logger.info("OBSERVED_PORTFOLIO_SETTLEMENT: status=%s", st_str or "unknown")
 
     def _handle_option_closed_frame(self, message: dict[str, Any]) -> None:
         """Parse option-closed settlement frame strictly matching observed ticket."""
@@ -1685,15 +1696,11 @@ class PassivePracticeObserver:
 
         # Only correlate settlement with exact ticket
         if self._observed_position is None:
-            logger.debug("Received option-closed for %s before position opened; ignoring.", opt_id)
+            logger.debug("Received option-closed before position opened; ignoring.")
             return
 
         if not opt_id or opt_id != self._observed_position.ticket_id:
-            logger.debug(
-                "Ignoring option-closed for ticket '%s'; does not match observed ticket '%s'.",
-                opt_id,
-                self._observed_position.ticket_id,
-            )
+            logger.debug("Ignoring option-closed that does not match observed ticket.")
             return
 
         raw_profit = body.get("profit") or body.get("win_amount")
@@ -1725,12 +1732,7 @@ class PassivePracticeObserver:
             sanitized_evidence=sanitized_settle,
         )
         self._settlement_event.set()
-        logger.info(
-            "OBSERVED_SETTLEMENT: ticket=%s status=%s profit=%s",
-            opt_id,
-            status or "unknown",
-            f"{profit:.2f}" if profit is not None else "unknown",
-        )
+        logger.info("OBSERVED_SETTLEMENT: status=%s", status or "unknown")
 
     def _handle_balance_changed_frame(self, message: dict[str, Any]) -> None:
         """Parse balance-changed event, update balances, and record mutation without assumptions."""
@@ -1877,11 +1879,7 @@ class PassivePracticeObserver:
         try:
             await asyncio.wait_for(self._settlement_event.wait(), timeout=settle_timeout)
         except TimeoutError:
-            logger.warning(
-                "Settlement notification for ticket %s timed out after %.1fs",
-                pos.ticket_id,
-                settle_timeout,
-            )
+            logger.warning("Settlement notification timed out after %.1fs", settle_timeout)
 
         # 3. Refresh balances post-settlement (Authoritative fresh broker response required)
         fresh_balances_retrieved = await self.async_refresh_account_state()
@@ -1927,13 +1925,12 @@ class PassivePracticeObserver:
         # Determine correlation verdict
         if real_wallet_status == "MUTATED":
             verdict = (
-                "CRITICAL_SAFETY_BREACH: Real account balance mutated during manual "
-                f"Practice trade! (Initial: ${init_real:.2f}, Final: ${final_real:.2f})"
+                "CRITICAL_SAFETY_BREACH: Real account balance mutated during manual Practice trade."
             )
         elif not is_prac_balance:
             verdict = (
-                f"ROUTING_MISMATCH_ALERT: Observed user_balance_id ({pos.user_balance_id}) "
-                f"did not match Practice wallet ({prac_id})."
+                "ROUTING_MISMATCH_ALERT: Observed position wallet did not match the "
+                "Practice wallet."
             )
         elif real_wallet_status == "UNVERIFIED":
             verdict = (
@@ -1943,7 +1940,7 @@ class PassivePracticeObserver:
         elif settle is None or settle.ticket_id != pos.ticket_id:
             verdict = (
                 "UNCORRELATED_SETTLEMENT_MISSING: Settlement event was missing or did not "
-                f"match position ticket {pos.ticket_id}."
+                "match the observed position."
             )
         else:
             verdict = (
@@ -1984,6 +1981,7 @@ class PassivePracticeObserver:
     async def async_close(self) -> None:
         """Cleanly close observer WebSocket connection."""
         self._closed = True
+        self._disconnected.set()
         if self._listener_task and not self._listener_task.done():
             self._listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

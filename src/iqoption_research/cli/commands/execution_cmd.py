@@ -10,10 +10,12 @@ Provides commands for:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -46,6 +48,11 @@ from iqoption_research.execution.modes import (
     PracticeAuthorizationError,
     RealAccountExecutionBlockedError,
     UnsupportedProductOperationError,
+)
+from iqoption_research.execution.practice_observer import (
+    MockPassivePracticeObserver,
+    ObservedPracticeTradeRecord,
+    PassivePracticeObserver,
 )
 from iqoption_research.execution.practice_transport import (
     MAX_PRACTICE_TEST_STAKE,
@@ -1952,3 +1959,316 @@ def practice_test_command(
                 )
     finally:
         transport.close()
+
+
+@execution_app.command(
+    "practice-observe",
+    help="Passively observe manual Practice transactions in official IQ Option UI (READ-ONLY).",
+)
+def practice_observe_command(
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help="Connect to live IQ Option broker in passive READ-ONLY observation mode.",
+    ),
+    offline_mock: bool = typer.Option(
+        False,
+        "--offline-mock",
+        help="Run against deterministic offline mock manual trade observation.",
+    ),
+    timeout: float = typer.Option(
+        180.0,
+        "--timeout",
+        "-t",
+        help="Maximum observation window in seconds.",
+    ),
+    asset: str | None = typer.Option(
+        None,
+        "--asset",
+        "-a",
+        help="Optional asset symbol filter (e.g. EURUSD).",
+    ),
+    record: str | None = typer.Option(
+        None,
+        "--record",
+        "-r",
+        help="Optional file path to persist observed trade record as JSON.",
+    ),
+    mock_anomaly: bool = typer.Option(
+        False,
+        "--mock-anomaly",
+        help="[Mock only] Simulate an anomalous manual trade on the REAL account to verify alert.",
+    ),
+    mock_timeout: bool = typer.Option(
+        False,
+        "--mock-timeout",
+        help="[Mock only] Simulate timeout without any observed trade.",
+    ),
+) -> None:
+    """Passively observe manual Practice transactions executed in the official IQ Option UI.
+
+    This command runs in strictly READ-ONLY mode. It NEVER places trades or modifies accounts.
+    It listens for broker push events (option-opened, portfolio updates, option-closed)
+    to confirm whether user_balance_id routes to Practice and leaves REAL untouched.
+    """
+    if live and offline_mock:
+        console.print("[bold red]Cannot specify both --live and --offline-mock.[/bold red]")
+        raise typer.BadParameter("Choose either --live or --offline-mock.")
+
+    if not live and not offline_mock:
+        offline_mock = True
+
+    banner = (
+        "[bold cyan]IQ Option Passive Practice Transaction Observer[/bold cyan]\n\n"
+        "[bold green]STRICT READ-ONLY GUARANTEE:[/bold green]\n"
+        "• This observer connects exclusively to listen to broker push events.\n"
+        "• Zero trading or order submission capabilities exist in this component.\n"
+        "• The Real account is continuously monitored: any balance mutation flags a breach.\n"
+        "• Objective: Correlate manual Practice trades executed in the official IQ Option UI."
+    )
+    console.print(Panel.fit(banner, border_style="cyan"))
+
+    trade_record: ObservedPracticeTradeRecord | None = None
+
+    if offline_mock:
+        console.print("[bold cyan]Running deterministic offline mock observation...[/bold cyan]")
+        mock_obs = MockPassivePracticeObserver(
+            ticket_id="mock_manual_ticket_12345",
+            simulate_real_trade_anomaly=mock_anomaly,
+            simulate_timeout=mock_timeout,
+        )
+
+        base_table = Table(title="[bold cyan]Baseline Account Balances (Observer)[/bold cyan]")
+        base_table.add_column("Account Type", style="cyan")
+        base_table.add_column("Balance ID", style="bold white")
+        base_table.add_column("Current Amount", style="bold green")
+        base_table.add_column("Observer Watchdog", style="bold yellow")
+
+        base_table.add_row(
+            "PRACTICE",
+            str(mock_obs.practice_balance.id),
+            f"${mock_obs.practice_balance.amount:,.2f} USD",
+            "Target for Manual Trade",
+        )
+        base_table.add_row(
+            "REAL",
+            str(mock_obs.real_balance.id),
+            f"${mock_obs.real_balance.amount:,.2f} USD",
+            "[bold red]PROTECTED (MUST REMAIN UNTOUCHED)[/bold red]",
+        )
+        console.print(base_table)
+
+        if not mock_timeout:
+            console.print(
+                "[dim]Simulating operator manual Practice trade in official UI "
+                "(EURUSD, $1.00 CALL)...[/dim]"
+            )
+        trade_record = mock_obs.observe(timeout_seconds=timeout, asset_filter=asset)
+
+    else:
+        # Live observation mode
+        console.print(
+            "[bold yellow]Connecting to live IQ Option broker in READ-ONLY mode...[/bold yellow]"
+        )
+        email = os.environ.get("IQOPTION_EMAIL")
+        password = os.environ.get("IQOPTION_PASSWORD")
+        if not email or not password:
+            console.print(
+                "[dim]Credentials not found in environment "
+                "(IQOPTION_EMAIL / IQOPTION_PASSWORD).[/dim]"
+            )
+            email = typer.prompt("IQ Option Account Email")
+            password = typer.prompt("IQ Option Password", hide_input=True)
+
+        credentials = Credentials(email=email, password=password)
+        observer = PassivePracticeObserver(credentials=credentials)
+
+        async def _run_live() -> ObservedPracticeTradeRecord | None:
+            try:
+                with console.status(
+                    "[bold green]Authenticating and establishing WebSocket stream..."
+                ):
+                    await observer.async_connect()
+            except Exception as exc:
+                console.print(f"[bold red]Failed to connect passive observer: {exc}[/bold red]")
+                raise typer.Exit(code=1) from exc
+
+            # Print Baseline
+            base_table = Table(
+                title="[bold cyan]Live Account Balances (Observer Baseline)[/bold cyan]"
+            )
+            base_table.add_column("Account Type", style="cyan")
+            base_table.add_column("Balance ID", style="bold white")
+            base_table.add_column("Current Amount", style="bold green")
+            base_table.add_column("Observer Watchdog", style="bold yellow")
+
+            if observer.practice_balance:
+                base_table.add_row(
+                    "PRACTICE",
+                    str(observer.practice_balance.id),
+                    f"${observer.practice_balance.amount:,.2f} "
+                    f"{observer.practice_balance.currency}",
+                    "Target for Manual Trade",
+                )
+            if observer.real_balance:
+                base_table.add_row(
+                    "REAL",
+                    str(observer.real_balance.id),
+                    f"${observer.real_balance.amount:,.2f} {observer.real_balance.currency}",
+                    "[bold red]PROTECTED (MUST REMAIN UNTOUCHED)[/bold red]",
+                )
+            console.print(base_table)
+
+            prompt_msg = (
+                "[bold yellow]READY FOR MANUAL OPERATOR PRACTICE TRADE[/bold yellow]\n\n"
+                "1. Switch to your official IQ Option Web or Desktop application.\n"
+                "2. Ensure the top-right account dropdown displays "
+                "[bold green]PRACTICE ACCOUNT[/bold green].\n"
+                "3. Place [bold white]ONE manual Practice trade[/bold white] "
+                "(e.g. EURUSD, $1.00 stake).\n"
+                f"4. Observer listening for broker push events (up to {int(timeout)}s).\n\n"
+                "[dim]Zero orders will be sent by bot. Press Ctrl+C at any time to cancel.[/dim]"
+            )
+            console.print(Panel.fit(prompt_msg, border_style="yellow"))
+
+            try:
+                with console.status(
+                    f"[bold cyan]Passively listening for events (timeout: {int(timeout)}s)..."
+                ):
+                    return await observer.async_observe_single_trade(
+                        timeout_seconds=timeout,
+                        asset_filter=asset,
+                    )
+            finally:
+                await observer.async_close()
+
+        try:
+            trade_record = asyncio.run(_run_live())
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Observation cancelled by operator.[/yellow]")
+            raise typer.Exit(code=0) from None
+
+    # Handle result
+    if trade_record is None:
+        console.print(
+            Panel.fit(
+                "[bold yellow]Observation Window Closed (No Trade Detected)[/bold yellow]\n\n"
+                f"• Timeout reached after {int(timeout)} seconds.\n"
+                "• No manual trades detected matching the criteria.\n"
+                "• Invariant Verified: Zero orders were submitted by the bot.",
+                border_style="yellow",
+            )
+        )
+        return
+
+    # Render Result Table
+    res_table = Table(
+        title="[bold green]Observed Practice Transaction Correlation Report[/bold green]"
+    )
+    res_table.add_column("Audit Dimension", style="cyan")
+    res_table.add_column("Observed Value", style="bold white")
+    res_table.add_column("Safety / Routing Verdict", style="bold")
+
+    res_table.add_row(
+        "Broker Ticket ID",
+        trade_record.ticket_id,
+        "[bold green]RECORDED[/bold green]",
+    )
+    res_table.add_row(
+        "Asset / Symbol",
+        f"{trade_record.symbol} (active_id={trade_record.active_id})",
+        "[bold green]IDENTIFIED[/bold green]",
+    )
+    res_table.add_row(
+        "Direction & Stake",
+        f"{trade_record.direction.upper()} | ${trade_record.stake:.2f}",
+        "[bold green]CONFIRMED[/bold green]",
+    )
+    res_table.add_row(
+        "Wire user_balance_id",
+        str(trade_record.user_balance_id),
+        (
+            "[bold green]MATCHES PRACTICE WALLET[/bold green]"
+            if trade_record.is_practice_balance
+            else "[bold red]ANOMALY: MATCHES REAL WALLET[/bold red]"
+        ),
+    )
+    res_table.add_row(
+        "Target Practice Wallet ID",
+        trade_record.practice_balance_id,
+        "[bold green]VERIFIED PRACTICE[/bold green]",
+    )
+
+    real_delta_str = (
+        f"Initial: ${trade_record.initial_real_amount:.2f} -> "
+        f"Final: ${trade_record.final_real_amount or trade_record.initial_real_amount:.2f}"
+    )
+    res_table.add_row(
+        "Real Wallet Untouched",
+        real_delta_str,
+        (
+            "[bold green]VERIFIED UNTOUCHED[/bold green]"
+            if trade_record.real_wallet_untouched
+            else "[bold red]CRITICAL SAFETY BREACH[/bold red]"
+        ),
+    )
+
+    post_open_val = trade_record.post_open_practice_amount or trade_record.initial_practice_amount
+    final_prac_val = trade_record.final_practice_amount or trade_record.initial_practice_amount
+    prac_lifecycle_str = (
+        f"Before: ${trade_record.initial_practice_amount:.2f} -> "
+        f"Post-Open: ${post_open_val:.2f} -> "
+        f"Final: ${final_prac_val:.2f}"
+    )
+    prac_delta = final_prac_val - trade_record.initial_practice_amount
+    res_table.add_row(
+        "Practice Balance Lifecycle",
+        prac_lifecycle_str,
+        f"[bold cyan]Delta: ${prac_delta:+.2f}[/bold cyan]",
+    )
+
+    settle_str = (
+        f"Status: {trade_record.settlement_status or 'N/A'} | "
+        f"Profit: ${trade_record.settlement_profit or 0.0:+.2f}"
+    )
+    res_table.add_row(
+        "Settlement Status & Profit",
+        settle_str,
+        (
+            "[bold green]SETTLED[/bold green]"
+            if trade_record.settlement_status
+            else "[yellow]PENDING[/yellow]"
+        ),
+    )
+    res_table.add_row(
+        "Correlation Verdict",
+        trade_record.correlation_verdict,
+        (
+            "[bold green]PASS (SAFE)[/bold green]"
+            if trade_record.is_practice_balance and trade_record.real_wallet_untouched
+            else "[bold red]FAIL (SAFETY ALERT)[/bold red]"
+        ),
+    )
+    console.print(res_table)
+
+    # Save to record JSON if requested
+    if record:
+        rec_path = Path(record)
+        rec_path.parent.mkdir(parents=True, exist_ok=True)
+        rec_path.write_text(json.dumps(trade_record.to_dict(), indent=2), encoding="utf-8")
+        console.print(f"[bold green]Observed trade record saved to {rec_path}[/bold green]")
+
+    if not trade_record.is_practice_balance or not trade_record.real_wallet_untouched:
+        console.print(
+            Panel.fit(
+                "[bold red]CRITICAL SAFETY VERDICT[/bold red]\n"
+                "The observed manual transaction affected the REAL account or did not route "
+                "to the expected Practice balance.\n"
+                "Real account protection has flagged a safety breach.",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+practice_observe = practice_observe_command

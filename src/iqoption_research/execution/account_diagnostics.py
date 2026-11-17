@@ -78,6 +78,81 @@ class AccountStateClassification(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class AccountRoutingLayers:
+    """Explicit multi-layer separation of account balance routing identities.
+
+    Separates:
+    1. Wallet identity: Discovered balance entities (e.g. Practice type 4 vs Real type 1).
+    2. Default account: Server profile registered default wallet (profile.balance_id).
+    3. Official UI selection: Balance selected in the web/desktop trading interface.
+    4. Requested order-routing balance: user_balance_id specified in order request payload.
+    5. Broker-confirmed position balance: user_balance_id attached to broker position/trade event.
+    """
+
+    wallet_identities: tuple[Balance, ...]
+    default_account_id: str | None
+    default_account_type: AccountType | None
+    official_ui_selected_id: str | None = None
+    requested_order_routing_id: str | None = None
+    broker_confirmed_position_id: str | None = None
+    broker_confirmed_position_type: AccountType | None = None
+    position_ticket_id: str | None = None
+
+    @property
+    def practice_wallet(self) -> Balance | None:
+        for b in self.wallet_identities:
+            if b.type == AccountType.PRACTICE and b.is_practice:
+                return b
+        return None
+
+    @property
+    def real_wallet(self) -> Balance | None:
+        for b in self.wallet_identities:
+            if b.type == AccountType.REAL or not b.is_practice:
+                return b
+        return None
+
+    @property
+    def is_confirmed_practice_position(self) -> bool:
+        if not self.broker_confirmed_position_id:
+            return False
+        prac = self.practice_wallet
+        if prac is None:
+            return False
+        return (
+            str(self.broker_confirmed_position_id).strip() == str(prac.id).strip()
+            and self.broker_confirmed_position_type == AccountType.PRACTICE
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "wallet_identities": [
+                {
+                    "id": b.id,
+                    "type": b.type.name,
+                    "amount": b.amount,
+                    "currency": b.currency,
+                }
+                for b in self.wallet_identities
+            ],
+            "default_account_id": self.default_account_id,
+            "default_account_type": (
+                self.default_account_type.name if self.default_account_type else None
+            ),
+            "official_ui_selected_id": self.official_ui_selected_id,
+            "requested_order_routing_id": self.requested_order_routing_id,
+            "broker_confirmed_position_id": self.broker_confirmed_position_id,
+            "broker_confirmed_position_type": (
+                self.broker_confirmed_position_type.name
+                if self.broker_confirmed_position_type
+                else None
+            ),
+            "position_ticket_id": self.position_ticket_id,
+            "is_confirmed_practice_position": self.is_confirmed_practice_position,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RoutingAuditResult:
     """Comprehensive read-only diagnostic of broker routing evidence."""
 
@@ -115,6 +190,15 @@ class RoutingAuditResult:
             if b.type == AccountType.REAL or not b.is_practice:
                 return str(b.id)
         return None
+
+    @property
+    def routing_layers(self) -> AccountRoutingLayers:
+        """Structured 5-layer separation of account routing identities."""
+        return AccountRoutingLayers(
+            wallet_identities=self.available_balances,
+            default_account_id=self.profile_balance_id,
+            default_account_type=self.profile_balance_type,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {

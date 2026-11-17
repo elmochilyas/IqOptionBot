@@ -3,6 +3,7 @@
 from iqoption_research.execution.account_diagnostics import (
     AccountDiagnosticReport,
     AccountReadinessResult,
+    AccountRoutingLayers,
     AccountStateClassification,
     BalanceIdentityAudit,
     BrokerAccountDiagnostic,
@@ -62,6 +63,14 @@ from iqoption_research.execution.modes import (
     PracticeAuthorizationError,
     UnsupportedProductOperationError,
 )
+from iqoption_research.execution.practice_observer import (
+    MockPassivePracticeObserver,
+    ObservedBalanceMutation,
+    ObservedPositionEvent,
+    ObservedPracticeTradeRecord,
+    ObservedSettlementEvent,
+    PassivePracticeObserver,
+)
 from iqoption_research.execution.practice_transport import (
     MIN_PRACTICE_STAKE,
     BinaryInstrumentSchedule,
@@ -108,6 +117,7 @@ __all__ = [
     "VALID_ORDER_TRANSITIONS",
     "AccountDiagnosticReport",
     "AccountReadinessResult",
+    "AccountRoutingLayers",
     "AccountStateClassification",
     "BalanceIdentityAudit",
     "BaseExecutionAdapter",
@@ -144,9 +154,14 @@ __all__ = [
     "IncomingBinarySettlementBody",
     "InvalidStateTransitionError",
     "MockBrokerPracticeTransport",
+    "MockPassivePracticeObserver",
     "ModularExecutionConfig",
     "ModularExecutionEngine",
     "ModularStepResult",
+    "ObservedBalanceMutation",
+    "ObservedPositionEvent",
+    "ObservedPracticeTradeRecord",
+    "ObservedSettlementEvent",
     "OperationCategory",
     "OperationalRiskManager",
     "OrderProposal",
@@ -160,6 +175,7 @@ __all__ = [
     "PaperPortfolio",
     "PaperTradingConfig",
     "PaperTradingEngine",
+    "PassivePracticeObserver",
     "PracticeAccountSafetyValidator",
     "PracticeAuthorizationError",
     "PracticeBinaryTransportAdapter",

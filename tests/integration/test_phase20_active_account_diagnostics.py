@@ -56,20 +56,23 @@ def _id_keys(value: int) -> dict[str, int]:
     return {"balance_id": value}
 
 
-def test_genuine_real_active_is_preserved() -> None:
+def test_profile_only_real_identity_is_unverified() -> None:
     result = assess_active_account(FakeAccountObserver(_id_keys(REAL)))
-    assert result["practice_account_active"] == "ACTIVE_REAL_OR_OTHER"
+    assert result["practice_account_active"] == "ACTIVE_PRACTICE_UNVERIFIED"
     assert result["active_id_relation"] == "MATCHES_REAL"
     assert result["profile_source"] == "CORRELATED"
     assert result["endpoint_consistency"] == "CONSISTENT"
-    assert result["classification_reason"] == "CORRELATED_PROFILE_MATCHES_REAL"
+    assert result["active_wallet_authority"] == "PROFILE_REPORTED_IDENTITY_ONLY"
+    assert result["ui_selected_account"] == "NOT_OBSERVED"
+    assert result["classification_reason"] == "PROFILE_BALANCE_ID_NOT_AUTHORITATIVE"
 
 
-def test_genuine_practice_active_is_confirmed() -> None:
+def test_profile_only_practice_identity_is_unverified() -> None:
     result = assess_active_account(FakeAccountObserver(_id_keys(PRACTICE)))
-    assert result["practice_account_active"] == "ACTIVE_PRACTICE_CONFIRMED"
+    assert result["practice_account_active"] == "ACTIVE_PRACTICE_UNVERIFIED"
     assert result["active_id_relation"] == "MATCHES_PRACTICE"
-    assert result["classification_reason"] == "CORRELATED_PROFILE_MATCHES_PRACTICE"
+    assert result["active_wallet_authority"] == "PROFILE_REPORTED_IDENTITY_ONLY"
+    assert result["classification_reason"] == "PROFILE_BALANCE_ID_NOT_AUTHORITATIVE"
 
 
 def test_conflicting_active_id_aliases_are_unverified() -> None:
@@ -86,7 +89,7 @@ def test_agreeing_aliases_are_accepted() -> None:
         FakeAccountObserver({"balance_id": PRACTICE, "balanceId": str(PRACTICE)})
     )
     assert result["active_id_alias"] == "MULTIPLE_AGREE"
-    assert result["practice_account_active"] == "ACTIVE_PRACTICE_CONFIRMED"
+    assert result["practice_account_active"] == "ACTIVE_PRACTICE_UNVERIFIED"
 
 
 @pytest.mark.parametrize(
@@ -132,7 +135,9 @@ def test_consistent_balance_flag_is_preserved() -> None:
     result = assess_active_account(FakeAccountObserver(_id_keys(REAL), balances=balances))
     assert result["practice_account_active"] == "ACTIVE_REAL_OR_OTHER"
     assert result["explicit_active_attribution"] == "REAL"
+    assert result["active_wallet_authority"] == "EXPLICIT_BALANCE_ACTIVE_FLAG"
     assert result["endpoint_consistency"] == "CONSISTENT"
+    assert result["classification_reason"] == "EXPLICIT_REAL_ACTIVE_FLAG"
 
 
 def test_missing_profile_or_wallet_is_unverified() -> None:
@@ -149,7 +154,8 @@ def test_default_flag_attribution_and_invalid_alias() -> None:
     balances = [Balance(str(PRACTICE), AccountType.PRACTICE, 100, "USD", is_default=True)]
     result = assess_active_account(FakeAccountObserver(_id_keys(PRACTICE), balances=balances))
     assert result["default_attribution"] == "PRACTICE"
-    assert result["practice_account_active"] == "ACTIVE_PRACTICE_CONFIRMED"
+    assert result["practice_account_active"] == "ACTIVE_PRACTICE_UNVERIFIED"
+    assert result["active_wallet_authority"] == "PROFILE_REPORTED_IDENTITY_ONLY"
 
     invalid = assess_active_account(FakeAccountObserver({"balance_id": "not-a-number"}))
     assert invalid["active_id_alias"] == "INVALID"

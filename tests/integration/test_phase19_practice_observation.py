@@ -452,19 +452,51 @@ def test_live_observation_requires_explicit_opt_in() -> None:
 
 def test_active_practice_wallet_classification() -> None:
     class FakeObserver:
-        def __init__(self, raw: dict[str, Any] | None, practice: Balance | None) -> None:
+        def __init__(
+            self,
+            raw: dict[str, Any] | None,
+            practice: Balance | None,
+            *,
+            explicit: str | None = None,
+        ) -> None:
             self.profile = Profile.from_raw({"user_id": 1, **raw}) if raw is not None else None
-            self.practice_balance = practice
-            self.real_balance = Balance(str(REAL), AccountType.REAL, 100, "USD")
-            self.balances = [self.real_balance] + ([practice] if practice is not None else [])
+            self.real_balance = Balance(
+                str(REAL), AccountType.REAL, 100, "USD", raw_is_active=explicit == "REAL"
+            )
+            self.practice_balance = (
+                Balance(
+                    str(PRACTICE),
+                    AccountType.PRACTICE,
+                    100,
+                    "USD",
+                    raw_is_active=explicit == "PRACTICE",
+                )
+                if practice is not None
+                else None
+            )
+            self.balances = [self.real_balance] + (
+                [self.practice_balance] if self.practice_balance is not None else []
+            )
 
         def profile_verification_diagnostics(self) -> dict[str, str]:
             return {"profile_outcome": "PROFILE_VERIFIED"}
 
     practice = Balance(str(PRACTICE), AccountType.PRACTICE, 100, "USD")
     classify = observation._active_practice_status
-    assert classify(FakeObserver({"balance_id": PRACTICE}, practice)) == "ACTIVE_PRACTICE_CONFIRMED"
-    assert classify(FakeObserver({"balance_id": REAL}, practice)) == "ACTIVE_REAL_OR_OTHER"
+    # A correlated profile id alone identifies a wallet but cannot prove selection.
+    assert (
+        classify(FakeObserver({"balance_id": PRACTICE}, practice)) == "ACTIVE_PRACTICE_UNVERIFIED"
+    )
+    assert classify(FakeObserver({"balance_id": REAL}, practice)) == "ACTIVE_PRACTICE_UNVERIFIED"
+    # Independent explicit balance flags may confirm either wallet.
+    assert (
+        classify(FakeObserver({"balance_id": PRACTICE}, practice, explicit="PRACTICE"))
+        == "ACTIVE_PRACTICE_CONFIRMED"
+    )
+    assert (
+        classify(FakeObserver({"balance_id": REAL}, practice, explicit="REAL"))
+        == "ACTIVE_REAL_OR_OTHER"
+    )
     assert classify(FakeObserver({}, practice)) == "ACTIVE_PRACTICE_UNVERIFIED"
     assert classify(FakeObserver(None, None)) == "ACTIVE_PRACTICE_UNVERIFIED"
 
@@ -651,6 +683,8 @@ async def test_observe_practice_active_account_diagnostics_are_opt_in(
         "explicit_active_attribution",
         "default_attribution",
         "endpoint_consistency",
+        "active_wallet_authority",
+        "ui_selected_account",
         "classification_reason",
     }
     serialized = json.dumps(report)

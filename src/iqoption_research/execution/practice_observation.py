@@ -657,6 +657,8 @@ _ACTIVE_ID_ALIASES = (
 )
 
 _ACTIVE_UNKNOWN = "ACTIVE_PRACTICE_UNVERIFIED"
+_ACTIVE_WALLET_AUTHORITY_EXPLICIT = "EXPLICIT_BALANCE_ACTIVE_FLAG"
+_ACTIVE_WALLET_AUTHORITY_PROFILE_ONLY = "PROFILE_REPORTED_IDENTITY_ONLY"
 
 
 def _active_id(raw: dict[str, Any]) -> tuple[str | None, str, bool]:
@@ -718,11 +720,15 @@ def _flag_attribution(
 
 
 def assess_active_account(observer: PassivePracticeObserver) -> dict[str, str]:
-    """Classify active-account evidence with a fixed, privacy-safe vocabulary.
+    """Classify active-wallet evidence with a fixed, privacy-safe vocabulary.
 
-    No identifier, amount, credential or raw response value is retained. An
-    uncertain result is always downgraded to ACTIVE_PRACTICE_UNVERIFIED; a
-    genuine REAL/other report is preserved only when the evidence agrees.
+    A profile ``balance_id`` is a *reported wallet identity*, not authoritative
+    proof of the actively selected wallet: it can reflect a session default or
+    another account property, and an independent WebSocket session is not known
+    to share the official interface's selection. Only an explicit active flag
+    on a discovered balance may confirm PRACTICE or REAL/other. Everything else
+    is downgraded to ACTIVE_PRACTICE_UNVERIFIED. No identifier, amount,
+    credential or raw response value is retained.
     """
     result: dict[str, str] = {
         "practice_account_active": _ACTIVE_UNKNOWN,
@@ -733,6 +739,8 @@ def assess_active_account(observer: PassivePracticeObserver) -> dict[str, str]:
         "explicit_active_attribution": "ABSENT",
         "default_attribution": "ABSENT",
         "endpoint_consistency": "UNVERIFIED",
+        "active_wallet_authority": "UNVERIFIED",
+        "ui_selected_account": "NOT_OBSERVED",
         "classification_reason": "PROFILE_OR_WALLET_MISSING",
     }
     profile = observer.profile
@@ -784,16 +792,27 @@ def assess_active_account(observer: PassivePracticeObserver) -> dict[str, str]:
         "MATCHES_REAL": "PRACTICE",
     }.get(relation)
     explicit = result["explicit_active_attribution"]
-    if opposite is not None and (
-        result["profile_balance_type"] == opposite or explicit == opposite
-    ):
+    profile_type = result["profile_balance_type"]
+    conflict = (
+        explicit in {"PRACTICE", "REAL"}
+        and profile_type in {"PRACTICE", "REAL"}
+        and explicit != profile_type
+    ) or (opposite is not None and (profile_type == opposite or explicit == opposite))
+    if conflict:
         result["endpoint_consistency"] = "PROFILE_VS_BALANCE_CONFLICT"
     elif relation in {"MATCHES_PRACTICE", "MATCHES_REAL"}:
         expected = relation.removeprefix("MATCHES_")
         if explicit in {"ABSENT", expected}:
             result["endpoint_consistency"] = "CONSISTENT"
-    elif relation == "MATCHES_NEITHER" and result["profile_balance_type"] == "PRACTICE":
+    elif relation == "MATCHES_NEITHER" and profile_type == "PRACTICE":
         result["endpoint_consistency"] = "TYPE_ID_NAMESPACE_MISMATCH"
+
+    # An explicit active flag on a discovered balance is independent evidence;
+    # a profile-reported balance id only identifies a wallet, not a selection.
+    if explicit in {"PRACTICE", "REAL"}:
+        result["active_wallet_authority"] = _ACTIVE_WALLET_AUTHORITY_EXPLICIT
+    elif active_id is not None:
+        result["active_wallet_authority"] = _ACTIVE_WALLET_AUTHORITY_PROFILE_ONLY
 
     if not aliases_agree:
         result["classification_reason"] = (
@@ -801,18 +820,24 @@ def assess_active_account(observer: PassivePracticeObserver) -> dict[str, str]:
         )
     elif result["profile_source"] != "CORRELATED":
         result["classification_reason"] = f"PROFILE_{result['profile_source']}"
-    elif result["endpoint_consistency"] == "PROFILE_VS_BALANCE_CONFLICT":
+    elif conflict:
         result["classification_reason"] = "PROFILE_BALANCE_EVIDENCE_CONFLICT"
-    elif relation == "MATCHES_PRACTICE":
-        result["practice_account_active"] = "ACTIVE_PRACTICE_CONFIRMED"
-        result["classification_reason"] = "CORRELATED_PROFILE_MATCHES_PRACTICE"
-    elif relation == "MATCHES_REAL":
-        result["practice_account_active"] = "ACTIVE_REAL_OR_OTHER"
-        result["classification_reason"] = "CORRELATED_PROFILE_MATCHES_REAL"
-    elif relation == "MATCHES_NEITHER" and result["profile_balance_type"] == "PRACTICE":
+    elif (
+        relation == "MATCHES_NEITHER"
+        and profile_type == "PRACTICE"
+        and result["active_wallet_authority"] == _ACTIVE_WALLET_AUTHORITY_PROFILE_ONLY
+    ):
         result["classification_reason"] = "PRACTICE_TYPE_ID_NAMESPACE_MISMATCH"
+    elif result["active_wallet_authority"] == _ACTIVE_WALLET_AUTHORITY_PROFILE_ONLY:
+        result["classification_reason"] = "PROFILE_BALANCE_ID_NOT_AUTHORITATIVE"
+    elif explicit == "PRACTICE":
+        result["practice_account_active"] = "ACTIVE_PRACTICE_CONFIRMED"
+        result["classification_reason"] = "EXPLICIT_PRACTICE_ACTIVE_FLAG"
+    elif explicit == "REAL":
+        result["practice_account_active"] = "ACTIVE_REAL_OR_OTHER"
+        result["classification_reason"] = "EXPLICIT_REAL_ACTIVE_FLAG"
     else:
-        result["classification_reason"] = "ACTIVE_ID_NOT_A_KNOWN_WALLET"
+        result["classification_reason"] = "NO_AUTHORITATIVE_ACTIVE_WALLET_EVIDENCE"
     return result
 
 

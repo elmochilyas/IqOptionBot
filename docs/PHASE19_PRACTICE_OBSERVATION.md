@@ -19,7 +19,7 @@ Keep three kinds of claim strictly separate:
 - Per-record wallet identity. A Practice-scoped history request proves only the request scope, never the wallet of an individual returned record.
 - Settlement/payout semantics for Blitz. Classic settlement requires an explicit recognized outcome together with payout and realized profit; partial fields remain `CLOSED`, not `SETTLED`.
 - History pagination and retention. Every reconciliation result is marked `history_may_be_truncated`; a bounded response is not a complete account history.
-- Active-wallet authority. `ACTIVE_PRACTICE_CONFIRMED` requires a fresh, correlated profile whose reported active balance id matches the discovered Practice wallet. `ACTIVE_REAL_OR_OTHER` is preserved only when the profile is correlated, its active-id aliases agree, the id matches the discovered REAL wallet, and no balance type or active flag contradicts it. Any ambiguity (conflicting or invalid aliases, uncorrelated/earlier-frame profile, type-vs-id mismatch, or flag conflict) is reported as `ACTIVE_PRACTICE_UNVERIFIED`. The selected broker account is never changed.
+- Active-wallet authority. A profile `balance_id` reports a wallet *identity*; it is not authoritative proof of the actively selected wallet and can reflect a session default or another account property. Neither `ACTIVE_PRACTICE_CONFIRMED` nor `ACTIVE_REAL_OR_OTHER` is granted from profile evidence alone: an explicit active flag on a discovered balance entry is also required. Ambiguity (conflicting/invalid aliases, uncorrelated or earlier-frame profile, type-vs-id mismatch, flag conflict, or profile-only identity) is reported as `ACTIVE_PRACTICE_UNVERIFIED`. The observer's session selection is not evidence of the interface's UI-selected account. The selected broker account is never changed.
 
 ## Live validation runbook
 
@@ -57,7 +57,7 @@ The JSON report contains classifications and bounded counts only. It contains no
 | `asset`, `observation_window` | Requested instrument and bounded timing/reconnect configuration. |
 | `event_delivery`, `live_validation_conclusion` | `LIVE_POSITION_EVENT_OBSERVED` or `LIVE_EVENT_DELIVERY_UNVERIFIED`. |
 | `websocket_authentication`, `practice_wallet`, `practice_account_active` | Session, wallet, and active-account verification states. |
-| `active_account_diagnostics` | Optional (opt-in). Fixed-vocabulary active-account evidence classifications; never ids, amounts, credentials, or raw responses. |
+| `active_account_diagnostics` | Optional (opt-in). Fixed-vocabulary active-account evidence classifications, including `active_wallet_authority` and `ui_selected_account`; never ids, amounts, credentials, or raw responses. |
 | `event_counts` | Relevant, malformed, filtered, verified, duplicate, out-of-order, missing-open, balance-change, gap-detected, and gap-omitted counts. |
 | `position_count`, `position_lifecycle_counts`, `position_samples` | Bounded position accounting (samples capped at 20, positions at 512). |
 | `position_samples[].wallet_status`, `wallet_evidence` | Per-record Practice attribution and its evidence source (`LIVE_PER_RECORD`, `HISTORY_PER_RECORD`, `LIVE_AND_HISTORY_PER_RECORD`, or `NONE`). |

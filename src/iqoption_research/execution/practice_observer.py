@@ -16,7 +16,7 @@ Guarantees:
 - Fails closed on any unexpected Real account mutation or unverified balance state.
 - Zero synthetic field defaults: missing broker fields are reported explicitly as None / missing.
 - Privacy-preserving: JSON reports omit raw frames, SSIDs, tokens, credentials, and PII.
-- Fully compatible with official web and desktop interfaces.
+- Cross-session delivery remains unverified.
 """
 
 from __future__ import annotations
@@ -91,6 +91,7 @@ class ObservedPositionEvent:
     user_balance_id: str | None
     created_ts: float | None
     raw_frame_name: str
+    product_type: str | None = None
     sanitized_evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -105,6 +106,7 @@ class ObservedPositionEvent:
             "user_balance_id": self.user_balance_id,
             "created_ts": self.created_ts,
             "raw_frame_name": self.raw_frame_name,
+            "product_type": self.product_type,
             "sanitized_evidence": self.sanitized_evidence,
         }
 
@@ -264,6 +266,15 @@ class PassivePracticeObserver:
         self._asset_filter: str | None = None
         self._portfolio_sub_status: SubscriptionStatus = SubscriptionStatus.NOT_SENT
         self._portfolio_sub_req_id: str | None = None
+        self._subscriptions: list[dict[str, Any]] = []
+        self._frame_count = 0
+        self._relevant_count = 0
+        self._unknown_count = 0
+        self._filter_rejected = 0
+        self._invalid_count = 0
+        self._other_product_count = 0
+        self._connection_error: str | None = None
+        self._balance_revision = 0
 
     @property
     def is_connected(self) -> bool:
@@ -288,6 +299,13 @@ class PassivePracticeObserver:
     @property
     def portfolio_subscription_status(self) -> SubscriptionStatus:
         return self._portfolio_sub_status
+
+    def real_mutation_observed(self, balance_id: str) -> bool:
+        """Report observed changes even if a later snapshot returns to baseline."""
+        return any(
+            str(m.balance_id) == balance_id and abs(m.delta) >= 1e-4
+            for m in self._balance_mutations
+        )
 
     async def async_connect(self) -> None:
         """Connect to broker and discover Practice and Real wallet baselines."""
@@ -331,7 +349,7 @@ class PassivePracticeObserver:
             "profile",
         }
         if not is_success:
-            raise LoginError(f"Observer WebSocket authentication failed: {auth_resp}")
+            raise LoginError("Observer WebSocket authentication failed.")
 
         # Refresh initial account state
         refreshed = await self.async_refresh_account_state()
@@ -344,7 +362,7 @@ class PassivePracticeObserver:
             None,
         )
         self._real_balance = next(
-            (b for b in self._balances if b.type == AccountType.REAL or not b.is_practice),
+            (b for b in self._balances if b.type == AccountType.REAL),
             None,
         )
 
@@ -375,68 +393,121 @@ class PassivePracticeObserver:
         if not self._practice_balance:
             raise ConnectionError("No Practice balance discovered.")
 
-        prac_id = int(self._practice_balance.id)
-        pos_req_id = f"obs_sub_pos_{self._request_counter}"
-        ord_req_id = f"obs_sub_ord_{self._request_counter}"
-        self._request_counter += 1
-        self._portfolio_sub_req_id = pos_req_id
-
-        sub_frames = [
-            {
-                "name": "subscribeMessage",
-                "msg": {
-                    "name": "portfolio.position-changed",
-                    "version": "2.0",
-                    "params": {"routingFilters": {"user_balance_id": prac_id}},
-                },
-                "request_id": pos_req_id,
-            },
-            {
-                "name": "subscribeMessage",
-                "msg": {
-                    "name": "portfolio.order-changed",
-                    "version": "2.0",
-                    "params": {"routingFilters": {"user_balance_id": prac_id}},
-                },
-                "request_id": ord_req_id,
-            },
-        ]
-
+        # Community client uses one subscription per product. These schemas are
+        # unverified against this gateway; a missing ACK is never called acceptance.
         loop = asyncio.get_running_loop()
-        pos_fut = loop.create_future()
-        ord_fut = loop.create_future()
-        self._pending_requests[pos_req_id] = pos_fut
-        self._pending_requests[ord_req_id] = ord_fut
+        futures: list[asyncio.Future[dict[str, Any]]] = []
+        self._subscriptions = []
         self._portfolio_sub_status = SubscriptionStatus.REQUEST_SENT
-
-        for frame in sub_frames:
-            await self._ws.send(json.dumps(frame))
-        logger.info(
-            "Dispatched portfolio subscription frames for Practice balance %s (req_ids: %s, %s)",
-            prac_id,
-            pos_req_id,
-            ord_req_id,
-        )
-
-        try:
-            responses = await asyncio.wait_for(asyncio.gather(pos_fut, ord_fut), timeout=3.0)
-            accepted = True
-            for resp in responses:
-                if resp.get("msg") is False or resp.get("status") in {"error", "rejected"}:
-                    accepted = False
-            self._portfolio_sub_status = (
-                SubscriptionStatus.ACCEPTED if accepted else SubscriptionStatus.REJECTED
-            )
-        except TimeoutError:
-            self._pending_requests.pop(pos_req_id, None)
-            self._pending_requests.pop(ord_req_id, None)
+        for product in ("binary-option", "turbo-option"):
+            for topic, version in (
+                ("portfolio.position-changed", "2.0"),
+                ("portfolio.order-changed", "1.0"),
+            ):
+                req_id = f"obs_sub_{self._request_counter}"
+                self._request_counter += 1
+                filters: dict[str, Any] = {"instrument_type": product}
+                if topic == "portfolio.position-changed":
+                    filters["user_balance_id"] = int(self._practice_balance.id)
+                frame = {
+                    "name": "subscribeMessage",
+                    "msg": {
+                        "name": topic,
+                        "version": version,
+                        "params": {"routingFilters": filters},
+                    },
+                    "request_id": req_id,
+                }
+                future: asyncio.Future[dict[str, Any]] = loop.create_future()
+                self._pending_requests[req_id] = future
+                futures.append(future)
+                self._subscriptions.append({
+                    "topic": topic,
+                    "version": version,
+                    "instrument_type": product,
+                    "request_id": req_id,
+                    "response_correlated": False,
+                    "status": "STATUS_UNKNOWN",
+                })
+                await self._ws.send(json.dumps(frame))
+        done, _ = await asyncio.wait(futures, timeout=3.0)
+        for entry, future in zip(self._subscriptions, futures, strict=True):
+            self._pending_requests.pop(entry["request_id"], None)
+            if future in done and not future.cancelled():
+                resp = future.result()
+                entry["response_correlated"] = True
+                msg = resp.get("msg")
+                status = resp.get("status")
+                if msg is False or status in ("error", "rejected"):
+                    entry["status"] = "REJECTED"
+                elif msg is True or status == 2000:
+                    entry["status"] = "ACCEPTED"
+            if not future.done():
+                future.cancel()
+        statuses = {entry["status"] for entry in self._subscriptions}
+        if (
+            self._observed_position is not None
+            and self._observed_position.raw_frame_name == "portfolio.position-changed"
+        ):
+            self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
+        elif "REJECTED" in statuses:
+            self._portfolio_sub_status = SubscriptionStatus.REJECTED
+        elif statuses == {"ACCEPTED"}:
+            self._portfolio_sub_status = SubscriptionStatus.ACCEPTED
+        else:
             self._portfolio_sub_status = SubscriptionStatus.STATUS_UNKNOWN
-            logger.info(
-                "Subscription request completed with STATUS_UNKNOWN: "
-                "gateway does not return direct subscription ACK."
-            )
-
         return self._portfolio_sub_status
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return bounded metadata, never broker payloads or arbitrary event names."""
+        return {
+            "subscriptions": [dict(item) for item in self._subscriptions],
+            "frames_received": self._frame_count,
+            "relevant_event_frames": self._relevant_count,
+            "unrecognized_event_frames": self._unknown_count,
+            "asset_filter_rejected": self._filter_rejected,
+            "invalid_schema": self._invalid_count,
+            "other_product_rejected": self._other_product_count,
+            "connection_error": self._connection_error,
+        }
+
+    def set_asset_filter(self, asset: str | None) -> None:
+        """Set the filter before subscriptions to cover early events."""
+        self._asset_filter = InstrumentRegistry.normalize_symbol(asset) if asset else None
+
+    async def async_get_options_history(
+        self,
+        *,
+        limit: int = 100,
+        timeout_seconds: float = 10.0,
+    ) -> dict[str, Any]:
+        """Request classic-option history, scoped to the discovered Practice wallet."""
+        if not self._ws or self._closed or self._practice_balance is None:
+            raise ConnectionError("Observer and Practice wallet must be initialized.")
+        if not 1 <= limit <= 1000:
+            raise ValueError("History limit must be between 1 and 1000.")
+        req_id = f"obs_history_{self._request_counter}"
+        self._request_counter += 1
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._pending_requests[req_id] = future
+        try:
+            await self._ws.send(
+                json.dumps({
+                    "name": "sendMessage",
+                    "request_id": req_id,
+                    "msg": {
+                        "name": "get-options",
+                        "body": {
+                            "limit": limit,
+                            "instrument_type": "binary,turbo",
+                            "user_balance_id": int(self._practice_balance.id),
+                        },
+                    },
+                })
+            )
+            return await asyncio.wait_for(future, timeout=timeout_seconds)
+        finally:
+            self._pending_requests.pop(req_id, None)
 
     async def async_refresh_account_state(self, timeout_seconds: float = 5.0) -> bool:
         """Retrieve fresh profile and balances from broker.
@@ -456,6 +527,7 @@ class PassivePracticeObserver:
         self._pending_requests[prof_req_id] = prof_fut
         self._pending_requests[bal_req_id] = bal_fut
 
+        revision = self._balance_revision
         try:
             await self._ws.send(
                 json.dumps({
@@ -473,7 +545,12 @@ class PassivePracticeObserver:
             )
             # bal_fut is the essential one for balance verification
             await asyncio.wait_for(asyncio.gather(prof_fut, bal_fut), timeout=timeout_seconds)
-            return True
+            balance_response = bal_fut.result()
+            return (
+                self._balance_revision > revision
+                and balance_response.get("name") in {"balances", "get-balances"}
+                and balance_response.get("status") in (None, 2000)
+            )
         except TimeoutError:
             self._pending_requests.pop(prof_req_id, None)
             self._pending_requests.pop(bal_req_id, None)
@@ -517,6 +594,7 @@ class PassivePracticeObserver:
             "subscription_status": sub_status.value,
             "subscription_accepted": sub_status == SubscriptionStatus.ACCEPTED,
             "frames_received": list(self._received_frames),
+            "diagnostics": self.diagnostics(),
         }
 
     async def _listen_loop(self) -> None:
@@ -525,23 +603,66 @@ class PassivePracticeObserver:
             while not self._closed and self._ws is not None:
                 raw_text = await self._ws.recv()
                 if not isinstance(raw_text, str):
+                    self._invalid_count += 1
                     continue
                 try:
                     message: dict[str, Any] = json.loads(raw_text)
                 except json.JSONDecodeError:
+                    self._invalid_count += 1
                     continue
-
-                self._handle_incoming_frame(message)
+                if not isinstance(message, dict):
+                    self._invalid_count += 1
+                    continue
+                try:
+                    self._handle_incoming_frame(message)
+                except Exception:  # noqa: BLE001 - isolate malformed broker frames
+                    self._invalid_count += 1
+                    logger.warning("Rejected malformed broker frame")
         except ConnectionClosed:
+            self._connection_error = "CONNECTION_CLOSED"
             logger.info("Observer WebSocket connection closed.")
-        except (asyncio.CancelledError, OSError) as exc:
-            logger.debug("Observer listener loop terminated: %s", exc)
+        except OSError:
+            self._connection_error = "CONNECTION_ERROR"
+            logger.warning("Observer connection error")
+        except asyncio.CancelledError:
+            pass
 
     def _handle_incoming_frame(self, message: dict[str, Any]) -> None:
         """Process incoming wire frame for position, settlement, or balance updates."""
         name = str(message.get("name") or "")
         req_id = str(message.get("request_id") or "").strip()
-        self._received_frames.append(name)
+        self._frame_count += 1
+        known = {
+            "authenticated",
+            "profile",
+            "get-profile",
+            "balances",
+            "get-balances",
+            "option-opened",
+            "socket-option-opened",
+            "portfolio.position-changed",
+            "portfolio.order-changed",
+            "option-closed",
+            "socket-option-closed",
+            "balance-changed",
+            "timesync",
+            "heartbeat",
+            "options",
+        }
+        self._received_frames.append(name if name in known else "unrecognized")
+        if len(self._received_frames) > 1000:
+            del self._received_frames[:-1000]
+        if name in {
+            "option-opened",
+            "socket-option-opened",
+            "portfolio.position-changed",
+            "portfolio.order-changed",
+            "option-closed",
+            "socket-option-closed",
+        }:
+            self._relevant_count += 1
+        elif name not in known and not req_id:
+            self._unknown_count += 1
 
         # Match pending request
         if req_id and req_id in self._pending_requests:
@@ -582,6 +703,7 @@ class PassivePracticeObserver:
                     with contextlib.suppress(Exception):
                         parsed_bals.append(Balance.from_raw(item))
                 if parsed_bals:
+                    self._balance_revision += 1
                     self._balances = parsed_bals
                     self._practice_balance = next(
                         (
@@ -592,7 +714,7 @@ class PassivePracticeObserver:
                         None,
                     )
                     self._real_balance = next(
-                        (b for b in parsed_bals if b.type == AccountType.REAL or not b.is_practice),
+                        (b for b in parsed_bals if b.type == AccountType.REAL),
                         None,
                     )
 
@@ -617,10 +739,20 @@ class PassivePracticeObserver:
         if "result" in body and isinstance(body["result"], dict):
             body = body["result"]
 
+        product = body.get("instrument_type") or body.get("product_type")
+        if product and str(product).lower() not in {
+            "binary",
+            "turbo",
+            "binary-option",
+            "turbo-option",
+        }:
+            self._other_product_count += 1
+            return
         ticket_id = str(
             body.get("id") or body.get("option_id") or body.get("position_id") or ""
         ).strip()
         if not ticket_id:
+            self._invalid_count += 1
             return
 
         # Deduplication: ignore if we already observed this exact ticket
@@ -678,15 +810,23 @@ class PassivePracticeObserver:
             if created_ts > 1e12:
                 created_ts /= 1000.0
 
+        if symbol is not None:
+            with contextlib.suppress(Exception):
+                symbol = InstrumentRegistry.normalize_symbol(symbol)
         # Asset filter check
         if self._asset_filter:
             target_filter = self._asset_filter.upper().strip()
+            with contextlib.suppress(Exception):
+                target_filter = InstrumentRegistry.normalize_symbol(target_filter)
             matches_symbol = symbol is not None and symbol == target_filter
             matches_active = False
             with contextlib.suppress(Exception):
                 expected_active = InstrumentRegistry.resolve_active_id(target_filter)
-                matches_active = active_id is not None and active_id == expected_active
+                matches_active = (
+                    symbol is None and active_id is not None and active_id == expected_active
+                )
             if not (matches_symbol or matches_active):
+                self._filter_rejected += 1
                 logger.info(
                     "Observed position %s (symbol=%s, active_id=%s) "
                     "does not match filter %s; ignoring.",
@@ -719,9 +859,9 @@ class PassivePracticeObserver:
             user_balance_id=user_balance_id,
             created_ts=created_ts,
             raw_frame_name=frame_name,
+            product_type=str(product).lower() if product else None,
             sanitized_evidence=sanitized,
         )
-        self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
         self._position_event.set()
         logger.info(
             "OBSERVED_POSITION_OPENED: ticket=%s balance_id=%s symbol=%s stake=%s direction=%s",
@@ -736,10 +876,29 @@ class PassivePracticeObserver:
         """Parse portfolio.position-changed push event without synthetic defaults."""
         raw_msg = message.get("msg")
         body: dict[str, Any] = raw_msg if isinstance(raw_msg, dict) else message
+        if isinstance(body.get("result"), dict):
+            body = body["result"]
         status = str(body.get("status") or "").lower()
         ticket_id = str(body.get("id") or body.get("position_id") or "").strip()
 
+        raw_event_product = body.get("raw_event")
+        product = body.get("instrument_type") or body.get("product_type")
+        if not product and isinstance(raw_event_product, dict):
+            product = raw_event_product.get("instrument_type") or raw_event_product.get(
+                "product_type"
+            )
+        if product and str(product).lower() not in {
+            "binary",
+            "turbo",
+            "binary-option",
+            "turbo-option",
+        }:
+            self._other_product_count += 1
+            return
         if status == "open":
+            if not ticket_id:
+                self._invalid_count += 1
+                return
             if self._observed_position is not None:
                 if self._observed_position.ticket_id == ticket_id:
                     return
@@ -805,15 +964,23 @@ class PassivePracticeObserver:
             if exp_ts is not None and exp_ts > 0:
                 exp_utc = datetime.fromtimestamp(exp_ts, tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
+            if symbol is not None:
+                with contextlib.suppress(Exception):
+                    symbol = InstrumentRegistry.normalize_symbol(symbol)
             # Asset filter check
             if self._asset_filter:
                 target_filter = self._asset_filter.upper().strip()
+                with contextlib.suppress(Exception):
+                    target_filter = InstrumentRegistry.normalize_symbol(target_filter)
                 matches_symbol = symbol is not None and symbol == target_filter
                 matches_active = False
                 with contextlib.suppress(Exception):
                     expected_active = InstrumentRegistry.resolve_active_id(target_filter)
-                    matches_active = active_id is not None and active_id == expected_active
+                    matches_active = (
+                        symbol is None and active_id is not None and active_id == expected_active
+                    )
                 if not (matches_symbol or matches_active):
+                    self._filter_rejected += 1
                     logger.info(
                         "Observed portfolio position %s (symbol=%s, active_id=%s) "
                         "does not match filter %s; ignoring.",
@@ -844,8 +1011,9 @@ class PassivePracticeObserver:
                 exp_ts=exp_ts,
                 exp_utc=exp_utc,
                 user_balance_id=user_balance_id,
-                created_ts=time.time(),
+                created_ts=None,
                 raw_frame_name="portfolio.position-changed",
+                product_type=str(product).lower() if product else None,
                 sanitized_evidence=sanitized,
             )
             self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
@@ -965,7 +1133,6 @@ class PassivePracticeObserver:
             close_time=close_time,
             sanitized_evidence=sanitized_settle,
         )
-        self._portfolio_sub_status = SubscriptionStatus.EVENT_RECEIVED
         self._settlement_event.set()
         logger.info(
             "OBSERVED_SETTLEMENT: ticket=%s status=%s profit=%s",
@@ -986,15 +1153,20 @@ class PassivePracticeObserver:
             logger.debug("balance-changed frame missing balance ID; ignoring.")
             return
 
-        raw_amount = (
-            curr.get("amount")
-            or curr.get("balance")
-            or (
-                body.get("current_balance")
-                if isinstance(body.get("current_balance"), (int, float))
-                else None
-            )
-            or body.get("amount")
+        raw_amount = next(
+            (
+                value
+                for value in (
+                    curr.get("amount"),
+                    curr.get("balance"),
+                    body.get("current_balance")
+                    if isinstance(body.get("current_balance"), (int, float))
+                    else None,
+                    body.get("amount"),
+                )
+                if value is not None
+            ),
+            None,
         )
         if raw_amount is None:
             logger.warning("balance-changed frame for %s missing balance amount; ignoring.", bal_id)
@@ -1149,12 +1321,18 @@ class PassivePracticeObserver:
             or not fresh_balances_retrieved
             or final_real is None
             or init_real is None
+            or self._real_balance is None
+            or str(self._real_balance.id) != real_id
         ):
             real_wallet_status = "UNVERIFIED"
             real_untouched = False
         else:
             delta = abs(final_real - init_real)
-            if delta < 1e-4:
+            real_mutation_seen = any(
+                str(m.balance_id) == real_id and abs(m.delta) >= 1e-4
+                for m in self._balance_mutations
+            )
+            if delta < 1e-4 and not real_mutation_seen:
                 real_wallet_status = "VERIFIED_UNTOUCHED"
                 real_untouched = True
             else:
@@ -1192,7 +1370,7 @@ class PassivePracticeObserver:
         else:
             verdict = (
                 "CORRELATED_PRACTICE_CONFIRMED: Official UI manual trade routed strictly to "
-                "Practice wallet. Real account verified completely untouched."
+                "Practice wallet. REAL snapshots match and no mutation was observed."
             )
 
         return ObservedPracticeTradeRecord(
@@ -1462,7 +1640,7 @@ class MockPassivePracticeObserver:
         else:
             verdict = (
                 "CORRELATED_PRACTICE_CONFIRMED: Official UI manual trade routed strictly to "
-                "Practice wallet. Real account verified completely untouched."
+                "Practice wallet. REAL snapshots match and no mutation was observed."
             )
 
         return ObservedPracticeTradeRecord(

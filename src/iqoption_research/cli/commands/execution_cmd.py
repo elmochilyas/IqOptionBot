@@ -50,6 +50,7 @@ from iqoption_research.execution.modes import (
     RealAccountExecutionBlockedError,
     UnsupportedProductOperationError,
 )
+from iqoption_research.execution.practice_history import recover_history
 from iqoption_research.execution.practice_observer import (
     MockPassivePracticeObserver,
     ObservedPracticeTradeRecord,
@@ -1994,6 +1995,9 @@ def practice_observe_command(
         "-a",
         help="Optional asset symbol filter (e.g. EURUSD).",
     ),
+    history_stake: float | None = typer.Option(
+        None, "--history-stake", help="Reconcile this stake against history after a live timeout."
+    ),
     record: str | None = typer.Option(
         None,
         "--record",
@@ -2039,12 +2043,15 @@ def practice_observe_command(
     if not live and not offline_mock:
         offline_mock = True
 
+    if history_stake is not None and (not live or not asset or history_stake <= 0):
+        raise typer.BadParameter("--history-stake requires --live, --asset and a positive stake.")
+
     banner = (
         "[bold cyan]IQ Option Passive Practice Transaction Observer[/bold cyan]\n\n"
         "[bold green]STRICT READ-ONLY GUARANTEE:[/bold green]\n"
         "• This observer connects exclusively to listen to broker push events.\n"
         "• Zero trading or order submission capabilities exist in this component.\n"
-        "• The Real account is continuously monitored: any balance mutation flags a breach.\n"
+        "• Observed REAL balance mutations flag a breach; missing events remain unverified.\n"
         "• Objective: Correlate manual Practice trades executed in the official IQ Option UI."
     )
     console.print(Panel.fit(banner, border_style="cyan"))
@@ -2070,21 +2077,21 @@ def practice_observe_command(
                 password = typer.prompt("IQ Option Password", hide_input=True)
 
             credentials = Credentials(email=email, password=password)
-            observer = PassivePracticeObserver(credentials=credentials)
+            probe_observer = PassivePracticeObserver(credentials=credentials)
 
             async def _run_probe() -> dict[str, Any]:
                 try:
                     with console.status(
                         "[bold green]Connecting and probing portfolio subscriptions..."
                     ):
-                        return await observer.async_probe_connection_and_subscriptions()
+                        return await probe_observer.async_probe_connection_and_subscriptions()
                 finally:
-                    await observer.async_close()
+                    await probe_observer.async_close()
 
             try:
                 probe_res = asyncio.run(_run_probe())
             except Exception as exc:
-                console.print(f"[bold red]Probe failed: {exc}[/bold red]")
+                console.print(f"[bold red]Probe failed: {type(exc).__name__}[/bold red]")
                 raise typer.Exit(code=1) from exc
 
         # Render Probe Table
@@ -2140,9 +2147,12 @@ def practice_observe_command(
             "[bold green]STRICT READ-ONLY (ZERO TRADES)[/bold green]",
         )
         console.print(probe_table)
+        if probe_res.get("diagnostics") is not None:
+            console.print_json(json.dumps(probe_res["diagnostics"]))
         return
 
     trade_record: ObservedPracticeTradeRecord | None = None
+    observer: PassivePracticeObserver | None = None
 
     if offline_mock:
         console.print("[bold cyan]Running deterministic offline mock observation...[/bold cyan]")
@@ -2209,9 +2219,14 @@ def practice_observe_command(
                 ):
                     await observer.async_connect()
             except Exception as exc:
-                console.print(f"[bold red]Failed to connect passive observer: {exc}[/bold red]")
+                console.print(
+                    f"[bold red]Failed to connect passive observer: {type(exc).__name__}[/bold red]"
+                )
                 raise typer.Exit(code=1) from exc
 
+            history_start = time.time()
+            # Set the filter before subscribing so early events are filtered too.
+            observer.set_asset_filter(asset)
             # Subscribe to portfolio updates
             with console.status("[bold cyan]Subscribing to read-only portfolio updates..."):
                 await observer.async_subscribe_portfolio()
@@ -2242,26 +2257,45 @@ def practice_observe_command(
                 )
             console.print(base_table)
 
-            prompt_msg = (
-                "[bold yellow]READY FOR MANUAL OPERATOR PRACTICE TRADE[/bold yellow]\n\n"
-                "1. Switch to your official IQ Option Web or Desktop application.\n"
-                "2. Ensure the top-right account dropdown displays "
-                "[bold green]PRACTICE ACCOUNT[/bold green].\n"
-                "3. Place [bold white]ONE manual Practice trade[/bold white] "
-                "(e.g. EURUSD, $1.00 stake).\n"
-                f"4. Observer listening for broker push events (up to {int(timeout)}s).\n\n"
-                "[dim]Zero orders will be sent by bot. Press Ctrl+C at any time to cancel.[/dim]"
+            console.print(
+                "[yellow]Listening for existing or subsequent broker events. "
+                "No trade is required or requested.[/yellow]"
             )
-            console.print(Panel.fit(prompt_msg, border_style="yellow"))
 
             try:
                 with console.status(
                     f"[bold cyan]Passively listening for events (timeout: {int(timeout)}s)..."
                 ):
-                    return await observer.async_observe_single_trade(
+                    observed = await observer.async_observe_single_trade(
                         timeout_seconds=timeout,
                         asset_filter=asset,
                     )
+                if observed is None and history_stake is not None and asset:
+                    try:
+                        history = await recover_history(
+                            observer,
+                            asset=asset,
+                            stake=history_stake,
+                            start=history_start,
+                            end=time.time(),
+                        )
+                        console.print("Read-only history reconciliation after missed event:")
+                        console.print_json(json.dumps(history))
+                        if record:
+                            await asyncio.to_thread(
+                                Path(record).write_text,
+                                json.dumps(history, indent=2),
+                                encoding="utf-8",
+                            )
+                        if history["account"]["real_wallet_status"] == "MUTATED":
+                            raise typer.Exit(code=1)
+                    except typer.Exit:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - never expose broker errors
+                        console.print(
+                            f"[yellow]History unverified ({type(exc).__name__}).[/yellow]"
+                        )
+                return observed
             finally:
                 await observer.async_close()
 
@@ -2275,13 +2309,20 @@ def practice_observe_command(
     if trade_record is None:
         console.print(
             Panel.fit(
-                "[bold yellow]Observation Window Closed (No Trade Detected)[/bold yellow]\n\n"
+                "[bold yellow]Observation Window Closed "
+                "(No Position Event Confirmed)[/bold yellow]\n\n"
                 f"• Timeout reached after {int(timeout)} seconds.\n"
-                "• No manual trades detected matching the criteria.\n"
+                "• No matching position event was confirmed.\n"
                 "• Invariant Verified: Zero orders were submitted by the bot.",
                 border_style="yellow",
             )
         )
+        if observer is not None:
+            console.print("Read-only observation diagnostics:")
+            console.print_json(json.dumps(observer.diagnostics()))
+            console.print(
+                "No matching event was observed; use practice-history for reconciliation."
+            )
         return
 
     # Render Result Table
@@ -2377,8 +2418,16 @@ def practice_observe_command(
         ),
     )
 
-    post_open_val = trade_record.post_open_practice_amount or trade_record.initial_practice_amount
-    final_prac_val = trade_record.final_practice_amount or trade_record.initial_practice_amount
+    post_open_val = (
+        trade_record.post_open_practice_amount
+        if trade_record.post_open_practice_amount is not None
+        else trade_record.initial_practice_amount
+    )
+    final_prac_val = (
+        trade_record.final_practice_amount
+        if trade_record.final_practice_amount is not None
+        else trade_record.initial_practice_amount
+    )
     prac_delta = final_prac_val - trade_record.initial_practice_amount
     res_table.add_row(
         "Practice Balance Lifecycle",
@@ -2440,3 +2489,63 @@ def practice_observe_command(
 
 
 practice_observe = practice_observe_command
+
+
+def practice_history_command(
+    live: bool = typer.Option(False, "--live", help="Connect to broker read-only."),
+    asset: str = typer.Option(..., "--asset", help="Exact asset, e.g. EURUSD or EURUSD-OTC."),
+    stake: float = typer.Option(..., "--stake", help="Exact virtual trade stake."),
+    start: str = typer.Option(..., "--start", help="Inclusive ISO-8601 start with UTC offset."),
+    end: str = typer.Option(..., "--end", help="Inclusive ISO-8601 end with UTC offset."),
+    limit: int = typer.Option(100, "--limit", min=1, max=1000),
+    ticket: str | None = typer.Option(None, "--ticket", help="Exact broker ticket if known."),
+    record: str | None = typer.Option(None, "--record", help="Save allowlisted evidence JSON."),
+) -> None:
+    """Query broker history for classic binary/turbo options; never submits orders."""
+    if not live:
+        raise typer.BadParameter("Explicit --live is required for a broker history query.")
+    try:
+        start_dt, end_dt = datetime.fromisoformat(start), datetime.fromisoformat(end)
+        if start_dt.utcoffset() is None or end_dt.utcoffset() is None:
+            raise ValueError("Timestamps must include a UTC offset")
+        if start_dt >= end_dt:
+            raise ValueError("Start must be earlier than end")
+        from iqoption_research.market_data.instruments import InstrumentRegistry
+
+        InstrumentRegistry.normalize_symbol(asset)
+    except (ValueError, TypeError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    email = os.environ.get("IQOPTION_EMAIL") or typer.prompt("IQ Option Account Email")
+    password = os.environ.get("IQOPTION_PASSWORD") or typer.prompt(
+        "IQ Option Password", hide_input=True
+    )
+    observer = PassivePracticeObserver(credentials=Credentials(email=email, password=password))
+
+    async def run() -> dict[str, Any]:
+        try:
+            await observer.async_connect()
+            return await recover_history(
+                observer,
+                asset=asset,
+                stake=stake,
+                start=start_dt.timestamp(),
+                end=end_dt.timestamp(),
+                limit=limit,
+                ticket_id=ticket,
+            )
+        finally:
+            await observer.async_close()
+
+    try:
+        result = asyncio.run(run())
+    except Exception as exc:
+        # Broker payloads and credentials must not be echoed in exception text.
+        console.print(
+            f"[red]History query failed ({type(exc).__name__}); history unverified.[/red]"
+        )
+        raise typer.Exit(code=1) from exc
+    console.print_json(json.dumps(result))
+    if record:
+        Path(record).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    if result["account"]["real_wallet_status"] == "MUTATED":
+        raise typer.Exit(code=1)

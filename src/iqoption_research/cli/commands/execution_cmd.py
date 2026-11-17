@@ -2502,7 +2502,7 @@ def practice_history_command(
     balance_diagnostics: bool = typer.Option(
         False,
         "--balance-diagnostics",
-        help="Print sanitized account and history protocol metadata.",
+        help="Print sanitized account and history protocol metadata and bounded record shapes.",
     ),
     record: str | None = typer.Option(None, "--record", help="Save allowlisted evidence JSON."),
 ) -> None:

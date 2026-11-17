@@ -6,11 +6,11 @@ confirmed the options message and status 0. Each payload still needs schema vali
 
 from __future__ import annotations
 
-import contextlib
 import math
 from datetime import UTC, datetime
 from typing import Any
 
+from iqoption_research.connectors.iqoption.exceptions import UnsupportedInstrumentError
 from iqoption_research.execution.practice_observer import (
     ObserverStageError,
     PassivePracticeObserver,
@@ -28,6 +28,63 @@ _POSITION_FIELDS = (
     "expires_at_utc",
     "status",
 )
+_ASSET_NAMES = ("symbol", "active", "instrument_id")
+_ACTIVE_IDS = ("active_id", "act_id")
+_PRODUCT_NAMES = ("instrument_type", "product_type", "option_type", "type_name")
+_TICKET_FIELDS = ("id", "option_id", "position_id")
+_WALLET_FIELDS = ("user_balance_id", "balance_id")
+_STATUS_FIELDS = ("status", "position_status")
+_DIRECTION_FIELDS = ("direction", "dir")
+_RESULT_FIELDS = ("result", "win")
+_STAKE_FIELDS = ("amount", "invest", "stake", "deposit")
+_OPEN_FIELDS = ("created", "created_at", "open_time")
+_EXPIRY_FIELDS = ("expiration_time", "expire_at", "exp", "expired")
+_PRODUCT_NAMES_MAP = {
+    "binary": "binary-option",
+    "turbo": "turbo-option",
+    "binary-option": "binary-option",
+    "turbo-option": "turbo-option",
+    "digital-option": "digital-option",
+    "digital": "digital-option",
+}
+# IQ Option's classic-option protocol uses 1 for binary and 3 for turbo.
+_OPTION_TYPE_IDS = {1: "binary-option", 3: "turbo-option"}
+_DIRECTIONS = {"call", "put"}
+_STATUSES = {"open", "closed", "settled", "expired"}
+_RESULTS = {"win", "loose", "lose", "loss", "equal", "draw"}
+_CONTAINER_STATES = {"closed_options": "closed", "open_options": "open"}
+_PAYOUT_FIELDS = ("payout", "payout_amount")
+# Recognized for diagnostics, since these variants fall outside classic history matching.
+_OTHER_OPTION_NAMES = {
+    "blitz": "blitz-option",
+    "blitz-option": "blitz-option",
+    "front.tu": "legacy-turbo-label",
+}
+_DIAGNOSTIC_RECORD_FIELDS = {
+    "ticket_id": (*_TICKET_FIELDS, "index", "external_id"),
+    "symbol": (*_ASSET_NAMES, *_ACTIVE_IDS, "act"),
+    "product_type": (*_PRODUCT_NAMES, "option_type_id", "type"),
+    "direction": (
+        *_DIRECTION_FIELDS,
+        "side",
+        "option_direction",
+        "instrument_direction",
+        "is_call",
+    ),
+    "stake": _STAKE_FIELDS,
+    "opened_at_utc": (*_OPEN_FIELDS, "open_time_millisecond"),
+    "expires_at_utc": (*_EXPIRY_FIELDS, "actual_expire"),
+    "status": (*_STATUS_FIELDS, "game_state"),
+    "result": _RESULT_FIELDS,
+    "payout": (*_PAYOUT_FIELDS, "win_amount", "profit_amount"),
+    "realized_profit": ("realized_profit", "net_profit", "pnl"),
+    "user_balance_id": (*_WALLET_FIELDS, "is_demo", "balance_type_id", "wallet_id"),
+}
+_DIAGNOSTIC_OBJECTS = ("active", "data", "details", "instrument", "option", "position", "result")
+_DIAGNOSTIC_FIELD_NAMES = sorted(
+    {key for keys in _DIAGNOSTIC_RECORD_FIELDS.values() for key in keys} | set(_DIAGNOSTIC_OBJECTS)
+)
+_MAX_RECORD_SAMPLES = 5
 
 
 def _number(value: Any) -> float | None:
@@ -53,66 +110,126 @@ def _timestamp(value: Any) -> float | None:
     return number if 0 < number < 253402300800 else None
 
 
-def _symbol(row: dict[str, Any]) -> str | None:
-    explicit = _first(row, "symbol", "active", "instrument_id")
-    if isinstance(explicit, str):
-        with contextlib.suppress(Exception):
-            return InstrumentRegistry.normalize_symbol(explicit)
+def _identifier(value: Any) -> str | None:
+    if type(value) is int:
+        return str(value) if value > 0 else None
+    if isinstance(value, str):
+        digits = value.strip()
+        if digits.isascii() and digits.isdecimal() and digits.strip("0"):
+            return digits
+    return None
+
+
+def _key(value: Any) -> str:
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def _enum(value: Any, allowed: set[str]) -> str | None:
+    key = _key(value)
+    return key if key in allowed else None
+
+
+def _agreed(values: list[str | None]) -> str | None:
+    """Use an explicit value only when all supplied aliases agree."""
+    return values[0] if values and len(set(values)) == 1 else None
+
+
+def _enum_from_aliases(row: dict[str, Any], keys: tuple[str, ...], allowed: set[str]) -> str | None:
+    return _agreed([_enum(row[key], allowed) for key in keys if row.get(key) is not None])
+
+
+def _asset_name(value: Any) -> str | None:
+    try:
+        return InstrumentRegistry.normalize_symbol(value)
+    except UnsupportedInstrumentError:
         return None
-    active = _number(_first(row, "active_id", "act_id"))
-    if active is not None and active.is_integer():
-        with contextlib.suppress(Exception):
-            return InstrumentRegistry.get_by_active_id(int(active)).symbol
+
+
+def _asset_from_id(value: Any) -> str | None:
+    active_id = _number(value)
+    if active_id is None or not active_id.is_integer():
+        return None
+    try:
+        return InstrumentRegistry.get_by_active_id(int(active_id)).symbol
+    except UnsupportedInstrumentError:
+        return None
+
+
+def _symbol(row: dict[str, Any]) -> str | None:
+    return _agreed([
+        *(_asset_name(row[key]) for key in _ASSET_NAMES if row.get(key) is not None),
+        *(_asset_from_id(row[key]) for key in _ACTIVE_IDS if row.get(key) is not None),
+    ])
+
+
+def _ticket_id(row: dict[str, Any], container: str | None) -> str | None:
+    values = []
+    for field in _TICKET_FIELDS:
+        value = row.get(field)
+        if value is None:
+            continue
+        # The get_optioninfo_v2 consumer reads closed_options[i]["id"][0].
+        # A group with several entries cannot identify one individual trade.
+        if field == "id" and container == "closed_options" and isinstance(value, list):
+            value = value[0] if len(value) == 1 else None
+        values.append(_identifier(value))
+    return _agreed(values)
+
+
+def _lifecycle(row: dict[str, Any], container: str | None) -> str | None:
+    container_state = _CONTAINER_STATES.get(container) if container is not None else None
+    if all(row.get(field) is None for field in _STATUS_FIELDS):
+        return container_state
+    status = _enum_from_aliases(row, _STATUS_FIELDS, _STATUSES)
+    if status and container_state and (status == "open") != (container_state == "open"):
+        return None
+    return status
+
+
+def _payout(row: dict[str, Any], *, closed_winner: bool) -> float | None:
+    values = [_number(row[key]) for key in _PAYOUT_FIELDS if row.get(key) is not None]
+    # The get_optioninfo_v2 consumer subtracts the stake from win_amount for a win,
+    # establishing that win_amount is the gross return, with the stake included.
+    if closed_winner and row.get("win_amount") is not None:
+        values.append(_number(row["win_amount"]))
+    if values and len(set(values)) == 1 and values[0] is not None and values[0] >= 0:
+        return values[0]
     return None
 
 
-def _text(value: Any) -> str | None:
-    if isinstance(value, (str, int)) and not isinstance(value, bool):
-        return str(value).strip() or None
-    return None
-
-
-def normalize_history_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Allowlist fields; never emit unknown broker data or infer net profit."""
-    raw_product = _text(_first(row, "instrument_type", "product_type", "option_type"))
-    product_aliases = {
-        "binary": "binary-option",
-        "turbo": "turbo-option",
-        "binary-option": "binary-option",
-        "turbo-option": "turbo-option",
-        "digital-option": "digital-option",
-        "digital": "digital-option",
-    }
-    product = product_aliases.get(raw_product.lower()) if raw_product else None
-    status = _text(_first(row, "status", "position_status"))
-    result = _text(_first(row, "result", "win"))
-    direction = _text(_first(row, "direction", "dir"))
-    status = (
-        status.lower()
-        if status and status.lower() in {"open", "closed", "settled", "expired"}
-        else None
-    )
-    result = (
-        result.lower()
-        if result and result.lower() in {"win", "loose", "lose", "loss", "equal", "draw"}
-        else None
-    )
-    direction = direction.lower() if direction and direction.lower() in {"call", "put"} else None
-    ticket = _text(_first(row, "id", "option_id", "position_id"))
-    wallet = _text(_first(row, "user_balance_id", "balance_id"))
+def normalize_history_row(row: dict[str, Any], *, container: str | None = None) -> dict[str, Any]:
+    """Decode supported fields and preserve conflicts and missing evidence."""
+    products = [
+        _PRODUCT_NAMES_MAP.get(_key(row[key])) for key in _PRODUCT_NAMES if row.get(key) is not None
+    ]
+    product_id = row.get("option_type_id")
+    if product_id is not None:
+        products.append(_OPTION_TYPE_IDS.get(product_id) if type(product_id) is int else None)
+    stake = _number(_first(row, *_STAKE_FIELDS))
+    opened = _timestamp(_first(row, *_OPEN_FIELDS))
+    expires = _timestamp(_first(row, *_EXPIRY_FIELDS))
+    if opened is not None and expires is not None and expires <= opened:
+        expires = None
+    status = _lifecycle(row, container)
+    result = _enum_from_aliases(row, _RESULT_FIELDS, _RESULTS)
     return {
-        "ticket_id": ticket if ticket and ticket.isascii() and ticket.isdecimal() else None,
+        "ticket_id": _ticket_id(row, container),
         "symbol": _symbol(row),
-        "product_type": product,
-        "direction": direction.lower() if direction else None,
-        "stake": _number(_first(row, "amount", "invest", "stake", "deposit")),
-        "opened_at_utc": _timestamp(_first(row, "created", "created_at", "open_time")),
-        "expires_at_utc": _timestamp(_first(row, "expiration_time", "expire_at", "exp", "expired")),
-        "status": status.lower() if status else None,
-        "result": result.lower() if result else None,
-        "payout": _number(_first(row, "payout", "payout_amount")),
+        "product_type": _agreed(products),
+        "direction": _enum_from_aliases(row, _DIRECTION_FIELDS, _DIRECTIONS),
+        "stake": stake if stake is not None and stake > 0 else None,
+        "opened_at_utc": opened,
+        "expires_at_utc": expires,
+        "status": status,
+        "result": result,
+        "payout": _payout(
+            row,
+            closed_winner=container == "closed_options" and status is not None and result == "win",
+        ),
         "realized_profit": _number(_first(row, "realized_profit", "net_profit", "pnl")),
-        "user_balance_id": wallet if wallet and wallet.isascii() and wallet.isdecimal() else None,
+        "user_balance_id": _agreed([
+            _identifier(row[key]) for key in _WALLET_FIELDS if row.get(key) is not None
+        ]),
     }
 
 
@@ -143,9 +260,9 @@ def _history_container_summary(msg: dict[str, Any]) -> dict[str, Any]:
     return {"containers": containers, "unrecognized_array_count": unrecognized_array_count}
 
 
-def extract_rows(
+def _extract_records(
     response: dict[str, Any], *, diagnostics: dict[str, Any] | None = None
-) -> list[dict[str, Any]]:
+) -> list[tuple[str, str, dict[str, Any]]]:
     """Validate an options response after the live transport has matched its request ID."""
     msg = response.get("msg")
     if diagnostics is not None and isinstance(msg, dict):
@@ -165,22 +282,116 @@ def extract_rows(
         raise invalid("OPTIONS_BODY_NOT_OBJECT")
     nested = msg.get("result")
     body = nested if isinstance(nested, dict) else msg
+    prefix = "msg" if body is msg else "msg.result"
     if msg.get("success") is False or body.get("success") is False:
         raise invalid("BROKER_REPORTED_FAILURE")
-    arrays = [body[key] for key in _OPTION_ARRAYS if key in body]
+    arrays = [(key, body[key]) for key in _OPTION_ARRAYS if key in body]
     if not arrays:
         raise invalid("OPTION_ARRAY_MISSING")
-    if any(not isinstance(array, list) for array in arrays):
+    if any(not isinstance(array, list) for _, array in arrays):
         raise invalid("OPTION_CONTAINER_NOT_ARRAY")
-    rows: list[dict[str, Any]] = []
-    for array in arrays:
+    rows: list[tuple[str, str, dict[str, Any]]] = []
+    for key, array in arrays:
         if any(not isinstance(item, dict) for item in array):
             raise invalid("OPTION_ROW_NOT_OBJECT")
-        rows.extend(array)
+        rows.extend((f"{prefix}.{key}[]", key, item) for item in array)
     if diagnostics is not None:
         diagnostics["row_count"] = len(rows)
         diagnostics["schema_rejection_reason"] = None
     return rows
+
+
+def extract_rows(
+    response: dict[str, Any], *, diagnostics: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Return the validated options rows without their container context."""
+    return [row for _, _, row in _extract_records(response, diagnostics=diagnostics)]
+
+
+def _field_type(value: Any) -> str:
+    return {
+        type(None): "NULL",
+        bool: "BOOLEAN",
+        int: "INTEGER",
+        float: "NUMBER",
+        str: "STRING",
+        dict: "OBJECT",
+        list: "ARRAY",
+    }.get(type(value), "OTHER")
+
+
+def _field_shapes(row: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for name in _DIAGNOSTIC_FIELD_NAMES:
+        if name not in row:
+            continue
+        value = row[name]
+        shape: dict[str, Any] = {"type": _field_type(value)}
+        if isinstance(value, list):
+            shape["entry_count"] = len(value)
+            if name == "id" and len(value) == 1:
+                shape["item_type"] = _field_type(value[0])
+        fields[name] = shape
+    return {"fields": fields, "unknown_field_count": len(row) - len(fields)}
+
+
+def _identity_categories(row: dict[str, Any]) -> dict[str, str]:
+    categories: dict[str, str] = {}
+    for key in _ASSET_NAMES:
+        value = row.get(key)
+        if value is not None:
+            if _key(value) == "eurusd-op":
+                categories[key] = "EURUSD_OP"
+            else:
+                categories[key] = _asset_name(value) or "UNRECOGNIZED"
+    for key in _ACTIVE_IDS:
+        value = row.get(key)
+        if value is not None:
+            # The public active table identifies EURUSD-op separately from EURUSD and OTC.
+            categories[key] = (
+                "EURUSD_OP"
+                if type(value) is int and value == 1861
+                else _asset_from_id(value) or "UNRECOGNIZED"
+            )
+    for key in (*_PRODUCT_NAMES, "type"):
+        value = row.get(key)
+        if value is not None:
+            name = _key(value)
+            categories[key] = _PRODUCT_NAMES_MAP.get(name) or _OTHER_OPTION_NAMES.get(
+                name, "UNRECOGNIZED"
+            )
+    return categories
+
+
+def _record_sample(path: str, row: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+    objects = {
+        key: _field_shapes(row[key])
+        for key in _DIAGNOSTIC_OBJECTS
+        if isinstance(row.get(key), dict)
+    }
+    missing = {
+        field: (
+            "UNSUPPORTED_MALFORMED_OR_CONFLICTING_FIELD"
+            if any(row.get(key) is not None for key in aliases)
+            else "MISSING_OR_NULL_FIELD"
+        )
+        for field, aliases in _DIAGNOSTIC_RECORD_FIELDS.items()
+        if item[field] is None
+    }
+    if item["ticket_id"] is None and isinstance(row.get("id"), list) and len(row["id"]) > 1:
+        missing["ticket_id"] = "MULTIPLE_TICKET_ENTRIES"
+    return {
+        "path": path,
+        **_field_shapes(row),
+        "objects": objects,
+        "identity_field_categories": _identity_categories(row),
+        "missing_normalized_fields": missing,
+        "recognized_enums": {
+            key: item[key]
+            for key in ("product_type", "direction", "status", "result")
+            if item[key] is not None
+        },
+    }
 
 
 def reconcile_history(
@@ -195,7 +406,7 @@ def reconcile_history(
     diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Match only complete evidence; ambiguous or conflicting tickets are not confirmed."""
-    rows = extract_rows(response, diagnostics=diagnostics)
+    rows = _extract_records(response, diagnostics=diagnostics)
     wanted = InstrumentRegistry.normalize_symbol(asset)
     candidates: dict[str, dict[str, Any]] = {}
     seen: dict[str, dict[str, Any]] = {}
@@ -203,29 +414,32 @@ def reconcile_history(
     missing_id: list[dict[str, Any]] = []
     conflicting: set[str] = set()
     parseable_count = 0
-    for row in rows:
-        item = normalize_history_row(row)
+    samples: list[dict[str, Any]] = []
+    other_samples: list[dict[str, Any]] = []
+    for path, container, row in rows:
+        item = normalize_history_row(row, container=container)
         ident = item["ticket_id"]
         complete = ident is not None and all(item[key] is not None for key in _POSITION_FIELDS)
         if complete:
             parseable_count += 1
-        if ident and ticket_id is not None and ident != ticket_id:
-            continue
         if ident:
             if ident in seen and seen[ident] != item:
                 conflicting.add(ident)
             seen[ident] = item
         opened = item["opened_at_utc"]
         # Keep incomplete but otherwise plausible records as explicitly unverified hints.
-        if (
-            item["symbol"] not in (None, wanted)
-            or (
-                item["stake"] is not None
-                and not math.isclose(item["stake"], stake, rel_tol=0, abs_tol=0.001)
-            )
+        outside_search = (
+            (ident is not None and ticket_id is not None and ident != ticket_id)
+            or item["symbol"] not in (None, wanted)
+            or item["stake"] not in (None, stake)
             or (opened is not None and not start <= opened <= end)
             or item["product_type"] not in (None, "binary-option", "turbo-option")
-        ):
+        )
+        if diagnostics is not None:
+            selected = other_samples if outside_search else samples
+            if len(selected) < _MAX_RECORD_SAMPLES:
+                selected.append(_record_sample(path, row, item))
+        if outside_search:
             continue
         if not ident:
             missing_id.append(item)
@@ -236,10 +450,13 @@ def reconcile_history(
         candidates[ident] = item
     entries = list(candidates.values())
     if diagnostics is not None:
+        record_samples = (samples + other_samples)[:_MAX_RECORD_SAMPLES]
         diagnostics.update({
             "parseable_candidate_count": parseable_count,
             "matching_candidate_count": len(entries),
             "incomplete_candidate_count": len(possible) + len(missing_id),
+            "record_samples": record_samples,
+            "record_samples_omitted": len(rows) - len(record_samples),
         })
     relevant_conflicts = conflicting.intersection(candidates.keys() | possible.keys())
     result: dict[str, Any] = {
@@ -265,14 +482,7 @@ def reconcile_history(
             result["wallet_status"] = "PRACTICE_WALLET_CONFIRMED"
         elif item["user_balance_id"] is not None:
             result["wallet_status"] = "WALLET_MISMATCH"
-        if item["status"] in {"closed", "settled", "expired"} or item["result"] in {
-            "win",
-            "loose",
-            "lose",
-            "loss",
-            "equal",
-            "draw",
-        }:
+        if item["status"] in {"closed", "settled", "expired"} and item["result"] is not None:
             result["settlement_status"] = "SETTLEMENT_CONFIRMED"
     elif len(entries) > 1 or relevant_conflicts or (entries and (possible or missing_id)):
         result["history_status"] = "HISTORY_AMBIGUOUS"

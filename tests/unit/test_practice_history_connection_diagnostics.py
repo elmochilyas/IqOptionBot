@@ -68,9 +68,17 @@ def test_history_verdict_requires_one_complete_unique_match() -> None:
     assert reconcile(item(user_balance_id=None))["wallet_status"] == "ROUTING_UNVERIFIED"
 
 
-@pytest.mark.parametrize("missing", ["direction", "expiration_time", "status"])
+@pytest.mark.parametrize("missing", ["direction", "expiration_time"])
 def test_incomplete_position_fields_do_not_confirm_history(missing: str) -> None:
     assert reconcile(item(**{missing: None}))["history_status"] == "HISTORY_UNVERIFIED"
+
+
+def test_unclassified_options_array_needs_explicit_lifecycle() -> None:
+    reply = {"name": "options", "msg": {"options": [item(status=None)]}}
+    result = reconcile_history(
+        reply, asset="EURUSD", stake=1000, start=1794903900, end=1794904100, practice_id="101"
+    )
+    assert result["history_status"] == "HISTORY_UNVERIFIED"
 
 
 class ScriptedSocket:
@@ -333,7 +341,10 @@ async def test_profile_push_before_query_is_not_claimed_as_correlated(monkeypatc
         await obs.async_close()
 
 
-def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(monkeypatch: Any) -> None:
+@pytest.mark.parametrize("diagnostics_enabled", [False, True])
+def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(
+    monkeypatch: Any, diagnostics_enabled: bool
+) -> None:
     class Socket(ScriptedSocket):
         async def send(self, data: str) -> None:
             request = json.loads(data)
@@ -344,6 +355,29 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(monkey
                     "status": 0,
                     "msg": {"user_id": 123},
                     "request_id": request["request_id"],
+                })
+                return
+            if request["name"] == "sendMessage" and request["msg"]["name"] == "get-options":
+                self.sent.append(request)
+                assert self.obs.failure_diagnostics()["practice_wallet_identity_established"]
+                assert request["msg"]["body"]["user_balance_id"] == 101
+                self.obs._handle_incoming_frame({
+                    "name": "options",
+                    "status": 0,
+                    "request_id": request["request_id"],
+                    "msg": {
+                        "closed_options": [
+                            {
+                                "id": [9944556677],
+                                "amount": 1000,
+                                "created": 1794907530,
+                                "expired": 1794907560,
+                                "user_balance_id": None,
+                                "option": {"token": "private-record-token"},
+                            }
+                        ],
+                        "open_options": [],
+                    },
                 })
                 return
             await super().send(data)
@@ -378,17 +412,24 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(monkey
             "--stake",
             "1000",
             "--start",
-            "2026-11-17T09:25:00+01:00",
+            "2026-11-17T09:25:00Z",
             "--end",
-            "2026-11-17T09:30:00+01:00",
-            "--balance-diagnostics",
+            "2026-11-17T09:30:00Z",
+            *(["--balance-diagnostics"] if diagnostics_enabled else []),
         ],
     )
     assert result.exit_code == 0, result.output
     assert '"profile_verification": "PROFILE_UNVERIFIED"' in result.output
     assert '"real_wallet_status": "UNVERIFIED"' in result.output
-    assert '"history_status": "HISTORY_NOT_FOUND"' in result.output
-    assert '"start": "2026-11-17T08:25:00+00:00"' in result.output
+    assert '"history_status": "HISTORY_UNVERIFIED"' in result.output
+    assert '"position_status": "INCOMPLETE_CANDIDATES"' in result.output
+    assert '"start": "2026-11-17T09:25:00+00:00"' in result.output
+    assert ('"record_samples"' in result.output) == diagnostics_enabled
+    assert ("msg.closed_options[]" in result.output) == diagnostics_enabled
+    assert not any(
+        value in result.output
+        for value in ("9944556677", "private-record-token", "1794907530", "private-ssid")
+    )
     assert [f["msg"]["name"] for f in sockets[0].sent[1:]] == [
         "get-profile",
         "get-balances",

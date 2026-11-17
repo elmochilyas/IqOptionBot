@@ -37,12 +37,15 @@ from iqoption_research.connectors.iqoption.exceptions import (
 from iqoption_research.connectors.iqoption.http_auth import async_login
 from iqoption_research.execution.models import OrderSide, PaperOrder
 from iqoption_research.execution.modes import (
+    ContractAvailabilityUnverifiedError,
     ExecutionMode,
     PracticeAuthorizationError,
     RealAccountExecutionBlockedError,
+    UnsupportedProductOperationError,
 )
 from iqoption_research.execution.practice_transport import (
     MIN_PRACTICE_STAKE,
+    BinaryInstrumentSchedule,
     PracticeBinaryTransportAdapter,
     PracticeSettlementResult,
 )
@@ -134,6 +137,7 @@ class IQOptionLivePracticeTransport:
         self._submitted_order_count: int = 0
         self._server_time_sec: float | None = None
         self._server_time_synced_at: float | None = None
+        self._instrument_schedules: dict[str, BinaryInstrumentSchedule] = {}
 
     def __repr__(self) -> str:
         masked_ssid = "***" if self._ssid else "None"
@@ -732,6 +736,76 @@ class IQOptionLivePracticeTransport:
             raw=raw_c,
         )
 
+    async def async_get_contract_specification(
+        self, symbol: str = "EURUSD", *, force_refresh: bool = False
+    ) -> BinaryInstrumentSchedule:
+        """Query and return verified contract limits, availability, and payout from broker.
+
+        Raises:
+        - ContractAvailabilityUnverifiedError: If contract info is unverified or broker times out.
+        - UnsupportedProductOperationError: If contract is explicitly disabled on broker.
+        """
+        sym = symbol.upper()
+        now = time.time()
+
+        if not force_refresh and sym in self._instrument_schedules:
+            cached = self._instrument_schedules[sym]
+            if cached.verified_at and (now - cached.verified_at) < 60.0:
+                if not cached.is_available:
+                    raise UnsupportedProductOperationError(
+                        f"Contract {sym} is currently unavailable for trading on broker "
+                        "(enabled=False)."
+                    )
+                return cached
+
+        if self._closed or self._ws is None:
+            raise ConnectionError(
+                "Cannot query contract specification: Practice transport is disconnected."
+            )
+
+        req_id = f"init_{next(self._request_counter)}"
+        init_frame = {
+            "name": "sendMessage",
+            "msg": {"name": "get-initialization-data", "version": "4.0", "body": {}},
+            "request_id": req_id,
+        }
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._pending_requests[req_id] = future
+
+        try:
+            logger.info("Requesting initialization data from broker (req_id=%s)", req_id)
+            await self._ws.send(json.dumps(init_frame))
+            opt_req_id = f"opt_{next(self._request_counter)}"
+            opt_frame = {
+                "name": "api_game_getoptions",
+                "msg": {"type": "turbo"},
+                "request_id": opt_req_id,
+            }
+            with contextlib.suppress(Exception):
+                await self._ws.send(json.dumps(opt_frame))
+
+            try:
+                await asyncio.wait_for(future, timeout=min(5.0, self.config.request_timeout))
+            except TimeoutError:
+                logger.warning("get-initialization-data timed out waiting for correlated response.")
+        finally:
+            self._pending_requests.pop(req_id, None)
+
+        if sym in self._instrument_schedules:
+            sched = self._instrument_schedules[sym]
+            if not sched.is_available:
+                raise UnsupportedProductOperationError(
+                    f"Contract {sym} is currently unavailable for trading on broker "
+                    "(enabled=False)."
+                )
+            return sched
+
+        raise ContractAvailabilityUnverifiedError(
+            f"Broker contract availability, payout, and limits for {sym} could not be verified."
+        )
+
     async def async_close(self) -> None:
         """Cleanly close WebSocket connection and cancel listener tasks."""
         self._closed = True
@@ -827,6 +901,29 @@ class IQOptionLivePracticeTransport:
         # 3. Balances
         if name in {"balances", "get-balances", "balance"}:
             self._handle_balances_frame(message)
+            return
+
+        # Contract availability and options specification
+        if name in {
+            "initialization-data",
+            "get-initialization-data",
+            "api_game_getoptions",
+            "instruments",
+            "turbo",
+            "binary",
+        }:
+            self._handle_initialization_data_frame(message)
+            if req_id and req_id in self._pending_requests:
+                fut = self._pending_requests[req_id]
+                if not fut.done():
+                    fut.set_result(message)
+                return
+            for pending_id, pending_fut in self._pending_requests.items():
+                if (
+                    pending_id.startswith("init_") or pending_id.startswith("opt_")
+                ) and not pending_fut.done():
+                    pending_fut.set_result(message)
+                    return
             return
 
         # 4. Time synchronization
@@ -939,6 +1036,115 @@ class IQOptionLivePracticeTransport:
                     self._active_balance_id = str(b.id)
             self._balances_event.set()
 
+    def _handle_initialization_data_frame(self, message: dict[str, Any]) -> None:
+        """Parse initialization-data or options frame to update contract schedules."""
+        raw_msg = message.get("msg")
+        msg_dict = raw_msg if isinstance(raw_msg, dict) else message
+        if "result" in msg_dict and isinstance(msg_dict["result"], dict):
+            msg_dict = msg_dict["result"]
+
+        sources: list[dict[str, Any]] = []
+        for cat in ("turbo", "binary", "digital"):
+            if cat in msg_dict and isinstance(msg_dict[cat], dict):
+                cat_dict = msg_dict[cat]
+                if "actives" in cat_dict and isinstance(cat_dict["actives"], dict):
+                    sources.append(cat_dict["actives"])
+        if "actives" in msg_dict and isinstance(msg_dict["actives"], dict):
+            sources.append(msg_dict["actives"])
+
+        now = time.time()
+        known_symbols = {
+            1: "EURUSD",
+            2: "EURGBP",
+            3: "GBPJPY",
+            4: "EURJPY",
+            5: "GBPUSD",
+            6: "USDJPY",
+            7: "AUDCAD",
+            8: "NZDUSD",
+            10: "USDCHF",
+        }
+
+        for actives_map in sources:
+            for str_act_id, act_val in actives_map.items():
+                if not isinstance(act_val, dict):
+                    continue
+                with contextlib.suppress(Exception):
+                    act_id = int(str_act_id)
+                    raw_name = (
+                        str(act_val.get("name") or act_val.get("ticker") or "")
+                        .replace("/", "")
+                        .replace(" ", "")
+                        .upper()
+                    )
+                    sym = raw_name if raw_name else known_symbols.get(act_id)
+                    if not sym:
+                        continue
+
+                    is_enabled = bool(
+                        act_val.get("enabled", False)
+                        or act_val.get("is_enabled", False)
+                        or act_val.get("enabled") == 1
+                    )
+
+                    option_info = (
+                        act_val.get("option", {}) if isinstance(act_val.get("option"), dict) else {}
+                    )
+                    profit_info = (
+                        option_info.get("profit", {})
+                        if isinstance(option_info.get("profit"), dict)
+                        else act_val.get("profit", {})
+                    )
+                    if not isinstance(profit_info, dict):
+                        profit_info = {}
+
+                    commission = None
+                    if "commission" in profit_info:
+                        commission = float(profit_info["commission"])
+                    elif "commission" in option_info:
+                        commission = float(option_info["commission"])
+                    elif "commission" in act_val:
+                        commission = float(act_val["commission"])
+
+                    payout_rate = 0.85
+                    commission_pct = 15.0
+                    if commission is not None:
+                        commission_pct = float(commission)
+                        payout_rate = max(0.0, min(1.0, (100.0 - commission_pct) / 100.0))
+                    elif "payout" in profit_info:
+                        p = float(profit_info["payout"])
+                        payout_rate = p / 100.0 if p > 1.0 else p
+                        commission_pct = (1.0 - payout_rate) * 100.0
+                    elif "payout" in act_val:
+                        p = float(act_val["payout"])
+                        payout_rate = p / 100.0 if p > 1.0 else p
+                        commission_pct = (1.0 - payout_rate) * 100.0
+
+                    min_stake = 1.00
+                    max_stake = 100.00
+                    if "min_bet" in option_info:
+                        min_stake = float(option_info["min_bet"])
+                    elif "min_bet" in act_val:
+                        min_stake = float(act_val["min_bet"])
+
+                    if "max_bet" in option_info:
+                        max_stake = float(option_info["max_bet"])
+                    elif "max_bet" in act_val:
+                        max_stake = float(act_val["max_bet"])
+
+                    schedule = BinaryInstrumentSchedule(
+                        symbol=sym,
+                        active_id=act_id,
+                        is_available=is_enabled,
+                        min_stake=min_stake,
+                        max_stake=max_stake,
+                        payout_rate=payout_rate,
+                        commission_percent=commission_pct,
+                        verified_at=now,
+                        source="broker_live",
+                    )
+                    self._instrument_schedules[sym] = schedule
+
     # -----------------------------------------------------------------------
     # Synchronous Transport Bridge (for BaseExecutionAdapter compatibility)
     # -----------------------------------------------------------------------
@@ -990,6 +1196,34 @@ class IQOptionLivePracticeTransport:
         if conn_error:
             self.close()
             raise conn_error[0]
+
+    def get_contract_specification(
+        self, symbol: str = "EURUSD", *, force_refresh: bool = False
+    ) -> BinaryInstrumentSchedule:
+        """Synchronously retrieve verified contract specification from broker."""
+        if self._is_running_thread and self._loop is not None and self._thread is not None:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.async_get_contract_specification(symbol=symbol, force_refresh=force_refresh),
+                self._loop,
+            )
+            try:
+                return fut.result(timeout=self.config.request_timeout + 2.0)
+            except TimeoutError as exc:
+                raise TimeoutError(f"Synchronous contract specification timeout: {exc}") from exc
+
+        try:
+            running_loop = asyncio.get_running_loop()
+            if running_loop.is_running():
+                raise RuntimeError(
+                    "Cannot call synchronous get_contract_specification from an already running "
+                    "event loop. Use await transport.async_get_contract_specification() instead."
+                )
+        except RuntimeError:
+            pass
+
+        return asyncio.run(
+            self.async_get_contract_specification(symbol=symbol, force_refresh=force_refresh)
+        )
 
     def get_live_candle(self, symbol: str = "EURUSD", size: int = 60) -> Candle:
         """Synchronously fetch the latest candle from broker."""

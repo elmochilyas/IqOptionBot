@@ -38,9 +38,11 @@ from iqoption_research.execution.execution_engine import (
 from iqoption_research.execution.live_practice_transport import IQOptionLivePracticeTransport
 from iqoption_research.execution.models import OrderSide, OrderState, ProductType
 from iqoption_research.execution.modes import (
+    ContractAvailabilityUnverifiedError,
     ExecutionMode,
     ExecutionModeConfig,
     RealAccountExecutionBlockedError,
+    UnsupportedProductOperationError,
 )
 from iqoption_research.execution.practice_transport import (
     MAX_PRACTICE_TEST_STAKE,
@@ -1134,6 +1136,14 @@ def practice_test_command(
             f"${MAX_PRACTICE_TEST_STAKE:.2f}[/bold red]"
         )
         raise typer.BadParameter(f"Stake must be <= ${MAX_PRACTICE_TEST_STAKE:.2f}")
+    if not offline_mock and abs(stake - 1.00) > 1e-4:
+        console.print(
+            "[bold red]CRITICAL SAFETY GUARD: Live Practice test trade is strictly restricted to "
+            "exactly $1.00 virtual money.[/bold red]"
+        )
+        raise typer.BadParameter(
+            "Live Practice test trade is strictly restricted to exactly $1.00 virtual money."
+        )
 
     norm_side = OrderSide.CALL if side.lower() == "call" else OrderSide.PUT
 
@@ -1254,77 +1264,193 @@ def practice_test_command(
                 current_amount = float(b.amount)
                 break
 
-        # 4. Fetch live market quote & verify asset tradability
-        server_ts = transport.server_time
-        try:
-            current_candle = transport.get_live_candle(symbol=symbol.upper(), size=60)
-        except Exception as exc:
-            console.print(
-                f"[bold red]Failed to fetch live market quote for {symbol.upper()}: "
-                f"{exc}[/bold red]"
+        # 4. Pre-Flight Verification & Expiry Drift Revalidation Loop
+        spec = None
+        current_candle = None
+        expiry_ts = 0
+        expiry_utc_str = ""
+
+        while True:
+            # Query verified contract specification
+            try:
+                spec = transport.get_contract_specification(symbol=symbol.upper())
+            except (ContractAvailabilityUnverifiedError, UnsupportedProductOperationError) as exc:
+                console.print(
+                    Panel.fit(
+                        f"[bold red]CRITICAL SAFETY BLOCK: Contract Unavailable or Unverified"
+                        f"[/bold red]\n\n"
+                        f"• Instrument: {symbol.upper()}\n"
+                        f"• Error: {exc}\n"
+                        "• Rule: Practice order cannot be placed without authoritative contract "
+                        "availability and payout verification from the broker.\n"
+                        "• Zero orders were dispatched fail-closed.",
+                        border_style="red",
+                    )
+                )
+                raise typer.Exit(code=1) from exc
+
+            if not spec.is_available:
+                console.print(
+                    Panel.fit(
+                        "[bold red]CRITICAL SAFETY BLOCK: Contract Disabled on Broker[/bold red]"
+                        "\n\n"
+                        f"• Instrument: {symbol.upper()}\n"
+                        f"• Broker Status: enabled=False\n"
+                        "• Rule: Contract is currently closed/disabled by the broker.\n"
+                        "• Zero orders were dispatched fail-closed.",
+                        border_style="red",
+                    )
+                )
+                raise typer.Exit(code=1)
+
+            if stake < spec.min_stake:
+                console.print(
+                    f"[bold red]Stake ${stake:.2f} is below broker minimum stake "
+                    f"${spec.min_stake:.2f} for {symbol.upper()}[/bold red]"
+                )
+                raise typer.Exit(code=1)
+
+            # Fetch live market quote & verify asset tradability
+            server_ts = transport.server_time
+            try:
+                current_candle = transport.get_live_candle(symbol=symbol.upper(), size=60)
+            except Exception as exc:
+                console.print(
+                    f"[bold red]Failed to fetch live market quote for {symbol.upper()}: "
+                    f"{exc}[/bold red]"
+                )
+                raise typer.Exit(code=1) from exc
+
+            if current_candle.close <= 0:
+                console.print(
+                    f"[bold red]Asset {symbol.upper()} returned non-positive quote "
+                    f"({current_candle.close}). Market unavailable.[/bold red]"
+                )
+                raise typer.Exit(code=1)
+
+            candle_age = server_ts - current_candle.to_ts
+            if candle_age > 180:
+                console.print(
+                    f"[bold red]Asset quote is stale ({candle_age:.0f}s old). "
+                    f"Market for {symbol.upper()} may be closed.[/bold red]"
+                )
+                raise typer.Exit(code=1)
+
+            # Expiration calculation
+            expiry_ts = compute_binary_expiry(server_ts, duration_minutes=1)
+            remaining_seconds = expiry_ts - int(server_ts)
+            if remaining_seconds < 30:
+                server_ts = transport.server_time
+                expiry_ts = compute_binary_expiry(server_ts, duration_minutes=1)
+                remaining_seconds = expiry_ts - int(server_ts)
+
+            expiry_utc_str = datetime.fromtimestamp(expiry_ts, tz=UTC).strftime(
+                "%Y-%m-%d %H:%M:%S UTC"
             )
-            raise typer.Exit(code=1) from exc
 
-        if current_candle.close <= 0:
-            console.print(
-                f"[bold red]Asset {symbol.upper()} returned non-positive quote "
-                f"({current_candle.close}). Market unavailable.[/bold red]"
+            # Display Pre-Flight Confirmation Table
+            table = Table(
+                title=(
+                    "[bold yellow]Operator Supervised Practice Test — "
+                    "Pre-Flight Audit[/bold yellow]"
+                )
             )
-            raise typer.Exit(code=1)
+            table.add_column("Parameter", style="cyan")
+            table.add_column("Value", style="bold white")
 
-        candle_age = server_ts - current_candle.to_ts
-        if candle_age > 180:
-            console.print(
-                f"[bold red]Asset quote is stale ({candle_age:.0f}s old). "
-                f"Market for {symbol.upper()} may be closed.[/bold red]"
+            table.add_row(
+                "Confirmed Account Type",
+                "[bold green]PRACTICE (type 4 - Virtual Funds)[/bold green]",
             )
-            raise typer.Exit(code=1)
-
-        # 5. Expiration calculation
-        expiry_ts = compute_binary_expiry(server_ts, duration_minutes=1)
-        remaining_seconds = expiry_ts - int(server_ts)
-        expiry_utc_str = datetime.fromtimestamp(expiry_ts, tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-        # 6. Display Pre-Flight Confirmation Table
-        table = Table(
-            title="[bold yellow]Operator Supervised Practice Test — Pre-Flight Audit[/bold yellow]"
-        )
-        table.add_column("Parameter", style="cyan")
-        table.add_column("Value", style="bold white")
-
-        table.add_row(
-            "Confirmed Account Type", "[bold green]PRACTICE (type 4 - Virtual Funds)[/bold green]"
-        )
-        table.add_row("Active Practice Balance ID", active_bal_id)
-        table.add_row("Current Virtual Balance", f"${current_amount:,.2f}")
-        table.add_row("Session Identifier", str(initial_session_id))
-        table.add_row("Product & Instrument", f"BINARY {symbol.upper()}")
-        table.add_row("Trade Direction", f"[bold cyan]{norm_side.value.upper()}[/bold cyan]")
-        table.add_row("Virtual Stake Amount", f"${stake:.2f} (Platform minimum)")
-        table.add_row(
-            "Live Quote Price",
-            f"{current_candle.close:.5f} (Mid: {current_candle.midpoint:.5f})",
-        )
-        table.add_row("Contract Expiration", f"{expiry_ts} ({expiry_utc_str})")
-        table.add_row("Remaining Seconds to Expiry", f"{remaining_seconds}s")
-        table.add_row("Autonomous AI Trading", "[bold red]DISABLED[/bold red]")
-        table.add_row(
-            "Safety Invariant",
-            "[bold green]Single Practice Order / Zero Retries Enforced[/bold green]",
-        )
-        console.print(table)
-
-        # 7. Explicit operator authorization
-        if not confirm:
-            reconfirm = typer.confirm(
-                f"Transmit single ${stake:.2f} Practice trade on {symbol.upper()} to broker?",
-                default=False,
+            table.add_row("Active Practice Balance ID", active_bal_id)
+            table.add_row("Current Virtual Balance", f"${current_amount:,.2f}")
+            table.add_row("Session Identifier", str(initial_session_id))
+            table.add_row("Product & Instrument", f"BINARY {symbol.upper()}")
+            table.add_row("Trade Direction", f"[bold cyan]{norm_side.value.upper()}[/bold cyan]")
+            table.add_row("Virtual Stake Amount", f"${stake:.2f} (Platform minimum)")
+            table.add_row(
+                "Contract Availability",
+                f"[bold green]AVAILABLE (Source: {spec.source})[/bold green]",
             )
-            if not reconfirm:
-                console.print("[yellow]Aborted by operator. No test order was dispatched.[/yellow]")
-                raise typer.Abort()
+            table.add_row(
+                "Broker Payout Rate",
+                f"{spec.payout_rate * 100:.1f}% (Commission: {spec.commission_percent:.1f}%)",
+            )
+            table.add_row(
+                "Live Quote Price",
+                f"{current_candle.close:.5f} (Mid: {current_candle.midpoint:.5f})",
+            )
+            table.add_row("Contract Expiration", f"{expiry_ts} ({expiry_utc_str})")
+            table.add_row("Remaining Seconds to Expiry", f"{remaining_seconds}s")
+            table.add_row("Autonomous AI Trading", "[bold red]DISABLED[/bold red]")
+            table.add_row(
+                "Safety Invariant",
+                "[bold green]Single Practice Order / Zero Retries Enforced[/bold green]",
+            )
+            console.print(table)
 
-        # 8. Immediate Pre-Transmission Invariant & Continuity Verification
+            # Operator authorization
+            if not confirm:
+                reconfirm = typer.confirm(
+                    f"Transmit single ${stake:.2f} Practice trade on {symbol.upper()} to broker?",
+                    default=False,
+                )
+                if not reconfirm:
+                    console.print(
+                        "[yellow]Aborted by operator. No test order was dispatched.[/yellow]"
+                    )
+                    raise typer.Abort()
+
+            # Immediate Pre-Transmission Revalidation: detect expiry drift or material payout change
+            fresh_server_ts = transport.server_time
+            remaining_before_send = expiry_ts - int(fresh_server_ts)
+            try:
+                fresh_spec = transport.get_contract_specification(symbol=symbol.upper())
+            except Exception as exc:
+                console.print(
+                    f"[bold red]CRITICAL SAFETY BLOCK: Pre-transmission contract verification "
+                    f"failed: {exc}[/bold red]"
+                )
+                raise typer.Exit(code=1) from exc
+
+            terms_invalid_reason: str | None = None
+            if remaining_before_send < 30:
+                terms_invalid_reason = (
+                    f"Order expiry deadline elapsed while reviewing prompt: only "
+                    f"{remaining_before_send}s remaining "
+                    "(minimum 30s cutoff required before expiry)."
+                )
+            elif not fresh_spec.is_available:
+                terms_invalid_reason = (
+                    f"Contract {symbol.upper()} became unavailable during confirmation."
+                )
+            elif abs(fresh_spec.payout_rate - spec.payout_rate) > 0.001:
+                terms_invalid_reason = (
+                    f"Broker payout rate changed materially from {spec.payout_rate * 100:.1f}% "
+                    f"to {fresh_spec.payout_rate * 100:.1f}% during confirmation."
+                )
+
+            if terms_invalid_reason:
+                console.print(
+                    Panel.fit(
+                        f"[bold yellow]APPROVED ORDER TERMS INVALIDATED PRE-TRANSMISSION"
+                        f"[/bold yellow]\n\n"
+                        f"• {terms_invalid_reason}\n"
+                        "• Invariant: Order terms will NEVER be silently modified.\n"
+                        "• Re-evaluating fresh market terms and requiring renewed authorization.",
+                        border_style="yellow",
+                    )
+                )
+                if confirm:
+                    raise RuntimeError(
+                        f"Pre-transmission validation failed in automated mode: "
+                        f"{terms_invalid_reason}"
+                    )
+                continue
+
+            break
+
+        # Pre-transmission connection & session continuity verification
         transport.refresh_account_state()
         if not transport.is_connected:
             console.print(
@@ -1377,6 +1503,7 @@ def practice_test_command(
             symbol=symbol.upper(),
             side=norm_side,
             stake=stake,
+            payout_rate=spec.payout_rate if spec else None,
             candle_to_ts=float(current_candle.to_ts),
             signal_id="sig_operator_cli_supervised",
         )

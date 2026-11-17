@@ -138,6 +138,29 @@ class MockWebSocket:
                     },
                 })
 
+            # Reactive response for get-initialization-data
+            if msg_name == "get-initialization-data":
+                req_id = parsed.get("request_id", "init_default")
+                self.inject_message({
+                    "name": "initialization-data",
+                    "request_id": req_id,
+                    "msg": {
+                        "turbo": {
+                            "actives": {
+                                "1": {
+                                    "name": "EURUSD",
+                                    "enabled": True,
+                                    "option": {
+                                        "profit": {"commission": 15.0},
+                                        "min_bet": 1.0,
+                                        "max_bet": 100.0,
+                                    },
+                                }
+                            }
+                        }
+                    },
+                })
+
     def inject_message(self, message: dict[str, Any] | str) -> None:
         text = json.dumps(message) if isinstance(message, dict) else message
         q = self._ensure_queue()

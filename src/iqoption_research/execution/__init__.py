@@ -52,6 +52,7 @@ from iqoption_research.execution.models import (
     ProductType,
 )
 from iqoption_research.execution.modes import (
+    ContractAvailabilityUnverifiedError,
     ExecutionModeConfig,
     ExecutionModeError,
     ExecutionModeGuard,
@@ -116,6 +117,7 @@ __all__ = [
     "BrokerLedgerStatus",
     "BrokerOperation",
     "CircuitBreakerState",
+    "ContractAvailabilityUnverifiedError",
     "DigitalOptionsAdapter",
     "DigitalPayoffModel",
     "DisabledBrokerExecutionAdapter",

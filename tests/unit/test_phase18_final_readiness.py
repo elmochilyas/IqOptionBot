@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -29,6 +30,7 @@ from iqoption_research.execution.modes import (
 from iqoption_research.execution.practice_transport import (
     MAX_PRACTICE_TEST_STAKE,
     MIN_PRACTICE_STAKE,
+    BinaryInstrumentSchedule,
     MockBrokerPracticeTransport,
     compute_binary_expiry,
 )
@@ -386,3 +388,183 @@ def test_cli_practice_test_operator_abort() -> None:
     )
     assert result.exit_code != 0
     assert "Aborted by operator. No test order was dispatched." in result.stdout
+
+
+# ===========================================================================
+# 7. Contract Availability & Expiry Safety Tests
+# ===========================================================================
+def test_cli_live_stake_restricted_to_exactly_one_dollar() -> None:
+    """Live Practice test order must be strictly restricted to exactly $1.00 virtual money."""
+    result = runner.invoke(
+        app,
+        ["practice-test", "--live-socket", "--yes", "--stake", "2.00"],
+    )
+    assert result.exit_code != 0
+    assert "Live Practice test trade is strictly restricted" in result.stdout
+    assert "$1.00 virtual money" in result.stdout
+
+
+def test_contract_availability_unverified_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If contract availability/payout is unverified, order dispatch fails closed."""
+    orig_init = MockBrokerPracticeTransport.__init__
+
+    def patched_init(self: MockBrokerPracticeTransport, *args: Any, **kwargs: Any) -> None:
+        orig_init(self, *args, **kwargs)
+        self.simulate_unverified_contract = True
+
+    monkeypatch.setattr(MockBrokerPracticeTransport, "__init__", patched_init)
+
+    result = runner.invoke(
+        app,
+        ["practice-test", "--offline-mock", "--yes", "--stake", "1.00"],
+    )
+    assert result.exit_code != 0
+    assert "CRITICAL SAFETY BLOCK: Contract Unavailable or Unverified" in result.stdout
+
+
+def test_contract_disabled_on_broker_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If contract is marked disabled (enabled=False) on broker, order dispatch fails closed."""
+    orig_init = MockBrokerPracticeTransport.__init__
+
+    def patched_init(self: MockBrokerPracticeTransport, *args: Any, **kwargs: Any) -> None:
+        orig_init(self, *args, **kwargs)
+        self.set_contract_specification(
+            BinaryInstrumentSchedule(
+                symbol="EURUSD",
+                active_id=1,
+                is_available=False,
+                min_stake=1.00,
+                max_stake=100.00,
+                payout_rate=0.85,
+            )
+        )
+
+    monkeypatch.setattr(MockBrokerPracticeTransport, "__init__", patched_init)
+
+    result = runner.invoke(
+        app,
+        ["practice-test", "--offline-mock", "--yes", "--stake", "1.00"],
+    )
+    assert result.exit_code != 0
+    assert "CRITICAL SAFETY BLOCK: Contract Unavailable or Unverified" in result.stdout
+    assert "enabled=False" in result.stdout
+
+
+def test_pre_transmission_expiry_cutoff_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If remaining seconds drop below 30s cutoff before transmission, it is detected."""
+    call_count = 0
+
+    def mock_server_time(self: MockBrokerPracticeTransport) -> float:
+        nonlocal call_count
+        call_count += 1
+        base = 1700000000 - (1700000000 % 60)
+        # 1st call for initial expiry calculation: 10s into minute
+        # 2nd call right before transmission: 35s into minute (remaining = 25s < 30s)
+        if call_count == 1:
+            return float(base + 10)
+        return float(base + 35)
+
+    monkeypatch.setattr(MockBrokerPracticeTransport, "server_time", property(mock_server_time))
+
+    with pytest.raises(RuntimeError, match="Order expiry deadline elapsed while reviewing prompt"):
+        runner.invoke(
+            app,
+            ["practice-test", "--offline-mock", "--yes", "--stake", "1.00"],
+            catch_exceptions=False,
+        )
+
+
+def test_pre_transmission_material_payout_change_detected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If broker payout rate changes materially before transmission, it is detected."""
+    call_count = 0
+
+    def mock_get_spec(
+        self: MockBrokerPracticeTransport, symbol: str = "EURUSD"
+    ) -> BinaryInstrumentSchedule:
+        nonlocal call_count
+        call_count += 1
+        rate = 0.85 if call_count == 1 else 0.80
+        return BinaryInstrumentSchedule(
+            symbol=symbol.upper(),
+            active_id=1,
+            is_available=True,
+            min_stake=1.00,
+            max_stake=100.00,
+            payout_rate=rate,
+            commission_percent=(1.0 - rate) * 100.0,
+            source="mock_dynamic",
+        )
+
+    monkeypatch.setattr(MockBrokerPracticeTransport, "get_contract_specification", mock_get_spec)
+
+    with pytest.raises(RuntimeError, match="Broker payout rate changed materially"):
+        runner.invoke(
+            app,
+            ["practice-test", "--offline-mock", "--yes", "--stake", "1.00"],
+            catch_exceptions=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_live_transport_parses_initialization_data_frame() -> None:
+    """IQOptionLivePracticeTransport parses initialization-data frame and computes payout."""
+    handshake = [
+        json.dumps({"name": "authenticated", "msg": True}),
+        json.dumps({"name": "profile", "msg": {"user_id": 999123, "balance_id": 101}}),
+        json.dumps({
+            "name": "balances",
+            "msg": [
+                {"id": 101, "type": 4, "amount": 10000.0, "currency": "USD", "is_active": True},
+            ],
+        }),
+    ]
+    mock_ws = MockWebSocket(handshake)
+
+    async def fake_connect() -> MockWebSocket:
+        return mock_ws
+
+    transport = IQOptionLivePracticeTransport(
+        ssid="mock_ssid",
+        config=IQOptionLivePracticeTransportConfig(request_timeout=2.0),
+        connect_factory=fake_connect,
+    )
+
+    try:
+        await transport.async_connect(require_practice=False)
+        spec = await transport.async_get_contract_specification("EURUSD")
+        assert spec.symbol == "EURUSD"
+        assert spec.active_id == 1
+        assert spec.is_available is True
+        assert spec.commission_percent == 15.0
+        assert spec.payout_rate == 0.85
+        assert spec.min_stake == 1.0
+        assert spec.source == "broker_live"
+    finally:
+        await transport.async_close()
+
+
+def test_no_blind_retries_on_broker_rejection() -> None:
+    """When broker rejects order, single-order invariant ensures zero automatic retries."""
+    mock = MockBrokerPracticeTransport(
+        should_succeed=False,
+        rejection_message="Market closed for Turbo options",
+        active_balance_id="101",
+        practice_balance_id="101",
+    )
+    mock._session_practice_selected = True
+
+    order_frame = {
+        "name": "sendMessage",
+        "msg": {
+            "name": "binary-options.open-option",
+            "version": "1.0",
+            "body": {"user_balance_id": 101, "active_id": 1, "direction": "call", "price": 1.0},
+        },
+    }
+
+    res = mock.send_order_frame(order_frame)
+    assert res.get("status") == "error"
+    assert res.get("message") == "Market closed for Turbo options"
+    assert mock._submitted_order_count == 1

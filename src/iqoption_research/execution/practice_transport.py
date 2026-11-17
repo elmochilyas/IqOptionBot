@@ -23,6 +23,7 @@ from iqoption_research.execution.models import (
     PaperOrder,
 )
 from iqoption_research.execution.modes import (
+    ContractAvailabilityUnverifiedError,
     ExecutionMode,
     PaperAirGapViolationError,
     PracticeAuthorizationError,
@@ -144,7 +145,10 @@ class BinaryInstrumentSchedule:
     min_stake: float = MIN_PRACTICE_STAKE
     max_stake: float = MAX_PRACTICE_TEST_STAKE
     payout_rate: float = 0.85
+    commission_percent: float = 15.0
     valid_durations_seconds: tuple[int, ...] = VALID_BINARY_EXPIRATION_DURATIONS
+    verified_at: float | None = None
+    source: str = "offline_default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -467,6 +471,7 @@ class MockBrokerPracticeTransport:
         active_balance_id: str | None = None,
         practice_balance_id: str = "101",
         virtual_amount: float = 10000.0,
+        simulate_unverified_contract: bool = False,
     ) -> None:
         self.should_succeed = should_succeed
         self.option_id = option_id
@@ -474,6 +479,7 @@ class MockBrokerPracticeTransport:
         self.simulate_timeout = simulate_timeout
         self.simulate_transport_error = simulate_transport_error
         self.malformed_response = malformed_response
+        self.simulate_unverified_contract = simulate_unverified_contract
         self.active_balance_id: str | None = (
             active_balance_id if active_balance_id is not None else initial_active_balance_id
         )
@@ -485,6 +491,19 @@ class MockBrokerPracticeTransport:
         self._session_id: str = "mock_sess_101"
         self._submitted_order_count: int = 0
         self.dispatched_frames: list[dict[str, Any]] = []
+        self._instrument_schedules: dict[str, BinaryInstrumentSchedule] = {
+            "EURUSD": BinaryInstrumentSchedule(
+                symbol="EURUSD",
+                active_id=1,
+                is_available=True,
+                min_stake=1.00,
+                max_stake=100.00,
+                payout_rate=0.85,
+                commission_percent=15.0,
+                verified_at=time.time(),
+                source="mock_verified",
+            ),
+        }
 
     @property
     def is_connected(self) -> bool:
@@ -554,6 +573,39 @@ class MockBrokerPracticeTransport:
             bid=1.0852,
             ask=1.0852,
         )
+
+    def get_contract_specification(self, symbol: str = "EURUSD") -> BinaryInstrumentSchedule:
+        """Return contract availability and limits for symbol."""
+        if self.simulate_unverified_contract:
+            raise ContractAvailabilityUnverifiedError(
+                f"Broker contract availability, payout, and limits for {symbol} "
+                "could not be verified."
+            )
+        sym = symbol.upper()
+        if sym in self._instrument_schedules:
+            schedule = self._instrument_schedules[sym]
+            if not schedule.is_available:
+                raise UnsupportedProductOperationError(
+                    f"Contract {sym} is currently unavailable for trading on broker "
+                    "(enabled=False)."
+                )
+            return schedule
+
+        return BinaryInstrumentSchedule(
+            symbol=sym,
+            active_id=1,
+            is_available=True,
+            min_stake=1.00,
+            max_stake=100.00,
+            payout_rate=0.85,
+            commission_percent=15.0,
+            verified_at=time.time(),
+            source="mock_default",
+        )
+
+    def set_contract_specification(self, schedule: BinaryInstrumentSchedule) -> None:
+        """Override contract schedule for testing."""
+        self._instrument_schedules[schedule.symbol.upper()] = schedule
 
     def refresh_account_state(self) -> None:
         """Simulate synchronous account refresh."""

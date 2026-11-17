@@ -45,6 +45,10 @@ class UnsupportedProductOperationError(ExecutionModeError):
     """Raised when an operation is attempted on an unsupported or unverified product adapter."""
 
 
+class ContractAvailabilityUnverifiedError(ExecutionModeError):
+    """Raised when broker contract availability, payout, or expirations cannot be verified."""
+
+
 DEFAULT_PRACTICE_VERIFICATION_MAX_AGE: Final[float] = 10.0  # Max 10s for practice order safety
 
 

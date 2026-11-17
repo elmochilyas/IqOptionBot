@@ -25,7 +25,10 @@ from iqoption_research.execution.models import (
     ProductType,
 )
 from iqoption_research.execution.modes import ExecutionMode, UnsupportedProductOperationError
-from iqoption_research.execution.practice_transport import PracticeBinaryTransportAdapter
+from iqoption_research.execution.practice_transport import (
+    PracticeBinaryTransportAdapter,
+    compute_binary_expiry,
+)
 from iqoption_research.execution.risk import OrderProposal
 from iqoption_research.models.market import Candle
 from iqoption_research.research.backtest.payoffs import BinaryPayoffModel
@@ -165,13 +168,26 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
                 )
 
             # Build documented protocol frame
-            expiry_ts = int(
-                current_candle.to_ts + (order.expiry_horizon_bars * self.bar_duration_seconds)
-            )
-            raw_bal_id = order.metadata.get("active_balance_id", 1)
+            if order.expiry_ts is not None and order.expiry_ts > 0:
+                expiry_ts = int(order.expiry_ts)
+            elif current_candle.to_ts >= 1_000_000_000:
+                expiry_ts = compute_binary_expiry(
+                    current_candle.to_ts,
+                    duration_minutes=order.expiry_horizon_bars,
+                )
+            else:
+                expiry_ts = int(
+                    current_candle.to_ts + (order.expiry_horizon_bars * self.bar_duration_seconds)
+                )
+
+            transport_bal_id = getattr(broker_transport, "active_balance_id", None)
+            metadata_bal_id = order.metadata.get("active_balance_id")
+            raw_bal_id = transport_bal_id or metadata_bal_id or 1
             user_balance_id = (
                 int(raw_bal_id) if str(raw_bal_id).isdigit() and int(raw_bal_id) > 0 else 1
             )
+            order.metadata["active_balance_id"] = str(user_balance_id)
+            order.expiry_ts = float(expiry_ts)
             frame = self.practice_transport.build_order_frame(
                 order,
                 user_balance_id=user_balance_id,

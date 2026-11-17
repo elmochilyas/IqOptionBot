@@ -37,12 +37,15 @@ from iqoption_research.connectors.iqoption.exceptions import (
 from iqoption_research.connectors.iqoption.http_auth import async_login
 from iqoption_research.execution.models import OrderSide, PaperOrder
 from iqoption_research.execution.modes import (
+    ContractAvailabilityUnverifiedError,
     ExecutionMode,
     PracticeAuthorizationError,
     RealAccountExecutionBlockedError,
+    UnsupportedProductOperationError,
 )
 from iqoption_research.execution.practice_transport import (
     MIN_PRACTICE_STAKE,
+    BinaryInstrumentSchedule,
     PracticeBinaryTransportAdapter,
     PracticeSettlementResult,
 )
@@ -52,6 +55,7 @@ from iqoption_research.execution.safety import (
     PracticeSafetyVerdict,
 )
 from iqoption_research.models.account import AccountType, Balance, Profile
+from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.security import (
     Credentials,
     create_tls_context,
@@ -130,6 +134,10 @@ class IQOptionLivePracticeTransport:
         self._authenticated_ok: bool = False
         self._closed: bool = False
         self._is_running_thread: bool = False
+        self._submitted_order_count: int = 0
+        self._server_time_sec: float | None = None
+        self._server_time_synced_at: float | None = None
+        self._instrument_schedules: dict[str, BinaryInstrumentSchedule] = {}
 
     def __repr__(self) -> str:
         masked_ssid = "***" if self._ssid else "None"
@@ -146,6 +154,23 @@ class IQOptionLivePracticeTransport:
     @property
     def is_authenticated(self) -> bool:
         return self._authenticated_ok
+
+    @property
+    def is_connected(self) -> bool:
+        """True only if WebSocket connection is open and active."""
+        return self._ws is not None and not self._closed
+
+    @property
+    def server_time(self) -> float:
+        """Estimated current broker server time in epoch seconds."""
+        if self._server_time_sec is not None and self._server_time_synced_at is not None:
+            return self._server_time_sec + (time.monotonic() - self._server_time_synced_at)
+        return time.time()
+
+    @property
+    def submitted_order_count(self) -> int:
+        """Number of orders submitted through this transport in the current session."""
+        return self._submitted_order_count
 
     @property
     def profile(self) -> Profile | None:
@@ -350,7 +375,10 @@ class IQOptionLivePracticeTransport:
         try:
             await self._ws.send(json.dumps(change_bal_frame))
             try:
-                resp = await asyncio.wait_for(future, timeout=self.config.request_timeout)
+                # IQ Option change_balance does not echo client request_id.
+                # Allow a brief 0.5s window for immediate error/rejection frames before
+                # querying fresh authoritative broker profile.
+                resp = await asyncio.wait_for(future, timeout=0.5)
                 if isinstance(resp, dict):
                     msg_body = resp.get("msg")
                     if resp.get("name") in {"error", "reject"} or (
@@ -361,14 +389,26 @@ class IQOptionLivePracticeTransport:
                         )
             except TimeoutError:
                 logger.info(
-                    "Explicit change_balance request_id not acknowledged directly; "
-                    "refreshing authoritative account state to verify mutation."
+                    "Explicit change_balance frame transmitted (asynchronous broker state change; "
+                    "no direct request_id echo expected). Refreshing fresh broker profile."
                 )
         finally:
             self._pending_requests.pop(req_id, None)
 
         # Refresh authoritative state from broker
         await self.async_refresh_account_state()
+
+        # Authoritative broker response verification:
+        # Broker profile must reflect the selected Practice balance ID
+        fresh_prof_bal_id = (
+            str(self._profile.raw.get("balance_id", "")).strip() if self._profile else ""
+        )
+        if fresh_prof_bal_id != str(practice_bal.id).strip():
+            raise PracticeAuthorizationError(
+                f"Broker account state refresh failed to confirm Practice balance selection. "
+                f"Fresh broker profile balance_id ({fresh_prof_bal_id}) does not match "
+                f"requested Practice balance ID ({practice_bal.id})."
+            )
 
         # Update active balance ID and session flag
         self._active_balance_id = str(practice_bal.id)
@@ -476,6 +516,12 @@ class IQOptionLivePracticeTransport:
             raise ConnectionError("Cannot send order frame: Practice transport is disconnected.")
 
         # Invariant checks
+        if self._submitted_order_count >= 1:
+            raise RuntimeError(
+                "Single test order invariant violated: only 1 live Practice order may be "
+                "submitted in this session."
+            )
+
         if self._active_ticket_id is not None:
             raise RuntimeError(
                 f"Single test order invariant violated: an unresolved Practice order "
@@ -492,6 +538,16 @@ class IQOptionLivePracticeTransport:
         # Active balance guard: ensure we are strictly on a verified Practice balance
         if not self._active_balance_id:
             raise PracticeAuthorizationError("No verified active Practice balance ID available.")
+
+        # Pre-transmission broker profile balance check
+        if self._profile is not None:
+            prof_bal_id = str(self._profile.raw.get("balance_id", "")).strip()
+            if prof_bal_id and prof_bal_id != str(self._active_balance_id).strip():
+                raise RealAccountExecutionBlockedError(
+                    f"CRITICAL SAFETY GUARD: Broker profile balance ({prof_bal_id}) does not match "
+                    f"verified active Practice balance ({self._active_balance_id}). "
+                    "Order transmission strictly prohibited fail-closed."
+                )
 
         matched_bal = next(
             (b for b in self._balances if str(b.id) == str(self._active_balance_id)),
@@ -524,6 +580,7 @@ class IQOptionLivePracticeTransport:
         self._pending_requests[request_id] = future
 
         try:
+            self._submitted_order_count += 1
             logger.info("Transmitting Binary Practice order frame (request_id=%s)", request_id)
             await self._ws.send(json.dumps(frame))
             resp = await asyncio.wait_for(future, timeout=self.config.request_timeout)
@@ -607,6 +664,148 @@ class IQOptionLivePracticeTransport:
             )
         return float(bal.amount)
 
+    async def async_get_live_candle(self, symbol: str = "EURUSD", size: int = 60) -> Candle:
+        """Fetch latest candle from broker to verify asset tradability and live pricing."""
+        if self._closed or self._ws is None:
+            raise ConnectionError("Cannot get live candle: Practice transport is disconnected.")
+
+        active_id = 1
+        req_id = f"candle_{next(self._request_counter)}"
+        now_ts = int(self.server_time)
+        frame = {
+            "name": "sendMessage",
+            "msg": {
+                "name": "get-candles",
+                "version": "2.0",
+                "body": {
+                    "active_id": active_id,
+                    "size": int(size),
+                    "to": now_ts,
+                    "count": 1,
+                },
+            },
+            "request_id": req_id,
+        }
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._pending_requests[req_id] = future
+
+        try:
+            logger.info(
+                "Requesting live candle for %s (active_id=%s, to=%s)",
+                symbol,
+                active_id,
+                now_ts,
+            )
+            await self._ws.send(json.dumps(frame))
+            resp = await asyncio.wait_for(future, timeout=self.config.request_timeout)
+        except TimeoutError as exc:
+            raise RequestTimeoutError(
+                f"Live candle fetch timed out after {self.config.request_timeout}s"
+            ) from exc
+        finally:
+            self._pending_requests.pop(req_id, None)
+
+        msg = resp.get("msg") if isinstance(resp.get("msg"), dict) else resp
+        raw_candles = msg.get("candles", []) if isinstance(msg, dict) else []
+        if not raw_candles:
+            raise ValueError(f"Broker returned no candle data for {symbol}.")
+
+        raw_c = raw_candles[-1]
+        close_price = float(raw_c.get("close", 0.0))
+        from_ts = int(raw_c.get("from", now_ts - size))
+        to_ts = int(raw_c.get("to", now_ts))
+        bid = float(raw_c.get("bid", close_price)) if raw_c.get("bid") is not None else close_price
+        ask = float(raw_c.get("ask", close_price)) if raw_c.get("ask") is not None else close_price
+
+        return Candle(
+            active_id=active_id,
+            symbol=symbol.upper(),
+            size=CandleSize.from_seconds(size),
+            from_ts=from_ts,
+            to_ts=to_ts,
+            at_ts=to_ts * 1_000_000_000,
+            open=float(raw_c.get("open", close_price)),
+            high=float(raw_c.get("max", raw_c.get("high", close_price))),
+            low=float(raw_c.get("min", raw_c.get("low", close_price))),
+            close=close_price,
+            volume=int(raw_c.get("volume", 0)),
+            bid=bid,
+            ask=ask,
+            raw=raw_c,
+        )
+
+    async def async_get_contract_specification(
+        self, symbol: str = "EURUSD", *, force_refresh: bool = False
+    ) -> BinaryInstrumentSchedule:
+        """Query and return verified contract limits, availability, and payout from broker.
+
+        Raises:
+        - ContractAvailabilityUnverifiedError: If contract info is unverified or broker times out.
+        - UnsupportedProductOperationError: If contract is explicitly disabled on broker.
+        """
+        sym = symbol.upper()
+        now = time.time()
+
+        if not force_refresh and sym in self._instrument_schedules:
+            cached = self._instrument_schedules[sym]
+            if cached.verified_at and (now - cached.verified_at) < 60.0:
+                if not cached.is_available:
+                    raise UnsupportedProductOperationError(
+                        f"Contract {sym} is currently unavailable for trading on broker "
+                        "(enabled=False)."
+                    )
+                return cached
+
+        if self._closed or self._ws is None:
+            raise ConnectionError(
+                "Cannot query contract specification: Practice transport is disconnected."
+            )
+
+        req_id = f"init_{next(self._request_counter)}"
+        init_frame = {
+            "name": "sendMessage",
+            "msg": {"name": "get-initialization-data", "version": "4.0", "body": {}},
+            "request_id": req_id,
+        }
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._pending_requests[req_id] = future
+
+        try:
+            logger.info("Requesting initialization data from broker (req_id=%s)", req_id)
+            await self._ws.send(json.dumps(init_frame))
+            opt_req_id = f"opt_{next(self._request_counter)}"
+            opt_frame = {
+                "name": "api_game_getoptions",
+                "msg": {"type": "turbo"},
+                "request_id": opt_req_id,
+            }
+            with contextlib.suppress(Exception):
+                await self._ws.send(json.dumps(opt_frame))
+
+            try:
+                await asyncio.wait_for(future, timeout=min(5.0, self.config.request_timeout))
+            except TimeoutError:
+                logger.warning("get-initialization-data timed out waiting for correlated response.")
+        finally:
+            self._pending_requests.pop(req_id, None)
+
+        if sym in self._instrument_schedules:
+            sched = self._instrument_schedules[sym]
+            if not sched.is_available:
+                raise UnsupportedProductOperationError(
+                    f"Contract {sym} is currently unavailable for trading on broker "
+                    "(enabled=False)."
+                )
+            return sched
+
+        raise ContractAvailabilityUnverifiedError(
+            f"Broker contract availability, payout, and limits for {sym} could not be verified."
+        )
+
     async def async_close(self) -> None:
         """Cleanly close WebSocket connection and cancel listener tasks."""
         self._closed = True
@@ -614,6 +813,8 @@ class IQOptionLivePracticeTransport:
         self._active_balance_id = None
         self._verified_at = None
         self._session_id = None
+        self._submitted_order_count = 0
+        self._submitted_order_count = 0
 
         if self._receive_task is not None and not self._receive_task.done():
             self._receive_task.cancel()
@@ -702,14 +903,60 @@ class IQOptionLivePracticeTransport:
             self._handle_balances_frame(message)
             return
 
-        # 4. Correlated request matching
+        # Contract availability and options specification
+        if name in {
+            "initialization-data",
+            "get-initialization-data",
+            "api_game_getoptions",
+            "instruments",
+            "turbo",
+            "binary",
+        }:
+            self._handle_initialization_data_frame(message)
+            if req_id and req_id in self._pending_requests:
+                fut = self._pending_requests[req_id]
+                if not fut.done():
+                    fut.set_result(message)
+                return
+            for pending_id, pending_fut in self._pending_requests.items():
+                if (
+                    pending_id.startswith("init_") or pending_id.startswith("opt_")
+                ) and not pending_fut.done():
+                    pending_fut.set_result(message)
+                    return
+            return
+
+        # 4. Time synchronization
+        if name == "timeSync":
+            raw_time = message.get("msg")
+            if isinstance(raw_time, (int, float)) and raw_time > 0:
+                val = float(raw_time)
+                if val >= 1e11:
+                    val /= 1000.0
+                self._server_time_sec = val
+                self._server_time_synced_at = time.monotonic()
+            return
+
+        # 5. Candles market data
+        if name in {"candles", "candle-generated"}:
+            if req_id and req_id in self._pending_requests:
+                fut = self._pending_requests[req_id]
+                if not fut.done():
+                    fut.set_result(message)
+                return
+            for pending_id, pending_fut in self._pending_requests.items():
+                if pending_id.startswith("candle_") and not pending_fut.done():
+                    pending_fut.set_result(message)
+                    return
+
+        # 6. Correlated request matching
         if req_id and req_id in self._pending_requests:
             fut = self._pending_requests[req_id]
             if not fut.done():
                 fut.set_result(message)
             return
 
-        # 5. Order Acknowledgement (option-opened)
+        # 7. Order Acknowledgement (option-opened)
         if name == "option-opened":
             # Match by request_id if present
             if req_id and req_id in self._pending_requests:
@@ -723,7 +970,7 @@ class IQOptionLivePracticeTransport:
                     pending_fut.set_result(message)
                     return
 
-        # 6. Order Rejection (option-rejected)
+        # 8. Order Rejection (option-rejected)
         if name in {"option-rejected", "error"}:
             if req_id and req_id in self._pending_requests:
                 fut = self._pending_requests[req_id]
@@ -789,6 +1036,115 @@ class IQOptionLivePracticeTransport:
                     self._active_balance_id = str(b.id)
             self._balances_event.set()
 
+    def _handle_initialization_data_frame(self, message: dict[str, Any]) -> None:
+        """Parse initialization-data or options frame to update contract schedules."""
+        raw_msg = message.get("msg")
+        msg_dict = raw_msg if isinstance(raw_msg, dict) else message
+        if "result" in msg_dict and isinstance(msg_dict["result"], dict):
+            msg_dict = msg_dict["result"]
+
+        sources: list[dict[str, Any]] = []
+        for cat in ("turbo", "binary", "digital"):
+            if cat in msg_dict and isinstance(msg_dict[cat], dict):
+                cat_dict = msg_dict[cat]
+                if "actives" in cat_dict and isinstance(cat_dict["actives"], dict):
+                    sources.append(cat_dict["actives"])
+        if "actives" in msg_dict and isinstance(msg_dict["actives"], dict):
+            sources.append(msg_dict["actives"])
+
+        now = time.time()
+        known_symbols = {
+            1: "EURUSD",
+            2: "EURGBP",
+            3: "GBPJPY",
+            4: "EURJPY",
+            5: "GBPUSD",
+            6: "USDJPY",
+            7: "AUDCAD",
+            8: "NZDUSD",
+            10: "USDCHF",
+        }
+
+        for actives_map in sources:
+            for str_act_id, act_val in actives_map.items():
+                if not isinstance(act_val, dict):
+                    continue
+                with contextlib.suppress(Exception):
+                    act_id = int(str_act_id)
+                    raw_name = (
+                        str(act_val.get("name") or act_val.get("ticker") or "")
+                        .replace("/", "")
+                        .replace(" ", "")
+                        .upper()
+                    )
+                    sym = raw_name if raw_name else known_symbols.get(act_id)
+                    if not sym:
+                        continue
+
+                    is_enabled = bool(
+                        act_val.get("enabled", False)
+                        or act_val.get("is_enabled", False)
+                        or act_val.get("enabled") == 1
+                    )
+
+                    option_info = (
+                        act_val.get("option", {}) if isinstance(act_val.get("option"), dict) else {}
+                    )
+                    profit_info = (
+                        option_info.get("profit", {})
+                        if isinstance(option_info.get("profit"), dict)
+                        else act_val.get("profit", {})
+                    )
+                    if not isinstance(profit_info, dict):
+                        profit_info = {}
+
+                    commission = None
+                    if "commission" in profit_info:
+                        commission = float(profit_info["commission"])
+                    elif "commission" in option_info:
+                        commission = float(option_info["commission"])
+                    elif "commission" in act_val:
+                        commission = float(act_val["commission"])
+
+                    payout_rate = 0.85
+                    commission_pct = 15.0
+                    if commission is not None:
+                        commission_pct = float(commission)
+                        payout_rate = max(0.0, min(1.0, (100.0 - commission_pct) / 100.0))
+                    elif "payout" in profit_info:
+                        p = float(profit_info["payout"])
+                        payout_rate = p / 100.0 if p > 1.0 else p
+                        commission_pct = (1.0 - payout_rate) * 100.0
+                    elif "payout" in act_val:
+                        p = float(act_val["payout"])
+                        payout_rate = p / 100.0 if p > 1.0 else p
+                        commission_pct = (1.0 - payout_rate) * 100.0
+
+                    min_stake = 1.00
+                    max_stake = 100.00
+                    if "min_bet" in option_info:
+                        min_stake = float(option_info["min_bet"])
+                    elif "min_bet" in act_val:
+                        min_stake = float(act_val["min_bet"])
+
+                    if "max_bet" in option_info:
+                        max_stake = float(option_info["max_bet"])
+                    elif "max_bet" in act_val:
+                        max_stake = float(act_val["max_bet"])
+
+                    schedule = BinaryInstrumentSchedule(
+                        symbol=sym,
+                        active_id=act_id,
+                        is_available=is_enabled,
+                        min_stake=min_stake,
+                        max_stake=max_stake,
+                        payout_rate=payout_rate,
+                        commission_percent=commission_pct,
+                        verified_at=now,
+                        source="broker_live",
+                    )
+                    self._instrument_schedules[sym] = schedule
+
     # -----------------------------------------------------------------------
     # Synchronous Transport Bridge (for BaseExecutionAdapter compatibility)
     # -----------------------------------------------------------------------
@@ -841,6 +1197,79 @@ class IQOptionLivePracticeTransport:
             self.close()
             raise conn_error[0]
 
+    def get_contract_specification(
+        self, symbol: str = "EURUSD", *, force_refresh: bool = False
+    ) -> BinaryInstrumentSchedule:
+        """Synchronously retrieve verified contract specification from broker."""
+        if self._is_running_thread and self._loop is not None and self._thread is not None:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.async_get_contract_specification(symbol=symbol, force_refresh=force_refresh),
+                self._loop,
+            )
+            try:
+                return fut.result(timeout=self.config.request_timeout + 2.0)
+            except TimeoutError as exc:
+                raise TimeoutError(f"Synchronous contract specification timeout: {exc}") from exc
+
+        try:
+            running_loop = asyncio.get_running_loop()
+            if running_loop.is_running():
+                raise RuntimeError(
+                    "Cannot call synchronous get_contract_specification from an already running "
+                    "event loop. Use await transport.async_get_contract_specification() instead."
+                )
+        except RuntimeError:
+            pass
+
+        return asyncio.run(
+            self.async_get_contract_specification(symbol=symbol, force_refresh=force_refresh)
+        )
+
+    def get_live_candle(self, symbol: str = "EURUSD", size: int = 60) -> Candle:
+        """Synchronously fetch the latest candle from broker."""
+        if self._is_running_thread and self._loop is not None and self._thread is not None:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.async_get_live_candle(symbol=symbol, size=size), self._loop
+            )
+            try:
+                return fut.result(timeout=self.config.request_timeout + 2.0)
+            except TimeoutError as exc:
+                raise TimeoutError(f"Synchronous candle fetch timeout: {exc}") from exc
+
+        try:
+            running_loop = asyncio.get_running_loop()
+            if running_loop.is_running():
+                raise RuntimeError(
+                    "Cannot call synchronous get_live_candle from an already running event loop. "
+                    "Use await transport.async_get_live_candle() instead."
+                )
+        except RuntimeError:
+            pass
+
+        return asyncio.run(self.async_get_live_candle(symbol=symbol, size=size))
+
+    def refresh_account_state(self) -> None:
+        """Synchronously refresh account profile and balances from broker."""
+        if self._is_running_thread and self._loop is not None and self._thread is not None:
+            fut = asyncio.run_coroutine_threadsafe(self.async_refresh_account_state(), self._loop)
+            try:
+                fut.result(timeout=self.config.request_timeout + 2.0)
+                return
+            except TimeoutError as exc:
+                raise TimeoutError(f"Synchronous refresh timeout: {exc}") from exc
+
+        try:
+            running_loop = asyncio.get_running_loop()
+            if running_loop.is_running():
+                raise RuntimeError(
+                    "Cannot call synchronous refresh_account_state from an already running "
+                    "event loop. Use await transport.async_refresh_account_state() instead."
+                )
+        except RuntimeError:
+            pass
+
+        asyncio.run(self.async_refresh_account_state())
+
     def send_order_frame(self, frame: dict[str, Any]) -> dict[str, Any]:
         """Synchronously dispatch an order frame to the broker via the transport."""
         if self._is_running_thread and self._loop is not None and self._thread is not None:
@@ -887,6 +1316,7 @@ class IQOptionLivePracticeTransport:
         self._active_balance_id = None
         self._verified_at = None
         self._session_id = None
+        self._submitted_order_count = 0
 
         if self._is_running_thread and self._loop is not None and self._thread is not None:
             if not self._loop.is_closed():

@@ -36,15 +36,19 @@ from iqoption_research.execution.execution_engine import (
     ModularExecutionEngine,
 )
 from iqoption_research.execution.live_practice_transport import IQOptionLivePracticeTransport
-from iqoption_research.execution.models import OrderSide, ProductType
+from iqoption_research.execution.models import OrderSide, OrderState, ProductType
 from iqoption_research.execution.modes import (
+    ContractAvailabilityUnverifiedError,
     ExecutionMode,
     ExecutionModeConfig,
     RealAccountExecutionBlockedError,
+    UnsupportedProductOperationError,
 )
 from iqoption_research.execution.practice_transport import (
+    MAX_PRACTICE_TEST_STAKE,
     MIN_PRACTICE_STAKE,
     MockBrokerPracticeTransport,
+    compute_binary_expiry,
 )
 from iqoption_research.execution.safety import AccountSelectionUnverifiedError
 from iqoption_research.models.account import AccountType, Balance, Profile
@@ -1110,41 +1114,61 @@ def practice_test_command(
         "--select-practice",
         help="Prompt operator to explicitly switch session balance to Practice if unverified",
     ),
+    confirm: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        "--confirm",
+        help="Automatically confirm operator authorization prompts (for automated/mock testing)",
+    ),
 ) -> None:
     """Supervised Practice test workflow requiring explicit operator authorization."""
+    # 1. Stake validation
+    if stake < MIN_PRACTICE_STAKE:
+        console.print(
+            f"[bold red]Stake ${stake:.2f} is below minimum allowed stake "
+            f"${MIN_PRACTICE_STAKE:.2f}[/bold red]"
+        )
+        raise typer.BadParameter(f"Stake must be >= ${MIN_PRACTICE_STAKE:.2f}")
+    if stake > MAX_PRACTICE_TEST_STAKE:
+        console.print(
+            f"[bold red]Stake ${stake:.2f} exceeds maximum allowed test stake "
+            f"${MAX_PRACTICE_TEST_STAKE:.2f}[/bold red]"
+        )
+        raise typer.BadParameter(f"Stake must be <= ${MAX_PRACTICE_TEST_STAKE:.2f}")
+    if not offline_mock and abs(stake - 1.00) > 1e-4:
+        console.print(
+            "[bold red]CRITICAL SAFETY GUARD: Live Practice test trade is strictly restricted to "
+            "exactly $1.00 virtual money.[/bold red]"
+        )
+        raise typer.BadParameter(
+            "Live Practice test trade is strictly restricted to exactly $1.00 virtual money."
+        )
+
     norm_side = OrderSide.CALL if side.lower() == "call" else OrderSide.PUT
-    stake = max(MIN_PRACTICE_STAKE, stake)
 
-    table = Table(
-        title="[bold yellow]Operator Supervised Practice Test — Pre-Flight Audit[/bold yellow]"
-    )
-    table.add_column("Parameter", style="cyan")
-    table.add_column("Value", style="bold white")
-
-    table.add_row("Confirmed Account Type", "[bold green]PRACTICE (Virtual Funds)[/bold green]")
-    table.add_row("Product & Instrument", f"BINARY {symbol.upper()}")
-    table.add_row("Trade Direction", f"[bold cyan]{norm_side.value.upper()}[/bold cyan]")
-    table.add_row("Virtual Stake Amount", f"${stake:.2f} (Platform minimum)")
-    table.add_row("Expiration Duration", "60 seconds (1 minute)")
-    table.add_row("Current Payout Rate", "85.0%")
-    table.add_row("Max Possible Simulated Loss", f"${stake:.2f}")
-    table.add_row("Autonomous AI Trading", "[bold red]DISABLED[/bold red]")
-    table.add_row(
-        "Action to Perform",
-        "Deterministic single test order placement via guarded practice transport",
-    )
-    console.print(table)
-
-    # Require explicit confirmation
-    confirmed = typer.confirm(
-        "Do you explicitly authorize submitting this single Practice test order?",
-        default=False,
-    )
-    if not confirmed:
-        console.print("[yellow]Aborted by operator. No test order was dispatched.[/yellow]")
-        raise typer.Abort()
-
-    if not offline_mock:
+    # 2. Transport initialization
+    transport: IQOptionLivePracticeTransport | MockBrokerPracticeTransport
+    if offline_mock:
+        transport = MockBrokerPracticeTransport(
+            should_succeed=True,
+            option_id="mock_ticket_cli_supervised",
+            active_balance_id="101" if not select_practice else None,
+        )
+        if select_practice:
+            if not confirm:
+                confirmed_switch = typer.confirm(
+                    "Authorise explicitly switching session active balance to Practice ID 101?",
+                    default=False,
+                )
+                if not confirmed_switch:
+                    console.print(
+                        "[yellow]Aborted by operator. "
+                        "No balance switch or orders dispatched.[/yellow]"
+                    )
+                    raise typer.Abort()
+            transport.select_practice_balance(operator_authorized=True)
+    else:
         console.print(
             "[bold yellow]Initiating live practice connection to IQ Option...[/bold yellow]"
         )
@@ -1204,129 +1228,348 @@ def practice_test_command(
                 f"[yellow]Active session balance ({transport.active_balance_id}) "
                 "is not verified PRACTICE.[/yellow]"
             )
-            confirmed_switch = typer.confirm(
-                f"Authorise explicitly switching session active balance to Practice ID "
-                f"{practice_bal.id}?",
-                default=False,
-            )
-            if not confirmed_switch:
-                console.print(
-                    "[yellow]Aborted by operator. "
-                    "No balance switch or orders were dispatched.[/yellow]"
+            if not confirm:
+                confirmed_switch = typer.confirm(
+                    f"Authorise explicitly switching session active balance to Practice ID "
+                    f"{practice_bal.id}?",
+                    default=False,
                 )
-                transport.close()
-                raise typer.Abort()
+                if not confirmed_switch:
+                    console.print(
+                        "[yellow]Aborted by operator. "
+                        "No balance switch or orders were dispatched.[/yellow]"
+                    )
+                    transport.close()
+                    raise typer.Abort()
 
             with console.status(
                 "[bold green]Switching session balance to Practice and verifying..."
             ):
                 transport.select_practice_balance(operator_authorized=True)
 
-        try:
-            live_bal = transport.active_balance_id
-            live_amount = 0.0
-            for b in transport.balances:
-                if str(b.id) == str(live_bal):
-                    live_amount = float(b.amount)
-                    break
+    try:
+        # 3. Verify active practice account & balance
+        if not transport.is_practice_verified or not transport.is_connected:
+            console.print(
+                "[bold red]Practice transport is not connected or practice account "
+                "is not verified.[/bold red]"
+            )
+            raise typer.Exit(code=1)
 
-            live_audit_table = Table(
-                title="[bold green]Live Broker Account State (Verified)[/bold green]"
-            )
-            live_audit_table.add_column("Property", style="cyan")
-            live_audit_table.add_column("Live Value", style="bold white")
-            live_audit_table.add_row(
-                "Verified Account Type", "[bold green]PRACTICE (type 4)[/bold green]"
-            )
-            live_audit_table.add_row("Active Practice Balance ID", str(live_bal))
-            live_audit_table.add_row("Current Virtual Balance", f"${live_amount:,.2f}")
-            live_audit_table.add_row("Underlying Instrument", symbol.upper())
-            live_audit_table.add_row("Stake Amount", f"${stake:.2f}")
-            console.print(live_audit_table)
+        initial_session_id = transport.session_id
+        active_bal_id = str(transport.active_balance_id)
+        current_amount = 0.0
+        for b in transport.balances:
+            if str(b.id) == active_bal_id:
+                current_amount = float(b.amount)
+                break
 
-            reconfirm = typer.confirm(
-                f"Transmit single ${stake:.2f} Practice trade on {symbol.upper()} to broker?",
-                default=False,
-            )
-            if not reconfirm:
-                console.print("[yellow]Aborted by operator. Live trade not sent.[/yellow]")
-                transport.close()
-                raise typer.Abort()
+        # 4. Pre-Flight Verification & Expiry Drift Revalidation Loop
+        spec = None
+        current_candle = None
+        expiry_ts = 0
+        expiry_utc_str = ""
 
-            tok = PracticeExecutionAuthToken(
-                authorization_signature="sig_supervisor_cli_practice_live",
-                supervisor_id="supervisor_cli_operator_live",
-            )
-            mode_cfg = ExecutionModeConfig(
-                mode=ExecutionMode.PRACTICE,
-                practice_enabled=True,
-                practice_auth_token=tok,
-            )
-            engine = ModularExecutionEngine(
-                ModularExecutionConfig(
-                    symbol=symbol.upper(),
-                    mode=ExecutionMode.PRACTICE,
-                    default_product_type=ProductType.BINARY,
-                    initial_balance=live_amount,
-                    mode_config=mode_cfg,
-                    single_test_order_mode=True,
-                )
-            )
-
-            now_ts = time.time()
-            c1 = Candle(
-                active_id=1,
-                symbol=symbol.upper(),
-                size=CandleSize.MIN_1,
-                from_ts=int(now_ts) - 60,
-                to_ts=int(now_ts),
-                at_ts=int(now_ts) * 1_000_000_000,
-                open=1.0850,
-                high=1.0855,
-                low=1.0848,
-                close=1.0852,
-                volume=100,
-                bid=1.0852,
-                ask=1.0852,
-            )
-
-            proposal = engine.create_proposal(
-                symbol=symbol.upper(),
-                side=norm_side,
-                stake=stake,
-                candle_to_ts=float(c1.to_ts),
-                signal_id="sig_operator_cli_live_test",
-            )
-            order, dec = engine.propose_and_validate(
-                proposal,
-                current_ts=float(c1.to_ts),
-                profile=transport.profile,
-                balances=transport.balances,
-            )
-            if not dec.permitted:
+        while True:
+            # Query verified contract specification
+            try:
+                spec = transport.get_contract_specification(symbol=symbol.upper())
+            except (ContractAvailabilityUnverifiedError, UnsupportedProductOperationError) as exc:
                 console.print(
-                    f"[bold red]Order rejected by risk controller: {dec.message}[/bold red]"
+                    Panel.fit(
+                        f"[bold red]CRITICAL SAFETY BLOCK: Contract Unavailable or Unverified"
+                        f"[/bold red]\n\n"
+                        f"• Instrument: {symbol.upper()}\n"
+                        f"• Error: {exc}\n"
+                        "• Rule: Practice order cannot be placed without authoritative contract "
+                        "availability and payout verification from the broker.\n"
+                        "• Zero orders were dispatched fail-closed.",
+                        border_style="red",
+                    )
+                )
+                raise typer.Exit(code=1) from exc
+
+            if not spec.is_available:
+                console.print(
+                    Panel.fit(
+                        "[bold red]CRITICAL SAFETY BLOCK: Contract Disabled on Broker[/bold red]"
+                        "\n\n"
+                        f"• Instrument: {symbol.upper()}\n"
+                        f"• Broker Status: enabled=False\n"
+                        "• Rule: Contract is currently closed/disabled by the broker.\n"
+                        "• Zero orders were dispatched fail-closed.",
+                        border_style="red",
+                    )
                 )
                 raise typer.Exit(code=1)
 
-            console.print("[bold cyan]Submitting order to live broker transport...[/bold cyan]")
-            _ = engine.submit_order(order, c1, broker_transport=transport)
-
-            if not order.broker_order_id:
-                console.print(f"[bold red]Broker order failed: {order.state.value}[/bold red]")
+            if stake < spec.min_stake:
+                console.print(
+                    f"[bold red]Stake ${stake:.2f} is below broker minimum stake "
+                    f"${spec.min_stake:.2f} for {symbol.upper()}[/bold red]"
+                )
                 raise typer.Exit(code=1)
 
+            # Fetch live market quote & verify asset tradability
+            server_ts = transport.server_time
+            try:
+                current_candle = transport.get_live_candle(symbol=symbol.upper(), size=60)
+            except Exception as exc:
+                console.print(
+                    f"[bold red]Failed to fetch live market quote for {symbol.upper()}: "
+                    f"{exc}[/bold red]"
+                )
+                raise typer.Exit(code=1) from exc
+
+            if current_candle.close <= 0:
+                console.print(
+                    f"[bold red]Asset {symbol.upper()} returned non-positive quote "
+                    f"({current_candle.close}). Market unavailable.[/bold red]"
+                )
+                raise typer.Exit(code=1)
+
+            candle_age = server_ts - current_candle.to_ts
+            if candle_age > 180:
+                console.print(
+                    f"[bold red]Asset quote is stale ({candle_age:.0f}s old). "
+                    f"Market for {symbol.upper()} may be closed.[/bold red]"
+                )
+                raise typer.Exit(code=1)
+
+            # Expiration calculation
+            expiry_ts = compute_binary_expiry(server_ts, duration_minutes=1)
+            remaining_seconds = expiry_ts - int(server_ts)
+            if remaining_seconds < 30:
+                server_ts = transport.server_time
+                expiry_ts = compute_binary_expiry(server_ts, duration_minutes=1)
+                remaining_seconds = expiry_ts - int(server_ts)
+
+            expiry_utc_str = datetime.fromtimestamp(expiry_ts, tz=UTC).strftime(
+                "%Y-%m-%d %H:%M:%S UTC"
+            )
+
+            # Display Pre-Flight Confirmation Table
+            table = Table(
+                title=(
+                    "[bold yellow]Operator Supervised Practice Test — "
+                    "Pre-Flight Audit[/bold yellow]"
+                )
+            )
+            table.add_column("Parameter", style="cyan")
+            table.add_column("Value", style="bold white")
+
+            table.add_row(
+                "Confirmed Account Type",
+                "[bold green]PRACTICE (type 4 - Virtual Funds)[/bold green]",
+            )
+            table.add_row("Active Practice Balance ID", active_bal_id)
+            table.add_row("Current Virtual Balance", f"${current_amount:,.2f}")
+            table.add_row("Session Identifier", str(initial_session_id))
+            table.add_row("Product & Instrument", f"BINARY {symbol.upper()}")
+            table.add_row("Trade Direction", f"[bold cyan]{norm_side.value.upper()}[/bold cyan]")
+            table.add_row("Virtual Stake Amount", f"${stake:.2f} (Platform minimum)")
+            table.add_row(
+                "Contract Availability",
+                f"[bold green]AVAILABLE (Source: {spec.source})[/bold green]",
+            )
+            table.add_row(
+                "Broker Payout Rate",
+                f"{spec.payout_rate * 100:.1f}% (Commission: {spec.commission_percent:.1f}%)",
+            )
+            table.add_row(
+                "Live Quote Price",
+                f"{current_candle.close:.5f} (Mid: {current_candle.midpoint:.5f})",
+            )
+            table.add_row("Contract Expiration", f"{expiry_ts} ({expiry_utc_str})")
+            table.add_row("Remaining Seconds to Expiry", f"{remaining_seconds}s")
+            table.add_row("Autonomous AI Trading", "[bold red]DISABLED[/bold red]")
+            table.add_row(
+                "Safety Invariant",
+                "[bold green]Single Practice Order / Zero Retries Enforced[/bold green]",
+            )
+            console.print(table)
+
+            # Operator authorization
+            if not confirm:
+                reconfirm = typer.confirm(
+                    f"Transmit single ${stake:.2f} Practice trade on {symbol.upper()} to broker?",
+                    default=False,
+                )
+                if not reconfirm:
+                    console.print(
+                        "[yellow]Aborted by operator. No test order was dispatched.[/yellow]"
+                    )
+                    raise typer.Abort()
+
+            # Immediate Pre-Transmission Revalidation: detect expiry drift or material payout change
+            fresh_server_ts = transport.server_time
+            remaining_before_send = expiry_ts - int(fresh_server_ts)
+            try:
+                fresh_spec = transport.get_contract_specification(symbol=symbol.upper())
+            except Exception as exc:
+                console.print(
+                    f"[bold red]CRITICAL SAFETY BLOCK: Pre-transmission contract verification "
+                    f"failed: {exc}[/bold red]"
+                )
+                raise typer.Exit(code=1) from exc
+
+            terms_invalid_reason: str | None = None
+            if remaining_before_send < 30:
+                terms_invalid_reason = (
+                    f"Order expiry deadline elapsed while reviewing prompt: only "
+                    f"{remaining_before_send}s remaining "
+                    "(minimum 30s cutoff required before expiry)."
+                )
+            elif not fresh_spec.is_available:
+                terms_invalid_reason = (
+                    f"Contract {symbol.upper()} became unavailable during confirmation."
+                )
+            elif abs(fresh_spec.payout_rate - spec.payout_rate) > 0.001:
+                terms_invalid_reason = (
+                    f"Broker payout rate changed materially from {spec.payout_rate * 100:.1f}% "
+                    f"to {fresh_spec.payout_rate * 100:.1f}% during confirmation."
+                )
+
+            if terms_invalid_reason:
+                console.print(
+                    Panel.fit(
+                        f"[bold yellow]APPROVED ORDER TERMS INVALIDATED PRE-TRANSMISSION"
+                        f"[/bold yellow]\n\n"
+                        f"• {terms_invalid_reason}\n"
+                        "• Invariant: Order terms will NEVER be silently modified.\n"
+                        "• Re-evaluating fresh market terms and requiring renewed authorization.",
+                        border_style="yellow",
+                    )
+                )
+                if confirm:
+                    raise RuntimeError(
+                        f"Pre-transmission validation failed in automated mode: "
+                        f"{terms_invalid_reason}"
+                    )
+                continue
+
+            break
+
+        # Pre-transmission connection & session continuity verification
+        transport.refresh_account_state()
+        if not transport.is_connected:
+            console.print(
+                "[bold red]CRITICAL SAFETY BLOCK: Transport disconnected before submission. "
+                "Order blocked fail-closed.[/bold red]"
+            )
+            raise typer.Exit(code=1)
+        if transport.session_id != initial_session_id:
+            console.print(
+                "[bold red]CRITICAL SAFETY BLOCK: Session ID changed unexpectedly. "
+                "Order blocked fail-closed.[/bold red]"
+            )
+            raise typer.Exit(code=1)
+        if not transport.is_practice_verified or str(transport.active_balance_id) != active_bal_id:
+            console.print(
+                f"[bold red]CRITICAL SAFETY BLOCK: Active balance changed "
+                f"({transport.active_balance_id} != {active_bal_id}) or lost practice "
+                "verification. Order blocked fail-closed.[/bold red]"
+            )
+            raise typer.Exit(code=1)
+
+        # 9. Engine Execution & Order Dispatch
+        tok = PracticeExecutionAuthToken(
+            authorization_signature=(
+                "sig_supervisor_cli_practice_live"
+                if not offline_mock
+                else "sig_supervisor_cli_practice"
+            ),
+            supervisor_id=(
+                "supervisor_cli_operator_live" if not offline_mock else "supervisor_cli_operator"
+            ),
+        )
+        mode_cfg = ExecutionModeConfig(
+            mode=ExecutionMode.PRACTICE,
+            practice_enabled=True,
+            practice_auth_token=tok,
+        )
+        engine = ModularExecutionEngine(
+            ModularExecutionConfig(
+                symbol=symbol.upper(),
+                mode=ExecutionMode.PRACTICE,
+                default_product_type=ProductType.BINARY,
+                initial_balance=current_amount,
+                mode_config=mode_cfg,
+                single_test_order_mode=True,
+            )
+        )
+
+        proposal = engine.create_proposal(
+            symbol=symbol.upper(),
+            side=norm_side,
+            stake=stake,
+            payout_rate=spec.payout_rate if spec else None,
+            candle_to_ts=float(current_candle.to_ts),
+            signal_id="sig_operator_cli_supervised",
+        )
+        order, dec = engine.propose_and_validate(
+            proposal,
+            current_ts=float(current_candle.to_ts),
+            profile=(
+                transport.profile
+                if not offline_mock
+                else _make_profile(1, int(active_bal_id) if active_bal_id.isdigit() else 101)
+            ),
+            balances=(
+                transport.balances
+                if not offline_mock
+                else [
+                    Balance(
+                        id=active_bal_id,
+                        type=AccountType.PRACTICE,
+                        amount=current_amount,
+                        currency="USD",
+                        is_active=True,
+                    )
+                ]
+            ),
+        )
+        if not dec.permitted:
+            console.print(f"[bold red]Order rejected by risk controller: {dec.message}[/bold red]")
+            raise typer.Exit(code=1)
+
+        order.expiry_ts = float(expiry_ts)
+
+        console.print("[bold cyan]Submitting order to broker transport...[/bold cyan]")
+        _ = engine.submit_order(order, current_candle, broker_transport=transport)
+
+        if not order.broker_order_id or order.state not in {
+            OrderState.ACKNOWLEDGED,
+            OrderState.OPEN,
+        }:
             console.print(
                 Panel.fit(
-                    "[bold green]Broker Practice Order Confirmed[/bold green]\n"
-                    f"• Broker Ticket ID: [bold white]{order.broker_order_id}[/bold white]\n"
-                    f"• Local Order ID: {order.order_id}\n"
+                    "[bold red]Broker Order Submission Failed[/bold red]\n"
                     f"• State: {order.state.value.upper()}\n"
-                    f"• Expiry TS: {int(order.expiry_ts or 0)}",
-                    border_style="green",
+                    f"• Reconciliation Required: {order.reconciliation_required}\n"
+                    "• Invariant: Zero retries attempted.",
+                    border_style="red",
                 )
             )
+            raise typer.Exit(code=1)
 
+        console.print(
+            Panel.fit(
+                "[bold green]Practice Test Order Successfully Placed\n"
+                "(Broker Practice Order Confirmed)[/bold green]\n"
+                f"• Broker Ticket ID: [bold white]{order.broker_order_id}[/bold white]\n"
+                f"• Local Order ID: {order.order_id}\n"
+                f"• State: {order.state.value.upper()}\n"
+                f"• Entry Price: {order.entry_price:.5f}\n"
+                f"• Expiry TS: {int(order.expiry_ts or 0)} ({expiry_utc_str})\n"
+                f"• Active Balance ID: {active_bal_id}\n"
+                "• Audit Trail: Durably recorded in SQLite execution journal.",
+                border_style="green",
+            )
+        )
+
+        # 10. Settlement & Post-Trade Reconciliation (for live socket)
+        if not offline_mock and isinstance(transport, IQOptionLivePracticeTransport):
             console.print("[bold yellow]Monitoring position until expiration...[/bold yellow]")
             try:
                 settlement = transport.wait_for_settlement(
@@ -1334,7 +1577,7 @@ def practice_test_command(
                 )
                 new_bal = 0.0
                 for b in transport.balances:
-                    if str(b.id) == str(live_bal):
+                    if str(b.id) == str(active_bal_id):
                         new_bal = float(b.amount)
                         break
 
@@ -1346,9 +1589,9 @@ def practice_test_command(
                         f"• Realized PnL: ${settlement.net_pnl:+.2f}\n"
                         f"• Exit Price: {settlement.exit_price}\n"
                         f"• Close Time: {settlement.exit_ts}\n"
-                        f"• Prior Practice Balance: ${live_amount:,.2f}\n"
+                        f"• Prior Practice Balance: ${current_amount:,.2f}\n"
                         f"• New Practice Balance: ${new_bal:,.2f} "
-                        f"(Delta: ${new_bal - live_amount:+.2f})\n"
+                        f"(Delta: ${new_bal - current_amount:+.2f})\n"
                         f"• Financial Consistency: {settlement.is_financially_consistent} "
                         f"({settlement.consistency_note})\n"
                         "• SQLite Journal: Audit trail durably committed.",
@@ -1360,85 +1603,5 @@ def practice_test_command(
                     "[yellow]Timed out waiting for broker settlement notification. "
                     "Position will reconcile on subsequent poll.[/yellow]"
                 )
-        finally:
-            transport.close()
-        return
-
-    # Execute deterministic mock dispatch
-    tok = PracticeExecutionAuthToken(
-        authorization_signature="sig_supervisor_cli_practice",
-        supervisor_id="supervisor_cli_operator",
-    )
-    mode_cfg = ExecutionModeConfig(
-        mode=ExecutionMode.PRACTICE,
-        practice_enabled=True,
-        practice_auth_token=tok,
-    )
-    engine = ModularExecutionEngine(
-        ModularExecutionConfig(
-            symbol=symbol.upper(),
-            mode=ExecutionMode.PRACTICE,
-            default_product_type=ProductType.BINARY,
-            initial_balance=10000.0,
-            mode_config=mode_cfg,
-            single_test_order_mode=True,
-        )
-    )
-
-    prof = _make_profile(1, 101)
-    bals = [
-        Balance(
-            id="101",
-            type=AccountType.PRACTICE,
-            amount=10000.0,
-            currency="USD",
-            is_active=True,
-        )
-    ]
-    c1 = Candle(
-        active_id=1,
-        symbol=symbol.upper(),
-        size=CandleSize.MIN_1,
-        from_ts=1700000000,
-        to_ts=1700000060,
-        at_ts=1700000060_000_000_000,
-        open=1.0850,
-        high=1.0855,
-        low=1.0848,
-        close=1.0852,
-        volume=100,
-        bid=1.0852,
-        ask=1.0852,
-    )
-
-    proposal = engine.create_proposal(
-        symbol=symbol.upper(),
-        side=norm_side,
-        stake=stake,
-        candle_to_ts=float(c1.to_ts),
-        signal_id="sig_operator_cli_test",
-    )
-    order, dec = engine.propose_and_validate(
-        proposal, current_ts=float(c1.to_ts), profile=prof, balances=bals
-    )
-    if not dec.permitted:
-        console.print(f"[bold red]Order rejected by risk controller: {dec.message}[/bold red]")
-        raise typer.Exit(code=1)
-
-    mock_transport = MockBrokerPracticeTransport(
-        should_succeed=True, option_id="mock_ticket_cli_supervised"
-    )
-    _ = engine.submit_order(order, c1, broker_transport=mock_transport)
-    console.print(
-        Panel.fit(
-            "[bold green]Practice Test Order Successfully Placed "
-            "(Simulated Transport)[/bold green]\n"
-            f"• Order ID: {order.order_id}\n"
-            f"• Broker Ticket ID: {order.broker_order_id}\n"
-            f"• State: {order.state.value.upper()}\n"
-            f"• Entry Price: {order.entry_price:.5f}\n"
-            f"• Expiry TS: {int(order.expiry_ts or 0)}\n"
-            f"• Audit Trail: Order intent durably saved in SQLite execution journal.",
-            border_style="green",
-        )
-    )
+    finally:
+        transport.close()

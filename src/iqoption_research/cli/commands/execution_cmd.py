@@ -2499,6 +2499,9 @@ def practice_history_command(
     end: str = typer.Option(..., "--end", help="Inclusive ISO-8601 end with UTC offset."),
     limit: int = typer.Option(100, "--limit", min=1, max=1000),
     ticket: str | None = typer.Option(None, "--ticket", help="Exact broker ticket if known."),
+    balance_diagnostics: bool = typer.Option(
+        False, "--balance-diagnostics", help="Print sanitized balance protocol metadata."
+    ),
     record: str | None = typer.Option(None, "--record", help="Save allowlisted evidence JSON."),
 ) -> None:
     """Query broker history for classic binary/turbo options; never submits orders."""
@@ -2519,7 +2522,10 @@ def practice_history_command(
     password = os.environ.get("IQOPTION_PASSWORD") or typer.prompt(
         "IQ Option Password", hide_input=True
     )
-    observer = PassivePracticeObserver(credentials=Credentials(email=email, password=password))
+    observer = PassivePracticeObserver(
+        credentials=Credentials(email=email, password=password),
+        balance_diagnostics=balance_diagnostics,
+    )
 
     async def run() -> dict[str, Any]:
         try:
@@ -2543,7 +2549,27 @@ def practice_history_command(
         console.print("[red]Read-only history query failed; history is unverified.[/red]")
         console.print_json(json.dumps(observer.failure_diagnostics()))
         raise typer.Exit(code=1) from exc
-    console.print_json(json.dumps(result))
+    if balance_diagnostics:
+        console.print_json(
+            json.dumps({
+                "balance_protocol_diagnostics": observer.balance_protocol_diagnostics(),
+            })
+        )
+    # Display only non-personal classifications; detailed evidence is opt-in on disk.
+    console.print_json(
+        json.dumps({
+            "history_status": result["history_status"],
+            "position_status": result["position_status"],
+            "wallet_status": result["wallet_status"],
+            "settlement_status": result["settlement_status"],
+            "candidate_count": result["candidate_count"],
+            "incomplete_candidate_count": len(result["incomplete_candidates"]),
+            "real_wallet_status": result["account"]["real_wallet_status"],
+            "history_may_be_truncated": result["query_limit_may_truncate_history"],
+            "operator_reconciliation_required": True,
+            "evidence_export_requested": record is not None,
+        })
+    )
     if record:
         Path(record).write_text(json.dumps(result, indent=2), encoding="utf-8")
     if result["account"]["real_wallet_status"] == "MUTATED":

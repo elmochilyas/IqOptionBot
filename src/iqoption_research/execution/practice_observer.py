@@ -251,6 +251,7 @@ class PassivePracticeObserver:
         credentials: Credentials | None = None,
         ssid: str | None = None,
         wss_url: str = DEFAULT_WSS_URL,
+        balance_diagnostics: bool = False,
     ) -> None:
         self._credentials = credentials
         self._ssid = ssid
@@ -285,7 +286,6 @@ class PassivePracticeObserver:
         self._invalid_count = 0
         self._other_product_count = 0
         self._connection_error: str | None = None
-        self._balance_revision = 0
         self._last_successful_stage = "NOT_STARTED"
         self._failed_stage: str | None = None
         self._failure_code: str | None = None
@@ -298,6 +298,10 @@ class PassivePracticeObserver:
         self._history_response_correlated = False
         self._authenticated = False
         self._practice_identity_established = False
+        self._balance_diagnostics_enabled = balance_diagnostics
+        self._balance_attempts: list[dict[str, Any]] = []
+        self._active_balance_attempt: dict[str, Any] | None = None
+        self._balance_request_id: str | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -337,7 +341,7 @@ class PassivePracticeObserver:
 
     def failure_diagnostics(self) -> dict[str, Any]:
         """Fixed vocabulary only: no broker payloads, account IDs or exception messages."""
-        return {
+        report: dict[str, Any] = {
             "history_status": "HISTORY_UNVERIFIED",
             "last_successful_stage": self._last_successful_stage,
             "failed_stage": self._failed_stage or "UNKNOWN",
@@ -356,8 +360,15 @@ class PassivePracticeObserver:
             "real_wallet_state": "SNAPSHOT_AVAILABLE"
             if self._initial_real_balance
             else "UNVERIFIED",
-            "recommended_next_diagnostic": "practice-observe --live --probe-only",
+            "recommended_next_diagnostic": "practice-history --live --balance-diagnostics",
         }
+        if self._balance_diagnostics_enabled:
+            report["balance_protocol_diagnostics"] = self.balance_protocol_diagnostics()
+        return report
+
+    def balance_protocol_diagnostics(self) -> list[dict[str, Any]]:
+        """Return only fixed metadata; never return payloads, IDs or account values."""
+        return list(self._balance_attempts)
 
     def mark_history_response_invalid(self) -> None:
         self._failed_stage = "HISTORY_PARSING"
@@ -436,7 +447,11 @@ class PassivePracticeObserver:
         refreshed = await self.async_refresh_account_state()
         if not refreshed:
             code = self._last_refresh_failure or "BALANCES_FETCH_FAILED"
-            stage = self._last_refresh_stage or "BALANCES_FETCH"
+            stage = (
+                "WALLET_DISCOVERY"
+                if code.startswith("PRACTICE_WALLET_")
+                else self._last_refresh_stage or "BALANCES_FETCH"
+            )
             raise self._fail(stage, code)
         self._last_successful_stage = "BALANCES_FETCH"
         if self._practice_balance is None:
@@ -634,25 +649,121 @@ class PassivePracticeObserver:
             return None
 
     @staticmethod
-    def _parse_balance_response(message: dict[str, Any]) -> list[Balance]:
-        if message.get("name") not in {"balances", "get-balances"}:
-            return []
-        if message.get("status") not in (None, 2000):
-            return []
+    def _balance_envelope(message: dict[str, Any]) -> tuple[list[Any] | None, str]:
+        """Recognize the account envelopes used by the existing read-only clients."""
         body = message.get("msg")
+        if isinstance(body, list):
+            return body, "MSG_LIST"
         if isinstance(body, dict):
-            body = body.get("result") if "result" in body else body.get("balances")
-        if not isinstance(body, list) or not body:
+            for key, label in (
+                ("balances", "MSG_BALANCES_LIST"),
+                ("result", "MSG_RESULT_LIST"),
+                ("msg", "MSG_MSG_LIST"),
+            ):
+                if isinstance(body.get(key), list):
+                    return body[key], label
+            result = body.get("result")
+            if isinstance(result, dict) and isinstance(result.get("balances"), list):
+                return result["balances"], "MSG_RESULT_BALANCES_LIST"
+        body = message.get("body")
+        if isinstance(body, list):
+            return body, "BODY_LIST"
+        if isinstance(body, dict) and isinstance(body.get("balances"), list):
+            return body["balances"], "BODY_BALANCES_LIST"
+        return None, "UNRECOGNIZED"
+
+    @staticmethod
+    def _balance_status(message: dict[str, Any]) -> str:
+        status = message.get("status")
+        if message.get("name") == "error" or status is False:
+            return "REJECTED"
+        if status is None:
+            return "ABSENT"
+        if not isinstance(status, bool) and status == 2000:
+            return "SUCCESS"
+        if isinstance(status, str) and status.lower() in {"error", "failed", "rejected"}:
+            return "REJECTED"
+        return "UNRECOGNIZED"
+
+    @staticmethod
+    def _parse_balance_entry(item: Any) -> Balance | None:
+        if not isinstance(item, dict):
+            return None
+        if item.get("amount") is None and item.get("balance") is None:
+            return None
+        raw_id = item.get("id") if item.get("id") is not None else item.get("balance_id")
+        if isinstance(raw_id, bool) or not isinstance(raw_id, (int, str)):
+            return None
+        if not str(raw_id).isascii() or not str(raw_id).isdecimal():
+            return None
+        try:
+            if int(raw_id) <= 0:
+                return None
+            return Balance.from_raw(item)
+        except (ValueError, TypeError, KeyError, OverflowError):
+            return None
+
+    @classmethod
+    def _parse_balance_entries(cls, body: list[Any] | None) -> list[Balance]:
+        if not body:
             return []
         parsed: list[Balance] = []
         for item in body:
-            if not isinstance(item, dict):
+            balance = cls._parse_balance_entry(item)
+            if balance is None:
                 return []
-            try:
-                parsed.append(Balance.from_raw(item))
-            except (ValueError, TypeError, KeyError, OverflowError):
-                return []
+            parsed.append(balance)
         return parsed
+
+    @classmethod
+    def _parse_balance_response(cls, message: dict[str, Any]) -> list[Balance]:
+        if message.get("name") not in {"balances", "get-balances", "balance"}:
+            return []
+        if cls._balance_status(message) not in {"ABSENT", "SUCCESS"}:
+            return []
+        body, _ = cls._balance_envelope(message)
+        return cls._parse_balance_entries(body)
+
+    def _record_balance_frame(self, message: dict[str, Any], req_id: str) -> None:
+        """Capture an allowlisted response summary during the active request only."""
+        attempt = self._active_balance_attempt
+        if attempt is None or self._balance_request_id is None:
+            return
+        raw_name = message.get("name")
+        name = raw_name if isinstance(raw_name, str) else ""
+        relevant = {"balances", "get-balances", "balance", "error", "result", "response"}
+        if name not in relevant and req_id != self._balance_request_id:
+            known_other = {
+                "authenticated",
+                "profile",
+                "get-profile",
+                "heartbeat",
+                "timeSync",
+                "timesync",
+                "balance-changed",
+            }
+            bucket = "known_non_balance" if name in known_other else "unrecognized"
+            attempt["other_frame_counts"][bucket] += 1
+            return
+        body, envelope = self._balance_envelope(message)
+        valid_count = sum(self._parse_balance_entry(item) is not None for item in body or [])
+        frames = attempt["responses"]
+        if len(frames) < 30:
+            frames.append({
+                "message_name": name if name in relevant else "OTHER",
+                "request_id": "MATCH"
+                if req_id == self._balance_request_id
+                else "DIFFERENT"
+                if req_id
+                else "ABSENT",
+                "status": self._balance_status(message),
+                "envelope": envelope,
+                "balance_array_detected": body is not None,
+                "balance_entry_count": len(body) if body is not None else None,
+                "parsed_entry_count": valid_count,
+            })
+        else:
+            attempt["additional_responses_omitted"] += 1
 
     async def async_refresh_account_state(self, timeout_seconds: float = 5.0) -> bool:
         """Require a fresh correlated balance response and a valid session profile."""
@@ -669,7 +780,23 @@ class PassivePracticeObserver:
         bal_fut: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending_requests[prof_req_id] = prof_fut
         self._pending_requests[bal_req_id] = bal_fut
+        self._balance_request_id = bal_req_id
+        if self._balance_diagnostics_enabled:
+            self._active_balance_attempt = {
+                "request_type": "get-balances",
+                "protocol_version": "1.0",
+                "body_present": False,
+                "dispatch_state": "NOT_ATTEMPTED",
+                "responses": [],
+                "additional_responses_omitted": 0,
+                "diagnostic_capture_errors": 0,
+                "other_frame_counts": {"known_non_balance": 0, "unrecognized": 0},
+                "initialization_condition": "IN_PROGRESS",
+            }
+            if len(self._balance_attempts) < 5:
+                self._balance_attempts.append(self._active_balance_attempt)
         deadline = loop.time() + timeout_seconds
+        snapshot_accepted = False
         try:
             await self._ws.send(
                 json.dumps({
@@ -679,6 +806,8 @@ class PassivePracticeObserver:
                 })
             )
             self._last_refresh_stage = "BALANCES_FETCH"
+            if self._active_balance_attempt is not None:
+                self._active_balance_attempt["dispatch_state"] = "DELIVERY_UNKNOWN"
             await self._ws.send(
                 json.dumps({
                     "name": "sendMessage",
@@ -686,6 +815,8 @@ class PassivePracticeObserver:
                     "request_id": bal_req_id,
                 })
             )
+            if self._active_balance_attempt is not None:
+                self._active_balance_attempt["dispatch_state"] = "SENT"
             try:
                 balance_response = await asyncio.wait_for(
                     bal_fut, timeout=max(0, deadline - loop.time())
@@ -693,14 +824,21 @@ class PassivePracticeObserver:
             except TimeoutError:
                 if self._profile is not None and not self._history_dispatched:
                     self._last_successful_stage = "PROFILE_FETCH"
-                self._last_refresh_failure = "BALANCES_FETCH_FAILED"
+                self._last_refresh_failure = "BALANCES_RESPONSE_TIMEOUT"
                 return False
             if balance_response.get("name") == "observer-connection-closed":
                 self._last_refresh_failure = "WS_CONNECTION_CLOSED"
                 return False
+            status = self._balance_status(balance_response)
+            if status == "REJECTED":
+                self._last_refresh_failure = "BALANCES_RESPONSE_REJECTED"
+                return False
+            if status == "UNRECOGNIZED":
+                self._last_refresh_failure = "BALANCES_RESPONSE_STATUS_UNRECOGNIZED"
+                return False
             parsed = self._parse_balance_response(balance_response)
-            if not parsed:
-                self._last_refresh_failure = "BALANCES_FETCH_FAILED"
+            if not parsed or len({int(balance.id) for balance in parsed}) != len(parsed):
+                self._last_refresh_failure = "BALANCES_RESPONSE_INVALID"
                 return False
             # The profile may have arrived unsolicited on this authenticated connection.
             # Unlike the balance snapshot, it is not used as proof of a fresh balance.
@@ -719,17 +857,47 @@ class PassivePracticeObserver:
                     )
                     return False
             if not self._history_dispatched:
-                self._last_successful_stage = "PROFILE_FETCH"
+                self._last_successful_stage = "BALANCES_FETCH"
+            practice = [b for b in parsed if b.type == AccountType.PRACTICE]
+            if len(practice) != 1:
+                self._practice_balance = None
+                self._last_refresh_failure = (
+                    "PRACTICE_WALLET_MISSING" if not practice else "PRACTICE_WALLET_AMBIGUOUS"
+                )
+                return False
             self._balances = parsed
-            self._practice_balance = next(
-                (b for b in parsed if b.type == AccountType.PRACTICE), None
-            )
-            self._real_balance = next((b for b in parsed if b.type == AccountType.REAL), None)
+            self._practice_balance = practice[0]
+            real_wallets = [b for b in parsed if b.type == AccountType.REAL]
+            self._real_balance = real_wallets[0] if len(real_wallets) == 1 else None
+            snapshot_accepted = True
             return True
+        except TimeoutError:
+            self._last_refresh_failure = (
+                "PROFILE_REQUEST_SEND_TIMEOUT"
+                if self._last_refresh_stage == "PROFILE_FETCH"
+                else "BALANCES_REQUEST_SEND_TIMEOUT"
+            )
+            return False
         except (ConnectionClosed, OSError):
             self._last_refresh_failure = "WS_CONNECTION_CLOSED"
             return False
+        except Exception:  # noqa: BLE001 - do not expose broker or internal data
+            self._last_refresh_failure = (
+                "PROFILE_INTERNAL_ERROR"
+                if self._last_refresh_stage == "PROFILE_FETCH"
+                else "BALANCES_INTERNAL_ERROR"
+            )
+            return False
         finally:
+            if not snapshot_accepted:
+                self._practice_identity_established = False
+            if self._active_balance_attempt is not None:
+                self._active_balance_attempt["initialization_condition"] = (
+                    self._last_refresh_failure
+                    or ("BALANCE_SNAPSHOT_ACCEPTED" if snapshot_accepted else "INTERRUPTED")
+                )
+            self._active_balance_attempt = None
+            self._balance_request_id = None
             for req_id, future in ((prof_req_id, prof_fut), (bal_req_id, bal_fut)):
                 self._pending_requests.pop(req_id, None)
                 if not future.done():
@@ -821,6 +989,7 @@ class PassivePracticeObserver:
             "get-profile",
             "balances",
             "get-balances",
+            "balance",
             "option-opened",
             "socket-option-opened",
             "portfolio.position-changed",
@@ -852,6 +1021,12 @@ class PassivePracticeObserver:
                 self._history_response_arrived = True
             if req_id == self._history_request_id:
                 self._history_response_correlated = True
+        if self._balance_diagnostics_enabled:
+            try:
+                self._record_balance_frame(message, req_id)
+            except Exception:  # noqa: BLE001 - diagnostics must not alter frame handling
+                if self._active_balance_attempt is not None:
+                    self._active_balance_attempt["diagnostic_capture_errors"] += 1
         # Match pending request
         if req_id and req_id in self._pending_requests:
             fut = self._pending_requests.pop(req_id)
@@ -873,17 +1048,8 @@ class PassivePracticeObserver:
             if profile is not None:
                 self._profile = profile
                 self._profile_event.set()
-        if name in {"balances", "get-balances"}:
-            parsed_bals = self._parse_balance_response(message)
-            if parsed_bals:
-                self._balance_revision += 1
-                self._balances = parsed_bals
-                self._practice_balance = next(
-                    (b for b in parsed_bals if b.type == AccountType.PRACTICE), None
-                )
-                self._real_balance = next(
-                    (b for b in parsed_bals if b.type == AccountType.REAL), None
-                )
+        # Uncorrelated balance snapshots are not proof of a fresh wallet selection.
+        # A correlated snapshot is applied by async_refresh_account_state after validation.
 
         # Handle position opening (option-opened, socket-option-opened, portfolio.position-changed)
         if name in {"option-opened", "socket-option-opened"}:

@@ -186,8 +186,8 @@ async def test_handshake_failure_is_sanitized(monkeypatch: Any) -> None:
     "profile, balances, expected",
     [
         ({}, [{"id": 101, "type": 4, "amount": 100, "currency": "USD"}], "PROFILE_FETCH_FAILED"),
-        ({"user_id": 123}, [], "BALANCES_FETCH_FAILED"),
-        ({"user_id": 123}, [{"id": 101, "type": 4, "amount": "bad"}], "BALANCES_FETCH_FAILED"),
+        ({"user_id": 123}, [], "BALANCES_RESPONSE_INVALID"),
+        ({"user_id": 123}, [{"id": 101, "type": 4, "amount": "bad"}], "BALANCES_RESPONSE_INVALID"),
     ],
 )
 async def test_missing_or_malformed_account_data(
@@ -220,7 +220,7 @@ async def test_unrelated_balance_push_does_not_validate_malformed_correlated_res
 
     obs._ws = Socket(obs)  # type: ignore[assignment]
     assert not await obs.async_refresh_account_state(timeout_seconds=0.02)
-    assert obs._last_refresh_failure == "BALANCES_FETCH_FAILED"
+    assert obs._last_refresh_failure == "BALANCES_RESPONSE_INVALID"
 
 
 @pytest.mark.asyncio

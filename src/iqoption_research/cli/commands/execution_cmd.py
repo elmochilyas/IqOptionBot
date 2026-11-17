@@ -2500,7 +2500,9 @@ def practice_history_command(
     limit: int = typer.Option(100, "--limit", min=1, max=1000),
     ticket: str | None = typer.Option(None, "--ticket", help="Exact broker ticket if known."),
     balance_diagnostics: bool = typer.Option(
-        False, "--balance-diagnostics", help="Print sanitized balance protocol metadata."
+        False,
+        "--balance-diagnostics",
+        help="Print sanitized account and history protocol metadata.",
     ),
     record: str | None = typer.Option(None, "--record", help="Save allowlisted evidence JSON."),
 ) -> None:
@@ -2525,6 +2527,7 @@ def practice_history_command(
     observer = PassivePracticeObserver(
         credentials=Credentials(email=email, password=password),
         balance_diagnostics=balance_diagnostics,
+        require_profile=False,
     )
 
     async def run() -> dict[str, Any]:
@@ -2550,17 +2553,14 @@ def practice_history_command(
         console.print_json(json.dumps(observer.failure_diagnostics()))
         raise typer.Exit(code=1) from exc
     if balance_diagnostics:
-        console.print_json(
-            json.dumps({
-                "balance_protocol_diagnostics": observer.balance_protocol_diagnostics(),
-            })
-        )
+        console.print_json(json.dumps(observer.account_protocol_diagnostics()))
     # Display only non-personal classifications; detailed evidence is opt-in on disk.
     console.print_json(
         json.dumps({
             "history_status": result["history_status"],
             "position_status": result["position_status"],
             "wallet_status": result["wallet_status"],
+            **observer.profile_verification_diagnostics(),
             "settlement_status": result["settlement_status"],
             "candidate_count": result["candidate_count"],
             "incomplete_candidate_count": len(result["incomplete_candidates"]),

@@ -56,6 +56,8 @@ class BalanceSocket:
                 response["request_id"] = frame["request_id"]
             elif self.request_id == "DIFFERENT":
                 response["request_id"] = "OTHER-REQUEST-ID-PRIVATE"
+            elif self.request_id == "PADDED":
+                response["request_id"] = f" {frame['request_id']} "
             self.observer._handle_incoming_frame(response)
 
     async def close(self) -> None:
@@ -247,7 +249,7 @@ async def test_status_wire_code_ignores_payload_status() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("request_id", ["ABSENT", "DIFFERENT"])
+@pytest.mark.parametrize("request_id", ["ABSENT", "DIFFERENT", "PADDED"])
 async def test_uncorrelated_balance_does_not_establish_a_wallet(request_id: str) -> None:
     obs, _ = make_observer({"name": "balances", "status": 0, "msg": WALLETS}, request_id=request_id)
     assert not await obs.async_refresh_account_state(timeout_seconds=0.02)
@@ -255,7 +257,9 @@ async def test_uncorrelated_balance_does_not_establish_a_wallet(request_id: str)
     assert obs.practice_balance is None
     assert not obs.failure_diagnostics()["practice_wallet_identity_established"]
     trace = obs.balance_protocol_diagnostics()[0]
-    assert trace["responses"][0]["request_id"] == request_id
+    assert trace["responses"][0]["request_id"] == (
+        "DIFFERENT" if request_id == "PADDED" else request_id
+    )
     assert trace["responses"][0]["parsed_entry_count"] == 2
     assert trace["initialization_condition"] == "BALANCES_RESPONSE_TIMEOUT"
     assert "OTHER-REQUEST-ID-PRIVATE" not in json.dumps(trace)

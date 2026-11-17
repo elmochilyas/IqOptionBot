@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from iqoption_research.execution.blitz_diagnostics import BlitzSchemaDiagnostics
+from iqoption_research.execution.history_monitor import HistorySnapshotMonitor
 from iqoption_research.execution.practice_history import (
     invalid_option_fields,
     normalize_history_asset,
@@ -760,6 +761,7 @@ def assess_active_account(observer: PassivePracticeObserver) -> dict[str, str]:
         "endpoint_consistency": "UNVERIFIED",
         "active_wallet_authority": "UNVERIFIED",
         "ui_selected_account": "NOT_OBSERVED",
+        "session_selection_endpoint": "NO_VERIFIED_READ_ONLY_AUTHORITY_CONTRACT",
         "classification_reason": "PROFILE_OR_WALLET_MISSING",
     }
     profile = observer.profile
@@ -885,6 +887,7 @@ async def observe_practice(
     ):
         raise ValueError("Invalid observation duration, history limit or reconnect limit")
     tracker = PracticeObservation(asset)
+    monitor = HistorySnapshotMonitor(asset, history_limit) if tracker.asset == "EURUSD_OP" else None
     loop = asyncio.get_running_loop()
     deadline = loop.time() + seconds
     started_at = time.time()
@@ -912,15 +915,25 @@ async def observe_practice(
         active_real_seen |= active_status == "ACTIVE_REAL_OR_OTHER"
 
     async def query(active: PassivePracticeObserver, reason: str) -> str:
+        snapshot: dict[str, Any] | None = None
         try:
             async with asyncio.timeout(_REQUEST_TIMEOUT_SECONDS):
                 response = await active.async_get_options_history(
                     limit=history_limit, timeout_seconds=_REQUEST_TIMEOUT_SECONDS
                 )
             status = tracker.reconcile(response, started_at, time.time())
+            if monitor is not None and tracker.practice_id is not None:
+                snapshot = monitor.snapshot(response, tracker.practice_id)
         except (ConnectionError, OSError, ValueError):
             status = "HISTORY_UNVERIFIED"
-        history.append({"reason": reason, "status": status, "history_may_be_truncated": True})
+            if monitor is not None:
+                monitor.gap()
+        history.append({
+            "reason": reason,
+            "status": status,
+            "history_may_be_truncated": True,
+            **({"snapshot_comparison": snapshot} if snapshot is not None else {}),
+        })
         return status
 
     try:
@@ -953,6 +966,8 @@ async def observe_practice(
                         session["subscription_status"] = current.portfolio_subscription_status.value
                     if attempt:
                         await query(current, "RECONNECTION")
+                    elif monitor is not None:
+                        await query(current, "INITIAL_HISTORY_BASELINE")
                     while current.is_connected:
                         try:
                             async with asyncio.timeout(_HISTORY_INTERVAL_SECONDS):
@@ -975,6 +990,8 @@ async def observe_practice(
                             break
                     session["status"] = "CONNECTION_LOST"
                     gaps.append("CONNECTION_LOST")
+                    if monitor is not None:
+                        monitor.gap()
             except TimeoutError:
                 if not current.is_connected and session["status"] == "CONNECTING":
                     session["status"] = "CONNECT_TIMEOUT"
@@ -997,6 +1014,8 @@ async def observe_practice(
                     error_classification=failure["error_classification"],
                 )
                 gaps.append(session["status"])
+                if monitor is not None:
+                    monitor.gap()
                 if failure["error_classification"] in _NON_RETRYABLE_CONNECTION_ERRORS:
                     break
             finally:
@@ -1070,13 +1089,14 @@ async def observe_practice(
         if wallet_verified and not account_conflict_seen and not active_real_seen
         else "ACTIVE_PRACTICE_UNVERIFIED"
     )
+    tracking_report = tracker.report(
+        started_at_utc=started_at,
+        ended_at_utc=ended_at,
+        requested_seconds=seconds,
+        reconnect_limit=reconnect_limit,
+    )
     report: dict[str, Any] = {
-        **tracker.report(
-            started_at_utc=started_at,
-            ended_at_utc=ended_at,
-            requested_seconds=seconds,
-            reconnect_limit=reconnect_limit,
-        ),
+        **tracking_report,
         "websocket_authentication": "VERIFIED" if authentication_verified else "UNVERIFIED",
         "practice_wallet": "VERIFIED" if wallet_verified else "UNVERIFIED",
         "practice_account_active": final_active_status,
@@ -1084,6 +1104,12 @@ async def observe_practice(
         "active_real_or_other_observed": active_real_seen,
         "ui_selected_account": "NOT_OBSERVED",
         "autonomous_execution_authorized": False,
+        "live_observation_assessment": (
+            "INCONCLUSIVE_NO_VERIFIED_LIVE_EVENTS"
+            if tracking_report["event_delivery"] != "LIVE_POSITION_EVENT_OBSERVED"
+            else "LIVE_POSITION_EVENT_OBSERVED"
+        ),
+        **({"history_monitor": monitor.report()} if monitor is not None else {}),
         "connection_attempts": sessions,
         "reconnect_attempts": max(0, len(sessions) - 1),
         "observation_gaps": dict(Counter(gaps)),

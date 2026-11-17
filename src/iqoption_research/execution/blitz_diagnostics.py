@@ -39,6 +39,15 @@ _FIELDS = (
     "close_time",
     "raw_event",
     "binary_options_option_changed1",
+    # Cached Quadcode SDK portfolio v3 reference fields. Presence is metadata
+    # only: its applicability to this IQ Option gateway remains unverified.
+    "open_time",
+    "expiration_time",
+    "invest",
+    "close_profit",
+    "pnl_realized",
+    "order_ids",
+    "version",
 )
 _PRODUCTS = ("instrument_type", "product_type", "option_type")
 
@@ -93,6 +102,8 @@ class BlitzSchemaDiagnostics:
             "subscription_status": "NOT_SENT_NO_VERIFIED_BLITZ_SUBSCRIPTION",
             "candidate_evidence": "METADATA_ONLY_NOT_LIVE_POSITION_PROOF",
             "position_ticket_correlation": "UNVERIFIED_NO_SUPPORTED_LIVE_SCHEMA",
+            "reference_schema": "CACHED_QUADCODE_PORTFOLIO_V3",
+            "reference_applicability": "IQOPTION_GATEWAY_UNVERIFIED",
             "counts": dict(self.counts),
             "topic_counts": dict(self.topics),
             "field_presence_counts": dict(self.fields),

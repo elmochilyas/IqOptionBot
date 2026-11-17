@@ -42,7 +42,7 @@ def practice_watch_command(
 
     Credentials are read from IQOPTION_EMAIL / IQOPTION_PASSWORD or prompted for.
     No order, account-selection or other state-changing broker message is sent.
-    EURUSD_OP (Blitz) collects passive schema metadata and bounded history only.
+    EURUSD_OP (Blitz) compares bounded history snapshots and passive schema metadata.
     No Blitz subscription or live payload schema has been verified.
     """
     if not live:
@@ -88,6 +88,8 @@ def practice_watch_command(
         or conflicts
         or report.get("account_evidence_conflict_observed")
         or report.get("active_real_or_other_observed")
+        or report.get("history_monitor", {}).get("conflicting_records", 0)
+        or report.get("history_monitor", {}).get("counts", {}).get("ambiguous_records", 0)
     ):
         raise typer.Exit(code=_EXIT_SAFETY_CONFLICT)
     if (

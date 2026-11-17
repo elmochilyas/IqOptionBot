@@ -127,6 +127,11 @@ bounded history recovery. It sends no portfolio subscriptions and explicitly
 reports `LIVE_SCHEMA_UNVERIFIED`; recovered history does not prove live delivery.
 See the [Phase 22 findings and read-only runbook](docs/PHASE22_BLITZ_OBSERVATION.md).
 
+Phase 23 adds an immediate history baseline and snapshot comparisons for later
+discoveries, updates, unchanged records, incomplete evidence, and coverage gaps.
+History discovery remains separate from live delivery; silence is inconclusive.
+See the [Phase 23 evidence matrix and monitoring runbook](docs/PHASE23_HISTORY_MONITORING.md).
+
 ```powershell
 python -m iqoption_research.cli.main practice-watch --live --asset EURUSD_OP --seconds 120 --history-limit 100 --reconnect-limit 3 --active-account-diagnostics
 ```

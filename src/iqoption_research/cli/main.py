@@ -15,6 +15,7 @@ from iqoption_research.cli.commands.data_cmd import app as data_app
 from iqoption_research.cli.commands.execution_cmd import (
     execution_app,
     practice_diagnostics_command,
+    practice_history_command,
     practice_observe_command,
     practice_select_command,
     practice_test_command,
@@ -58,6 +59,9 @@ app.command(
     "practice-observe",
     help="Passively observe manual Practice transactions in official IQ Option UI (READ-ONLY).",
 )(practice_observe_command)
+app.command("practice-history", help="Read-only classic option history reconciliation.")(
+    practice_history_command
+)
 app.add_typer(research_app, name="research")
 app.add_typer(ml_app, name="ml")
 app.add_typer(paper_app, name="paper")

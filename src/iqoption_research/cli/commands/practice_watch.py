@@ -42,8 +42,8 @@ def practice_watch_command(
 
     Credentials are read from IQOPTION_EMAIL / IQOPTION_PASSWORD or prompted for.
     No order, account-selection or other state-changing broker message is sent.
-    EURUSD_OP (Blitz) live events are not supported by this observer; use EURUSD
-    or EURUSD-OTC when live event delivery must be demonstrated.
+    EURUSD_OP (Blitz) collects passive schema metadata and bounded history only.
+    No Blitz subscription or live payload schema has been verified.
     """
     if not live:
         raise typer.BadParameter("Explicit --live is required for a broker observation.")
@@ -83,7 +83,12 @@ def practice_watch_command(
         raise typer.Exit(code=1) from None
     console.print_json(json.dumps(report))
     conflicts = report.get("position_lifecycle_counts", {}).get("CONFLICT", 0) > 0
-    if report["real_wallet_status"] == "MUTATION_OBSERVED" or conflicts:
+    if (
+        report["real_wallet_status"] == "MUTATION_OBSERVED"
+        or conflicts
+        or report.get("account_evidence_conflict_observed")
+        or report.get("active_real_or_other_observed")
+    ):
         raise typer.Exit(code=_EXIT_SAFETY_CONFLICT)
     if (
         report.get("websocket_authentication") != "VERIFIED"

@@ -911,6 +911,17 @@ class PassivePracticeObserver:
             return None
         if item.get("amount") is None and item.get("balance") is None:
             return None
+        # Balance.from_raw has legacy truthiness coercion. Active-wallet authority
+        # must use explicit booleans only, with agreeing aliases.
+        if any(
+            item.get(key) is not None and type(item[key]) is not bool
+            for key in ("is_active", "active", "is_default")
+        ) or (
+            item.get("is_active") is not None
+            and item.get("active") is not None
+            and item["is_active"] != item["active"]
+        ):
+            return None
         ids = [item[key] for key in ("id", "balance_id") if item.get(key) is not None]
         if not ids or any(
             type(value) not in (int, str) or not str(value).isascii() or not str(value).isdecimal()

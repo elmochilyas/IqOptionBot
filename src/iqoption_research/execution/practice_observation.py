@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from iqoption_research.execution.blitz_diagnostics import BlitzSchemaDiagnostics
 from iqoption_research.execution.practice_history import (
     invalid_option_fields,
     normalize_history_asset,
@@ -132,6 +133,7 @@ class PracticeObservation:
 
     def __init__(self, asset: str) -> None:
         self.asset = normalize_history_asset(asset)
+        self._blitz_diagnostics = BlitzSchemaDiagnostics() if self.asset == "EURUSD_OP" else None
         self.practice_id: str | None = None
         self.real_id: str | None = None
         self._positions: dict[int, Position] = {}
@@ -352,6 +354,8 @@ class PracticeObservation:
         }
 
     def on_frame(self, name: str, message: dict[str, Any]) -> str | None:
+        if self._blitz_diagnostics is not None:
+            self._blitz_diagnostics.on_frame(name, message)
         if name not in _OPEN_TOPICS | _CLOSE_TOPICS | {
             _PORTFOLIO_TOPIC,
             "balance-changed",
@@ -582,6 +586,9 @@ class PracticeObservation:
                 "live_close_seen": p.live_close,
                 "expiry_reported": p.reported_expired,
                 "history_seen": p.history_seen,
+                "opening_time_reported": p.fields.get("opened_at_utc") is not None,
+                "expiry_time_reported": p.fields.get("expires_at_utc") is not None,
+                "close_time_reported": p.fields.get("closed_at_utc") is not None,
             }
             for p in self._positions.values()
         ]
@@ -598,6 +605,18 @@ class PracticeObservation:
         )
         return {
             "asset": self.asset,
+            **(
+                {"blitz_diagnostics": self._blitz_diagnostics.report()}
+                if self._blitz_diagnostics is not None
+                else {}
+            ),
+            "live_schema_status": (
+                "LIVE_SCHEMA_UNVERIFIED" if self.asset == "EURUSD_OP" else "CLASSIC_SCHEMA_ONLY"
+            ),
+            "history_positions_without_live_evidence": sum(
+                p.history_seen and not p.live_open and not p.live_close
+                for p in self._positions.values()
+            ),
             "event_delivery": delivery,
             "live_validation_conclusion": delivery,
             "observation_window": {
@@ -877,7 +896,20 @@ async def observe_practice(
     same_wallet = True
     active_status = "ACTIVE_PRACTICE_UNVERIFIED"
     active_assessment: dict[str, str] = {}
+    account_conflict_seen = False
+    active_real_seen = False
     observer: PassivePracticeObserver | None = None
+
+    def assess(active: PassivePracticeObserver) -> None:
+        nonlocal active_assessment, active_status, account_conflict_seen, active_real_seen
+        active_assessment = assess_active_account(active)
+        active_status = active_assessment["practice_account_active"]
+        account_conflict_seen |= (
+            active_assessment["endpoint_consistency"] == "PROFILE_VS_BALANCE_CONFLICT"
+            or active_assessment["explicit_active_attribution"] == "CONFLICT"
+            or active_assessment["active_id_alias"] == "ALIASES_CONFLICT"
+        )
+        active_real_seen |= active_status == "ACTIVE_REAL_OR_OTHER"
 
     async def query(active: PassivePracticeObserver, reason: str) -> str:
         try:
@@ -909,13 +941,16 @@ async def observe_practice(
                         break
                     same_wallet = tracker.wallets(practice, current.real_balance)
                     wallet_verified = same_wallet
-                    active_assessment = assess_active_account(current)
-                    active_status = active_assessment["practice_account_active"]
+                    assess(current)
                     if not same_wallet:
                         session["status"] = "PRACTICE_WALLET_CHANGED"
                         break
                     session["status"] = "CONNECTED"
-                    await current.async_subscribe_portfolio(ack_timeout=1.0)
+                    if tracker.asset == "EURUSD_OP":
+                        session["subscription_status"] = "NOT_SENT_NO_VERIFIED_BLITZ_SUBSCRIPTION"
+                    else:
+                        await current.async_subscribe_portfolio(ack_timeout=1.0)
+                        session["subscription_status"] = current.portfolio_subscription_status.value
                     if attempt:
                         await query(current, "RECONNECTION")
                     while current.is_connected:
@@ -934,6 +969,8 @@ async def observe_practice(
                                     if status == "HISTORY_RECONCILED"
                                     else "GAP_UNRESOLVED"
                                 )
+                            elif tracker.asset == "EURUSD_OP":
+                                await query(current, "PERIODIC_BLITZ_HISTORY")
                         else:
                             break
                     session["status"] = "CONNECTION_LOST"
@@ -1007,6 +1044,8 @@ async def observe_practice(
                     and practice is not None
                     and tracker.wallets(practice, observer.real_balance)
                 )
+                if wallet_verified:
+                    assess(observer)
             except TimeoutError:
                 wallet_verified = False
         else:
@@ -1026,7 +1065,11 @@ async def observe_practice(
         if observer is not None:
             await observer.async_close()
     ended_at = time.time()
-    final_active_status = active_status if wallet_verified else "ACTIVE_PRACTICE_UNVERIFIED"
+    final_active_status = (
+        active_status
+        if wallet_verified and not account_conflict_seen and not active_real_seen
+        else "ACTIVE_PRACTICE_UNVERIFIED"
+    )
     report: dict[str, Any] = {
         **tracker.report(
             started_at_utc=started_at,
@@ -1037,6 +1080,10 @@ async def observe_practice(
         "websocket_authentication": "VERIFIED" if authentication_verified else "UNVERIFIED",
         "practice_wallet": "VERIFIED" if wallet_verified else "UNVERIFIED",
         "practice_account_active": final_active_status,
+        "account_evidence_conflict_observed": account_conflict_seen,
+        "active_real_or_other_observed": active_real_seen,
+        "ui_selected_account": "NOT_OBSERVED",
+        "autonomous_execution_authorized": False,
         "connection_attempts": sessions,
         "reconnect_attempts": max(0, len(sessions) - 1),
         "observation_gaps": dict(Counter(gaps)),

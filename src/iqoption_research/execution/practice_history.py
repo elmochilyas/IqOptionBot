@@ -182,6 +182,22 @@ def _ticket_identifier(value: Any) -> str | None:
     return ident.lstrip("0") if ident is not None else None
 
 
+def normalize_ticket_aliases(row: dict[str, Any], *fields: str) -> str | None:
+    """Return a positive scalar ID only when all supplied aliases agree."""
+    return _agreed([_ticket_identifier(row[key]) for key in fields if row.get(key) is not None])
+
+
+def normalize_observation_close_time(row: dict[str, Any]) -> tuple[float | None, bool]:
+    """Keep explicit close timestamps separate from scheduled expiry."""
+    values = [
+        _timestamp(row[key])
+        for key in ("close_time", "close_at", "closed_at")
+        if row.get(key) is not None
+    ]
+    timestamp = _agreed(values)
+    return timestamp, bool(values) and timestamp is None
+
+
 def _ticket_id(row: dict[str, Any], container: str | None) -> str | None:
     values = []
     for field in _TICKET_FIELDS:
@@ -258,6 +274,28 @@ def normalize_history_row(row: dict[str, Any], *, container: str | None = None) 
             _identifier(row[key]) for key in _WALLET_FIELDS if row.get(key) is not None
         ]),
     }
+
+
+def invalid_option_fields(row: dict[str, Any], normalized: dict[str, Any]) -> bool:
+    """Distinguish rejected known values from fields the broker omitted."""
+    aliases = {
+        "ticket_id": _TICKET_FIELDS,
+        "symbol": (*_ASSET_NAMES, *_ACTIVE_IDS),
+        "product_type": (*_PRODUCT_NAMES, "option_type_id"),
+        "direction": _DIRECTION_FIELDS,
+        "stake": _STAKE_FIELDS,
+        "opened_at_utc": _OPEN_FIELDS,
+        "expires_at_utc": _EXPIRY_FIELDS,
+        "status": _STATUS_FIELDS,
+        "result": _RESULT_FIELDS,
+        "payout": _PAYOUT_FIELDS,
+        "realized_profit": _PROFIT_FIELDS,
+        "user_balance_id": _WALLET_FIELDS,
+    }
+    return any(
+        normalized[field] is None and any(row.get(key) is not None for key in keys)
+        for field, keys in aliases.items()
+    )
 
 
 def _complete_position(row: dict[str, Any], item: dict[str, Any], container: str) -> bool:
@@ -348,6 +386,19 @@ def extract_rows(
 ) -> list[dict[str, Any]]:
     """Return the validated options rows without their container context."""
     return [row for _, _, row in _extract_records(response, diagnostics=diagnostics)]
+
+
+def normalized_history_records(response: dict[str, Any]) -> list[tuple[dict[str, Any], bool]]:
+    """Validate a correlated options reply and preserve its lifecycle containers."""
+    records = []
+    for _, container, row in _extract_records(response):
+        item = normalize_history_row(row, container=container)
+        item["closed_at_utc"], invalid_close = normalize_observation_close_time(row)
+        invalid = invalid_close or invalid_option_fields(row, item)
+        if item["product_type"] == _BLITZ_PRODUCT:
+            invalid = invalid or not _complete_position(row, item, container)
+        records.append((item, invalid))
+    return records
 
 
 def _field_type(value: Any) -> str:

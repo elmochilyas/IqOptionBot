@@ -116,6 +116,12 @@ python -m iqoption_research.cli.main probe
 python -m iqoption_research.cli.main probe --live --symbol EURUSD --size 60 --count 10
 ```
 
+#### Bounded Practice Observation (Phase 19)
+Watches existing Practice activity read-only for a bounded window and reconciles broker history after gaps or reconnects. Prints one sanitized JSON report; never places trades or switches accounts. Requires explicit `--live`. See [docs/PHASE19_PRACTICE_OBSERVATION.md](docs/PHASE19_PRACTICE_OBSERVATION.md) for the full runbook, exit codes, acceptance matrix, and remaining requirements before autonomous Demo trading.
+```powershell
+python -m iqoption_research.cli.main practice-watch --live --asset EURUSD --seconds 120 --history-limit 100
+```
+
 ---
 
 ### 3.2. Phase 3 Research Commands (`iqresearch research`)

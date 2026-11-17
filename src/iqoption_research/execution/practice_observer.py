@@ -252,7 +252,7 @@ class PassivePracticeObserver:
         ssid: str | None = None,
         wss_url: str = DEFAULT_WSS_URL,
         balance_diagnostics: bool = False,
-        require_profile: bool = True,
+        history_only: bool = False,
     ) -> None:
         self._credentials = credentials
         self._ssid = ssid
@@ -260,7 +260,7 @@ class PassivePracticeObserver:
         self._ws: ClientConnection | None = None
         self._profile: Profile | None = None
         self._profile_event = asyncio.Event()
-        self._require_profile = require_profile
+        self._history_only = history_only
         self._profile_request_id: str | None = None
         self._profile_correlated_outcome: str | None = None
         self._profile_uncorrelated_outcome: str | None = None
@@ -493,7 +493,6 @@ class PassivePracticeObserver:
         self._last_successful_stage = "BALANCES_FETCH"
         if self._practice_balance is None:
             raise self._fail("WALLET_DISCOVERY", "PRACTICE_WALLET_MISSING")
-        self._practice_identity_established = True
         self._initial_real_balance = self._real_balance
         self._last_successful_stage = "PRACTICE_WALLET_ESTABLISHED"
         logger.info(
@@ -602,7 +601,7 @@ class PassivePracticeObserver:
         limit: int = 100,
         timeout_seconds: float = 10.0,
     ) -> dict[str, Any]:
-        """Request classic-option history, scoped to the discovered Practice wallet."""
+        """Request options history, scoped to the discovered Practice wallet."""
         if not self._ws or self._closed or self._connection_error:
             raise self._fail("HISTORY_DISPATCH", "WS_CONNECTION_CLOSED")
         if (
@@ -782,32 +781,44 @@ class PassivePracticeObserver:
     @staticmethod
     def _balance_envelope(message: dict[str, Any]) -> tuple[list[Any] | None, str]:
         """Recognize the account envelopes used by the existing read-only clients."""
+        arrays = []
         body = message.get("msg")
         if isinstance(body, list):
-            return body, "MSG_LIST"
-        if isinstance(body, dict):
+            arrays.append((body, "MSG_LIST"))
+        elif isinstance(body, dict):
             for key, label in (
                 ("balances", "MSG_BALANCES_LIST"),
                 ("result", "MSG_RESULT_LIST"),
                 ("msg", "MSG_MSG_LIST"),
             ):
                 if isinstance(body.get(key), list):
-                    return body[key], label
+                    arrays.append((body[key], label))
             result = body.get("result")
             if isinstance(result, dict) and isinstance(result.get("balances"), list):
-                return result["balances"], "MSG_RESULT_BALANCES_LIST"
+                arrays.append((result["balances"], "MSG_RESULT_BALANCES_LIST"))
         body = message.get("body")
         if isinstance(body, list):
-            return body, "BODY_LIST"
-        if isinstance(body, dict) and isinstance(body.get("balances"), list):
-            return body["balances"], "BODY_BALANCES_LIST"
-        return None, "UNRECOGNIZED"
+            arrays.append((body, "BODY_LIST"))
+        elif isinstance(body, dict) and isinstance(body.get("balances"), list):
+            arrays.append((body["balances"], "BODY_BALANCES_LIST"))
+        if len(arrays) > 1:
+            return None, "AMBIGUOUS"
+        return arrays[0] if arrays else (None, "UNRECOGNIZED")
 
-    @staticmethod
-    def _balance_status(message: dict[str, Any]) -> str:
+    @classmethod
+    def _balance_status(cls, message: dict[str, Any]) -> str:
         status = message.get("status")
         name = message.get("name")
-        if name == "error" or status is False:
+        msg = message.get("msg")
+        envelopes = (
+            message,
+            msg,
+            msg.get("result") if isinstance(msg, dict) else None,
+            message.get("body"),
+        )
+        if cls._explicit_response_rejection(message) or any(
+            isinstance(body, dict) and body.get("success") is False for body in envelopes
+        ):
             return "REJECTED"
         if status is None:
             return "ABSENT"
@@ -820,14 +831,8 @@ class PassivePracticeObserver:
             and isinstance(message.get("msg"), list)
         ):
             return "SUCCESS"
-        if isinstance(status, (int, float)) and not isinstance(status, bool):
-            if status == 2000:
-                return "SUCCESS"
-            # Quadcode's WebSocket client rejects status codes at or above 4000.
-            if status >= 4000:
-                return "REJECTED"
-        if isinstance(status, str) and status.lower() in {"error", "failed", "rejected"}:
-            return "REJECTED"
+        if type(status) in (int, float) and status == 2000:
+            return "SUCCESS"
         return "UNRECOGNIZED"
 
     @staticmethod
@@ -863,15 +868,26 @@ class PassivePracticeObserver:
             return None
         if item.get("amount") is None and item.get("balance") is None:
             return None
-        raw_id = item.get("id") if item.get("id") is not None else item.get("balance_id")
-        if isinstance(raw_id, bool) or not isinstance(raw_id, (int, str)):
+        ids = [item[key] for key in ("id", "balance_id") if item.get(key) is not None]
+        if not ids or any(
+            type(value) not in (int, str) or not str(value).isascii() or not str(value).isdecimal()
+            for value in ids
+        ):
             return None
-        if not str(raw_id).isascii() or not str(raw_id).isdecimal():
-            return None
+        aliases = {
+            key: item[alias]
+            for key, alias in (("type", "balance_type"), ("amount", "balance"))
+            if item.get(key) is not None and item.get(alias) is not None
+        }
         try:
-            if int(raw_id) <= 0:
+            if int(ids[0]) <= 0 or len({int(value) for value in ids}) != 1:
                 return None
-            return Balance.from_raw(item)
+            balance = Balance.from_raw(item)
+            if aliases:
+                alternate = Balance.from_raw({**item, **aliases})
+                if (balance.type, balance.amount) != (alternate.type, alternate.amount):
+                    return None
+            return balance
         except (ValueError, TypeError, KeyError, OverflowError):
             return None
 
@@ -940,6 +956,7 @@ class PassivePracticeObserver:
 
     async def async_refresh_account_state(self, timeout_seconds: float = 5.0) -> bool:
         """Verify correlated wallets separately from the session's profile evidence."""
+        self._practice_identity_established = False
         self._last_refresh_failure = None
         self._last_refresh_stage = "PROFILE_FETCH"
         ws = self._ws
@@ -1001,7 +1018,7 @@ class PassivePracticeObserver:
                 )
             except TimeoutError:
                 profile_send_timed_out = True
-                if self._require_profile:
+                if not self._history_only:
                     raise
             else:
                 if self._active_profile_attempt is not None:
@@ -1062,7 +1079,7 @@ class PassivePracticeObserver:
             if self._ws is not ws or not self.is_connected:
                 self._last_refresh_failure = "WS_CONNECTION_CLOSED"
                 return False
-            if self._require_profile and self._profile is None:
+            if not self._history_only and self._profile is None:
                 self._last_refresh_failure = self._profile_request_outcome(
                     send_timed_out=profile_send_timed_out,
                     wait_timed_out=profile_wait_timed_out,
@@ -1100,8 +1117,7 @@ class PassivePracticeObserver:
                 self._active_profile_attempt.update(self.profile_verification_diagnostics())
             self._active_profile_attempt = None
             self._profile_request_id = None
-            if not snapshot_accepted:
-                self._practice_identity_established = False
+            self._practice_identity_established = snapshot_accepted and self._authenticated
             if self._active_balance_attempt is not None:
                 self._active_balance_attempt["initialization_condition"] = (
                     "BALANCE_SNAPSHOT_ACCEPTED"
@@ -1292,6 +1308,11 @@ class PassivePracticeObserver:
         # Uncorrelated balance snapshots are not proof of a fresh wallet selection.
         # A correlated snapshot is applied by async_refresh_account_state after validation.
 
+        if name == "balance-changed":
+            self._handle_balance_changed_frame(message)
+        if self._history_only:
+            return
+
         # Handle position opening (option-opened, socket-option-opened, portfolio.position-changed)
         if name in {"option-opened", "socket-option-opened"}:
             self._handle_option_opened_frame(message, frame_name=name)
@@ -1301,10 +1322,6 @@ class PassivePracticeObserver:
         # Handle settlement (option-closed, socket-option-closed)
         if name in {"option-closed", "socket-option-closed"}:
             self._handle_option_closed_frame(message)
-
-        # Handle balance changed push notification
-        if name == "balance-changed":
-            self._handle_balance_changed_frame(message)
 
     def _handle_option_opened_frame(self, message: dict[str, Any], frame_name: str) -> None:
         """Parse position opened frame from manual trade without synthetic defaults."""
@@ -1743,20 +1760,16 @@ class PassivePracticeObserver:
             None,
         )
         if raw_amount is None:
-            logger.warning("balance-changed frame for %s missing balance amount; ignoring.", bal_id)
+            logger.warning("Ignoring balance-changed frame with missing amount")
             return
 
         try:
             amount = float(raw_amount)
             if not math.isfinite(amount):
-                logger.warning(
-                    "balance-changed frame for %s contains non-finite amount; ignoring.", bal_id
-                )
+                logger.warning("Ignoring balance-changed frame with non-finite amount")
                 return
         except (ValueError, TypeError):
-            logger.warning(
-                "balance-changed frame for %s contains invalid amount; ignoring.", bal_id
-            )
+            logger.warning("Ignoring balance-changed frame with invalid amount")
             return
 
         # Find existing balance
@@ -1816,16 +1829,7 @@ class PassivePracticeObserver:
             reason=reason,
         )
         self._balance_mutations.append(mutation)
-        logger.info(
-            "OBSERVED_BALANCE_MUTATION: balance=%s (type=%s) before=%.2f "
-            "after=%.2f delta=%.2f (%s)",
-            bal_id,
-            acct_type.name if acct_type else "unknown",
-            before_amount,
-            amount,
-            delta,
-            reason,
-        )
+        logger.info("Observed a balance-changed event")
 
     async def async_observe_single_trade(
         self,

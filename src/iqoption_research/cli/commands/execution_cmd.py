@@ -2280,7 +2280,7 @@ def practice_observe_command(
                             end=time.time(),
                         )
                         console.print("Read-only history reconciliation after missed event:")
-                        console.print_json(json.dumps(history))
+                        console.print_json(json.dumps(_history_classifications(history)))
                         if record:
                             await asyncio.to_thread(
                                 Path(record).write_text,
@@ -2491,6 +2491,20 @@ def practice_observe_command(
 practice_observe = practice_observe_command
 
 
+def _history_classifications(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "history_status": result["history_status"],
+        "position_status": result["position_status"],
+        "wallet_status": result["wallet_status"],
+        "settlement_status": result["settlement_status"],
+        "candidate_count": result["candidate_count"],
+        "incomplete_candidate_count": len(result["incomplete_candidates"]),
+        "real_wallet_status": result["account"]["real_wallet_status"],
+        "history_may_be_truncated": result["query_limit_may_truncate_history"],
+        "operator_reconciliation_required": True,
+    }
+
+
 def practice_history_command(
     live: bool = typer.Option(False, "--live", help="Connect to broker read-only."),
     asset: str = typer.Option(
@@ -2531,7 +2545,7 @@ def practice_history_command(
     observer = PassivePracticeObserver(
         credentials=Credentials(email=email, password=password),
         balance_diagnostics=balance_diagnostics,
-        require_profile=False,
+        history_only=True,
     )
 
     async def run() -> dict[str, Any]:
@@ -2551,8 +2565,7 @@ def practice_history_command(
 
     try:
         result = asyncio.run(run())
-    except Exception as exc:
-        # Never display broker exception text, account data, or raw frames.
+    except Exception:  # noqa: BLE001 - never expose broker or transport errors
         console.print("[red]Read-only history query failed; history is unverified.[/red]")
         console.print_json(
             json.dumps({
@@ -2560,27 +2573,23 @@ def practice_history_command(
                 "search_window_utc": search_window_utc,
             })
         )
-        raise typer.Exit(code=1) from exc
+        raise typer.Exit(code=1) from None
     if balance_diagnostics:
         console.print_json(json.dumps(observer.account_protocol_diagnostics()))
     # Display only non-personal classifications; detailed evidence is opt-in on disk.
     console.print_json(
         json.dumps({
-            "history_status": result["history_status"],
-            "position_status": result["position_status"],
-            "wallet_status": result["wallet_status"],
+            **_history_classifications(result),
             **observer.profile_verification_diagnostics(),
-            "settlement_status": result["settlement_status"],
-            "candidate_count": result["candidate_count"],
-            "incomplete_candidate_count": len(result["incomplete_candidates"]),
             "search_window_utc": search_window_utc,
-            "real_wallet_status": result["account"]["real_wallet_status"],
-            "history_may_be_truncated": result["query_limit_may_truncate_history"],
-            "operator_reconciliation_required": True,
             "evidence_export_requested": record is not None,
         })
     )
     if record:
-        Path(record).write_text(json.dumps(result, indent=2), encoding="utf-8")
+        try:
+            Path(record).write_text(json.dumps(result, indent=2), encoding="utf-8")
+        except (OSError, ValueError):
+            console.print("[red]Unable to save history evidence.[/red]")
+            raise typer.Exit(code=1) from None
     if result["account"]["real_wallet_status"] == "MUTATED":
         raise typer.Exit(code=1)

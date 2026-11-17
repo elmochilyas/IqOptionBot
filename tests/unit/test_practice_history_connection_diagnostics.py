@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -291,7 +292,7 @@ async def test_missing_or_malformed_account_data(
 async def test_read_only_wallet_refresh_reports_profile_independently(
     frame: dict[str, Any] | None, expected: str, correlation: str | None
 ) -> None:
-    obs = PassivePracticeObserver(ssid="fake", require_profile=False, balance_diagnostics=True)
+    obs = PassivePracticeObserver(ssid="fake", history_only=True, balance_diagnostics=True)
 
     class Socket(ScriptedSocket):
         async def send(self, data: str) -> None:
@@ -343,7 +344,7 @@ async def test_profile_push_before_query_is_not_claimed_as_correlated(monkeypatc
 
 @pytest.mark.parametrize("diagnostics_enabled", [False, True])
 def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(
-    monkeypatch: Any, diagnostics_enabled: bool
+    monkeypatch: Any, tmp_path: Path, diagnostics_enabled: bool
 ) -> None:
     class Socket(ScriptedSocket):
         async def send(self, data: str) -> None:
@@ -361,6 +362,13 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(
                 self.sent.append(request)
                 assert self.obs.failure_diagnostics()["practice_wallet_identity_established"]
                 assert request["msg"]["body"]["user_balance_id"] == 101
+                for frame in (
+                    {"name": "option-opened", "msg": {"id": "private-push-ticket", "active_id": 1}},
+                    {"name": "option-closed", "msg": {"id": "private-close-ticket"}},
+                    {"name": "balance-changed", "msg": {"id": "837625849", "amount": 71423.25}},
+                    {"name": "balance-changed", "msg": {"id": "private-invalid-balance-id"}},
+                ):
+                    self.obs._handle_incoming_frame(frame)
                 self.obs._handle_incoming_frame({
                     "name": "options",
                     "status": 0,
@@ -406,9 +414,11 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(
     monkeypatch.setattr(observer_module, "async_login", AsyncMock(return_value="private-ssid"))
     monkeypatch.setenv("IQOPTION_EMAIL", "private@example.com")
     monkeypatch.setenv("IQOPTION_PASSWORD", "private-password")
+    evidence = tmp_path / "evidence.json"
     result = CliRunner().invoke(
         app,
         [
+            "--verbose",
             "practice-history",
             "--live",
             "--asset",
@@ -419,7 +429,7 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(
             "2026-11-17T09:25:00Z",
             "--end",
             "2026-11-17T09:30:00Z",
-            *(["--balance-diagnostics"] if diagnostics_enabled else []),
+            *(["--balance-diagnostics", "--record", str(evidence)] if diagnostics_enabled else []),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -434,10 +444,27 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(
     assert ('"record_samples"' in result.output) == diagnostics_enabled
     assert ("msg.closed_options[]" in result.output) == diagnostics_enabled
     assert ('"option_type": "blitz-option"' in result.output) == diagnostics_enabled
-    assert not any(
-        value in result.output
-        for value in ("9944556677", "198765", "private-record-token", "1794907530", "private-ssid")
+    private_values = (
+        "198765",
+        "private-record-token",
+        "private-ssid",
+        "private@example.com",
+        "private-password",
+        "private-push-ticket",
+        "private-close-ticket",
+        "837625849",
+        "71423.25",
+        "private-invalid-balance-id",
     )
+    assert not any(
+        value in result.output for value in (*private_values, "9944556677", "1794907530")
+    )
+    assert evidence.exists() == diagnostics_enabled
+    if diagnostics_enabled:
+        exported = evidence.read_text(encoding="utf-8")
+        assert not any(value in exported for value in private_values)
+        assert json.loads(exported)["candidates"][0]["ticket_id"] == "9944556677"
+    assert sockets[0].sent[0]["name"] == "authenticate"
     assert [f["msg"]["name"] for f in sockets[0].sent[1:]] == [
         "get-profile",
         "get-balances",
@@ -515,6 +542,27 @@ async def test_history_cannot_dispatch_without_verified_session_and_wallet() -> 
         await obs.async_get_options_history()
     assert socket.sent == []
     assert obs.failure_diagnostics()["history_request_dispatched"] is False
+
+
+@pytest.mark.asyncio
+async def test_history_requires_valid_wallet_again_after_failed_refresh(monkeypatch: Any) -> None:
+    obs = PassivePracticeObserver(ssid="fake", history_only=True)
+    socket = ScriptedSocket(obs, balance_status=0)
+    monkeypatch.setattr(observer_module, "ws_connect", AsyncMock(return_value=socket))
+    await obs.async_connect()
+    try:
+        valid = socket.balances
+        socket.balances = [{**valid[0], "balance_type": 1}]
+        assert not await obs.async_refresh_account_state()
+        with pytest.raises(ObserverStageError, match="ACCOUNT_STATE_UNVERIFIED"):
+            await obs.async_get_options_history()
+        assert [frame["msg"]["name"] for frame in socket.sent[1:]].count("get-options") == 0
+
+        socket.balances = valid
+        assert await obs.async_refresh_account_state()
+        assert (await obs.async_get_options_history())["name"] == "options"
+    finally:
+        await obs.async_close()
 
 
 @pytest.mark.asyncio

@@ -490,6 +490,24 @@ def test_history_schema_rejection_has_sanitized_reason(status: Any, msg: Any, re
     assert "private-value" not in json.dumps(diagnostics)
 
 
+@pytest.mark.parametrize(
+    ("fields", "reason"),
+    [
+        ({"success": False}, "BROKER_REPORTED_FAILURE"),
+        (
+            {"msg": {"result": {"closed_options": [blitz_row()]}, "closed_options": []}},
+            "AMBIGUOUS_OPTIONS_ENVELOPE",
+        ),
+    ],
+)
+def test_status_zero_does_not_override_failed_or_ambiguous_history(
+    fields: dict[str, Any], reason: str
+) -> None:
+    reply = {"name": "options", "status": 0, "msg": {"closed_options": [blitz_row()]}, **fields}
+    with pytest.raises(ValueError, match=reason):
+        match(reply, asset="EURUSD_OP")
+
+
 @pytest.mark.asyncio
 async def test_query_only_get_options_and_snapshots() -> None:
     obs = PassivePracticeObserver(ssid="fake")

@@ -323,8 +323,10 @@ def _extract_records(
     nested = msg.get("result")
     body = nested if isinstance(nested, dict) else msg
     prefix = "msg" if body is msg else "msg.result"
-    if msg.get("success") is False or body.get("success") is False:
+    if any(envelope.get("success") is False for envelope in (response, msg, body)):
         raise invalid("BROKER_REPORTED_FAILURE")
+    if body is not msg and any(key in msg for key in _OPTION_ARRAYS):
+        raise invalid("AMBIGUOUS_OPTIONS_ENVELOPE")
     arrays = [(key, body[key]) for key in _OPTION_ARRAYS if key in body]
     if not arrays:
         raise invalid("OPTION_ARRAY_MISSING")

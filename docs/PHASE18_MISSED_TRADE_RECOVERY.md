@@ -2,7 +2,7 @@
 
 ## Evidence and uncertainty
 
-The operator reported that the 2026-11-17 manual $1,000 Practice transaction was not detected during the 09:25:17–09:29:17 observation window. The earlier probe reported subscription requests sent, without correlated acknowledgements. That establishes neither rejection nor acceptance, nor whether any event was delivered on this secondary connection. There is no retained sanitized per-frame diagnostic for that window, so the particular cause is unknown. A filtered asset, another product, event delivery behavior, an unsupported schema, or malformed payload remains a hypothesis. A later history query returned one closed Blitz record. Its ticket and other available details still need comparison against the official history.
+The operator reported that the 2026-11-17 manual $1,000 Practice transaction was not detected during the 09:25:17–09:29:17 observation window. The earlier probe reported subscription requests sent, without correlated acknowledgements. That establishes neither rejection nor acceptance, nor whether any event was delivered on this secondary connection. There is no retained sanitized per-frame diagnostic for that window, so the particular cause is unknown. A later history query returned one closed `EURUSD_OP` Blitz position, which the operator confirmed matches the manual transaction. The response still lacks per-record wallet and settlement evidence.
 
 The old observer emitted `portfolio.position-changed` v2.0 and `portfolio.order-changed` v2.0 with only a wallet filter. The community client's [portfolio implementation](https://github.com/iqoptionapi/iqoptionapi/blob/master/iqoptionapi/api.py) uses position v2.0 with both `instrument_type` and `user_balance_id`, and order v1.0 with `instrument_type`. It sends separate subscriptions for `binary-option` and `turbo-option`. These are community examples, not a broker specification or proof that the changed subscriptions work on the current gateway. The observer now uses those schemas, reports each correlated response separately, and treats silence as unknown.
 
@@ -28,7 +28,7 @@ python -m iqoption_research.cli.main practice-observe --live --probe-only
 python -m iqoption_research.cli.main practice-observe --live --asset EURUSD --timeout 60 --history-stake 1000 --record observer_history.json
 ```
 
-A `HISTORY_NOT_FOUND` result is limited to the records returned for the search. Incomplete plausible rows receive `HISTORY_UNVERIFIED`. The console shows classifications, and `--record` saves the allowlisted evidence locally for comparison.
+A `HISTORY_NOT_FOUND` result is limited to the records returned for the search. Incomplete plausible rows receive `HISTORY_UNVERIFIED`. Wallet discovery rejects explicitly failed responses, multiple wallet arrays, and conflicting identifier, type, or amount aliases. A failed refresh invalidates wallet verification until a valid correlated snapshot is accepted. The history console shows classifications and omits unsolicited trade and balance details from its logs. Use `--record` to save the allowlisted evidence locally for comparison.
 
 ## Quality-gate findings
 

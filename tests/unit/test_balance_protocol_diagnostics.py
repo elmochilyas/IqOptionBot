@@ -275,6 +275,18 @@ async def test_uncorrelated_balance_does_not_establish_a_wallet(request_id: str)
         ),
         ({"name": "error", "status": 0, "msg": WALLETS}, "BALANCES_RESPONSE_REJECTED"),
         (
+            {"name": "balances", "status": 0, "success": False, "msg": WALLETS},
+            "BALANCES_RESPONSE_REJECTED",
+        ),
+        (
+            {"name": "balances", "status": 2000, "msg": {"success": False, "balances": WALLETS}},
+            "BALANCES_RESPONSE_REJECTED",
+        ),
+        (
+            {"name": "balances", "status": 0, "msg": WALLETS, "body": WALLETS[1:]},
+            "BALANCES_RESPONSE_INVALID",
+        ),
+        (
             {"name": "result", "status": 0, "msg": WALLETS},
             "BALANCES_RESPONSE_STATUS_UNRECOGNIZED",
         ),
@@ -310,6 +322,9 @@ async def test_classifies_correlated_failures_without_payloads(
         {"id": 982345672, "type": 17, "amount": 5},
         {"id": 982345671, "type": 1, "amount": 5},
         {"id": "0982345671", "type": 1, "amount": 5},
+        {**WALLETS[1], "balance_id": 982345673},
+        {**WALLETS[1], "balance_type": 4},
+        {**WALLETS[1], "balance": 5},
     ],
 )
 async def test_invalid_or_duplicate_wallets_do_not_authorize_partial_snapshot(bad: Any) -> None:
@@ -327,6 +342,14 @@ async def test_multiple_practice_wallets_do_not_choose_one() -> None:
     assert not await obs.async_refresh_account_state(timeout_seconds=0.05)
     assert obs._last_refresh_failure == "PRACTICE_WALLET_AMBIGUOUS"
     assert obs.practice_balance is None
+
+
+@pytest.mark.asyncio
+async def test_balance_aliases_may_repeat_the_same_normalized_values() -> None:
+    wallet = {**WALLETS[0], "balance_id": "0982345671", "balance_type": "4", "balance": "8765.43"}
+    obs, _ = make_observer({"name": "balances", "status": 0, "msg": [wallet]})
+    assert await obs.async_refresh_account_state(timeout_seconds=0.05)
+    assert obs.practice_balance is not None and obs.practice_balance.type == AccountType.PRACTICE
 
 
 @pytest.mark.asyncio

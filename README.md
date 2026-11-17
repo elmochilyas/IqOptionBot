@@ -122,6 +122,15 @@ Watches existing Practice activity read-only for a bounded window and reconciles
 python -m iqoption_research.cli.main practice-watch --live --asset EURUSD --seconds 120 --history-limit 100
 ```
 
+Phase 24 adds reproducible **offline** authentic-data coverage, strategy benchmarks,
+purged walk-forward ML comparisons, and economic/risk reports. It preserves the
+reserved confirmation holdout and never enables broker execution.
+See the [Phase 24 methodology and commands](docs/PHASE24_RESEARCH.md).
+
+```powershell
+python -m iqoption_research.cli.main research evaluate --mode all --output-dir data/phase24
+```
+
 For Blitz (`EURUSD_OP`), Phase 22 provides passive schema diagnostics and periodic
 bounded history recovery. It sends no portfolio subscriptions and explicitly
 reports `LIVE_SCHEMA_UNVERIFIED`; recovered history does not prove live delivery.

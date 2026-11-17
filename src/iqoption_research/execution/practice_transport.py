@@ -472,6 +472,7 @@ class MockBrokerPracticeTransport:
         practice_balance_id: str = "101",
         virtual_amount: float = 10000.0,
         simulate_unverified_contract: bool = False,
+        delayed_balance_propagation_steps: int = 0,
     ) -> None:
         self.should_succeed = should_succeed
         self.option_id = option_id
@@ -480,6 +481,8 @@ class MockBrokerPracticeTransport:
         self.simulate_transport_error = simulate_transport_error
         self.malformed_response = malformed_response
         self.simulate_unverified_contract = simulate_unverified_contract
+        self.delayed_balance_propagation_steps = delayed_balance_propagation_steps
+        self._refresh_call_count = 0
         self.active_balance_id: str | None = (
             active_balance_id if active_balance_id is not None else initial_active_balance_id
         )
@@ -609,9 +612,21 @@ class MockBrokerPracticeTransport:
 
     def refresh_account_state(self) -> None:
         """Simulate synchronous account refresh."""
-        pass
+        self._refresh_call_count += 1
+        if (
+            self.delayed_balance_propagation_steps > 0
+            and self._refresh_call_count >= self.delayed_balance_propagation_steps
+        ):
+            self.active_balance_id = self.practice_balance_id
+            self._session_practice_selected = True
 
-    def select_practice_balance(self, *, operator_authorized: bool = False) -> Balance:
+    def select_practice_balance(
+        self,
+        *,
+        operator_authorized: bool = False,
+        verification_timeout: float = 10.0,
+        retry_interval: float = 0.5,
+    ) -> Balance:
         """Simulate manual operator-authorized practice session balance selection."""
         if not operator_authorized:
             raise PracticeAuthorizationError(
@@ -640,15 +655,33 @@ class MockBrokerPracticeTransport:
             },
             "request_id": f"mock_chg_bal_{self.practice_balance_id}",
         })
-        self.active_balance_id = self.practice_balance_id
-        self._session_practice_selected = True
+        if self.delayed_balance_propagation_steps > 0:
+            deadline = time.time() + verification_timeout
+            while True:
+                self.refresh_account_state()
+                if (
+                    self.active_balance_id == self.practice_balance_id
+                    and self._session_practice_selected
+                ):
+                    break
+                if time.time() >= deadline:
+                    raise PracticeAuthorizationError(
+                        "Broker account state refresh failed to confirm Practice balance "
+                        f"selection. Fresh broker profile balance_id ({self.active_balance_id}) "
+                        f"does not match requested Practice balance ID "
+                        f"({self.practice_balance_id}) within {verification_timeout:.1f}s."
+                    )
+                time.sleep(min(retry_interval, 0.05))
+        else:
+            self.active_balance_id = self.practice_balance_id
+            self._session_practice_selected = True
         return Balance(
             id=self.practice_balance_id,
             type=AccountType.PRACTICE,
             amount=self.virtual_amount,
             currency="USD",
-            is_active=True,
-            raw_is_active=True,
+            is_active=self._session_practice_selected,
+            raw_is_active=self._session_practice_selected,
         )
 
     def close(self) -> None:

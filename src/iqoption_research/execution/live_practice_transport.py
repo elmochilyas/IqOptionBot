@@ -71,6 +71,17 @@ ConnectFactory = Callable[[], Awaitable[ClientConnection]]
 
 
 @dataclass(frozen=True, slots=True)
+class ExtractedBalanceInfo:
+    """Sanitized metadata about active balance discovered in a broker frame."""
+
+    balance_id: str | None
+    location: str | None
+    account_type: AccountType | None = None
+    is_practice: bool = False
+    source_frame: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class IQOptionLivePracticeTransportConfig:
     """Configuration for IQ Option Live Practice Transport."""
 
@@ -138,6 +149,7 @@ class IQOptionLivePracticeTransport:
         self._server_time_sec: float | None = None
         self._server_time_synced_at: float | None = None
         self._instrument_schedules: dict[str, BinaryInstrumentSchedule] = {}
+        self._last_change_balance_ts: float | None = None
 
     def __repr__(self) -> str:
         masked_ssid = "***" if self._ssid else "None"
@@ -311,17 +323,30 @@ class IQOptionLivePracticeTransport:
 
         self._verified_at = time.time()
 
-    async def async_select_practice_balance(self, *, operator_authorized: bool = False) -> Balance:
+    async def async_select_practice_balance(
+        self,
+        *,
+        operator_authorized: bool = False,
+        verification_timeout: float = 10.0,
+        retry_interval: float = 0.5,
+    ) -> Balance:
         """Explicitly switch the session's active balance to the PRACTICE account.
 
         Guards:
         1. Requires explicit operator authorization flag (operator_authorized=True).
         2. Strictly targets the Practice balance (type == AccountType.PRACTICE).
         3. Rejects selection of REAL balance fail-closed.
-        4. Transmits verified wire protocol frame 'change_balance'.
-        5. Refreshes authoritative profile and balances.
-        6. Updates session state and executes pre-flight safety guard.
-        7. Invalidate on disconnect or reconnect.
+        4. Transmits verified wire protocol frame 'change_balance' EXACTLY ONCE.
+           Zero automatic re-transmissions of change_balance.
+        5. Allows a brief 0.3s window for immediate error/rejection frames.
+        6. Runs a bounded READ-ONLY verification loop (timeout_budget=10.0s, poll_interval=0.5s)
+           querying get-profile and get-balances until fresh evidence confirms Practice balance.
+        7. Authoritative verification criteria:
+           - Correct active Practice balance ID matching target practice balance.
+           - AccountType is PRACTICE (4).
+           - Same authenticated WebSocket session (session continuity verified).
+           - No conflicting REAL active account state.
+        8. If verification times out or disconnects: fails closed with clear diagnostic.
         """
         if not operator_authorized:
             raise PracticeAuthorizationError(
@@ -330,6 +355,8 @@ class IQOptionLivePracticeTransport:
 
         if self._closed or self._ws is None:
             raise ConnectionError("Cannot select practice balance: transport is not connected.")
+
+        initial_session_id = self._session_id
 
         if not self._balances:
             await self.async_refresh_account_state()
@@ -366,6 +393,9 @@ class IQOptionLivePracticeTransport:
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending_requests[req_id] = future
 
+        transmission_ts = time.time()
+        self._last_change_balance_ts = transmission_ts
+
         logger.info(
             "Transmitting explicit change_balance frame for Practice balance %s (req_id=%s)",
             practice_bal.id,
@@ -375,10 +405,9 @@ class IQOptionLivePracticeTransport:
         try:
             await self._ws.send(json.dumps(change_bal_frame))
             try:
-                # IQ Option change_balance does not echo client request_id.
-                # Allow a brief 0.5s window for immediate error/rejection frames before
-                # querying fresh authoritative broker profile.
-                resp = await asyncio.wait_for(future, timeout=0.5)
+                # IQ Option change_balance does not echo client request_id on success.
+                # Allow a brief 0.3s window for immediate error/rejection frames.
+                resp = await asyncio.wait_for(future, timeout=0.3)
                 if isinstance(resp, dict):
                     msg_body = resp.get("msg")
                     if resp.get("name") in {"error", "reject"} or (
@@ -389,25 +418,101 @@ class IQOptionLivePracticeTransport:
                         )
             except TimeoutError:
                 logger.info(
-                    "Explicit change_balance frame transmitted (asynchronous broker state change; "
-                    "no direct request_id echo expected). Refreshing fresh broker profile."
+                    "change_balance frame transmitted (no direct request_id echo expected; "
+                    "proceeding to bounded read-only verification loop)."
                 )
         finally:
             self._pending_requests.pop(req_id, None)
 
-        # Refresh authoritative state from broker
-        await self.async_refresh_account_state()
+        # Bounded READ-ONLY verification loop (Zero duplicate change_balance sends)
+        timeout_budget = verification_timeout or self.config.request_timeout
+        deadline = time.time() + timeout_budget
+        confirmed_practice: bool = False
+        last_observed_active_id: str | None = None
+        attempt = 0
 
-        # Authoritative broker response verification:
-        # Broker profile must reflect the selected Practice balance ID
-        fresh_prof_bal_id = (
-            str(self._profile.raw.get("balance_id", "")).strip() if self._profile else ""
-        )
-        if fresh_prof_bal_id != str(practice_bal.id).strip():
+        while time.time() < deadline:
+            attempt += 1
+            # Session continuity check
+            if self._closed or self._ws is None or self._session_id != initial_session_id:
+                raise ConnectionError(
+                    "WebSocket disconnected or session reset during Practice balance verification."
+                )
+
+            # Read-only account state query
+            with contextlib.suppress(Exception):
+                await self.async_refresh_account_state()
+
+            # Inspect fresh evidence
+            # 1. Profile balance_id
+            prof_bal_id = ""
+            if self._profile and self._profile.raw:
+                extracted_prof = self._extract_active_balance_info({
+                    "name": "profile",
+                    "msg": self._profile.raw,
+                })
+                if extracted_prof and extracted_prof.balance_id:
+                    prof_bal_id = str(extracted_prof.balance_id).strip()
+
+            # 2. Active balance ID on transport
+            current_active = str(self._active_balance_id or prof_bal_id or "").strip()
+            last_observed_active_id = current_active
+
+            # 3. Matching Practice balance in balances list
+            matched_practice_bal = next(
+                (
+                    b
+                    for b in self._balances
+                    if str(b.id) == str(practice_bal.id)
+                    and b.type == AccountType.PRACTICE
+                    and b.is_practice
+                ),
+                None,
+            )
+
+            # 4. Conflicting REAL balance check
+            conflicting_real = any(
+                b.type == AccountType.REAL and (b.is_active or b.raw_is_active)
+                for b in self._balances
+                if str(b.id) != str(practice_bal.id)
+            )
+
+            # Decision: Practice is confirmed ONLY when active ID matches target Practice balance
+            # and balances list confirms Practice type, with NO conflicting REAL active balance
+            if (
+                current_active == str(practice_bal.id).strip()
+                and matched_practice_bal is not None
+                and not conflicting_real
+            ):
+                confirmed_practice = True
+                elapsed = time.time() - transmission_ts
+                logger.info(
+                    "PRACTICE_VERIFIED_SUCCESS: Active Practice balance %s confirmed by broker "
+                    "(attempt=%d, elapsed=%.2fs)",
+                    practice_bal.id,
+                    attempt,
+                    elapsed,
+                )
+                break
+
+            logger.info(
+                "PRACTICE_VERIFICATION_POLL: attempt=%d elapsed=%.2fs "
+                "observed_active_id=%s requested_practice_id=%s retrying_readonly...",
+                attempt,
+                time.time() - transmission_ts,
+                current_active or "none",
+                practice_bal.id,
+            )
+            await asyncio.sleep(retry_interval)
+
+        if not confirmed_practice:
+            elapsed = time.time() - transmission_ts
             raise PracticeAuthorizationError(
-                f"Broker account state refresh failed to confirm Practice balance selection. "
-                f"Fresh broker profile balance_id ({fresh_prof_bal_id}) does not match "
-                f"requested Practice balance ID ({practice_bal.id})."
+                f"Broker account state refresh failed to confirm Practice balance selection "
+                f"within {timeout_budget:.1f}s (elapsed={elapsed:.2f}s, {attempt} attempts). "
+                f"Fresh broker profile balance_id ({last_observed_active_id or ''}) does not match "
+                f"requested Practice balance ID ({practice_bal.id}). "
+                f"change_balance frame was transmitted once; zero retries were dispatched."
             )
 
         # Update active balance ID and session flag
@@ -422,15 +527,25 @@ class IQOptionLivePracticeTransport:
             practice_bal,
         )
 
-    def select_practice_balance(self, *, operator_authorized: bool = False) -> Balance:
+    def select_practice_balance(
+        self,
+        *,
+        operator_authorized: bool = False,
+        verification_timeout: float = 10.0,
+        retry_interval: float = 0.5,
+    ) -> Balance:
         """Synchronously execute explicit practice balance selection."""
         if self._is_running_thread and self._loop is not None and self._thread is not None:
             fut = asyncio.run_coroutine_threadsafe(
-                self.async_select_practice_balance(operator_authorized=operator_authorized),
+                self.async_select_practice_balance(
+                    operator_authorized=operator_authorized,
+                    verification_timeout=verification_timeout,
+                    retry_interval=retry_interval,
+                ),
                 self._loop,
             )
             try:
-                return fut.result(timeout=self.config.request_timeout + 5.0)
+                return fut.result(timeout=verification_timeout + 5.0)
             except TimeoutError as exc:
                 raise TimeoutError(f"Synchronous practice selection timeout: {exc}") from exc
 
@@ -445,7 +560,11 @@ class IQOptionLivePracticeTransport:
             pass
 
         return asyncio.run(
-            self.async_select_practice_balance(operator_authorized=operator_authorized)
+            self.async_select_practice_balance(
+                operator_authorized=operator_authorized,
+                verification_timeout=verification_timeout,
+                retry_interval=retry_interval,
+            )
         )
 
     async def _verify_practice_account_guard(self) -> None:
@@ -838,8 +957,171 @@ class IQOptionLivePracticeTransport:
         self._incoming_settlements.clear()
 
     # -----------------------------------------------------------------------
-    # Inbound WebSocket Dispatch Loop
+    # Inbound WebSocket Dispatch Loop & Diagnostics
     # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_active_balance_info(
+        message: dict[str, Any], *, source_frame: str = ""
+    ) -> ExtractedBalanceInfo | None:
+        """Deeply inspect incoming frame for active balance info without logging secrets."""
+        msg_name = str(message.get("name") or source_frame or "unknown")
+        raw_msg = message.get("msg")
+        body = message.get("body")
+
+        # 1. Check for "balance-changed" frame
+        if msg_name == "balance-changed":
+            dict_cand = raw_msg if isinstance(raw_msg, dict) else message
+            current = dict_cand.get("current_balance")
+            if isinstance(current, dict) and current.get("id") is not None:
+                b_id = str(current["id"]).strip()
+                raw_type = current.get("type")
+                acc_type = None
+                with contextlib.suppress(Exception):
+                    if raw_type is not None:
+                        acc_type = AccountType(int(raw_type))
+                return ExtractedBalanceInfo(
+                    balance_id=b_id,
+                    location="msg.current_balance.id",
+                    account_type=acc_type,
+                    is_practice=(acc_type == AccountType.PRACTICE) if acc_type else False,
+                    source_frame="balance-changed",
+                )
+
+        # 2. Check candidate dictionaries in priority order
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        if isinstance(raw_msg, dict):
+            if isinstance(raw_msg.get("result"), dict):
+                candidates.append(("msg.result", raw_msg["result"]))
+            if isinstance(raw_msg.get("profile"), dict):
+                candidates.append(("msg.profile", raw_msg["profile"]))
+            if isinstance(raw_msg.get("current_balance"), dict):
+                candidates.append(("msg.current_balance", raw_msg["current_balance"]))
+            candidates.append(("msg", raw_msg))
+        if isinstance(body, dict):
+            if isinstance(body.get("result"), dict):
+                candidates.append(("body.result", body["result"]))
+            if isinstance(body.get("profile"), dict):
+                candidates.append(("body.profile", body["profile"]))
+            candidates.append(("body", body))
+        if isinstance(message.get("result"), dict):
+            candidates.append(("result", message["result"]))
+        candidates.append(("root", message))
+
+        target_keys = ("balance_id", "balanceId", "active_balance_id", "id")
+        for prefix, cand_dict in candidates:
+            # Check nested current_balance
+            if "current_balance" in cand_dict and isinstance(cand_dict["current_balance"], dict):
+                cb = cand_dict["current_balance"]
+                if cb.get("id") is not None and str(cb.get("id")).strip():
+                    b_id = str(cb["id"]).strip()
+                    raw_type = cb.get("type") or cb.get("balance_type")
+                    acc_type = None
+                    with contextlib.suppress(Exception):
+                        if raw_type is not None:
+                            acc_type = AccountType(int(raw_type))
+                    return ExtractedBalanceInfo(
+                        balance_id=b_id,
+                        location=f"{prefix}.current_balance.id",
+                        account_type=acc_type,
+                        is_practice=(acc_type == AccountType.PRACTICE) if acc_type else False,
+                        source_frame=msg_name,
+                    )
+
+            # Check direct balance id keys
+            for k in target_keys:
+                if k == "id" and prefix in {"root", "msg", "body"}:
+                    continue
+                if k in cand_dict and cand_dict[k] is not None:
+                    val = str(cand_dict[k]).strip()
+                    if val and val.isdigit():
+                        raw_type = cand_dict.get("type") or cand_dict.get("balance_type")
+                        acc_type = None
+                        with contextlib.suppress(Exception):
+                            if raw_type is not None:
+                                acc_type = AccountType(int(raw_type))
+                        return ExtractedBalanceInfo(
+                            balance_id=val,
+                            location=f"{prefix}.{k}",
+                            account_type=acc_type,
+                            is_practice=(acc_type == AccountType.PRACTICE) if acc_type else False,
+                            source_frame=msg_name,
+                        )
+
+        # 3. Check balances array if present
+        bals_list = None
+        if isinstance(raw_msg, list):
+            bals_list = raw_msg
+        elif isinstance(raw_msg, dict):
+            if isinstance(raw_msg.get("balances"), list):
+                bals_list = raw_msg["balances"]
+            elif isinstance(raw_msg.get("result"), list):
+                bals_list = raw_msg["result"]
+
+        if bals_list:
+            for idx, item in enumerate(bals_list):
+                if isinstance(item, dict):
+                    is_act = bool(
+                        item.get("is_active") or item.get("active") or item.get("raw_is_active")
+                    )
+                    if is_act and item.get("id") is not None:
+                        b_id = str(item["id"]).strip()
+                        raw_type = item.get("type") or item.get("balance_type")
+                        acc_type = None
+                        with contextlib.suppress(Exception):
+                            if raw_type is not None:
+                                acc_type = AccountType(int(raw_type))
+                        return ExtractedBalanceInfo(
+                            balance_id=b_id,
+                            location=f"balances[{idx}].is_active",
+                            account_type=acc_type,
+                            is_practice=(acc_type == AccountType.PRACTICE) if acc_type else False,
+                            source_frame=msg_name,
+                        )
+
+        return None
+
+    def _log_account_state_diagnostic(
+        self,
+        *,
+        req_type: str,
+        resp_type: str,
+        req_id: str | None,
+        extracted: ExtractedBalanceInfo | None,
+        is_fresh: bool = True,
+        change_bal_sent_at: float | None = None,
+    ) -> None:
+        """Emit structured sanitized diagnostic log for account state tracking."""
+        now = time.time()
+        elapsed_change = (
+            f"{now - change_bal_sent_at:.2f}s" if change_bal_sent_at is not None else "N/A"
+        )
+        has_id = extracted is not None and extracted.balance_id is not None
+        bal_id = extracted.balance_id if extracted else None
+        loc = extracted.location if extracted else None
+        acc_type_str = (
+            extracted.account_type.name if (extracted and extracted.account_type) else "UNKNOWN"
+        )
+        is_prac = extracted.is_practice if extracted else False
+        sess_ok = bool(self._session_id and self.is_connected)
+
+        logger.info(
+            "ACCOUNT_STATE_DIAGNOSTIC: req=%s req_id=%s resp=%s arrival_ts=%.3f "
+            "elapsed_since_change_bal=%s balance_id_found=%s location=%s "
+            "balance_id=%s account_type=%s is_practice=%s is_fresh=%s session_ok=%s",
+            req_type,
+            req_id or "none",
+            resp_type,
+            now,
+            elapsed_change,
+            has_id,
+            loc or "none",
+            bal_id or "none",
+            acc_type_str,
+            is_prac,
+            is_fresh,
+            sess_ok,
+        )
 
     async def _receive_loop(self) -> None:
         """Background coroutine processing incoming WebSocket messages."""
@@ -896,11 +1178,34 @@ class IQOptionLivePracticeTransport:
         # 2. Profile
         if name in {"profile", "get-profile", "user-profile"}:
             self._handle_profile_frame(message)
+            if req_id and req_id in self._pending_requests:
+                fut = self._pending_requests[req_id]
+                if not fut.done():
+                    fut.set_result(message)
+                return
+            for pending_id, pending_fut in self._pending_requests.items():
+                if pending_id.startswith("prof_") and not pending_fut.done():
+                    pending_fut.set_result(message)
+                    return
             return
 
         # 3. Balances
         if name in {"balances", "get-balances", "balance"}:
             self._handle_balances_frame(message)
+            if req_id and req_id in self._pending_requests:
+                fut = self._pending_requests[req_id]
+                if not fut.done():
+                    fut.set_result(message)
+                return
+            for pending_id, pending_fut in self._pending_requests.items():
+                if pending_id.startswith("bal_") and not pending_fut.done():
+                    pending_fut.set_result(message)
+                    return
+            return
+
+        # 4. Balance Changed notification from broker
+        if name == "balance-changed":
+            self._handle_balance_changed_frame(message)
             return
 
         # Contract availability and options specification
@@ -996,21 +1301,51 @@ class IQOptionLivePracticeTransport:
                     settle_fut.set_result(message)
 
     def _handle_profile_frame(self, message: dict[str, Any]) -> None:
-        """Parse profile frame."""
+        """Parse profile frame with deep unwrapping, non-destructive merging, and diagnostics."""
         raw_msg = message.get("msg")
         profile_dict = raw_msg if isinstance(raw_msg, dict) else message
+        if "result" in profile_dict and isinstance(profile_dict["result"], dict):
+            profile_dict = profile_dict["result"]
         if "profile" in profile_dict and isinstance(profile_dict["profile"], dict):
             profile_dict = profile_dict["profile"]
 
+        extracted = self._extract_active_balance_info(
+            message, source_frame=str(message.get("name") or "profile")
+        )
+
         with contextlib.suppress(Exception):
-            self._profile = Profile.from_raw(profile_dict)
-            bal_id = profile_dict.get("balance_id")
-            if bal_id is not None:
-                self._active_balance_id = str(bal_id).strip()
+            if self._profile is None:
+                self._profile = Profile.from_raw(profile_dict)
+            else:
+                # Merge into existing raw profile so partial updates never drop balance_id
+                merged_raw = dict(self._profile.raw)
+                merged_raw.update(profile_dict)
+                self._profile = Profile.from_raw(merged_raw)
+
+            if extracted and extracted.balance_id:
+                self._active_balance_id = extracted.balance_id
+                if extracted.account_type:
+                    self._profile.raw["balance_type"] = extracted.account_type.value
+                self._profile.raw["balance_id"] = (
+                    int(extracted.balance_id)
+                    if extracted.balance_id.isdigit()
+                    else extracted.balance_id
+                )
+
             self._profile_event.set()
 
+        req_id = str(message.get("request_id") or "").strip()
+        self._log_account_state_diagnostic(
+            req_type="get-profile" if req_id.startswith("prof_") else "server_push",
+            resp_type=str(message.get("name") or "profile"),
+            req_id=req_id if req_id else None,
+            extracted=extracted,
+            is_fresh=True,
+            change_bal_sent_at=self._last_change_balance_ts,
+        )
+
     def _handle_balances_frame(self, message: dict[str, Any]) -> None:
-        """Parse balances frame."""
+        """Parse balances frame with authoritative active balance identification."""
         raw_msg = message.get("msg")
         balances_list: list[dict[str, Any]] = []
         if isinstance(raw_msg, list):
@@ -1020,6 +1355,12 @@ class IQOptionLivePracticeTransport:
                 balances_list = raw_msg["balances"]
             elif isinstance(raw_msg.get("result"), list):
                 balances_list = raw_msg["result"]
+
+        extracted = self._extract_active_balance_info(
+            message, source_frame=str(message.get("name") or "balances")
+        )
+        if extracted and extracted.balance_id:
+            self._active_balance_id = extracted.balance_id
 
         parsed_bals: list[Balance] = []
         for item in balances_list:
@@ -1032,9 +1373,61 @@ class IQOptionLivePracticeTransport:
             self._balances = parsed_bals
             # Identify active balance if marked
             for b in self._balances:
-                if b.is_active:
+                if b.raw_is_active is True or b.is_active:
                     self._active_balance_id = str(b.id)
             self._balances_event.set()
+
+        req_id = str(message.get("request_id") or "").strip()
+        self._log_account_state_diagnostic(
+            req_type="get-balances" if req_id.startswith("bal_") else "server_push",
+            resp_type=str(message.get("name") or "balances"),
+            req_id=req_id if req_id else None,
+            extracted=extracted,
+            is_fresh=True,
+            change_bal_sent_at=self._last_change_balance_ts,
+        )
+
+    def _handle_balance_changed_frame(self, message: dict[str, Any]) -> None:
+        """Handle balance-changed notification pushed by broker upon change_balance."""
+        extracted = self._extract_active_balance_info(message, source_frame="balance-changed")
+        if extracted and extracted.balance_id:
+            self._active_balance_id = extracted.balance_id
+            if self._profile and self._profile.raw:
+                self._profile.raw["balance_id"] = (
+                    int(extracted.balance_id)
+                    if extracted.balance_id.isdigit()
+                    else extracted.balance_id
+                )
+            if extracted.is_practice:
+                self._session_practice_selected = True
+
+            new_bals: list[Balance] = []
+            for b in self._balances:
+                is_now_act = str(b.id) == extracted.balance_id
+                new_bals.append(
+                    Balance(
+                        id=b.id,
+                        type=b.type,
+                        amount=b.amount,
+                        currency=b.currency,
+                        is_active=is_now_act,
+                        raw_is_active=is_now_act,
+                        is_default=b.is_default,
+                    )
+                )
+            if new_bals:
+                self._balances = new_bals
+            self._balances_event.set()
+            self._profile_event.set()
+
+        self._log_account_state_diagnostic(
+            req_type="server_push",
+            resp_type="balance-changed",
+            req_id=None,
+            extracted=extracted,
+            is_fresh=True,
+            change_bal_sent_at=self._last_change_balance_ts,
+        )
 
     def _handle_initialization_data_frame(self, message: dict[str, Any]) -> None:
         """Parse initialization-data or options frame to update contract schedules."""

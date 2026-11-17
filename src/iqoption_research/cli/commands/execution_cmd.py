@@ -41,6 +41,7 @@ from iqoption_research.execution.modes import (
     ContractAvailabilityUnverifiedError,
     ExecutionMode,
     ExecutionModeConfig,
+    PracticeAuthorizationError,
     RealAccountExecutionBlockedError,
     UnsupportedProductOperationError,
 )
@@ -1045,12 +1046,33 @@ def practice_select_command(
                     return
 
             # Dispatch explicit selection
-            with console.status(
-                "[bold green]Transmitting change_balance and verifying post-selection state..."
-            ):
-                verified_bal = await transport.async_select_practice_balance(
-                    operator_authorized=True
+            try:
+                with console.status(
+                    "[bold green]Transmitting change_balance and verifying post-selection state..."
+                ):
+                    verified_bal = await transport.async_select_practice_balance(
+                        operator_authorized=True
+                    )
+            except (
+                PracticeAuthorizationError,
+                AccountSelectionUnverifiedError,
+                RealAccountExecutionBlockedError,
+                TimeoutError,
+                ConnectionError,
+            ) as exc:
+                console.print(
+                    Panel.fit(
+                        f"[bold red]CRITICAL SAFETY BLOCK: Practice Selection Failed[/bold red]\n\n"
+                        f"• Failure: {exc}\n"
+                        "• Verification: Active account could not be confirmed as PRACTICE.\n"
+                        "• Selection Request: change_balance was transmitted once.\n"
+                        "• Policy: Zero duplicate selection frames sent; zero automatic retries.\n"
+                        "• Order Submission: ZERO ORDERS DISPATCHED.\n"
+                        "• Teardown: WebSocket connection cleanly closed.",
+                        border_style="red",
+                    )
                 )
+                return
 
             res_table = Table(
                 title="[bold green]Live Practice Session Selection Result[/bold green]"
@@ -1121,6 +1143,11 @@ def practice_test_command(
         "--confirm",
         help="Automatically confirm operator authorization prompts (for automated/mock testing)",
     ),
+    preflight_only: bool = typer.Option(
+        False,
+        "--preflight-only",
+        help="Run full live pre-flight checks and verification without order submission",
+    ),
 ) -> None:
     """Supervised Practice test workflow requiring explicit operator authorization."""
     # 1. Stake validation
@@ -1167,7 +1194,30 @@ def practice_test_command(
                         "No balance switch or orders dispatched.[/yellow]"
                     )
                     raise typer.Abort()
-            transport.select_practice_balance(operator_authorized=True)
+            try:
+                transport.select_practice_balance(operator_authorized=True)
+            except (
+                PracticeAuthorizationError,
+                AccountSelectionUnverifiedError,
+                RealAccountExecutionBlockedError,
+                TimeoutError,
+                ConnectionError,
+            ) as exc:
+                console.print(
+                    Panel.fit(
+                        "[bold red]CRITICAL SAFETY BLOCK: Practice Balance Selection Failed"
+                        "[/bold red]\n\n"
+                        f"• Failure: {exc}\n"
+                        "• Verification: Active account could not be confirmed as PRACTICE.\n"
+                        "• Selection Request: change_balance was transmitted once.\n"
+                        "• Policy: Zero duplicate selection frames sent; zero automatic retries.\n"
+                        "• Order Submission: ZERO ORDERS DISPATCHED (Fail-Closed).\n"
+                        "• Teardown: Connection cleanly closed.",
+                        border_style="red",
+                    )
+                )
+                transport.close()
+                raise typer.Exit(code=1) from exc
     else:
         console.print(
             "[bold yellow]Initiating live practice connection to IQ Option...[/bold yellow]"
@@ -1242,10 +1292,33 @@ def practice_test_command(
                     transport.close()
                     raise typer.Abort()
 
-            with console.status(
-                "[bold green]Switching session balance to Practice and verifying..."
-            ):
-                transport.select_practice_balance(operator_authorized=True)
+            try:
+                with console.status(
+                    "[bold green]Switching session balance to Practice and verifying..."
+                ):
+                    transport.select_practice_balance(operator_authorized=True)
+            except (
+                PracticeAuthorizationError,
+                AccountSelectionUnverifiedError,
+                RealAccountExecutionBlockedError,
+                TimeoutError,
+                ConnectionError,
+            ) as exc:
+                console.print(
+                    Panel.fit(
+                        "[bold red]CRITICAL SAFETY BLOCK: Practice Balance Selection Failed"
+                        "[/bold red]\n\n"
+                        f"• Failure: {exc}\n"
+                        "• Verification: Active account could not be confirmed as PRACTICE.\n"
+                        "• Selection Request: change_balance was transmitted once.\n"
+                        "• Policy: Zero duplicate selection frames sent; zero automatic retries.\n"
+                        "• Order Submission: ZERO ORDERS DISPATCHED (Fail-Closed).\n"
+                        "• Teardown: WebSocket connection cleanly closed.",
+                        border_style="red",
+                    )
+                )
+                transport.close()
+                raise typer.Exit(code=1) from exc
 
     try:
         # 3. Verify active practice account & balance
@@ -1383,14 +1456,20 @@ def practice_test_command(
             table.add_row("Contract Expiration", f"{expiry_ts} ({expiry_utc_str})")
             table.add_row("Remaining Seconds to Expiry", f"{remaining_seconds}s")
             table.add_row("Autonomous AI Trading", "[bold red]DISABLED[/bold red]")
-            table.add_row(
-                "Safety Invariant",
-                "[bold green]Single Practice Order / Zero Retries Enforced[/bold green]",
-            )
+            if preflight_only:
+                table.add_row(
+                    "Safety Invariant",
+                    "[bold yellow]Preflight-Only Mode (Zero Orders Dispatched)[/bold yellow]",
+                )
+            else:
+                table.add_row(
+                    "Safety Invariant",
+                    "[bold green]Single Practice Order / Zero Retries Enforced[/bold green]",
+                )
             console.print(table)
 
-            # Operator authorization
-            if not confirm:
+            # Operator authorization (bypassed in preflight_only mode)
+            if not confirm and not preflight_only:
                 reconfirm = typer.confirm(
                     f"Transmit single ${stake:.2f} Practice trade on {symbol.upper()} to broker?",
                     default=False,
@@ -1441,7 +1520,7 @@ def practice_test_command(
                         border_style="yellow",
                     )
                 )
-                if confirm:
+                if confirm and not preflight_only:
                     raise RuntimeError(
                         f"Pre-transmission validation failed in automated mode: "
                         f"{terms_invalid_reason}"
@@ -1471,6 +1550,31 @@ def practice_test_command(
                 "verification. Order blocked fail-closed.[/bold red]"
             )
             raise typer.Exit(code=1)
+
+        # Preflight-only mode: complete preflight audit, skip order creation & dispatch
+        if preflight_only:
+            payout_pct = spec.payout_rate * 100
+            console.print(
+                Panel.fit(
+                    "[bold green]LIVE PRE-FLIGHT VERIFICATION SUCCEEDED: ZERO ORDERS DISPATCHED"
+                    "[/bold green]\n\n"
+                    f"• Transport State: Connected ({transport.session_id})\n"
+                    f"• Verified Account: PRACTICE (Balance ID: {active_bal_id})\n"
+                    f"• Current Virtual Balance: ${current_amount:,.2f}\n"
+                    f"• Instrument Tradability: {symbol.upper()} Binary Option AVAILABLE\n"
+                    f"• Authoritative Broker Payout: {payout_pct:.1f}% "
+                    f"(Commission: {spec.commission_percent:.1f}%)\n"
+                    f"• Live Broker Quote: {current_candle.close:.5f} "
+                    f"(Midpoint: {current_candle.midpoint:.5f})\n"
+                    f"• Next Expiry Deadline: {expiry_ts} ({expiry_utc_str}, "
+                    f"{remaining_before_send}s remaining)\n"
+                    "• Pre-Flight Mode: Order proposal, creation, and submission "
+                    "completely BYPASSED.\n"
+                    "• Safety Invariant: Zero orders dispatched; clean teardown initiated.",
+                    border_style="green",
+                )
+            )
+            return
 
         # 9. Engine Execution & Order Dispatch
         tok = PracticeExecutionAuthToken(

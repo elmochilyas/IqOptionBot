@@ -16,10 +16,10 @@ Old position handlers could throw during numeric conversion and terminate the li
 
 The observer can optionally query history after a timeout when both `--asset` and `--history-stake` are supplied. This covers the current observation interval, not a previous session. Results do not establish custom order-routing safety. The history query and the observer submit no broker orders. REAL snapshots can only compare two instants; even matching snapshots cannot prove no unobserved intermediate mutations. Observed REAL balance changes are flagged even if a later update returns to baseline. Missing snapshots remain unverified.
 
-Run locally and provide credentials only through the existing hidden prompt or environment mechanism. Explicit offsets are required; confirm the operator's clock and timezone before changing the example. These commands do not ask for a new trade:
+Run locally and provide credentials through the existing hidden prompt or environment mechanism. The original observer log omitted its UTC offset. This workstation and the updated `Africa/Casablanca` timezone rules both interpret November 17, 2026, 09:25 as 09:25 UTC. Use the official transaction time with an explicit offset if the observer ran under a different clock configuration. [IANA timezone update](https://lists.iana.org/hyperkitty/list/tz%40iana.org/thread/OICICWYCOLRJSRJWO5O2SU3AADR5GAUJ/)
 
 ```powershell
-python -m iqoption_research.cli.main practice-history --live --asset EURUSD --stake 1000 --start "2026-11-17T09:25:00+01:00" --end "2026-11-17T09:30:00+01:00" --limit 100 --record recovered_history.json
+python -m iqoption_research.cli.main practice-history --live --asset EURUSD --stake 1000 --start "2026-11-17T09:25:00Z" --end "2026-11-17T09:30:00Z" --limit 100 --balance-diagnostics
 python -m iqoption_research.cli.main practice-observe --live --probe-only
 python -m iqoption_research.cli.main practice-observe --live --asset EURUSD --timeout 60 --history-stake 1000 --record observer_history.json
 ```

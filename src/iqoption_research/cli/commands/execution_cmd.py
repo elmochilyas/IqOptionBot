@@ -2520,6 +2520,10 @@ def practice_history_command(
         InstrumentRegistry.normalize_symbol(asset)
     except (ValueError, TypeError) as exc:
         raise typer.BadParameter(str(exc)) from exc
+    search_window_utc = {
+        "start": start_dt.astimezone(UTC).isoformat(),
+        "end": end_dt.astimezone(UTC).isoformat(),
+    }
     email = os.environ.get("IQOPTION_EMAIL") or typer.prompt("IQ Option Account Email")
     password = os.environ.get("IQOPTION_PASSWORD") or typer.prompt(
         "IQ Option Password", hide_input=True
@@ -2550,7 +2554,12 @@ def practice_history_command(
     except Exception as exc:
         # Never display broker exception text, account data, or raw frames.
         console.print("[red]Read-only history query failed; history is unverified.[/red]")
-        console.print_json(json.dumps(observer.failure_diagnostics()))
+        console.print_json(
+            json.dumps({
+                **observer.failure_diagnostics(),
+                "search_window_utc": search_window_utc,
+            })
+        )
         raise typer.Exit(code=1) from exc
     if balance_diagnostics:
         console.print_json(json.dumps(observer.account_protocol_diagnostics()))
@@ -2564,6 +2573,7 @@ def practice_history_command(
             "settlement_status": result["settlement_status"],
             "candidate_count": result["candidate_count"],
             "incomplete_candidate_count": len(result["incomplete_candidates"]),
+            "search_window_utc": search_window_utc,
             "real_wallet_status": result["account"]["real_wallet_status"],
             "history_may_be_truncated": result["query_limit_may_truncate_history"],
             "operator_reconciliation_required": True,

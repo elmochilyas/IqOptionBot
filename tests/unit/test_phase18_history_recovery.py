@@ -11,7 +11,11 @@ import pytest
 from typer.testing import CliRunner
 
 from iqoption_research.cli.main import app
-from iqoption_research.execution.practice_history import reconcile_history, recover_history
+from iqoption_research.execution.practice_history import (
+    extract_rows,
+    reconcile_history,
+    recover_history,
+)
 from iqoption_research.execution.practice_observer import (
     PassivePracticeObserver,
     SubscriptionStatus,
@@ -91,6 +95,57 @@ def test_incomplete_is_not_confirmed_or_absent(change: dict[str, Any]) -> None:
 def test_invalid_history_is_not_not_found() -> None:
     with pytest.raises(ValueError):
         match({"name": "options", "msg": {"error": "failure"}})
+
+
+@pytest.mark.parametrize("container", ["closed_options", "open_options", "options"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_status_zero_validated_array_structure(container: str, nested: bool) -> None:
+    body = {container: [row(), {"metadata": "private-value"}], "private-key": ["private-value"]}
+    msg = {"result": body} if nested else body
+    diagnostics: dict[str, Any] = {}
+    result = reconcile_history(
+        {"name": "options", "status": 0, "msg": msg},
+        asset="EURUSD",
+        stake=1000,
+        start=1794903900,
+        end=1794904100,
+        practice_id="101",
+        diagnostics=diagnostics,
+    )
+    assert result["position_status"] == "MULTIPLE_OR_CONFLICTING_CANDIDATES"
+    assert diagnostics["parseable_candidate_count"] == 1
+    assert diagnostics["matching_candidate_count"] == 1
+    assert diagnostics["incomplete_candidate_count"] == 1
+    assert diagnostics["unrecognized_array_count"] == 1
+    assert {
+        "path": f"msg.result.{container}" if nested else f"msg.{container}",
+        "is_array": True,
+        "entry_count": 2,
+        "object_count": 2,
+    } in diagnostics["containers"]
+    assert "private" not in json.dumps(diagnostics)
+    assert "secret-value" not in json.dumps(diagnostics)
+
+
+@pytest.mark.parametrize(
+    ("status", "msg", "reason"),
+    [
+        (0, [], "OPTIONS_BODY_NOT_OBJECT"),
+        (0, {"data": []}, "OPTION_ARRAY_MISSING"),
+        (0, {"result": ["private-value"]}, "OPTION_ARRAY_MISSING"),
+        (0, {"closed_options": ["private-value"]}, "OPTION_ROW_NOT_OBJECT"),
+        (0, {"success": False, "closed_options": []}, "BROKER_REPORTED_FAILURE"),
+        (False, {"closed_options": []}, "UNSUPPORTED_OPTIONS_STATUS"),
+        ("0", {"closed_options": []}, "UNSUPPORTED_OPTIONS_STATUS"),
+        (0.0, {"closed_options": []}, "UNSUPPORTED_OPTIONS_STATUS"),
+    ],
+)
+def test_history_schema_rejection_has_sanitized_reason(status: Any, msg: Any, reason: str) -> None:
+    diagnostics: dict[str, Any] = {}
+    with pytest.raises(ValueError, match=reason):
+        extract_rows({"name": "options", "status": status, "msg": msg}, diagnostics=diagnostics)
+    assert diagnostics["schema_rejection_reason"] == reason
+    assert "private-value" not in json.dumps(diagnostics)
 
 
 @pytest.mark.asyncio

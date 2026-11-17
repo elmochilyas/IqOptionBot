@@ -399,6 +399,14 @@ class PassivePracticeObserver:
             "history_protocol_diagnostics": self._history_response_metadata,
         }
 
+    def history_schema_diagnostics(self) -> dict[str, Any] | None:
+        """Provide an opt-in sink for sanitized parser counts on the matched reply."""
+        if self._history_response_metadata is None or not self._history_response_correlated:
+            return None
+        fields: dict[str, Any] = {}
+        self._history_response_metadata["structure"] = fields
+        return fields
+
     def mark_history_response_invalid(self) -> None:
         self._failed_stage = "HISTORY_PARSING"
         self._failure_code = "HISTORY_RESPONSE_INVALID"
@@ -643,6 +651,9 @@ class PassivePracticeObserver:
             if response.get("name") == "observer-connection-closed":
                 raise self._fail("HISTORY_RESPONSE", "WS_CONNECTION_CLOSED")
             if self._explicit_response_rejection(response):
+                diagnostics = self.history_schema_diagnostics()
+                if diagnostics is not None:
+                    diagnostics["schema_rejection_reason"] = "BROKER_REPORTED_FAILURE"
                 raise self._fail("HISTORY_RESPONSE", "HISTORY_RESPONSE_REJECTED")
             self._last_successful_stage = "HISTORY_RESPONSE"
             return response
@@ -704,15 +715,30 @@ class PassivePracticeObserver:
         if not recognized and not matches:
             return
         body, envelope = self._profile_envelope(message)
+        status = message.get("status")
+        zero_profile_reply = (
+            matches
+            and name == "profile"
+            and type(status) is int
+            and status == 0
+            and envelope == "MSG_RESULT_OBJECT"
+        )
         profile = None
-        if self._explicit_response_rejection(message):
+        msg = message.get("msg")
+        if (
+            self._explicit_response_rejection(message)
+            or (isinstance(msg, dict) and msg.get("success") is False)
+            or (body is not None and body.get("success") is False)
+        ):
             outcome = "PROFILE_REJECTED"
-        elif message.get("status") not in (None, 2000):
+        elif status not in (None, 2000) and not zero_profile_reply:
             outcome = "PROFILE_STATUS_UNRECOGNIZED"
         elif name == "result" and isinstance(body, dict) and body.get("success") is True:
             outcome = "PROFILE_ACKNOWLEDGED"
         else:
             profile = self._parse_profile_body(body) if recognized and body is not None else None
+            if zero_profile_reply and profile is not None and profile.user_id <= 0:
+                profile = None
             if profile is None:
                 outcome = "PROFILE_MALFORMED"
             else:

@@ -118,7 +118,11 @@ class ScriptedSocket:
         elif frame["msg"]["name"] == "get-options":
             assert self.obs.failure_diagnostics()["practice_wallet_identity_established"]
             assert frame["msg"]["body"]["user_balance_id"] == 101
-            self.obs._handle_incoming_frame({**history(), "request_id": frame["request_id"]})
+            self.obs._handle_incoming_frame({
+                **history(),
+                "status": 0,
+                "request_id": frame["request_id"],
+            })
         else:
             raise AssertionError("Unexpected frame; only read-only requests are permitted")
 
@@ -149,6 +153,9 @@ async def test_unsolicited_session_profile_and_correlated_balance(
     result = await recover_history(obs, asset="EURUSD", stake=1000, start=1, end=2)
     assert result["history_status"] == "HISTORY_NOT_FOUND"
     assert obs.failure_diagnostics()["history_response_correlated"] is True
+    trace = obs.account_protocol_diagnostics()["history_protocol_diagnostics"]
+    assert trace["status_wire_code"] == 0
+    assert trace["structure"]["schema_rejection_reason"] is None
     assert [f["msg"]["name"] for f in socket.sent[1:]] == [
         "get-profile",
         "get-balances",
@@ -244,6 +251,21 @@ async def test_missing_or_malformed_account_data(
             {"name": "profile", "status": 0, "msg": {"user_id": 123}},
             "PROFILE_STATUS_UNRECOGNIZED",
             "MATCH",
+        ),
+        (
+            {"name": "profile", "status": 0, "msg": {"result": {"user_id": 123}}},
+            "PROFILE_VERIFIED",
+            "MATCH",
+        ),
+        (
+            {"name": "profile", "status": 0, "msg": {"result": {"balance_id": 101}}},
+            "PROFILE_MALFORMED",
+            "MATCH",
+        ),
+        (
+            {"name": "profile", "status": 0, "msg": {"result": {"user_id": 123}}},
+            "PROFILE_STATUS_UNRECOGNIZED",
+            "DIFFERENT",
         ),
         ({"name": "profile", "msg": {}}, "PROFILE_MALFORMED", "MATCH"),
         (
@@ -366,6 +388,7 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(monkey
     assert '"profile_verification": "PROFILE_UNVERIFIED"' in result.output
     assert '"real_wallet_status": "UNVERIFIED"' in result.output
     assert '"history_status": "HISTORY_NOT_FOUND"' in result.output
+    assert '"start": "2026-11-17T08:25:00+00:00"' in result.output
     assert [f["msg"]["name"] for f in sockets[0].sent[1:]] == [
         "get-profile",
         "get-balances",
@@ -454,7 +477,7 @@ async def test_uncorrelated_history_response_is_not_accepted() -> None:
 
     class Socket:
         async def send(self, data: str) -> None:
-            obs._handle_incoming_frame({**history(item()), "request_id": "different"})
+            obs._handle_incoming_frame({**history(item()), "status": 0, "request_id": "different"})
 
     obs._ws = Socket()  # type: ignore[assignment]
     with pytest.raises(ObserverStageTimeout):
@@ -468,22 +491,31 @@ async def test_uncorrelated_history_response_is_not_accepted() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("frame", "stage", "code"),
+    ("frame", "stage", "code", "reason"),
     [
         (
             {"name": "options", "msg": {"password": "secret"}},
             "HISTORY_PARSING",
             "HISTORY_RESPONSE_INVALID",
+            "OPTION_ARRAY_MISSING",
         ),
         (
-            {"name": "options", "status": 0, "msg": {"closed_options": []}},
+            {"name": "options", "status": 0, "msg": {"closed_options": {}}},
             "HISTORY_PARSING",
             "HISTORY_RESPONSE_INVALID",
+            "OPTION_CONTAINER_NOT_ARRAY",
+        ),
+        (
+            {"name": "options", "status": 2001, "msg": {"closed_options": []}},
+            "HISTORY_PARSING",
+            "HISTORY_RESPONSE_INVALID",
+            "UNSUPPORTED_OPTIONS_STATUS",
         ),
         (
             {"name": "error", "status": 4000, "msg": {"detail": "secret"}},
             "HISTORY_RESPONSE",
             "HISTORY_RESPONSE_REJECTED",
+            "BROKER_REPORTED_FAILURE",
         ),
     ],
 )
@@ -491,6 +523,7 @@ async def test_correlated_history_failure_remains_unverified(
     frame: dict[str, Any],
     stage: str,
     code: str,
+    reason: str,
 ) -> None:
     obs = PassivePracticeObserver(ssid="fake", balance_diagnostics=True)
     obs._authenticated = True
@@ -511,6 +544,7 @@ async def test_correlated_history_failure_remains_unverified(
     assert report["failed_stage"] == stage
     assert report["history_protocol_diagnostics"]["message_name"] == frame["name"]
     assert report["history_protocol_diagnostics"]["request_id"] == "MATCH"
+    assert report["history_protocol_diagnostics"]["structure"]["schema_rejection_reason"] == reason
     assert "secret" not in json.dumps(report)
 
 

@@ -1,7 +1,7 @@
 """Read-only classic-option history and conservative reconciliation.
 
-Wire schema is based on the community iqoptionapi Get_options_v2 client. Broker
-support, response shape and wallet enforcement remain unverified until a live response.
+The request follows the community iqoptionapi Get_options_v2 client. A live reply
+confirmed the options message and status 0. Each payload still needs schema validation.
 """
 
 from __future__ import annotations
@@ -11,8 +11,23 @@ import math
 from datetime import UTC, datetime
 from typing import Any
 
-from iqoption_research.execution.practice_observer import PassivePracticeObserver
+from iqoption_research.execution.practice_observer import (
+    ObserverStageError,
+    PassivePracticeObserver,
+)
 from iqoption_research.market_data.instruments import InstrumentRegistry
+
+_OPTION_ARRAYS = ("closed_options", "open_options", "options")
+_DIAGNOSTIC_CONTAINERS = (*_OPTION_ARRAYS, "result", "data", "items", "positions")
+_POSITION_FIELDS = (
+    "symbol",
+    "stake",
+    "opened_at_utc",
+    "product_type",
+    "direction",
+    "expires_at_utc",
+    "status",
+)
 
 
 def _number(value: Any) -> float | None:
@@ -101,23 +116,70 @@ def normalize_history_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def extract_rows(response: dict[str, Any]) -> list[dict[str, Any]]:
-    """Require the expected options response and an explicit array container."""
-    if response.get("name") != "options" or response.get("status") not in (None, 2000):
-        raise ValueError("Unexpected or unsuccessful history response")
-    body = response.get("msg")
-    if not isinstance(body, dict):
-        raise ValueError("History payload is not an object")
-    if isinstance(body.get("result"), dict):
-        body = body["result"]
-    arrays = [body[k] for k in ("closed_options", "open_options", "options") if k in body]
-    if not arrays or any(not isinstance(a, list) for a in arrays):
-        raise ValueError("History response does not contain recognized option arrays")
+def _history_container_summary(msg: dict[str, Any]) -> dict[str, Any]:
+    """Describe known paths only. Unknown keys contribute counts without names or values."""
+    objects = [("msg", msg)]
+    if isinstance(msg.get("result"), dict):
+        objects.append(("msg.result", msg["result"]))
+    containers = []
+    unrecognized_array_count = 0
+    for prefix, body in objects:
+        unrecognized_array_count += sum(
+            isinstance(value, list)
+            for key, value in body.items()
+            if key not in _DIAGNOSTIC_CONTAINERS
+        )
+        for key in _DIAGNOSTIC_CONTAINERS:
+            if key in body:
+                value = body[key]
+                containers.append({
+                    "path": f"{prefix}.{key}",
+                    "is_array": isinstance(value, list),
+                    "entry_count": len(value) if isinstance(value, list) else None,
+                    "object_count": sum(isinstance(row, dict) for row in value)
+                    if isinstance(value, list)
+                    else None,
+                })
+    return {"containers": containers, "unrecognized_array_count": unrecognized_array_count}
+
+
+def extract_rows(
+    response: dict[str, Any], *, diagnostics: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Validate an options response after the live transport has matched its request ID."""
+    msg = response.get("msg")
+    if diagnostics is not None and isinstance(msg, dict):
+        diagnostics.update(_history_container_summary(msg))
+
+    def invalid(reason: str) -> ValueError:
+        if diagnostics is not None:
+            diagnostics["schema_rejection_reason"] = reason
+        return ValueError(reason)
+
+    if response.get("name") != "options":
+        raise invalid("UNEXPECTED_MESSAGE_NAME")
+    status = response.get("status")
+    if status not in (None, 2000) and not (type(status) is int and status == 0):
+        raise invalid("UNSUPPORTED_OPTIONS_STATUS")
+    if not isinstance(msg, dict):
+        raise invalid("OPTIONS_BODY_NOT_OBJECT")
+    nested = msg.get("result")
+    body = nested if isinstance(nested, dict) else msg
+    if msg.get("success") is False or body.get("success") is False:
+        raise invalid("BROKER_REPORTED_FAILURE")
+    arrays = [body[key] for key in _OPTION_ARRAYS if key in body]
+    if not arrays:
+        raise invalid("OPTION_ARRAY_MISSING")
+    if any(not isinstance(array, list) for array in arrays):
+        raise invalid("OPTION_CONTAINER_NOT_ARRAY")
     rows: list[dict[str, Any]] = []
     for array in arrays:
         if any(not isinstance(item, dict) for item in array):
-            raise ValueError("Malformed option history row")
+            raise invalid("OPTION_ROW_NOT_OBJECT")
         rows.extend(array)
+    if diagnostics is not None:
+        diagnostics["row_count"] = len(rows)
+        diagnostics["schema_rejection_reason"] = None
     return rows
 
 
@@ -130,18 +192,23 @@ def reconcile_history(
     end: float,
     practice_id: str,
     ticket_id: str | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Match only complete evidence; ambiguous or conflicting tickets are not confirmed."""
-    rows = extract_rows(response)
+    rows = extract_rows(response, diagnostics=diagnostics)
     wanted = InstrumentRegistry.normalize_symbol(asset)
     candidates: dict[str, dict[str, Any]] = {}
     seen: dict[str, dict[str, Any]] = {}
     possible: dict[str, dict[str, Any]] = {}
     missing_id: list[dict[str, Any]] = []
     conflicting: set[str] = set()
+    parseable_count = 0
     for row in rows:
         item = normalize_history_row(row)
         ident = item["ticket_id"]
+        complete = ident is not None and all(item[key] is not None for key in _POSITION_FIELDS)
+        if complete:
+            parseable_count += 1
         if ident and ticket_id is not None and ident != ticket_id:
             continue
         if ident:
@@ -163,19 +230,17 @@ def reconcile_history(
         if not ident:
             missing_id.append(item)
             continue
-        if (
-            item["symbol"] is None
-            or item["stake"] is None
-            or opened is None
-            or item["product_type"] is None
-            or item["direction"] is None
-            or item["expires_at_utc"] is None
-            or item["status"] is None
-        ):
+        if not complete:
             possible[ident] = item
             continue
         candidates[ident] = item
     entries = list(candidates.values())
+    if diagnostics is not None:
+        diagnostics.update({
+            "parseable_candidate_count": parseable_count,
+            "matching_candidate_count": len(entries),
+            "incomplete_candidate_count": len(possible) + len(missing_id),
+        })
     relevant_conflicts = conflicting.intersection(candidates.keys() | possible.keys())
     result: dict[str, Any] = {
         "history_status": "HISTORY_UNVERIFIED",
@@ -236,6 +301,7 @@ async def recover_history(
     practice = observer.practice_balance
     real = observer.real_balance
     response = await observer.async_get_options_history(limit=limit, timeout_seconds=timeout)
+    schema_diagnostics = observer.history_schema_diagnostics()
     try:
         result = reconcile_history(
             response,
@@ -245,11 +311,10 @@ async def recover_history(
             end=end,
             practice_id=str(practice.id),
             ticket_id=ticket_id,
+            diagnostics=schema_diagnostics,
         )
     except (ValueError, TypeError, KeyError) as exc:
         observer.mark_history_response_invalid()
-        from iqoption_research.execution.practice_observer import ObserverStageError
-
         raise ObserverStageError("HISTORY_PARSING", "HISTORY_RESPONSE_INVALID") from exc
     observer.mark_history_reconciled()
     fresh = await observer.async_refresh_account_state()

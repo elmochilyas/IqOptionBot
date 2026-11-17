@@ -36,10 +36,7 @@ from websockets.asyncio.client import ClientConnection
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed
 
-from iqoption_research.connectors.iqoption.exceptions import (
-    ConnectionError,
-    LoginError,
-)
+from iqoption_research.connectors.iqoption.exceptions import ConnectionError
 from iqoption_research.connectors.iqoption.http_auth import async_login
 from iqoption_research.connectors.iqoption.ws_client import (
     create_tls_context,
@@ -54,6 +51,19 @@ from iqoption_research.models.account import AccountType, Balance, Profile
 from iqoption_research.security.credentials import Credentials
 
 logger = logging.getLogger(__name__)
+
+
+class ObserverStageError(ConnectionError):
+    """Safe stage-specific failure; never includes broker data or exception text."""
+
+    def __init__(self, stage: str, code: str) -> None:
+        super().__init__(f"{stage}: {code}")
+        self.stage = stage
+        self.code = code
+
+
+class ObserverStageTimeout(ObserverStageError, TimeoutError):
+    """Safe bounded read-only request timeout."""
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +257,7 @@ class PassivePracticeObserver:
         self._wss_url = wss_url
         self._ws: ClientConnection | None = None
         self._profile: Profile | None = None
+        self._profile_event = asyncio.Event()
         self._balances: list[Balance] = []
         self._practice_balance: Balance | None = None
         self._real_balance: Balance | None = None
@@ -275,10 +286,22 @@ class PassivePracticeObserver:
         self._other_product_count = 0
         self._connection_error: str | None = None
         self._balance_revision = 0
+        self._last_successful_stage = "NOT_STARTED"
+        self._failed_stage: str | None = None
+        self._failure_code: str | None = None
+        self._last_refresh_failure: str | None = None
+        self._last_refresh_stage: str | None = None
+        self._history_request_id: str | None = None
+        self._history_dispatched = False
+        self._history_dispatch_attempted = False
+        self._history_response_arrived = False
+        self._history_response_correlated = False
+        self._authenticated = False
+        self._practice_identity_established = False
 
     @property
     def is_connected(self) -> bool:
-        return self._ws is not None and not self._closed
+        return self._ws is not None and not self._closed and self._connection_error is None
 
     @property
     def profile(self) -> Profile | None:
@@ -307,76 +330,122 @@ class PassivePracticeObserver:
             for m in self._balance_mutations
         )
 
+    def _fail(self, stage: str, code: str) -> ObserverStageError:
+        self._failed_stage = stage
+        self._failure_code = code
+        return ObserverStageError(stage, code)
+
+    def failure_diagnostics(self) -> dict[str, Any]:
+        """Fixed vocabulary only: no broker payloads, account IDs or exception messages."""
+        return {
+            "history_status": "HISTORY_UNVERIFIED",
+            "last_successful_stage": self._last_successful_stage,
+            "failed_stage": self._failed_stage or "UNKNOWN",
+            "error_classification": self._failure_code or "UNCLASSIFIED_FAILURE",
+            "history_request_dispatched": self._history_dispatched,
+            "history_dispatch_state": (
+                "SENT"
+                if self._history_dispatched
+                else "DELIVERY_UNKNOWN"
+                if self._history_dispatch_attempted
+                else "NOT_ATTEMPTED"
+            ),
+            "history_response_arrived": self._history_response_arrived,
+            "history_response_correlated": self._history_response_correlated,
+            "practice_wallet_identity_established": self._practice_identity_established,
+            "real_wallet_state": "SNAPSHOT_AVAILABLE"
+            if self._initial_real_balance
+            else "UNVERIFIED",
+            "recommended_next_diagnostic": "practice-observe --live --probe-only",
+        }
+
+    def mark_history_response_invalid(self) -> None:
+        self._failed_stage = "HISTORY_PARSING"
+        self._failure_code = "HISTORY_RESPONSE_INVALID"
+
+    def mark_history_reconciled(self) -> None:
+        self._last_successful_stage = "HISTORY_RECONCILIATION"
+
     async def async_connect(self) -> None:
+        """Connect once and close partial resources on any failed initialization."""
+        try:
+            await self._connect_once()
+        except BaseException:
+            await self.async_close()
+            raise
+
+    async def _connect_once(self) -> None:
         """Connect to broker and discover Practice and Real wallet baselines."""
         if not self._ssid:
             if not self._credentials:
-                raise LoginError("Neither credentials nor SSID provided for observer connection.")
+                raise self._fail("HTTPS_AUTH", "HTTPS_AUTH_FAILED")
             logger.info("Obtaining SSID via HTTPS login for passive observer...")
-            self._ssid = await async_login(self._credentials)
-
-        validate_wss_endpoint(self._wss_url)
-        ssl_ctx = create_tls_context()
-
-        logger.info("Connecting passive observer to %s...", self._wss_url)
-        self._ws = await ws_connect(
-            self._wss_url,
-            ssl=ssl_ctx,
-            open_timeout=15.0,
-            ping_interval=20,
-            ping_timeout=10,
-        )
+            try:
+                self._ssid = await async_login(self._credentials)
+            except Exception as exc:
+                raise self._fail("HTTPS_AUTH", "HTTPS_AUTH_FAILED") from exc
+            self._last_successful_stage = "HTTPS_AUTH"
+        else:
+            self._last_successful_stage = "SSID_SUPPLIED"
+        try:
+            validate_wss_endpoint(self._wss_url)
+            ssl_ctx = create_tls_context()
+            logger.info("Connecting passive observer to allowlisted WebSocket endpoint...")
+            # Protocol debug logs can contain the SSID and full broker frames.
+            wire_logger = logging.Logger("passive-observer-private-wire")
+            wire_logger.disabled = True
+            self._ws = await ws_connect(
+                self._wss_url,
+                logger=wire_logger,
+                ssl=ssl_ctx,
+                open_timeout=15.0,
+                ping_interval=20,
+                ping_timeout=10,
+            )
+        except Exception as exc:
+            raise self._fail("WS_HANDSHAKE", "WS_HANDSHAKE_FAILED") from exc
+        self._last_successful_stage = "WS_HANDSHAKE"
         self._listener_task = asyncio.create_task(self._listen_loop())
-
-        # Authenticate
         auth_req_id = f"obs_auth_{self._request_counter}"
         self._request_counter += 1
-        auth_fut = asyncio.get_running_loop().create_future()
+        auth_fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending_requests[auth_req_id] = auth_fut
         self._auth_future = auth_fut
-
-        auth_frame = {
-            "name": "authenticate",
-            "msg": {"ssid": self._ssid, "protocol": PROTOCOL_VERSION},
-            "request_id": auth_req_id,
-        }
-        await self._ws.send(json.dumps(auth_frame))
-        auth_resp = await asyncio.wait_for(auth_fut, timeout=10.0)
-
-        # Check authentication result
-        is_success = auth_resp.get("msg") is True or auth_resp.get("name") in {
-            "authenticated",
-            "profile",
-        }
-        if not is_success:
-            raise LoginError("Observer WebSocket authentication failed.")
-
-        # Refresh initial account state
+        try:
+            await self._ws.send(
+                json.dumps({
+                    "name": "authenticate",
+                    "msg": {"ssid": self._ssid, "protocol": PROTOCOL_VERSION},
+                    "request_id": auth_req_id,
+                })
+            )
+            auth_resp = await asyncio.wait_for(auth_fut, timeout=10.0)
+        except TimeoutError as exc:
+            raise self._fail("WS_AUTH", "WS_AUTH_TIMEOUT") from exc
+        except (ConnectionClosed, OSError) as exc:
+            raise self._fail("WS_AUTH", "WS_CONNECTION_CLOSED") from exc
+        finally:
+            self._pending_requests.pop(auth_req_id, None)
+            self._auth_future = None
+        if auth_resp.get("name") == "observer-connection-closed":
+            raise self._fail("WS_AUTH", "WS_CONNECTION_CLOSED")
+        if auth_resp.get("name") != "authenticated" or auth_resp.get("msg") is not True:
+            raise self._fail("WS_AUTH", "WS_AUTH_FAILED")
+        self._authenticated = True
+        self._last_successful_stage = "WS_AUTH"
         refreshed = await self.async_refresh_account_state()
         if not refreshed:
-            raise ConnectionError("Failed to retrieve initial account balances from broker.")
-
-        # Identify baseline practice and real balances
-        self._practice_balance = next(
-            (b for b in self._balances if b.type == AccountType.PRACTICE and b.is_practice),
-            None,
-        )
-        self._real_balance = next(
-            (b for b in self._balances if b.type == AccountType.REAL),
-            None,
-        )
-
+            code = self._last_refresh_failure or "BALANCES_FETCH_FAILED"
+            stage = self._last_refresh_stage or "BALANCES_FETCH"
+            raise self._fail(stage, code)
+        self._last_successful_stage = "BALANCES_FETCH"
         if self._practice_balance is None:
-            raise ConnectionError("No Practice wallet discovered on this broker account.")
-
+            raise self._fail("WALLET_DISCOVERY", "PRACTICE_WALLET_MISSING")
+        self._practice_identity_established = True
         self._initial_real_balance = self._real_balance
-
+        self._last_successful_stage = "WALLET_DISCOVERY"
         logger.info(
-            "Observer connected. Baseline Practice ID=%s ($%.2f), Real ID=%s ($%.2f)",
-            self._practice_balance.id,
-            self._practice_balance.amount,
-            self._real_balance.id if self._real_balance else "None",
-            self._real_balance.amount if self._real_balance else 0.0,
+            "Observer connected; account snapshots received and Practice wallet identified."
         )
 
     async def async_subscribe_portfolio(self) -> SubscriptionStatus:
@@ -482,15 +551,28 @@ class PassivePracticeObserver:
         timeout_seconds: float = 10.0,
     ) -> dict[str, Any]:
         """Request classic-option history, scoped to the discovered Practice wallet."""
-        if not self._ws or self._closed or self._practice_balance is None:
-            raise ConnectionError("Observer and Practice wallet must be initialized.")
+        if not self._ws or self._closed or self._connection_error:
+            raise self._fail("HISTORY_DISPATCH", "WS_CONNECTION_CLOSED")
+        if (
+            not self._authenticated
+            or not self._practice_identity_established
+            or self._practice_balance is None
+            or self._practice_balance.type != AccountType.PRACTICE
+        ):
+            raise self._fail("HISTORY_DISPATCH", "ACCOUNT_STATE_UNVERIFIED")
         if not 1 <= limit <= 1000:
             raise ValueError("History limit must be between 1 and 1000.")
         req_id = f"obs_history_{self._request_counter}"
         self._request_counter += 1
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending_requests[req_id] = future
+        self._history_request_id = req_id
+        self._history_dispatched = False
+        self._history_dispatch_attempted = False
+        self._history_response_arrived = False
+        self._history_response_correlated = False
         try:
+            self._history_dispatch_attempted = True
             await self._ws.send(
                 json.dumps({
                     "name": "sendMessage",
@@ -505,29 +587,89 @@ class PassivePracticeObserver:
                     },
                 })
             )
-            return await asyncio.wait_for(future, timeout=timeout_seconds)
+            self._history_dispatched = True
+            self._last_successful_stage = "HISTORY_DISPATCH"
+            try:
+                response = await asyncio.wait_for(future, timeout=timeout_seconds)
+            except TimeoutError as exc:
+                self._failed_stage = "HISTORY_RESPONSE"
+                self._failure_code = "HISTORY_REQUEST_TIMEOUT"
+                raise ObserverStageTimeout("HISTORY_RESPONSE", "HISTORY_REQUEST_TIMEOUT") from exc
+            if response.get("name") == "observer-connection-closed":
+                raise self._fail("HISTORY_RESPONSE", "WS_CONNECTION_CLOSED")
+            self._last_successful_stage = "HISTORY_RESPONSE"
+            return response
+        except (ConnectionClosed, OSError) as exc:
+            if isinstance(exc, ObserverStageError):
+                raise
+            raise self._fail("HISTORY_DISPATCH", "WS_CONNECTION_CLOSED") from exc
         finally:
             self._pending_requests.pop(req_id, None)
+            self._history_request_id = None
+
+    @staticmethod
+    def _parse_profile_response(message: dict[str, Any]) -> Profile | None:
+        if message.get("name") not in {"profile", "get-profile"}:
+            return None
+        if message.get("status") not in (None, 2000):
+            return None
+        body = message.get("msg")
+        if not isinstance(body, dict):
+            return None
+        for key in ("result", "profile"):
+            if isinstance(body.get(key), dict):
+                body = body[key]
+        identifiers = (body.get("user_id"), body.get("id"), body.get("balance_id"))
+        if not any(
+            not isinstance(value, bool)
+            and str(value).isascii()
+            and str(value).isdecimal()
+            and int(str(value)) > 0
+            for value in identifiers
+        ):
+            return None
+        try:
+            return Profile.from_raw(body)
+        except (ValueError, TypeError, OverflowError, OSError):
+            return None
+
+    @staticmethod
+    def _parse_balance_response(message: dict[str, Any]) -> list[Balance]:
+        if message.get("name") not in {"balances", "get-balances"}:
+            return []
+        if message.get("status") not in (None, 2000):
+            return []
+        body = message.get("msg")
+        if isinstance(body, dict):
+            body = body.get("result") if "result" in body else body.get("balances")
+        if not isinstance(body, list) or not body:
+            return []
+        parsed: list[Balance] = []
+        for item in body:
+            if not isinstance(item, dict):
+                return []
+            try:
+                parsed.append(Balance.from_raw(item))
+            except (ValueError, TypeError, KeyError, OverflowError):
+                return []
+        return parsed
 
     async def async_refresh_account_state(self, timeout_seconds: float = 5.0) -> bool:
-        """Retrieve fresh profile and balances from broker.
-
-        Returns True if fresh balances were successfully received and parsed.
-        """
+        """Require a fresh correlated balance response and a valid session profile."""
+        self._last_refresh_failure = None
+        self._last_refresh_stage = "PROFILE_FETCH"
         if not self._ws or self._closed:
+            self._last_refresh_failure = "WS_CONNECTION_CLOSED"
             return False
-
         loop = asyncio.get_running_loop()
         prof_req_id = f"obs_prof_{self._request_counter}"
         bal_req_id = f"obs_bal_{self._request_counter}"
         self._request_counter += 1
-
-        prof_fut = loop.create_future()
-        bal_fut = loop.create_future()
+        prof_fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        bal_fut: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending_requests[prof_req_id] = prof_fut
         self._pending_requests[bal_req_id] = bal_fut
-
-        revision = self._balance_revision
+        deadline = loop.time() + timeout_seconds
         try:
             await self._ws.send(
                 json.dumps({
@@ -536,6 +678,7 @@ class PassivePracticeObserver:
                     "request_id": prof_req_id,
                 })
             )
+            self._last_refresh_stage = "BALANCES_FETCH"
             await self._ws.send(
                 json.dumps({
                     "name": "sendMessage",
@@ -543,24 +686,54 @@ class PassivePracticeObserver:
                     "request_id": bal_req_id,
                 })
             )
-            # bal_fut is the essential one for balance verification
-            await asyncio.wait_for(asyncio.gather(prof_fut, bal_fut), timeout=timeout_seconds)
-            balance_response = bal_fut.result()
-            return (
-                self._balance_revision > revision
-                and balance_response.get("name") in {"balances", "get-balances"}
-                and balance_response.get("status") in (None, 2000)
+            try:
+                balance_response = await asyncio.wait_for(
+                    bal_fut, timeout=max(0, deadline - loop.time())
+                )
+            except TimeoutError:
+                if self._profile is not None and not self._history_dispatched:
+                    self._last_successful_stage = "PROFILE_FETCH"
+                self._last_refresh_failure = "BALANCES_FETCH_FAILED"
+                return False
+            if balance_response.get("name") == "observer-connection-closed":
+                self._last_refresh_failure = "WS_CONNECTION_CLOSED"
+                return False
+            parsed = self._parse_balance_response(balance_response)
+            if not parsed:
+                self._last_refresh_failure = "BALANCES_FETCH_FAILED"
+                return False
+            # The profile may have arrived unsolicited on this authenticated connection.
+            # Unlike the balance snapshot, it is not used as proof of a fresh balance.
+            if self._profile is None:
+                self._last_refresh_stage = "PROFILE_FETCH"
+                try:
+                    await asyncio.wait_for(
+                        self._profile_event.wait(), timeout=max(0, deadline - loop.time())
+                    )
+                except TimeoutError:
+                    self._last_refresh_failure = "PROFILE_FETCH_FAILED"
+                    return False
+                if self._profile is None:
+                    self._last_refresh_failure = (
+                        "WS_CONNECTION_CLOSED" if self._connection_error else "PROFILE_FETCH_FAILED"
+                    )
+                    return False
+            if not self._history_dispatched:
+                self._last_successful_stage = "PROFILE_FETCH"
+            self._balances = parsed
+            self._practice_balance = next(
+                (b for b in parsed if b.type == AccountType.PRACTICE), None
             )
-        except TimeoutError:
-            self._pending_requests.pop(prof_req_id, None)
-            self._pending_requests.pop(bal_req_id, None)
-            logger.warning("Account state refresh timed out after %.1fs", timeout_seconds)
+            self._real_balance = next((b for b in parsed if b.type == AccountType.REAL), None)
+            return True
+        except (ConnectionClosed, OSError):
+            self._last_refresh_failure = "WS_CONNECTION_CLOSED"
             return False
-        except (ConnectionClosed, asyncio.CancelledError, OSError) as exc:
-            self._pending_requests.pop(prof_req_id, None)
-            self._pending_requests.pop(bal_req_id, None)
-            logger.warning("Account state refresh failed: %s", exc)
-            return False
+        finally:
+            for req_id, future in ((prof_req_id, prof_fut), (bal_req_id, bal_fut)):
+                self._pending_requests.pop(req_id, None)
+                if not future.done():
+                    future.cancel()
 
     async def async_probe_connection_and_subscriptions(
         self,
@@ -626,6 +799,16 @@ class PassivePracticeObserver:
             logger.warning("Observer connection error")
         except asyncio.CancelledError:
             pass
+        except Exception:  # noqa: BLE001 - do not log broker or transport payloads
+            self._connection_error = "CONNECTION_ERROR"
+            logger.warning("Observer listener terminated unexpectedly")
+        finally:
+            if not self._closed:
+                self._connection_error = self._connection_error or "CONNECTION_CLOSED"
+                self._profile_event.set()
+                for future in self._pending_requests.values():
+                    if not future.done():
+                        future.set_result({"name": "observer-connection-closed"})
 
     def _handle_incoming_frame(self, message: dict[str, Any]) -> None:
         """Process incoming wire frame for position, settlement, or balance updates."""
@@ -664,6 +847,11 @@ class PassivePracticeObserver:
         elif name not in known and not req_id:
             self._unknown_count += 1
 
+        if self._history_request_id is not None:
+            if name == "options" or req_id == self._history_request_id:
+                self._history_response_arrived = True
+            if req_id == self._history_request_id:
+                self._history_response_correlated = True
         # Match pending request
         if req_id and req_id in self._pending_requests:
             fut = self._pending_requests.pop(req_id)
@@ -674,49 +862,28 @@ class PassivePracticeObserver:
         if (
             self._auth_future
             and not self._auth_future.done()
-            and (name == "authenticated" or name in {"profile", "get-profile"})
+            and name == "authenticated"
+            and (not req_id or req_id in self._pending_requests)
         ):
             self._auth_future.set_result(message)
 
-        # Handle profile frame
+        # Parse session profile and balance pushes without retaining malformed payloads.
         if name in {"profile", "get-profile"}:
-            raw_msg = message.get("msg")
-            prof_dict = raw_msg if isinstance(raw_msg, dict) else message
-            if "result" in prof_dict and isinstance(prof_dict["result"], dict):
-                prof_dict = prof_dict["result"]
-            with contextlib.suppress(Exception):
-                self._profile = Profile.from_raw(prof_dict)
-
-        # Handle balances frame
+            profile = self._parse_profile_response(message)
+            if profile is not None:
+                self._profile = profile
+                self._profile_event.set()
         if name in {"balances", "get-balances"}:
-            raw_msg = message.get("msg")
-            balances_list: list[dict[str, Any]] = []
-            if isinstance(raw_msg, list):
-                balances_list = raw_msg
-            elif isinstance(raw_msg, dict) and "result" in raw_msg:
-                balances_list = raw_msg["result"] if isinstance(raw_msg["result"], list) else []
-            elif isinstance(raw_msg, dict) and "balances" in raw_msg:
-                balances_list = raw_msg["balances"] if isinstance(raw_msg["balances"], list) else []
-            if balances_list:
-                parsed_bals: list[Balance] = []
-                for item in balances_list:
-                    with contextlib.suppress(Exception):
-                        parsed_bals.append(Balance.from_raw(item))
-                if parsed_bals:
-                    self._balance_revision += 1
-                    self._balances = parsed_bals
-                    self._practice_balance = next(
-                        (
-                            b
-                            for b in parsed_bals
-                            if b.type == AccountType.PRACTICE and b.is_practice
-                        ),
-                        None,
-                    )
-                    self._real_balance = next(
-                        (b for b in parsed_bals if b.type == AccountType.REAL),
-                        None,
-                    )
+            parsed_bals = self._parse_balance_response(message)
+            if parsed_bals:
+                self._balance_revision += 1
+                self._balances = parsed_bals
+                self._practice_balance = next(
+                    (b for b in parsed_bals if b.type == AccountType.PRACTICE), None
+                )
+                self._real_balance = next(
+                    (b for b in parsed_bals if b.type == AccountType.REAL), None
+                )
 
         # Handle position opening (option-opened, socket-option-opened, portfolio.position-changed)
         if name in {"option-opened", "socket-option-opened"}:

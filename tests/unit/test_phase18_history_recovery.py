@@ -96,6 +96,8 @@ def test_invalid_history_is_not_not_found() -> None:
 @pytest.mark.asyncio
 async def test_query_only_get_options_and_snapshots() -> None:
     obs = PassivePracticeObserver(ssid="fake")
+    obs._authenticated = True
+    obs._practice_identity_established = True
     practice = Balance(id=101, type=AccountType.PRACTICE, amount=9000, currency="USD")
     real = Balance(id=102, type=AccountType.REAL, amount=0, currency="USD")
     obs._practice_balance = practice
@@ -235,6 +237,8 @@ async def test_real_mutation_even_when_balance_returns_to_baseline() -> None:
 @pytest.mark.asyncio
 async def test_history_timeout_is_not_not_found_and_does_not_retry() -> None:
     obs = PassivePracticeObserver(ssid="fake")
+    obs._authenticated = True
+    obs._practice_identity_established = True
     obs._practice_balance = Balance(id="101", type=AccountType.PRACTICE, amount=10, currency="USD")
     sent: list[dict[str, Any]] = []
 

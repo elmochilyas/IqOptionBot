@@ -2539,10 +2539,9 @@ def practice_history_command(
     try:
         result = asyncio.run(run())
     except Exception as exc:
-        # Broker payloads and credentials must not be echoed in exception text.
-        console.print(
-            f"[red]History query failed ({type(exc).__name__}); history unverified.[/red]"
-        )
+        # Never display broker exception text, account data, or raw frames.
+        console.print("[red]Read-only history query failed; history is unverified.[/red]")
+        console.print_json(json.dumps(observer.failure_diagnostics()))
         raise typer.Exit(code=1) from exc
     console.print_json(json.dumps(result))
     if record:

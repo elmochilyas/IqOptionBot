@@ -137,15 +137,17 @@ def reconcile_history(
     candidates: dict[str, dict[str, Any]] = {}
     seen: dict[str, dict[str, Any]] = {}
     possible: dict[str, dict[str, Any]] = {}
+    missing_id: list[dict[str, Any]] = []
     conflicting: set[str] = set()
     for row in rows:
         item = normalize_history_row(row)
         ident = item["ticket_id"]
-        if not ident or (ticket_id is not None and ident != ticket_id):
+        if ident and ticket_id is not None and ident != ticket_id:
             continue
-        if ident in seen and seen[ident] != item:
-            conflicting.add(ident)
-        seen[ident] = item
+        if ident:
+            if ident in seen and seen[ident] != item:
+                conflicting.add(ident)
+            seen[ident] = item
         opened = item["opened_at_utc"]
         # Keep incomplete but otherwise plausible records as explicitly unverified hints.
         if (
@@ -158,30 +160,40 @@ def reconcile_history(
             or item["product_type"] not in (None, "binary-option", "turbo-option")
         ):
             continue
+        if not ident:
+            missing_id.append(item)
+            continue
         if (
             item["symbol"] is None
             or item["stake"] is None
             or opened is None
             or item["product_type"] is None
+            or item["direction"] is None
+            or item["expires_at_utc"] is None
+            or item["status"] is None
         ):
             possible[ident] = item
             continue
         candidates[ident] = item
     entries = list(candidates.values())
+    relevant_conflicts = conflicting.intersection(candidates.keys() | possible.keys())
     result: dict[str, Any] = {
-        "history_status": "HISTORY_CONFIRMED",
+        "history_status": "HISTORY_UNVERIFIED",
+        "response_status": "HISTORY_RESPONSE_RECEIVED",
         "position_status": "POSITION_UNCONFIRMED",
         "wallet_status": "ROUTING_UNVERIFIED",
         "settlement_status": "SETTLEMENT_UNCONFIRMED",
         "candidates": entries,
         "candidate_count": len(entries),
-        "incomplete_candidates": list(possible.values()),
-        "conflicting_ticket_count": len(conflicting),
+        "incomplete_candidates": [*possible.values(), *missing_id],
+        "conflicting_ticket_count": len(relevant_conflicts),
         "query_limit_may_truncate_history": True,
     }
-    if not entries:
-        result["position_status"] = "INCOMPLETE_CANDIDATES" if possible else "HISTORY_NOT_FOUND"
-    elif len(entries) == 1 and not conflicting and not possible:
+    if not entries and not possible and not missing_id:
+        result["history_status"] = "HISTORY_NOT_FOUND"
+        result["position_status"] = "HISTORY_NOT_FOUND"
+    elif len(entries) == 1 and not relevant_conflicts and not possible and not missing_id:
+        result["history_status"] = "HISTORY_CONFIRMED"
         item = entries[0]
         result["position_status"] = "POSITION_CONFIRMED"
         if item["user_balance_id"] == practice_id:
@@ -197,8 +209,11 @@ def reconcile_history(
             "draw",
         }:
             result["settlement_status"] = "SETTLEMENT_CONFIRMED"
-    else:
+    elif len(entries) > 1 or relevant_conflicts or (entries and (possible or missing_id)):
+        result["history_status"] = "HISTORY_AMBIGUOUS"
         result["position_status"] = "MULTIPLE_OR_CONFLICTING_CANDIDATES"
+    else:
+        result["position_status"] = "INCOMPLETE_CANDIDATES"
     return result
 
 
@@ -221,15 +236,22 @@ async def recover_history(
     practice = observer.practice_balance
     real = observer.real_balance
     response = await observer.async_get_options_history(limit=limit, timeout_seconds=timeout)
-    result = reconcile_history(
-        response,
-        asset=asset,
-        stake=stake,
-        start=start,
-        end=end,
-        practice_id=str(practice.id),
-        ticket_id=ticket_id,
-    )
+    try:
+        result = reconcile_history(
+            response,
+            asset=asset,
+            stake=stake,
+            start=start,
+            end=end,
+            practice_id=str(practice.id),
+            ticket_id=ticket_id,
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        observer.mark_history_response_invalid()
+        from iqoption_research.execution.practice_observer import ObserverStageError
+
+        raise ObserverStageError("HISTORY_PARSING", "HISTORY_RESPONSE_INVALID") from exc
+    observer.mark_history_reconciled()
     fresh = await observer.async_refresh_account_state()
     current_practice = observer.practice_balance if fresh else None
     if current_practice and str(current_practice.id) != str(practice.id):

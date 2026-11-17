@@ -19,7 +19,7 @@ Keep three kinds of claim strictly separate:
 - Per-record wallet identity. A Practice-scoped history request proves only the request scope, never the wallet of an individual returned record.
 - Settlement/payout semantics for Blitz. Classic settlement requires an explicit recognized outcome together with payout and realized profit; partial fields remain `CLOSED`, not `SETTLED`.
 - History pagination and retention. Every reconciliation result is marked `history_may_be_truncated`; a bounded response is not a complete account history.
-- Active-wallet authority. `ACTIVE_PRACTICE_CONFIRMED` requires the profile's reported active balance id to match the discovered Practice wallet. If the profile omits it, the status is `ACTIVE_PRACTICE_UNVERIFIED`.
+- Active-wallet authority. `ACTIVE_PRACTICE_CONFIRMED` requires a fresh, correlated profile whose reported active balance id matches the discovered Practice wallet. `ACTIVE_REAL_OR_OTHER` is preserved only when the profile is correlated, its active-id aliases agree, the id matches the discovered REAL wallet, and no balance type or active flag contradicts it. Any ambiguity (conflicting or invalid aliases, uncorrelated/earlier-frame profile, type-vs-id mismatch, or flag conflict) is reported as `ACTIVE_PRACTICE_UNVERIFIED`. The selected broker account is never changed.
 
 ## Live validation runbook
 
@@ -33,6 +33,7 @@ python -m iqoption_research.cli.main practice-watch --live --asset EURUSD --seco
 - Credentials come from `IQOPTION_EMAIL` / `IQOPTION_PASSWORD` or the interactive hidden prompt. They are never logged or written to the report.
 - `--asset` is restricted to `EURUSD`, `EURUSD-OTC`, and `EURUSD_OP`. Use `EURUSD` or `EURUSD-OTC` when live event delivery must be demonstrated. `EURUSD_OP` can reconcile history but can never produce live delivery verification because Blitz live events are unsupported.
 - `--seconds` is bounded to 10–3600; `--history-limit` to 1–1000; `--reconnect-limit` to 0–5.
+- `--active-account-diagnostics` is optional and off by default. It adds a bounded `active_account_diagnostics` block of fixed-vocabulary classifications for a mismatched active account: active-id alias agreement, profile correlation/freshness, profile balance type, active-id relation to the discovered wallets, explicit balance active/default flags, and endpoint consistency. It emits no wallet ids, balances, credentials, or raw responses and sends no additional broker messages.
 - The command connects, verifies the authenticated session and Practice wallet, subscribes to read-only portfolio topics, observes for the bounded window, reconciles history on gaps/reconnects and at the end, and prints one sanitized JSON report.
 
 The command never asks the operator to place a trade. Any manual trade you want observed must be placed separately in the official IQ Option interface during the observation window. If no Practice event arrives, the report says `LIVE_EVENT_DELIVERY_UNVERIFIED` and the command exits non-zero; it never fabricates success.
@@ -56,6 +57,7 @@ The JSON report contains classifications and bounded counts only. It contains no
 | `asset`, `observation_window` | Requested instrument and bounded timing/reconnect configuration. |
 | `event_delivery`, `live_validation_conclusion` | `LIVE_POSITION_EVENT_OBSERVED` or `LIVE_EVENT_DELIVERY_UNVERIFIED`. |
 | `websocket_authentication`, `practice_wallet`, `practice_account_active` | Session, wallet, and active-account verification states. |
+| `active_account_diagnostics` | Optional (opt-in). Fixed-vocabulary active-account evidence classifications; never ids, amounts, credentials, or raw responses. |
 | `event_counts` | Relevant, malformed, filtered, verified, duplicate, out-of-order, missing-open, balance-change, gap-detected, and gap-omitted counts. |
 | `position_count`, `position_lifecycle_counts`, `position_samples` | Bounded position accounting (samples capped at 20, positions at 512). |
 | `position_samples[].wallet_status`, `wallet_evidence` | Per-record Practice attribution and its evidence source (`LIVE_PER_RECORD`, `HISTORY_PER_RECORD`, `LIVE_AND_HISTORY_PER_RECORD`, or `NONE`). |

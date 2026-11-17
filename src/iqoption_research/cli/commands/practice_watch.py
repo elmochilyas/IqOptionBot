@@ -32,6 +32,11 @@ def practice_watch_command(
     reconnect_limit: int = typer.Option(
         3, "--reconnect-limit", min=0, max=5, help="Bounded reconnection attempts."
     ),
+    active_account_diagnostics: bool = typer.Option(
+        False,
+        "--active-account-diagnostics",
+        help="Add sanitized active-account evidence classifications (no ids or balances).",
+    ),
 ) -> None:
     """Observe existing Practice activity read-only and reconcile broker history.
 
@@ -68,6 +73,7 @@ def practice_watch_command(
                 seconds=seconds,
                 history_limit=history_limit,
                 reconnect_limit=reconnect_limit,
+                active_account_diagnostics=active_account_diagnostics,
             )
         )
     except KeyboardInterrupt:

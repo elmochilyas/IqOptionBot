@@ -455,6 +455,11 @@ def test_active_practice_wallet_classification() -> None:
         def __init__(self, raw: dict[str, Any] | None, practice: Balance | None) -> None:
             self.profile = Profile.from_raw({"user_id": 1, **raw}) if raw is not None else None
             self.practice_balance = practice
+            self.real_balance = Balance(str(REAL), AccountType.REAL, 100, "USD")
+            self.balances = [self.real_balance] + ([practice] if practice is not None else [])
+
+        def profile_verification_diagnostics(self) -> dict[str, str]:
+            return {"profile_outcome": "PROFILE_VERIFIED"}
 
     practice = Balance(str(PRACTICE), AccountType.PRACTICE, 100, "USD")
     classify = observation._active_practice_status
@@ -622,3 +627,40 @@ def test_cli_rejects_assets_outside_allowlist(monkeypatch: pytest.MonkeyPatch) -
     result = CliRunner().invoke(app, ["practice-watch", "--live", "--asset", "BTCUSD"])
     assert result.exit_code != 0
     assert "EURUSD" in result.output
+
+
+@pytest.mark.asyncio
+async def test_observe_practice_active_account_diagnostics_are_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = ScriptedSocket(options=history(), acknowledgements=False)
+    report = await observe_practice(
+        factory_for(monkeypatch, socket),
+        asset="EURUSD",
+        seconds=0.3,
+        reconnect_limit=0,
+        active_account_diagnostics=True,
+    )
+    diagnostics = report["active_account_diagnostics"]
+    assert diagnostics["practice_account_active"] == report["practice_account_active"]
+    assert set(diagnostics) >= {
+        "profile_source",
+        "active_id_alias",
+        "profile_balance_type",
+        "active_id_relation",
+        "explicit_active_attribution",
+        "default_attribution",
+        "endpoint_consistency",
+        "classification_reason",
+    }
+    serialized = json.dumps(report)
+    for private in (str(TICKET), str(PORTFOLIO), str(PRACTICE), str(REAL)):
+        assert private not in serialized
+
+    plain = await observe_practice(
+        factory_for(monkeypatch, ScriptedSocket(options=history(), acknowledgements=False)),
+        asset="EURUSD",
+        seconds=0.3,
+        reconnect_limit=0,
+    )
+    assert "active_account_diagnostics" not in plain

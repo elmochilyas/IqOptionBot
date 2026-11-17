@@ -12,6 +12,7 @@ Provides:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -33,6 +34,7 @@ from iqoption_research.execution.safety import (
     PracticeSafetyVerdict,
 )
 from iqoption_research.models.account import AccountType, Balance, Profile
+from iqoption_research.models.market import Candle, CandleSize
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,25 @@ logger = logging.getLogger(__name__)
 MIN_PRACTICE_STAKE: float = 1.00
 MAX_PRACTICE_TEST_STAKE: float = 100.00
 VALID_BINARY_EXPIRATION_DURATIONS: tuple[int, ...] = (60, 120, 180, 240, 300)
+
+
+def compute_binary_expiry(server_timestamp: float, duration_minutes: int = 1) -> int:
+    """Calculate the valid broker expiration timestamp (epoch seconds) for Binary/Turbo options.
+
+    IQ Option rules for Turbo options:
+    - Expirations align strictly to full minute boundaries (divisible by 60).
+    - If remaining seconds in the current minute candle are >= 30 seconds (now_sec <= 30),
+      the expiration is the end of the current candle: start_of_minute + 60 * duration_minutes.
+    - If remaining seconds in the current candle are < 30 seconds (now_sec > 30), the purchase
+      deadline for the current candle has elapsed; the expiration shifts to the subsequent candle:
+      start_of_minute + 60 * (duration_minutes + 1).
+    """
+    ts = int(server_timestamp)
+    now_second = ts % 60
+    start_of_minute = ts - now_second
+    if now_second > 30:
+        return start_of_minute + 60 * (duration_minutes + 1)
+    return start_of_minute + 60 * duration_minutes
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +464,7 @@ class MockBrokerPracticeTransport:
         simulate_transport_error: bool = False,
         malformed_response: bool = False,
         initial_active_balance_id: str | None = "200",
+        active_balance_id: str | None = None,
         practice_balance_id: str = "101",
         virtual_amount: float = 10000.0,
     ) -> None:
@@ -452,12 +474,25 @@ class MockBrokerPracticeTransport:
         self.simulate_timeout = simulate_timeout
         self.simulate_transport_error = simulate_transport_error
         self.malformed_response = malformed_response
-        self.active_balance_id: str | None = initial_active_balance_id
+        self.active_balance_id: str | None = (
+            active_balance_id if active_balance_id is not None else initial_active_balance_id
+        )
         self.practice_balance_id = practice_balance_id
         self.virtual_amount = virtual_amount
-        self._session_practice_selected: bool = False
+        self._session_practice_selected: bool = (
+            active_balance_id is not None and active_balance_id == practice_balance_id
+        )
         self._session_id: str = "mock_sess_101"
+        self._submitted_order_count: int = 0
         self.dispatched_frames: list[dict[str, Any]] = []
+
+    @property
+    def is_connected(self) -> bool:
+        return self.active_balance_id is not None
+
+    @property
+    def server_time(self) -> float:
+        return time.time()
 
     @property
     def is_practice_verified(self) -> bool:
@@ -468,6 +503,61 @@ class MockBrokerPracticeTransport:
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    @property
+    def balances(self) -> list[Balance]:
+        return [
+            Balance(
+                id=self.practice_balance_id,
+                type=AccountType.PRACTICE,
+                amount=self.virtual_amount,
+                currency="USD",
+                is_active=(self.active_balance_id == self.practice_balance_id),
+            ),
+            Balance(
+                id="200",
+                type=AccountType.REAL,
+                amount=50.0,
+                currency="USD",
+                is_active=(self.active_balance_id == "200"),
+            ),
+        ]
+
+    @property
+    def profile(self) -> Profile | None:
+        bal_int = (
+            int(self.active_balance_id)
+            if self.active_balance_id and self.active_balance_id.isdigit()
+            else 101
+        )
+        return Profile.from_raw({
+            "user_id": 999123,
+            "balance_id": bal_int,
+        })
+
+    def get_live_candle(self, symbol: str = "EURUSD", size: int = 60) -> Candle:
+        """Return a simulated recent candle for offline testing."""
+        now_ts = int(time.time())
+        from_ts = now_ts - size
+        return Candle(
+            active_id=1,
+            symbol=symbol.upper(),
+            size=CandleSize.MIN_1,
+            from_ts=from_ts,
+            to_ts=now_ts,
+            at_ts=now_ts * 1_000_000_000,
+            open=1.0850,
+            high=1.0855,
+            low=1.0848,
+            close=1.0852,
+            volume=100,
+            bid=1.0852,
+            ask=1.0852,
+        )
+
+    def refresh_account_state(self) -> None:
+        """Simulate synchronous account refresh."""
+        pass
 
     def select_practice_balance(self, *, operator_authorized: bool = False) -> Balance:
         """Simulate manual operator-authorized practice session balance selection."""
@@ -517,6 +607,15 @@ class MockBrokerPracticeTransport:
 
     def send_order_frame(self, frame: dict[str, Any]) -> dict[str, Any]:
         """Simulate broker frame dispatch."""
+        msg_name = frame.get("msg", {}).get("name")
+        if msg_name == "binary-options.open-option":
+            if self._submitted_order_count >= 1:
+                raise RuntimeError(
+                    "Single test order invariant violated: only 1 live Practice order may be "
+                    "submitted in this session."
+                )
+            self._submitted_order_count += 1
+
         self.dispatched_frames.append(frame)
 
         if self.simulate_timeout:
@@ -527,6 +626,15 @@ class MockBrokerPracticeTransport:
 
         if self.malformed_response:
             return {"corrupt": True, "unexpected_data": [1, 2, 3]}
+
+        if msg_name == "binary-options.open-option" and self._session_practice_selected:
+            msg_body = frame.get("msg", {}).get("body", {})
+            order_balance_id = str(msg_body.get("user_balance_id", "")).strip()
+            if self.active_balance_id and order_balance_id != str(self.active_balance_id).strip():
+                raise PracticeAuthorizationError(
+                    f"Order user_balance_id ({order_balance_id}) does not match verified "
+                    f"Practice balance ({self.active_balance_id})."
+                )
 
         if self.should_succeed:
             return {

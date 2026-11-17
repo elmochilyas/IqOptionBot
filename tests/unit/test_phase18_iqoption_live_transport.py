@@ -113,6 +113,31 @@ class MockWebSocket:
                     },
                 })
 
+            # Reactive response for get-candles
+            if msg_name == "get-candles":
+                req_id = parsed.get("request_id", "candle_default")
+                now_s = int(time.time())
+                self.inject_message({
+                    "name": "candles",
+                    "request_id": req_id,
+                    "msg": {
+                        "active_id": 1,
+                        "candles": [
+                            {
+                                "from": now_s - 60,
+                                "to": now_s,
+                                "open": 1.0850,
+                                "close": 1.0855,
+                                "min": 1.0848,
+                                "max": 1.0860,
+                                "volume": 120,
+                                "bid": 1.0854,
+                                "ask": 1.0856,
+                            }
+                        ],
+                    },
+                })
+
     def inject_message(self, message: dict[str, Any] | str) -> None:
         text = json.dumps(message) if isinstance(message, dict) else message
         q = self._ensure_queue()

@@ -52,6 +52,7 @@ from iqoption_research.execution.safety import (
     PracticeSafetyVerdict,
 )
 from iqoption_research.models.account import AccountType, Balance, Profile
+from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.security import (
     Credentials,
     create_tls_context,
@@ -130,6 +131,9 @@ class IQOptionLivePracticeTransport:
         self._authenticated_ok: bool = False
         self._closed: bool = False
         self._is_running_thread: bool = False
+        self._submitted_order_count: int = 0
+        self._server_time_sec: float | None = None
+        self._server_time_synced_at: float | None = None
 
     def __repr__(self) -> str:
         masked_ssid = "***" if self._ssid else "None"
@@ -146,6 +150,23 @@ class IQOptionLivePracticeTransport:
     @property
     def is_authenticated(self) -> bool:
         return self._authenticated_ok
+
+    @property
+    def is_connected(self) -> bool:
+        """True only if WebSocket connection is open and active."""
+        return self._ws is not None and not self._closed
+
+    @property
+    def server_time(self) -> float:
+        """Estimated current broker server time in epoch seconds."""
+        if self._server_time_sec is not None and self._server_time_synced_at is not None:
+            return self._server_time_sec + (time.monotonic() - self._server_time_synced_at)
+        return time.time()
+
+    @property
+    def submitted_order_count(self) -> int:
+        """Number of orders submitted through this transport in the current session."""
+        return self._submitted_order_count
 
     @property
     def profile(self) -> Profile | None:
@@ -350,7 +371,10 @@ class IQOptionLivePracticeTransport:
         try:
             await self._ws.send(json.dumps(change_bal_frame))
             try:
-                resp = await asyncio.wait_for(future, timeout=self.config.request_timeout)
+                # IQ Option change_balance does not echo client request_id.
+                # Allow a brief 0.5s window for immediate error/rejection frames before
+                # querying fresh authoritative broker profile.
+                resp = await asyncio.wait_for(future, timeout=0.5)
                 if isinstance(resp, dict):
                     msg_body = resp.get("msg")
                     if resp.get("name") in {"error", "reject"} or (
@@ -361,14 +385,26 @@ class IQOptionLivePracticeTransport:
                         )
             except TimeoutError:
                 logger.info(
-                    "Explicit change_balance request_id not acknowledged directly; "
-                    "refreshing authoritative account state to verify mutation."
+                    "Explicit change_balance frame transmitted (asynchronous broker state change; "
+                    "no direct request_id echo expected). Refreshing fresh broker profile."
                 )
         finally:
             self._pending_requests.pop(req_id, None)
 
         # Refresh authoritative state from broker
         await self.async_refresh_account_state()
+
+        # Authoritative broker response verification:
+        # Broker profile must reflect the selected Practice balance ID
+        fresh_prof_bal_id = (
+            str(self._profile.raw.get("balance_id", "")).strip() if self._profile else ""
+        )
+        if fresh_prof_bal_id != str(practice_bal.id).strip():
+            raise PracticeAuthorizationError(
+                f"Broker account state refresh failed to confirm Practice balance selection. "
+                f"Fresh broker profile balance_id ({fresh_prof_bal_id}) does not match "
+                f"requested Practice balance ID ({practice_bal.id})."
+            )
 
         # Update active balance ID and session flag
         self._active_balance_id = str(practice_bal.id)
@@ -476,6 +512,12 @@ class IQOptionLivePracticeTransport:
             raise ConnectionError("Cannot send order frame: Practice transport is disconnected.")
 
         # Invariant checks
+        if self._submitted_order_count >= 1:
+            raise RuntimeError(
+                "Single test order invariant violated: only 1 live Practice order may be "
+                "submitted in this session."
+            )
+
         if self._active_ticket_id is not None:
             raise RuntimeError(
                 f"Single test order invariant violated: an unresolved Practice order "
@@ -492,6 +534,16 @@ class IQOptionLivePracticeTransport:
         # Active balance guard: ensure we are strictly on a verified Practice balance
         if not self._active_balance_id:
             raise PracticeAuthorizationError("No verified active Practice balance ID available.")
+
+        # Pre-transmission broker profile balance check
+        if self._profile is not None:
+            prof_bal_id = str(self._profile.raw.get("balance_id", "")).strip()
+            if prof_bal_id and prof_bal_id != str(self._active_balance_id).strip():
+                raise RealAccountExecutionBlockedError(
+                    f"CRITICAL SAFETY GUARD: Broker profile balance ({prof_bal_id}) does not match "
+                    f"verified active Practice balance ({self._active_balance_id}). "
+                    "Order transmission strictly prohibited fail-closed."
+                )
 
         matched_bal = next(
             (b for b in self._balances if str(b.id) == str(self._active_balance_id)),
@@ -524,6 +576,7 @@ class IQOptionLivePracticeTransport:
         self._pending_requests[request_id] = future
 
         try:
+            self._submitted_order_count += 1
             logger.info("Transmitting Binary Practice order frame (request_id=%s)", request_id)
             await self._ws.send(json.dumps(frame))
             resp = await asyncio.wait_for(future, timeout=self.config.request_timeout)
@@ -607,6 +660,78 @@ class IQOptionLivePracticeTransport:
             )
         return float(bal.amount)
 
+    async def async_get_live_candle(self, symbol: str = "EURUSD", size: int = 60) -> Candle:
+        """Fetch latest candle from broker to verify asset tradability and live pricing."""
+        if self._closed or self._ws is None:
+            raise ConnectionError("Cannot get live candle: Practice transport is disconnected.")
+
+        active_id = 1
+        req_id = f"candle_{next(self._request_counter)}"
+        now_ts = int(self.server_time)
+        frame = {
+            "name": "sendMessage",
+            "msg": {
+                "name": "get-candles",
+                "version": "2.0",
+                "body": {
+                    "active_id": active_id,
+                    "size": int(size),
+                    "to": now_ts,
+                    "count": 1,
+                },
+            },
+            "request_id": req_id,
+        }
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._pending_requests[req_id] = future
+
+        try:
+            logger.info(
+                "Requesting live candle for %s (active_id=%s, to=%s)",
+                symbol,
+                active_id,
+                now_ts,
+            )
+            await self._ws.send(json.dumps(frame))
+            resp = await asyncio.wait_for(future, timeout=self.config.request_timeout)
+        except TimeoutError as exc:
+            raise RequestTimeoutError(
+                f"Live candle fetch timed out after {self.config.request_timeout}s"
+            ) from exc
+        finally:
+            self._pending_requests.pop(req_id, None)
+
+        msg = resp.get("msg") if isinstance(resp.get("msg"), dict) else resp
+        raw_candles = msg.get("candles", []) if isinstance(msg, dict) else []
+        if not raw_candles:
+            raise ValueError(f"Broker returned no candle data for {symbol}.")
+
+        raw_c = raw_candles[-1]
+        close_price = float(raw_c.get("close", 0.0))
+        from_ts = int(raw_c.get("from", now_ts - size))
+        to_ts = int(raw_c.get("to", now_ts))
+        bid = float(raw_c.get("bid", close_price)) if raw_c.get("bid") is not None else close_price
+        ask = float(raw_c.get("ask", close_price)) if raw_c.get("ask") is not None else close_price
+
+        return Candle(
+            active_id=active_id,
+            symbol=symbol.upper(),
+            size=CandleSize.from_seconds(size),
+            from_ts=from_ts,
+            to_ts=to_ts,
+            at_ts=to_ts * 1_000_000_000,
+            open=float(raw_c.get("open", close_price)),
+            high=float(raw_c.get("max", raw_c.get("high", close_price))),
+            low=float(raw_c.get("min", raw_c.get("low", close_price))),
+            close=close_price,
+            volume=int(raw_c.get("volume", 0)),
+            bid=bid,
+            ask=ask,
+            raw=raw_c,
+        )
+
     async def async_close(self) -> None:
         """Cleanly close WebSocket connection and cancel listener tasks."""
         self._closed = True
@@ -614,6 +739,8 @@ class IQOptionLivePracticeTransport:
         self._active_balance_id = None
         self._verified_at = None
         self._session_id = None
+        self._submitted_order_count = 0
+        self._submitted_order_count = 0
 
         if self._receive_task is not None and not self._receive_task.done():
             self._receive_task.cancel()
@@ -702,14 +829,37 @@ class IQOptionLivePracticeTransport:
             self._handle_balances_frame(message)
             return
 
-        # 4. Correlated request matching
+        # 4. Time synchronization
+        if name == "timeSync":
+            raw_time = message.get("msg")
+            if isinstance(raw_time, (int, float)) and raw_time > 0:
+                val = float(raw_time)
+                if val >= 1e11:
+                    val /= 1000.0
+                self._server_time_sec = val
+                self._server_time_synced_at = time.monotonic()
+            return
+
+        # 5. Candles market data
+        if name in {"candles", "candle-generated"}:
+            if req_id and req_id in self._pending_requests:
+                fut = self._pending_requests[req_id]
+                if not fut.done():
+                    fut.set_result(message)
+                return
+            for pending_id, pending_fut in self._pending_requests.items():
+                if pending_id.startswith("candle_") and not pending_fut.done():
+                    pending_fut.set_result(message)
+                    return
+
+        # 6. Correlated request matching
         if req_id and req_id in self._pending_requests:
             fut = self._pending_requests[req_id]
             if not fut.done():
                 fut.set_result(message)
             return
 
-        # 5. Order Acknowledgement (option-opened)
+        # 7. Order Acknowledgement (option-opened)
         if name == "option-opened":
             # Match by request_id if present
             if req_id and req_id in self._pending_requests:
@@ -723,7 +873,7 @@ class IQOptionLivePracticeTransport:
                     pending_fut.set_result(message)
                     return
 
-        # 6. Order Rejection (option-rejected)
+        # 8. Order Rejection (option-rejected)
         if name in {"option-rejected", "error"}:
             if req_id and req_id in self._pending_requests:
                 fut = self._pending_requests[req_id]
@@ -841,6 +991,51 @@ class IQOptionLivePracticeTransport:
             self.close()
             raise conn_error[0]
 
+    def get_live_candle(self, symbol: str = "EURUSD", size: int = 60) -> Candle:
+        """Synchronously fetch the latest candle from broker."""
+        if self._is_running_thread and self._loop is not None and self._thread is not None:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.async_get_live_candle(symbol=symbol, size=size), self._loop
+            )
+            try:
+                return fut.result(timeout=self.config.request_timeout + 2.0)
+            except TimeoutError as exc:
+                raise TimeoutError(f"Synchronous candle fetch timeout: {exc}") from exc
+
+        try:
+            running_loop = asyncio.get_running_loop()
+            if running_loop.is_running():
+                raise RuntimeError(
+                    "Cannot call synchronous get_live_candle from an already running event loop. "
+                    "Use await transport.async_get_live_candle() instead."
+                )
+        except RuntimeError:
+            pass
+
+        return asyncio.run(self.async_get_live_candle(symbol=symbol, size=size))
+
+    def refresh_account_state(self) -> None:
+        """Synchronously refresh account profile and balances from broker."""
+        if self._is_running_thread and self._loop is not None and self._thread is not None:
+            fut = asyncio.run_coroutine_threadsafe(self.async_refresh_account_state(), self._loop)
+            try:
+                fut.result(timeout=self.config.request_timeout + 2.0)
+                return
+            except TimeoutError as exc:
+                raise TimeoutError(f"Synchronous refresh timeout: {exc}") from exc
+
+        try:
+            running_loop = asyncio.get_running_loop()
+            if running_loop.is_running():
+                raise RuntimeError(
+                    "Cannot call synchronous refresh_account_state from an already running "
+                    "event loop. Use await transport.async_refresh_account_state() instead."
+                )
+        except RuntimeError:
+            pass
+
+        asyncio.run(self.async_refresh_account_state())
+
     def send_order_frame(self, frame: dict[str, Any]) -> dict[str, Any]:
         """Synchronously dispatch an order frame to the broker via the transport."""
         if self._is_running_thread and self._loop is not None and self._thread is not None:
@@ -887,6 +1082,7 @@ class IQOptionLivePracticeTransport:
         self._active_balance_id = None
         self._verified_at = None
         self._session_id = None
+        self._submitted_order_count = 0
 
         if self._is_running_thread and self._loop is not None and self._thread is not None:
             if not self._loop.is_closed():

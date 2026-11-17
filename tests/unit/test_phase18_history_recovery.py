@@ -49,7 +49,11 @@ def response(*rows: dict[str, Any]) -> dict[str, Any]:
 
 
 def match(
-    message: dict[str, Any], *, asset: str = "EURUSD", diagnostics: dict[str, Any] | None = None
+    message: dict[str, Any],
+    *,
+    asset: str = "EURUSD",
+    ticket_id: str | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return reconcile_history(
         message,
@@ -58,6 +62,7 @@ def match(
         start=1794903900,
         end=1794904100,
         practice_id="101",
+        ticket_id=ticket_id,
         diagnostics=diagnostics,
     )
 
@@ -242,41 +247,144 @@ def test_closed_history_win_amount_uses_only_supported_gross_payout(
     assert result["candidates"][0]["realized_profit"] is None
 
 
-def test_live_row_shape_does_not_confirm_position_with_missing_evidence() -> None:
-    diagnostics: dict[str, Any] = {}
-    item = {
-        "active": "EURUSD-op",
+def blitz_row(**updates: Any) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "active": "EURUSD_OP",
         "active_id": 1861,
         "amount": 1000,
         "created": 1794904000,
         "expired": 1794904060,
         "id": [42],
-        "option_type": "blitz",
+        "option_type": "blitz-option",
         "win": "win",
         "win_amount": 1800,
     }
+    item.update(updates)
+    return item
+
+
+def test_observed_blitz_shape_matches_position_only() -> None:
+    diagnostics: dict[str, Any] = {}
+    item = blitz_row()
     assert match(response(item))["history_status"] == "HISTORY_NOT_FOUND"
     assert match(response(item), asset="EURUSD-OTC")["history_status"] == "HISTORY_NOT_FOUND"
     assert not InstrumentRegistry.is_supported("EURUSD-op")
     result = match(response(item), asset="EURUSD-op", diagnostics=diagnostics)
-    assert result["position_status"] == "INCOMPLETE_CANDIDATES"
+    assert result["history_status"] == "HISTORY_POSITION_MATCHED"
+    assert result["position_status"] == "POSITION_CONFIRMED"
     assert result["wallet_status"] == "ROUTING_UNVERIFIED"
     assert result["settlement_status"] == "SETTLEMENT_UNCONFIRMED"
-    assert result["incomplete_candidates"][0]["ticket_id"] == "42"
-    assert result["incomplete_candidates"][0]["symbol"] == "EURUSD_OP"
-    assert result["incomplete_candidates"][0]["product_type"] == "blitz-option"
-    assert result["incomplete_candidates"][0]["payout"] == 1800
+    assert result["incomplete_candidates"] == []
+    assert result["candidates"] == [
+        {
+            "ticket_id": "42",
+            "symbol": "EURUSD_OP",
+            "product_type": "blitz-option",
+            "direction": None,
+            "stake": 1000,
+            "opened_at_utc": 1794904000,
+            "expires_at_utc": 1794904060,
+            "status": "closed",
+            "result": "win",
+            "payout": None,
+            "realized_profit": None,
+            "user_balance_id": None,
+        }
+    ]
     assert diagnostics["record_samples"][0]["identity_field_categories"] == {
         "active": "EURUSD_OP",
         "active_id": "EURUSD_OP",
         "option_type": "blitz-option",
     }
-    complete = match(
-        response({**item, "direction": "call", "user_balance_id": 101}), asset="EURUSD-op"
+    assert diagnostics["record_samples"][0]["missing_normalized_fields"]["payout"] == (
+        "BLITZ_WIN_AMOUNT_SEMANTICS_UNVERIFIED"
     )
-    assert complete["position_status"] == "POSITION_CONFIRMED"
-    assert complete["wallet_status"] == "PRACTICE_WALLET_CONFIRMED"
-    assert complete["settlement_status"] == "SETTLEMENT_CONFIRMED"
+
+
+@pytest.mark.parametrize("ticket", [42, "42", [42], "0042"])
+def test_blitz_single_ticket_formats_agree_with_scalar_alias(ticket: Any) -> None:
+    result = match(
+        response(blitz_row(id=ticket, option_id=42)), asset="EURUSD_OP", ticket_id="0042"
+    )
+    assert result["candidates"][0]["ticket_id"] == "42"
+    assert result["history_status"] == "HISTORY_POSITION_MATCHED"
+
+
+@pytest.mark.parametrize("ticket", [[], [42, 43], ["42"], [True], [42.0], [0], {}, True, 42.0, "x"])
+def test_blitz_invalid_ticket_is_not_rescued_by_a_scalar_alias(ticket: Any) -> None:
+    result = match(response(blitz_row(id=ticket, option_id=42)), asset="EURUSD_OP")
+    assert result["position_status"] == "INCOMPLETE_CANDIDATES"
+    assert result["incomplete_candidates"][0]["ticket_id"] is None
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"option_id": 43},
+        {"active_id": 1},
+        {"active_id": 76},
+        {"option_type": None},
+        {"option_type_id": 3},
+        {"stake": 999},
+        {"open_time": 1794904090},
+        {"expired": None},
+        {"expired": 1794904000},
+        {"expire_at": 1794904080},
+        {"status": "open"},
+        {"direction": "put", "dir": "call"},
+        {"result": "loss"},
+        {"payout": 1800, "payout_amount": 1700},
+        {"realized_profit": 800, "pnl": 700},
+        {"balance_id": 101, "user_balance_id": 102},
+    ],
+)
+def test_blitz_incomplete_or_conflicting_evidence_blocks_a_position_match(
+    updates: dict[str, Any],
+) -> None:
+    result = match(response(blitz_row(**updates)), asset="EURUSD_OP")
+    assert result["position_status"] == "INCOMPLETE_CANDIDATES"
+    assert result["candidate_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"option_type": "turbo-option"},
+        {"amount": 999},
+        {"created": 1794903899},
+        {"active": "EURUSD", "active_id": 1},
+        {"active": "EURUSD-OTC", "active_id": 76},
+    ],
+)
+def test_blitz_search_rejects_explicit_criteria_mismatches(updates: dict[str, Any]) -> None:
+    result = match(response(blitz_row(**updates)), asset="EURUSD_OP")
+    assert result["history_status"] == "HISTORY_NOT_FOUND"
+
+
+@pytest.mark.parametrize(
+    "other",
+    [blitz_row(id=[43]), blitz_row(id="0042", amount=999), blitz_row(id=[42, 43])],
+)
+def test_blitz_ambiguous_or_conflicting_duplicate_candidates_block_match(
+    other: dict[str, Any],
+) -> None:
+    result = match(response(blitz_row(), other), asset="EURUSD_OP")
+    assert result["history_status"] == "HISTORY_AMBIGUOUS"
+
+
+def test_blitz_row_outside_closed_container_cannot_confirm_position() -> None:
+    message = {"name": "options", "status": 0, "msg": {"options": [blitz_row(id=42)]}}
+    result = match(message, asset="EURUSD_OP")
+    assert result["position_status"] == "INCOMPLETE_CANDIDATES"
+
+
+def test_blitz_wallet_and_settlement_require_independent_row_evidence() -> None:
+    item = blitz_row(balance_id=101, payout=1800)
+    partial = match(response(item), asset="EURUSD_OP")
+    assert partial["wallet_status"] == "PRACTICE_WALLET_CONFIRMED"
+    assert partial["settlement_status"] == "SETTLEMENT_UNCONFIRMED"
+    explicit = match(response({**item, "realized_profit": 800}), asset="EURUSD_OP")
+    assert explicit["settlement_status"] == "SETTLEMENT_CONFIRMED"
 
 
 def test_bounded_diagnostics_report_nested_structure_without_guessing_aliases() -> None:

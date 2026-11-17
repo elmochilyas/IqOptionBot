@@ -2493,7 +2493,9 @@ practice_observe = practice_observe_command
 
 def practice_history_command(
     live: bool = typer.Option(False, "--live", help="Connect to broker read-only."),
-    asset: str = typer.Option(..., "--asset", help="Exact asset: EURUSD, EURUSD-OTC or EURUSD-op."),
+    asset: str = typer.Option(
+        ..., "--asset", help="Exact asset: EURUSD, EURUSD-OTC or EURUSD_OP (Blitz history)."
+    ),
     stake: float = typer.Option(..., "--stake", help="Exact virtual trade stake."),
     start: str = typer.Option(..., "--start", help="Inclusive ISO-8601 start with UTC offset."),
     end: str = typer.Option(..., "--end", help="Inclusive ISO-8601 end with UTC offset."),

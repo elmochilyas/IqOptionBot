@@ -24,7 +24,6 @@ _POSITION_FIELDS = (
     "stake",
     "opened_at_utc",
     "product_type",
-    "direction",
     "expires_at_utc",
     "status",
 )
@@ -49,7 +48,8 @@ _PRODUCT_NAMES_MAP = {
     "blitz": "blitz-option",
     "blitz-option": "blitz-option",
 }
-_HISTORY_PRODUCTS = {"binary-option", "turbo-option", "blitz-option"}
+_CLASSIC_PRODUCTS = {"binary-option", "turbo-option"}
+_BLITZ_PRODUCT = "blitz-option"
 # The live history row and public active table distinguish this contract from 1 and 76.
 _HISTORY_OP_SYMBOL = "EURUSD_OP"
 _HISTORY_OP_ACTIVE_ID = 1861
@@ -60,6 +60,14 @@ _STATUSES = {"open", "closed", "settled", "expired"}
 _RESULTS = {"win", "loose", "lose", "loss", "equal", "draw"}
 _CONTAINER_STATES = {"closed_options": "closed", "open_options": "open"}
 _PAYOUT_FIELDS = ("payout", "payout_amount")
+_PROFIT_FIELDS = ("realized_profit", "net_profit", "pnl")
+_BLITZ_OPTIONAL_FIELDS = {
+    "direction": _DIRECTION_FIELDS,
+    "result": _RESULT_FIELDS,
+    "payout": _PAYOUT_FIELDS,
+    "realized_profit": _PROFIT_FIELDS,
+    "user_balance_id": _WALLET_FIELDS,
+}
 # Recognized for diagnostics, since these variants fall outside classic history matching.
 _OTHER_OPTION_NAMES = {"front.tu": "legacy-turbo-label"}
 _DIAGNOSTIC_RECORD_FIELDS = {
@@ -79,7 +87,7 @@ _DIAGNOSTIC_RECORD_FIELDS = {
     "status": (*_STATUS_FIELDS, "game_state"),
     "result": _RESULT_FIELDS,
     "payout": (*_PAYOUT_FIELDS, "win_amount", "profit_amount"),
-    "realized_profit": ("realized_profit", "net_profit", "pnl"),
+    "realized_profit": _PROFIT_FIELDS,
     "user_balance_id": (*_WALLET_FIELDS, "is_demo", "balance_type_id", "wallet_id"),
 }
 _DIAGNOSTIC_OBJECTS = ("active", "data", "details", "instrument", "option", "position", "result")
@@ -97,10 +105,6 @@ def _number(value: Any) -> float | None:
         return result if math.isfinite(result) else None
     except (TypeError, ValueError, OverflowError):
         return None
-
-
-def _first(row: dict[str, Any], *keys: str) -> Any:
-    return next((row[k] for k in keys if row.get(k) is not None), None)
 
 
 def _timestamp(value: Any) -> float | None:
@@ -131,7 +135,7 @@ def _enum(value: Any, allowed: set[str]) -> str | None:
     return key if key in allowed else None
 
 
-def _agreed(values: list[str | None]) -> str | None:
+def _agreed[T](values: list[T | None]) -> T | None:
     """Use an explicit value only when all supplied aliases agree."""
     return values[0] if values and len(set(values)) == 1 else None
 
@@ -173,17 +177,21 @@ def _symbol(row: dict[str, Any]) -> str | None:
     ])
 
 
+def _ticket_identifier(value: Any) -> str | None:
+    ident = _identifier(value)
+    return ident.lstrip("0") if ident is not None else None
+
+
 def _ticket_id(row: dict[str, Any], container: str | None) -> str | None:
     values = []
     for field in _TICKET_FIELDS:
         value = row.get(field)
         if value is None:
             continue
-        # The get_optioninfo_v2 consumer reads closed_options[i]["id"][0].
-        # A group with several entries cannot identify one individual trade.
+        # Only a singleton integer array in a closed record identifies one ticket.
         if field == "id" and container == "closed_options" and isinstance(value, list):
-            value = value[0] if len(value) == 1 else None
-        values.append(_identifier(value))
+            value = value[0] if len(value) == 1 and type(value[0]) is int else None
+        values.append(_ticket_identifier(value))
     return _agreed(values)
 
 
@@ -197,11 +205,11 @@ def _lifecycle(row: dict[str, Any], container: str | None) -> str | None:
     return status
 
 
-def _payout(row: dict[str, Any], *, closed_winner: bool) -> float | None:
+def _payout(row: dict[str, Any], *, classic_closed_winner: bool) -> float | None:
     values = [_number(row[key]) for key in _PAYOUT_FIELDS if row.get(key) is not None]
-    # The get_optioninfo_v2 consumer subtracts the stake from win_amount for a win,
-    # establishing that win_amount is the gross return, with the stake included.
-    if closed_winner and row.get("win_amount") is not None:
+    # The classic get_optioninfo_v2 consumer subtracts the stake from win_amount.
+    # Its interpretation does not establish the meaning of the Blitz field.
+    if classic_closed_winner and row.get("win_amount") is not None:
         values.append(_number(row["win_amount"]))
     if values and len(set(values)) == 1 and values[0] is not None and values[0] >= 0:
         return values[0]
@@ -216,9 +224,10 @@ def normalize_history_row(row: dict[str, Any], *, container: str | None = None) 
     product_id = row.get("option_type_id")
     if product_id is not None:
         products.append(_OPTION_TYPE_IDS.get(product_id) if type(product_id) is int else None)
-    stake = _number(_first(row, *_STAKE_FIELDS))
-    opened = _timestamp(_first(row, *_OPEN_FIELDS))
-    expires = _timestamp(_first(row, *_EXPIRY_FIELDS))
+    product = _agreed(products)
+    stake = _agreed([_number(row[key]) for key in _STAKE_FIELDS if row.get(key) is not None])
+    opened = _agreed([_timestamp(row[key]) for key in _OPEN_FIELDS if row.get(key) is not None])
+    expires = _agreed([_timestamp(row[key]) for key in _EXPIRY_FIELDS if row.get(key) is not None])
     if opened is not None and expires is not None and expires <= opened:
         expires = None
     status = _lifecycle(row, container)
@@ -226,7 +235,7 @@ def normalize_history_row(row: dict[str, Any], *, container: str | None = None) 
     return {
         "ticket_id": _ticket_id(row, container),
         "symbol": _symbol(row),
-        "product_type": _agreed(products),
+        "product_type": product,
         "direction": _enum_from_aliases(row, _DIRECTION_FIELDS, _DIRECTIONS),
         "stake": stake if stake is not None and stake > 0 else None,
         "opened_at_utc": opened,
@@ -235,13 +244,33 @@ def normalize_history_row(row: dict[str, Any], *, container: str | None = None) 
         "result": result,
         "payout": _payout(
             row,
-            closed_winner=container == "closed_options" and status is not None and result == "win",
+            classic_closed_winner=(
+                product in _CLASSIC_PRODUCTS
+                and container == "closed_options"
+                and status is not None
+                and result == "win"
+            ),
         ),
-        "realized_profit": _number(_first(row, "realized_profit", "net_profit", "pnl")),
+        "realized_profit": _agreed([
+            _number(row[key]) for key in _PROFIT_FIELDS if row.get(key) is not None
+        ]),
         "user_balance_id": _agreed([
             _identifier(row[key]) for key in _WALLET_FIELDS if row.get(key) is not None
         ]),
     }
+
+
+def _complete_position(row: dict[str, Any], item: dict[str, Any], container: str) -> bool:
+    if item["ticket_id"] is None or any(item[field] is None for field in _POSITION_FIELDS):
+        return False
+    if item["product_type"] != _BLITZ_PRODUCT:
+        return item["direction"] is not None
+    # The observed closed Blitz record omits direction and financial/wallet details.
+    # Supplied but invalid or conflicting evidence cannot stand in for an omission.
+    return container == "closed_options" and all(
+        item[field] is not None or all(row.get(key) is None for key in aliases)
+        for field, aliases in _BLITZ_OPTIONAL_FIELDS.items()
+    )
 
 
 def _history_container_summary(msg: dict[str, Any]) -> dict[str, Any]:
@@ -383,6 +412,13 @@ def _record_sample(path: str, row: dict[str, Any], item: dict[str, Any]) -> dict
     }
     if item["ticket_id"] is None and isinstance(row.get("id"), list) and len(row["id"]) > 1:
         missing["ticket_id"] = "MULTIPLE_TICKET_ENTRIES"
+    if (
+        item["product_type"] == _BLITZ_PRODUCT
+        and item["payout"] is None
+        and row.get("win_amount") is not None
+        and all(row.get(key) is None for key in _PAYOUT_FIELDS)
+    ):
+        missing["payout"] = "BLITZ_WIN_AMOUNT_SEMANTICS_UNVERIFIED"
     return {
         "path": path,
         **_field_shapes(row),
@@ -411,6 +447,8 @@ def reconcile_history(
     """Match only complete evidence; ambiguous or conflicting tickets are not confirmed."""
     rows = _extract_records(response, diagnostics=diagnostics)
     wanted = normalize_history_asset(asset)
+    products = {_BLITZ_PRODUCT} if wanted == _HISTORY_OP_SYMBOL else _CLASSIC_PRODUCTS
+    ticket_id = _ticket_identifier(ticket_id) or ticket_id
     candidates: dict[str, dict[str, Any]] = {}
     seen: dict[str, dict[str, Any]] = {}
     possible: dict[str, dict[str, Any]] = {}
@@ -422,7 +460,7 @@ def reconcile_history(
     for path, container, row in rows:
         item = normalize_history_row(row, container=container)
         ident = item["ticket_id"]
-        complete = ident is not None and all(item[key] is not None for key in _POSITION_FIELDS)
+        complete = _complete_position(row, item, container)
         if complete:
             parseable_count += 1
         if ident:
@@ -436,7 +474,7 @@ def reconcile_history(
             or item["symbol"] not in (None, wanted)
             or item["stake"] not in (None, stake)
             or (opened is not None and not start <= opened <= end)
-            or (item["product_type"] is not None and item["product_type"] not in _HISTORY_PRODUCTS)
+            or (item["product_type"] is not None and item["product_type"] not in products)
         )
         if diagnostics is not None:
             selected = other_samples if outside_search else samples
@@ -478,14 +516,19 @@ def reconcile_history(
         result["history_status"] = "HISTORY_NOT_FOUND"
         result["position_status"] = "HISTORY_NOT_FOUND"
     elif len(entries) == 1 and not relevant_conflicts and not possible and not missing_id:
-        result["history_status"] = "HISTORY_CONFIRMED"
         item = entries[0]
+        blitz = item["product_type"] == _BLITZ_PRODUCT
+        result["history_status"] = "HISTORY_POSITION_MATCHED" if blitz else "HISTORY_CONFIRMED"
         result["position_status"] = "POSITION_CONFIRMED"
         if item["user_balance_id"] == practice_id:
             result["wallet_status"] = "PRACTICE_WALLET_CONFIRMED"
         elif item["user_balance_id"] is not None:
             result["wallet_status"] = "WALLET_MISMATCH"
-        if item["status"] in {"closed", "settled", "expired"} and item["result"] is not None:
+        if (
+            item["status"] in {"closed", "settled", "expired"}
+            and item["result"] is not None
+            and (not blitz or (item["payout"] is not None and item["realized_profit"] is not None))
+        ):
             result["settlement_status"] = "SETTLEMENT_CONFIRMED"
     elif len(entries) > 1 or relevant_conflicts or (entries and (possible or missing_id)):
         result["history_status"] = "HISTORY_AMBIGUOUS"

@@ -369,13 +369,14 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(
                         "closed_options": [
                             {
                                 "id": [9944556677],
-                                "active": "EURUSD-op",
+                                "active": "EURUSD_OP",
                                 "active_id": 1861,
-                                "option_type": "blitz",
+                                "option_type": "blitz-option",
                                 "amount": 1000,
                                 "created": 1794907530,
                                 "expired": 1794907560,
-                                "user_balance_id": None,
+                                "win": "win",
+                                "win_amount": 198765,
                                 "option": {"token": "private-record-token"},
                             }
                         ],
@@ -424,15 +425,18 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(
     assert result.exit_code == 0, result.output
     assert '"profile_verification": "PROFILE_UNVERIFIED"' in result.output
     assert '"real_wallet_status": "UNVERIFIED"' in result.output
-    assert '"history_status": "HISTORY_UNVERIFIED"' in result.output
-    assert '"position_status": "INCOMPLETE_CANDIDATES"' in result.output
+    assert '"history_status": "HISTORY_POSITION_MATCHED"' in result.output
+    assert '"position_status": "POSITION_CONFIRMED"' in result.output
+    assert '"wallet_status": "ROUTING_UNVERIFIED"' in result.output
+    assert '"settlement_status": "SETTLEMENT_UNCONFIRMED"' in result.output
+    assert '"operator_reconciliation_required": true' in result.output
     assert '"start": "2026-11-17T09:25:00+00:00"' in result.output
     assert ('"record_samples"' in result.output) == diagnostics_enabled
     assert ("msg.closed_options[]" in result.output) == diagnostics_enabled
     assert ('"option_type": "blitz-option"' in result.output) == diagnostics_enabled
     assert not any(
         value in result.output
-        for value in ("9944556677", "private-record-token", "1794907530", "private-ssid")
+        for value in ("9944556677", "198765", "private-record-token", "1794907530", "private-ssid")
     )
     assert [f["msg"]["name"] for f in sockets[0].sent[1:]] == [
         "get-profile",

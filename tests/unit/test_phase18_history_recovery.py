@@ -20,6 +20,7 @@ from iqoption_research.execution.practice_observer import (
     PassivePracticeObserver,
     SubscriptionStatus,
 )
+from iqoption_research.market_data.instruments import InstrumentRegistry
 from iqoption_research.models.account import AccountType, Balance
 
 
@@ -47,10 +48,12 @@ def response(*rows: dict[str, Any]) -> dict[str, Any]:
     return {"name": "options", "msg": {"result": {"closed_options": list(rows)}}}
 
 
-def match(message: dict[str, Any], *, diagnostics: dict[str, Any] | None = None) -> dict[str, Any]:
+def match(
+    message: dict[str, Any], *, asset: str = "EURUSD", diagnostics: dict[str, Any] | None = None
+) -> dict[str, Any]:
     return reconcile_history(
         message,
-        asset="EURUSD",
+        asset=asset,
         stake=1000,
         start=1794903900,
         end=1794904100,
@@ -252,17 +255,28 @@ def test_live_row_shape_does_not_confirm_position_with_missing_evidence() -> Non
         "win": "win",
         "win_amount": 1800,
     }
-    result = match(response(item), diagnostics=diagnostics)
+    assert match(response(item))["history_status"] == "HISTORY_NOT_FOUND"
+    assert match(response(item), asset="EURUSD-OTC")["history_status"] == "HISTORY_NOT_FOUND"
+    assert not InstrumentRegistry.is_supported("EURUSD-op")
+    result = match(response(item), asset="EURUSD-op", diagnostics=diagnostics)
     assert result["position_status"] == "INCOMPLETE_CANDIDATES"
     assert result["wallet_status"] == "ROUTING_UNVERIFIED"
     assert result["settlement_status"] == "SETTLEMENT_UNCONFIRMED"
     assert result["incomplete_candidates"][0]["ticket_id"] == "42"
+    assert result["incomplete_candidates"][0]["symbol"] == "EURUSD_OP"
+    assert result["incomplete_candidates"][0]["product_type"] == "blitz-option"
     assert result["incomplete_candidates"][0]["payout"] == 1800
     assert diagnostics["record_samples"][0]["identity_field_categories"] == {
         "active": "EURUSD_OP",
         "active_id": "EURUSD_OP",
         "option_type": "blitz-option",
     }
+    complete = match(
+        response({**item, "direction": "call", "user_balance_id": 101}), asset="EURUSD-op"
+    )
+    assert complete["position_status"] == "POSITION_CONFIRMED"
+    assert complete["wallet_status"] == "PRACTICE_WALLET_CONFIRMED"
+    assert complete["settlement_status"] == "SETTLEMENT_CONFIRMED"
 
 
 def test_bounded_diagnostics_report_nested_structure_without_guessing_aliases() -> None:

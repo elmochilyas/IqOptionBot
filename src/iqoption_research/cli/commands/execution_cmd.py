@@ -50,7 +50,7 @@ from iqoption_research.execution.modes import (
     RealAccountExecutionBlockedError,
     UnsupportedProductOperationError,
 )
-from iqoption_research.execution.practice_history import recover_history
+from iqoption_research.execution.practice_history import normalize_history_asset, recover_history
 from iqoption_research.execution.practice_observer import (
     MockPassivePracticeObserver,
     ObservedPracticeTradeRecord,
@@ -2493,7 +2493,7 @@ practice_observe = practice_observe_command
 
 def practice_history_command(
     live: bool = typer.Option(False, "--live", help="Connect to broker read-only."),
-    asset: str = typer.Option(..., "--asset", help="Exact asset, e.g. EURUSD or EURUSD-OTC."),
+    asset: str = typer.Option(..., "--asset", help="Exact asset: EURUSD, EURUSD-OTC or EURUSD-op."),
     stake: float = typer.Option(..., "--stake", help="Exact virtual trade stake."),
     start: str = typer.Option(..., "--start", help="Inclusive ISO-8601 start with UTC offset."),
     end: str = typer.Option(..., "--end", help="Inclusive ISO-8601 end with UTC offset."),
@@ -2506,7 +2506,7 @@ def practice_history_command(
     ),
     record: str | None = typer.Option(None, "--record", help="Save allowlisted evidence JSON."),
 ) -> None:
-    """Query broker history for classic binary/turbo options; never submits orders."""
+    """Query broker options history; never submits orders."""
     if not live:
         raise typer.BadParameter("Explicit --live is required for a broker history query.")
     try:
@@ -2515,9 +2515,7 @@ def practice_history_command(
             raise ValueError("Timestamps must include a UTC offset")
         if start_dt >= end_dt:
             raise ValueError("Start must be earlier than end")
-        from iqoption_research.market_data.instruments import InstrumentRegistry
-
-        InstrumentRegistry.normalize_symbol(asset)
+        normalize_history_asset(asset)
     except (ValueError, TypeError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     search_window_utc = {

@@ -1,4 +1,4 @@
-"""Read-only classic-option history and conservative reconciliation.
+"""Read-only options history and conservative reconciliation.
 
 The request follows the community iqoptionapi Get_options_v2 client. A live reply
 confirmed the options message and status 0. Each payload still needs schema validation.
@@ -46,7 +46,13 @@ _PRODUCT_NAMES_MAP = {
     "turbo-option": "turbo-option",
     "digital-option": "digital-option",
     "digital": "digital-option",
+    "blitz": "blitz-option",
+    "blitz-option": "blitz-option",
 }
+_HISTORY_PRODUCTS = {"binary-option", "turbo-option", "blitz-option"}
+# The live history row and public active table distinguish this contract from 1 and 76.
+_HISTORY_OP_SYMBOL = "EURUSD_OP"
+_HISTORY_OP_ACTIVE_ID = 1861
 # IQ Option's classic-option protocol uses 1 for binary and 3 for turbo.
 _OPTION_TYPE_IDS = {1: "binary-option", 3: "turbo-option"}
 _DIRECTIONS = {"call", "put"}
@@ -55,11 +61,7 @@ _RESULTS = {"win", "loose", "lose", "loss", "equal", "draw"}
 _CONTAINER_STATES = {"closed_options": "closed", "open_options": "open"}
 _PAYOUT_FIELDS = ("payout", "payout_amount")
 # Recognized for diagnostics, since these variants fall outside classic history matching.
-_OTHER_OPTION_NAMES = {
-    "blitz": "blitz-option",
-    "blitz-option": "blitz-option",
-    "front.tu": "legacy-turbo-label",
-}
+_OTHER_OPTION_NAMES = {"front.tu": "legacy-turbo-label"}
 _DIAGNOSTIC_RECORD_FIELDS = {
     "ticket_id": (*_TICKET_FIELDS, "index", "external_id"),
     "symbol": (*_ASSET_NAMES, *_ACTIVE_IDS, "act"),
@@ -138,14 +140,23 @@ def _enum_from_aliases(row: dict[str, Any], keys: tuple[str, ...], allowed: set[
     return _agreed([_enum(row[key], allowed) for key in keys if row.get(key) is not None])
 
 
+def normalize_history_asset(asset: str) -> str:
+    """Resolve the history-only EURUSD-op contract or a registered instrument."""
+    if _key(asset) in {"eurusd-op", "eurusd_op"}:
+        return _HISTORY_OP_SYMBOL
+    return InstrumentRegistry.normalize_symbol(asset)
+
+
 def _asset_name(value: Any) -> str | None:
     try:
-        return InstrumentRegistry.normalize_symbol(value)
+        return normalize_history_asset(value)
     except UnsupportedInstrumentError:
         return None
 
 
 def _asset_from_id(value: Any) -> str | None:
+    if type(value) is int and value == _HISTORY_OP_ACTIVE_ID:
+        return _HISTORY_OP_SYMBOL
     active_id = _number(value)
     if active_id is None or not active_id.is_integer():
         return None
@@ -340,19 +351,11 @@ def _identity_categories(row: dict[str, Any]) -> dict[str, str]:
     for key in _ASSET_NAMES:
         value = row.get(key)
         if value is not None:
-            if _key(value) == "eurusd-op":
-                categories[key] = "EURUSD_OP"
-            else:
-                categories[key] = _asset_name(value) or "UNRECOGNIZED"
+            categories[key] = _asset_name(value) or "UNRECOGNIZED"
     for key in _ACTIVE_IDS:
         value = row.get(key)
         if value is not None:
-            # The public active table identifies EURUSD-op separately from EURUSD and OTC.
-            categories[key] = (
-                "EURUSD_OP"
-                if type(value) is int and value == 1861
-                else _asset_from_id(value) or "UNRECOGNIZED"
-            )
+            categories[key] = _asset_from_id(value) or "UNRECOGNIZED"
     for key in (*_PRODUCT_NAMES, "type"):
         value = row.get(key)
         if value is not None:
@@ -407,7 +410,7 @@ def reconcile_history(
 ) -> dict[str, Any]:
     """Match only complete evidence; ambiguous or conflicting tickets are not confirmed."""
     rows = _extract_records(response, diagnostics=diagnostics)
-    wanted = InstrumentRegistry.normalize_symbol(asset)
+    wanted = normalize_history_asset(asset)
     candidates: dict[str, dict[str, Any]] = {}
     seen: dict[str, dict[str, Any]] = {}
     possible: dict[str, dict[str, Any]] = {}
@@ -433,7 +436,7 @@ def reconcile_history(
             or item["symbol"] not in (None, wanted)
             or item["stake"] not in (None, stake)
             or (opened is not None and not start <= opened <= end)
-            or item["product_type"] not in (None, "binary-option", "turbo-option")
+            or (item["product_type"] is not None and item["product_type"] not in _HISTORY_PRODUCTS)
         )
         if diagnostics is not None:
             selected = other_samples if outside_search else samples
@@ -547,7 +550,7 @@ async def recover_history(
         "real_wallet_status": real_status,
     }
     result["search"] = {
-        "asset": InstrumentRegistry.normalize_symbol(asset),
+        "asset": normalize_history_asset(asset),
         "stake": stake,
         "start_utc": datetime.fromtimestamp(start, UTC).isoformat(),
         "end_utc": datetime.fromtimestamp(end, UTC).isoformat(),

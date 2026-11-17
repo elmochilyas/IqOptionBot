@@ -369,6 +369,9 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(
                         "closed_options": [
                             {
                                 "id": [9944556677],
+                                "active": "EURUSD-op",
+                                "active_id": 1861,
+                                "option_type": "blitz",
                                 "amount": 1000,
                                 "created": 1794907530,
                                 "expired": 1794907560,
@@ -408,7 +411,7 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(
             "practice-history",
             "--live",
             "--asset",
-            "EURUSD",
+            "EURUSD-op",
             "--stake",
             "1000",
             "--start",
@@ -426,6 +429,7 @@ def test_history_cli_proceeds_with_verified_wallet_and_unverified_profile(
     assert '"start": "2026-11-17T09:25:00+00:00"' in result.output
     assert ('"record_samples"' in result.output) == diagnostics_enabled
     assert ("msg.closed_options[]" in result.output) == diagnostics_enabled
+    assert ('"option_type": "blitz-option"' in result.output) == diagnostics_enabled
     assert not any(
         value in result.output
         for value in ("9944556677", "private-record-token", "1794907530", "private-ssid")

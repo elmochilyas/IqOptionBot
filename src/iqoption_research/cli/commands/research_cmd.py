@@ -34,6 +34,7 @@ from iqoption_research.research.evaluation_metrics import SimulationPolicy
 from iqoption_research.research.features.pipeline import CausalFeaturePipeline
 from iqoption_research.research.features.scalers import StandardScaler
 from iqoption_research.research.phase24 import EvaluationConfig, run_evaluation, write_reports
+from iqoption_research.research.phase25 import run_phase25, write_phase25_reports
 
 console = Console()
 research_app = typer.Typer(
@@ -61,25 +62,27 @@ def evaluate_authentic_command(
     payout_rate: float = typer.Option(0.85, "--payout-rate", min=0.01, max=2.0),
     cost_rate: float = typer.Option(0.002, "--cost-rate", min=0, max=0.99),
     slippage_price: float = typer.Option(0.00001, "--slippage-price", min=0),
+    phase: int = typer.Option(24, "--phase", min=24, max=25),
+    registry: Path = typer.Option(Path("data/phase25/registry.json"), "--registry"),
 ) -> None:
     """Generate reproducible JSON/Markdown evidence; never contacts a broker."""
     try:
-        report = run_evaluation(
-            storage_dir,
-            EvaluationConfig(
-                symbol=symbol,
-                timeframe=timeframe,
-                seed=seed,
-                horizon=horizon,
-                latency_bars=latency_bars,
-                policy=SimulationPolicy(
-                    payout=payout_rate, cost_rate=cost_rate, slippage_price=slippage_price
-                ),
+        config = EvaluationConfig(
+            symbol=symbol,
+            timeframe=timeframe,
+            seed=seed,
+            horizon=horizon,
+            latency_bars=latency_bars,
+            policy=SimulationPolicy(
+                payout=payout_rate, cost_rate=cost_rate, slippage_price=slippage_price
             ),
-            reservation,
-            mode=mode,
         )
-        write_reports(report, output_dir)
+        if phase == 25:
+            report = run_phase25(storage_dir, config, reservation, registry, mode=mode)
+            write_phase25_reports(report, output_dir)
+        else:
+            report = run_evaluation(storage_dir, config, reservation, mode=mode)
+            write_reports(report, output_dir)
     except (ValueError, RuntimeError, OSError):
         console.print("INVALID_EVALUATION: offline data or configuration validation failed.")
         raise typer.Exit(code=2) from None

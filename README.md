@@ -127,6 +127,11 @@ purged walk-forward ML comparisons, and economic/risk reports. It preserves the
 reserved confirmation holdout and never enables broker execution.
 See the [Phase 24 methodology and commands](docs/PHASE24_RESEARCH.md).
 
+Phase 25 adds complete-only derived timeframes, a common comparison clock,
+prospective experiment registration, joint day-block uncertainty, and bounded
+read-only expansion support. It reports `NO_DEMONSTRATED_EDGE` when evidence fails.
+See the [Phase 25 research protocol and reproduction commands](docs/PHASE25_RESEARCH.md).
+
 ```powershell
 python -m iqoption_research.cli.main research evaluate --mode all --output-dir data/phase24
 ```

@@ -458,7 +458,7 @@ class PassivePracticeObserver:
             raise self._fail("WALLET_DISCOVERY", "PRACTICE_WALLET_MISSING")
         self._practice_identity_established = True
         self._initial_real_balance = self._real_balance
-        self._last_successful_stage = "WALLET_DISCOVERY"
+        self._last_successful_stage = "PRACTICE_WALLET_ESTABLISHED"
         logger.info(
             "Observer connected; account snapshots received and Practice wallet identified."
         )
@@ -679,11 +679,38 @@ class PassivePracticeObserver:
             return "REJECTED"
         if status is None:
             return "ABSENT"
-        if not isinstance(status, bool) and status == 2000:
-            return "SUCCESS"
+        if isinstance(status, (int, float)) and not isinstance(status, bool):
+            if status == 2000:
+                return "SUCCESS"
+            # Quadcode's WebSocket client rejects status codes at or above 4000.
+            if status >= 4000:
+                return "REJECTED"
         if isinstance(status, str) and status.lower() in {"error", "failed", "rejected"}:
             return "REJECTED"
         return "UNRECOGNIZED"
+
+    @staticmethod
+    def _balance_status_metadata(message: dict[str, Any]) -> dict[str, str]:
+        """Describe the wire representation without echoing arbitrary status values."""
+        if "status" not in message:
+            return {"status_wire_type": "MISSING"}
+        status = message["status"]
+        wire_type = {
+            type(None): "NULL",
+            bool: "BOOLEAN",
+            int: "INTEGER",
+            float: "NUMBER",
+            str: "STRING",
+            dict: "OBJECT",
+            list: "ARRAY",
+        }.get(type(status), "OTHER")
+        metadata = {"status_wire_type": wire_type}
+        # String forms are traced separately and do not inherit numeric success semantics.
+        if isinstance(status, str) and status in {"2000", "4000", "success", "error"}:
+            metadata["status_wire_constant"] = status
+        elif isinstance(status, (int, float)) and status in (2000, 4000):
+            metadata["status_wire_constant"] = "2000" if status == 2000 else "4000"
+        return metadata
 
     @staticmethod
     def _parse_balance_entry(item: Any) -> Balance | None:
@@ -757,6 +784,7 @@ class PassivePracticeObserver:
                 if req_id
                 else "ABSENT",
                 "status": self._balance_status(message),
+                **self._balance_status_metadata(message),
                 "envelope": envelope,
                 "balance_array_detected": body is not None,
                 "balance_entry_count": len(body) if body is not None else None,

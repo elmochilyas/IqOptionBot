@@ -106,9 +106,14 @@ class ScriptedSocket:
         elif frame["msg"]["name"] == "get-balances":
             self.obs._handle_incoming_frame({
                 "name": "balances",
+                "status": 2000,
                 "msg": self.balances,
                 "request_id": frame["request_id"],
             })
+        elif frame["msg"]["name"] == "get-options":
+            assert self.obs.failure_diagnostics()["practice_wallet_identity_established"]
+            assert frame["msg"]["body"]["user_balance_id"] == 101
+            self.obs._handle_incoming_frame({**history(), "request_id": frame["request_id"]})
         else:
             raise AssertionError("Unexpected frame; only read-only requests are permitted")
 
@@ -125,9 +130,14 @@ async def test_unsolicited_session_profile_and_correlated_balance(monkeypatch: A
     await obs.async_connect()
     assert connector.call_args.kwargs["logger"].disabled is True
     assert obs.practice_balance is not None and str(obs.practice_balance.id) == "101"
-    assert obs.failure_diagnostics()["last_successful_stage"] == "WALLET_DISCOVERY"
+    assert obs.failure_diagnostics()["last_successful_stage"] == "PRACTICE_WALLET_ESTABLISHED"
     assert [f["name"] for f in socket.sent] == ["authenticate", "sendMessage", "sendMessage"]
     assert [f["msg"]["name"] for f in socket.sent[1:]] == ["get-profile", "get-balances"]
+    assert await obs.async_get_options_history() == {
+        **history(),
+        "request_id": socket.sent[-1]["request_id"],
+    }
+    assert socket.sent[-1]["msg"]["name"] == "get-options"
     await obs.async_close()
 
 

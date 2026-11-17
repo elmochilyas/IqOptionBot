@@ -349,9 +349,10 @@ async def test_silence_is_unknown_and_history_no_match_is_reported(
     )
     assert report["event_delivery"] == "LIVE_EVENT_DELIVERY_UNVERIFIED"
     subscriptions = report["connection_attempts"][0]["subscriptions"]
-    assert len(subscriptions) == 4
-    assert all(
-        sub["status"] == "STATUS_UNKNOWN" and not sub["event_received"] for sub in subscriptions
+    assert subscriptions == []
+    assert socket.subscriptions == 0
+    assert report["connection_attempts"][0]["subscription_status"] == (
+        "NOT_SENT_NO_VERIFIED_BLITZ_SUBSCRIPTION"
     )
     assert report["history_outcomes"][0]["status"] == "HISTORY_NO_MATCH"
     assert report["unsupported_live_products"]["blitz-option"] == "LIVE_SCHEMA_UNVERIFIED"

@@ -1,0 +1,5474 @@
+{
+  "phase": 25,
+  "status": "NO_DEMONSTRATED_EDGE",
+  "coverage": {
+    "status": "AUDITED",
+    "datasets": [
+      {
+        "source": "BROKER_AUTHENTIC_COLLECTION",
+        "symbol": "EURUSD",
+        "timeframe_seconds": 60,
+        "catalog_entries": 2,
+        "provenance": "CATALOG_AUTHENTIC",
+        "status": "INVALID_EVALUATION",
+        "reason": "CATALOG_OR_PROVENANCE_VALIDATION_FAILED"
+      },
+      {
+        "source": "broker_authentic_collection",
+        "symbol": "EURUSD",
+        "timeframe_seconds": 60,
+        "catalog_entries": 132,
+        "provenance": "CATALOG_AUTHENTIC",
+        "status": "INTEGRITY_PASSED",
+        "integrity": {
+          "status": "INTEGRITY_PASSED",
+          "counts": {
+            "observations": 63559,
+            "gaps": 9,
+            "missing_bars": 25989,
+            "scheduled_weekend_closure": 9
+          },
+          "timezone": "UTC",
+          "timestamp_precision": "EPOCH_SECONDS",
+          "collection_clock_precision": "at_ts is nanoseconds, not a prediction feature",
+          "schedule_basis": "REFERENCE_CALENDAR_NOT_BROKER_EXECUTION_GUARANTEE",
+          "product_type": "BROKER_CANDLES_PRODUCT_UNSPECIFIED",
+          "start_utc": "2026-09-15T05:01:00+00:00",
+          "end_utc": "2026-11-16T09:29:00+00:00"
+        },
+        "unique_candles": 63559,
+        "catalog_rows": 63669,
+        "duplicate_collection_rows": 110,
+        "conflicting_duplicates": 0,
+        "original_file_order_violations": 0,
+        "calendar_span_days": 62.18541666666667,
+        "fingerprint": "1447d94f07ea5b025892facd82535afe974d0ab60fcf6d5df3fa7d247ce670b9",
+        "checksum_verified_entries": 132
+      }
+    ],
+    "unavailable_instruments": [
+      "EURUSD_OTC",
+      "EURUSD_OP"
+    ],
+    "provenance_limit": "Locally verified checksums/provenance; no independent venue attestation."
+  },
+  "configuration": {
+    "phase": 25,
+    "mode": "all",
+    "bootstrap_draws": 4000,
+    "symbol": "EURUSD",
+    "timeframe": 60,
+    "source": "broker_authentic_collection",
+    "horizon": 1,
+    "latency_bars": 1,
+    "folds": 3,
+    "seed": 42,
+    "min_rows": 2000,
+    "min_trades": 500,
+    "min_calendar_days": 90,
+    "models": [
+      "majority_class",
+      "logistic_regression",
+      "random_forest"
+    ],
+    "thresholds": [
+      0.5,
+      0.55,
+      0.6,
+      0.65
+    ],
+    "payout_sensitivity": [
+      0.7,
+      0.85,
+      0.95
+    ],
+    "policy": {
+      "payout": 0.85,
+      "cost_rate": 0.002,
+      "slippage_price": 1e-05,
+      "initial_capital": 10000.0,
+      "fixed_stake": 10.0,
+      "stake_fraction": 0.001,
+      "sizing": "fixed",
+      "max_exposure_fraction": 0.01,
+      "daily_loss_fraction": 0.02,
+      "drawdown_fraction": 0.1,
+      "consecutive_loss_limit": 10,
+      "min_confidence": 0.0,
+      "min_ev": -1.0
+    }
+  },
+  "configuration_fingerprint": "2cf4189398534df3e82387ffda5a32b0138e44b674c484cef56f6b0a660c7210",
+  "code_revision": "fc0adf2042a41f32da01992015f6f6e12f2c91ac",
+  "versions": {
+    "numpy": "2.4.6",
+    "scikit-learn": "1.9.0",
+    "scipy": "1.17.1"
+  },
+  "implementation_fingerprint": "045d0094558fb75b21047c9105af65ad6cfe52b9fecc062762fa59b4815b692b",
+  "assumptions": [
+    "Fixed net winning return is an assumption, not recovered Blitz payout.",
+    "Next delayed candle open is a simulated fill, not a broker executable quote.",
+    "One position; tie refund; per-stake cost and adverse strike slippage.",
+    "Legacy bundles are excluded; their prior use prevents fresh holdout claims."
+  ],
+  "safety": {
+    "offline_only": true,
+    "broker_orders": 0,
+    "account_switching": false,
+    "autonomous_execution_authorized": false
+  },
+  "product_evidence": {
+    "EURUSD_OP": "NO_VERIFIED_NATIVE_CANDLE_DATA_OR_CONNECTOR_MAPPING",
+    "blitz_current_payout": "UNVERIFIED",
+    "blitz_settlement_schema": "UNVERIFIED",
+    "payout_source": "ASSUMED_NET_RETURN_NOT_TRANSACTION_HISTORY",
+    "vendor_reference": "https://blog.iqoption.com/en/iq-option-introduces-blitz-options-up-to-95-profit-from-5-seconds/"
+  },
+  "expansion": {
+    "status": "READY_FOR_AUTHORIZED_READ_ONLY_COLLECTION",
+    "symbol": "EURUSD",
+    "timeframe_seconds": 60,
+    "current_oldest_utc": "2026-09-15T05:01:00+00:00",
+    "target_oldest_utc": "2026-08-18T09:28:00+00:00",
+    "max_new_candles": 2000,
+    "max_broker_requests": 4,
+    "source_fingerprint": "1447d94f07ea5b025892facd82535afe974d0ab60fcf6d5df3fa7d247ce670b9",
+    "network_requests_made": 0,
+    "blitz_candles": "UNSUPPORTED_VERIFIED_MAPPING_REQUIRED",
+    "current_blitz_payout": "UNVERIFIED_NO_TICKET_TERMS_OBSERVED",
+    "execution": "OFFLINE_PLAN_ONLY_NO_CREDENTIAL_ACCESS"
+  },
+  "holdout": {
+    "status": "SEALED_NOT_EVALUATED",
+    "available_candles": 688,
+    "reservation_fingerprint": "36baa802e16e38e864bb4b7273e60c8295c7f4e39669128ab03e3404ffa1e45a",
+    "integrity_audit_only": true
+  },
+  "dataset_fingerprint": "1447d94f07ea5b025892facd82535afe974d0ab60fcf6d5df3fa7d247ce670b9",
+  "development_fingerprint": "d28669356b2e0850f4949ca5afaad86cd858db8ec0b2f073e62fae9772851da6",
+  "development_candles": 62870,
+  "registered_protocol": {
+    "slot": 2,
+    "protocol_hash": "c90a7dc78dbb2247a24aaaa4331206a093739f8a79c4e0cd31584e9b1e844e06",
+    "alpha": 0.008333333333333333,
+    "registered_experiments": 2,
+    "total_registered_alpha": 0.03333333333333333,
+    "prior_research": "UNREGISTERED_LIFETIME_ERROR_CONTROL_UNVERIFIED"
+  },
+  "protocol": {
+    "schema": 1,
+    "family": [
+      "no_trade",
+      "always_call",
+      "always_put",
+      "random",
+      "momentum",
+      "ma_crossover",
+      "inverse_momentum",
+      "inverse_ma_crossover"
+    ],
+    "timeframes": [
+      60,
+      300
+    ],
+    "config": {
+      "symbol": "EURUSD",
+      "timeframe": 60,
+      "source": "broker_authentic_collection",
+      "horizon": 1,
+      "latency_bars": 1,
+      "folds": 3,
+      "seed": 42,
+      "min_rows": 2000,
+      "min_trades": 500,
+      "min_calendar_days": 90,
+      "models": [
+        "majority_class",
+        "logistic_regression",
+        "random_forest"
+      ],
+      "thresholds": [
+        0.5,
+        0.55,
+        0.6,
+        0.65
+      ],
+      "payout_sensitivity": [
+        0.7,
+        0.85,
+        0.95
+      ],
+      "policy": {
+        "payout": 0.85,
+        "cost_rate": 0.002,
+        "slippage_price": 1e-05,
+        "initial_capital": 10000.0,
+        "fixed_stake": 10.0,
+        "stake_fraction": 0.001,
+        "sizing": "fixed",
+        "max_exposure_fraction": 0.01,
+        "daily_loss_fraction": 0.02,
+        "drawdown_fraction": 0.1,
+        "consecutive_loss_limit": 10,
+        "min_confidence": 0.0,
+        "min_ev": -1.0
+      }
+    },
+    "development_fingerprint": "d28669356b2e0850f4949ca5afaad86cd858db8ec0b2f073e62fae9772851da6",
+    "implementation_fingerprint": "045d0094558fb75b21047c9105af65ad6cfe52b9fecc062762fa59b4815b692b",
+    "bootstrap_draws": 4000,
+    "primary": "UNCONDITIONAL_UNIT_EV_ON_SHARED_NONOVERLAPPING_CLOCK",
+    "nulls": [
+      "ZERO_NET_RETURN",
+      "EXACT_FAIR_RANDOM_DIRECTION_EXPECTATION"
+    ],
+    "min_test_days": 30,
+    "min_trades": 500,
+    "random_realizations": 64,
+    "confirmation": "NOT_EVALUATED_PRIOR_RESEARCH_UNREGISTERED"
+  },
+  "timeframes": [
+    {
+      "seconds": 60,
+      "provenance": {
+        "provenance": "BROKER_NATIVE_AUTHENTIC",
+        "timeframe_seconds": 60
+      },
+      "fingerprint": "ba5a62ef80e76f6ffc4ff9ea7457417440f3f722881b873167f85c2946c0409f",
+      "full_causal_rows": 62672,
+      "test_opportunities": 15670,
+      "test_days": 26,
+      "reference_session_counts": {
+        "LONDON_ONLY": 3150,
+        "NEW_YORK_ONLY": 3148,
+        "OTHER": 6582,
+        "OVERLAP": 2790
+      },
+      "random_64_realizations_total_unit_return_interval": [
+        -3450.86625,
+        -3055.085
+      ],
+      "random_expected_unit_ev": -0.20791097638800252,
+      "duration_seconds": 60,
+      "latency_seconds": 60
+    },
+    {
+      "seconds": 300,
+      "provenance": {
+        "provenance": "DERIVED_AUTHENTIC_NOT_BROKER_NATIVE",
+        "symbol": "EURUSD",
+        "timeframe_seconds": 300,
+        "complete_bins": 12566,
+        "excluded_partial_bins": 10,
+        "fingerprint": "6a5a85c3c539cdcae02edcf8ffd1bc4beed59912833ec95fd13cdb2fbf087e66",
+        "fill_policy": "NO_FILL_NO_INTERPOLATION"
+      },
+      "fingerprint": "41d3d75cbcf436462f29f7eea0c7aedf15ba70af3d1ca091a291b12ff074e670",
+      "full_causal_rows": 12368,
+      "test_opportunities": 3094,
+      "test_days": 26,
+      "reference_session_counts": {
+        "LONDON_ONLY": 630,
+        "NEW_YORK_ONLY": 628,
+        "OTHER": 1278,
+        "OVERLAP": 558
+      },
+      "random_64_realizations_total_unit_return_interval": [
+        -481.88675,
+        -300.62925
+      ],
+      "random_expected_unit_ev": -0.12598998060762767,
+      "duration_seconds": 300,
+      "latency_seconds": 300
+    }
+  ],
+  "candidates": [
+    {
+      "name": "no_trade",
+      "timeframe_seconds": 60,
+      "opportunities": 15670,
+      "trades": 0,
+      "coverage": 0.0,
+      "unit_ev_per_opportunity": 0.0,
+      "unit_ev_per_trade": null,
+      "uncensored_counterfactual": {
+        "opportunities": 15670,
+        "accepted_trades": 0,
+        "rejected_signals": 15670,
+        "rejection_reasons": {
+          "no_signal": 15670
+        },
+        "wins": 0,
+        "losses": 0,
+        "refunds": 0,
+        "win_rate": null,
+        "loss_rate": null,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": null,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": null,
+        "expected_pnl_per_trade": null,
+        "total_simulated_pnl": 0,
+        "max_drawdown": 0.0,
+        "max_drawdown_fraction": 0.0,
+        "profit_factor": null,
+        "profit_factor_status": "NO_LOSSES_OR_NO_TRADES",
+        "longest_losing_streak": 0,
+        "coverage": 0.0,
+        "wilson_interval_descriptive_iid": [
+          0.0,
+          1.0
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 0,
+        "profitable_days": 0,
+        "worst_day_pnl": null,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 15671,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": null,
+      "raw_win_rate_minus_break_even": null,
+      "guarded_economics": {
+        "opportunities": 15670,
+        "accepted_trades": 0,
+        "rejected_signals": 15670,
+        "rejection_reasons": {
+          "no_signal": 15670
+        },
+        "wins": 0,
+        "losses": 0,
+        "refunds": 0,
+        "win_rate": null,
+        "loss_rate": null,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": null,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": null,
+        "expected_pnl_per_trade": null,
+        "total_simulated_pnl": 0,
+        "max_drawdown": 0.0,
+        "max_drawdown_fraction": 0.0,
+        "profit_factor": null,
+        "profit_factor_status": "NO_LOSSES_OR_NO_TRADES",
+        "longest_losing_streak": 0,
+        "coverage": 0.0,
+        "wilson_interval_descriptive_iid": [
+          0.0,
+          1.0
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 0,
+        "profitable_days": 0,
+        "worst_day_pnl": null,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 5223,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2220,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            },
+            "high_volatility": {
+              "opportunities": 3003,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 5223,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2027,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            },
+            "high_volatility": {
+              "opportunities": 3196,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 5224,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2311,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            },
+            "high_volatility": {
+              "opportunities": 2913,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 3150,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 3148,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        "OTHER": {
+          "opportunities": 6582,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        "OVERLAP": {
+          "opportunities": 2790,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 15670,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 15670,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 15670,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 15670,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 15670,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 15670,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": 0.0,
+        "pointwise_day_block_interval_95": [
+          0.0,
+          0.0
+        ],
+        "simultaneous_lower_bound": -0.05832011911893526,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": 0.20791097638800254,
+        "pointwise_day_block_interval_95": [
+          0.19490927762144858,
+          0.2207247311011009
+        ],
+        "simultaneous_lower_bound": 0.1495908572690673,
+        "family_adjusted_p_value": 0.00024993751562109475,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "MINIMUM_TRADE_COUNT",
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "always_call",
+      "timeframe_seconds": 60,
+      "opportunities": 15670,
+      "trades": 15670,
+      "coverage": 1.0,
+      "unit_ev_per_opportunity": -0.19959412890874284,
+      "unit_ev_per_trade": -0.19959412890874284,
+      "uncensored_counterfactual": {
+        "opportunities": 15670,
+        "accepted_trades": 15670,
+        "rejected_signals": 0,
+        "rejection_reasons": {},
+        "wins": 6522,
+        "losses": 8640,
+        "refunds": 508,
+        "win_rate": 0.4301543332014246,
+        "loss_rate": 0.5698456667985754,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416578430428846,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.19959412890874284,
+        "expected_pnl_per_trade": -0.19959412890874284,
+        "total_simulated_pnl": -3127.6400000000003,
+        "max_drawdown": 3130.723999816226,
+        "max_drawdown_fraction": 0.003130722309226179,
+        "profit_factor": 0.6387695685155601,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 19,
+        "coverage": 1.0,
+        "wilson_interval_descriptive_iid": [
+          0.4222923788990454,
+          0.43805167086891933
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 0,
+        "worst_day_pnl": -223.14000000000001,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 15671,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.9634971282705808,
+      "raw_win_rate_minus_break_even": -0.11150350984145996,
+      "guarded_economics": {
+        "opportunities": 15670,
+        "accepted_trades": 572,
+        "rejected_signals": 15098,
+        "rejection_reasons": {
+          "daily_loss_stop": 2367,
+          "drawdown_or_capital_stop": 12731
+        },
+        "wins": 245,
+        "losses": 307,
+        "refunds": 20,
+        "win_rate": 0.4438405797101449,
+        "loss_rate": 0.5561594202898551,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416607912260086,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.1746398601398601,
+        "expected_pnl_per_trade": -1.7463986013986008,
+        "total_simulated_pnl": -998.9399999999997,
+        "max_drawdown": 1004.3400000002475,
+        "max_drawdown_fraction": 0.10037979491077295,
+        "profit_factor": 0.675304075357382,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 9,
+        "coverage": 0.036502871729419274,
+        "wilson_interval_descriptive_iid": [
+          0.40292348052779337,
+          0.4855339221791892
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 6,
+        "profitable_days": 0,
+        "worst_day_pnl": -205.77999999999997,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 5223,
+          "trades": 5223,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1949159486884932,
+          "unit_ev_per_trade": -0.1949159486884932,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2220,
+              "trades": 2220,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.25098648648648647,
+              "unit_ev_per_trade": -0.25098648648648647
+            },
+            "high_volatility": {
+              "opportunities": 3003,
+              "trades": 3003,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.15346520146520146,
+              "unit_ev_per_trade": -0.15346520146520146
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 5223,
+          "trades": 5223,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.18798506605399196,
+          "unit_ev_per_trade": -0.18798506605399196,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2027,
+              "trades": 2027,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.2683295510606808,
+              "unit_ev_per_trade": -0.2683295510606808
+            },
+            "high_volatility": {
+              "opportunities": 3196,
+              "trades": 3196,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.13702816020025033,
+              "unit_ev_per_trade": -0.13702816020025033
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 5224,
+          "trades": 5224,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.21587825421133233,
+          "unit_ev_per_trade": -0.21587825421133233,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2311,
+              "trades": 2311,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.2779627866724362,
+              "unit_ev_per_trade": -0.2779627866724362
+            },
+            "high_volatility": {
+              "opportunities": 2913,
+              "trades": 2913,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.16662409886714727,
+              "unit_ev_per_trade": -0.16662409886714727
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 3150,
+          "trades": 3150,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.14992063492063493,
+          "unit_ev_per_trade": -0.14992063492063493
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 3148,
+          "trades": 3148,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.19439199491740786,
+          "unit_ev_per_trade": -0.19439199491740786
+        },
+        "OTHER": {
+          "opportunities": 6582,
+          "trades": 6582,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.24444150714068671,
+          "unit_ev_per_trade": -0.24444150714068671
+        },
+        "OVERLAP": {
+          "opportunities": 2790,
+          "trades": 2790,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.15574551971326164,
+          "unit_ev_per_trade": -0.15574551971326164
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.2620255264837269,
+          "unit_ev_per_trade": -0.2620255264837269
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.19959412890874284,
+          "unit_ev_per_trade": -0.19959412890874284
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.15797319719208677,
+          "unit_ev_per_trade": -0.15797319719208677
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.06641927249521379,
+          "unit_ev_per_trade": -0.06641927249521379
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.19959412890874284,
+          "unit_ev_per_trade": -0.19959412890874284
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.3022233567326101,
+          "unit_ev_per_trade": -0.3022233567326101
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.19959412890874279,
+        "pointwise_day_block_interval_95": [
+          -0.22137614949981452,
+          -0.17576944028529107
+        ],
+        "simultaneous_lower_bound": -0.25791424802767804,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": 0.008316847479259735,
+        "pointwise_day_block_interval_95": [
+          -0.007141584839822367,
+          0.024129547226544538
+        ],
+        "simultaneous_lower_bound": -0.05000327163967552,
+        "family_adjusted_p_value": 0.9847538115471132,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "always_put",
+      "timeframe_seconds": 60,
+      "opportunities": 15670,
+      "trades": 15670,
+      "coverage": 1.0,
+      "unit_ev_per_opportunity": -0.21622782386726228,
+      "unit_ev_per_trade": -0.21622782386726228,
+      "uncensored_counterfactual": {
+        "opportunities": 15670,
+        "accepted_trades": 15670,
+        "rejected_signals": 0,
+        "rejection_reasons": {},
+        "wins": 6393,
+        "losses": 8791,
+        "refunds": 486,
+        "win_rate": 0.42103530031612224,
+        "loss_rate": 0.5789646996838778,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416562241904708,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.21622782386726228,
+        "expected_pnl_per_trade": -0.21622782386726228,
+        "total_simulated_pnl": -3388.29,
+        "max_drawdown": 3391.6059998132987,
+        "max_drawdown_fraction": 0.0033915947532850966,
+        "profit_factor": 0.6153846153846154,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 26,
+        "coverage": 1.0,
+        "wilson_interval_descriptive_iid": [
+          0.4132031557857485,
+          0.4289073899095185
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 0,
+        "worst_day_pnl": -211.44,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 15671,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.987364390555201,
+      "raw_win_rate_minus_break_even": -0.12062092387434853,
+      "guarded_economics": {
+        "opportunities": 15670,
+        "accepted_trades": 198,
+        "rejected_signals": 15472,
+        "rejection_reasons": {
+          "daily_loss_stop": 491,
+          "consecutive_loss_stop": 14981
+        },
+        "wins": 92,
+        "losses": 101,
+        "refunds": 5,
+        "win_rate": 0.47668393782383417,
+        "loss_rate": 0.5233160621761658,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416496289035149,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.11715151515151512,
+        "expected_pnl_per_trade": -1.1715151515151512,
+        "total_simulated_pnl": -231.95999999999992,
+        "max_drawdown": 265.120000000079,
+        "max_drawdown_fraction": 0.026424376766649712,
+        "profit_factor": 0.7708176896020236,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 10,
+        "coverage": 0.01263560944479898,
+        "wilson_interval_descriptive_iid": [
+          0.4073645270843834,
+          0.5469133976276142
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 2,
+        "profitable_days": 0,
+        "worst_day_pnl": -201.89999999999992,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 5223,
+          "trades": 5223,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.22578901014742486,
+          "unit_ev_per_trade": -0.22578901014742486,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2220,
+              "trades": 2220,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.2791171171171171,
+              "unit_ev_per_trade": -0.2791171171171171
+            },
+            "high_volatility": {
+              "opportunities": 3003,
+              "trades": 3003,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.18636563436563436,
+              "unit_ev_per_trade": -0.18636563436563436
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 5223,
+          "trades": 5223,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.2157468887612483,
+          "unit_ev_per_trade": -0.2157468887612483,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2027,
+              "trades": 2027,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.27040157868771586,
+              "unit_ev_per_trade": -0.27040157868771586
+            },
+            "high_volatility": {
+              "opportunities": 3196,
+              "trades": 3196,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.18108322903629537,
+              "unit_ev_per_trade": -0.18108322903629537
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 5224,
+          "trades": 5224,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.20714931087289437,
+          "unit_ev_per_trade": -0.20714931087289437,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2311,
+              "trades": 2311,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.2549640848117698,
+              "unit_ev_per_trade": -0.2549640848117698
+            },
+            "high_volatility": {
+              "opportunities": 2913,
+              "trades": 2913,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.1692159285959492,
+              "unit_ev_per_trade": -0.1692159285959492
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 3150,
+          "trades": 3150,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1730952380952381,
+          "unit_ev_per_trade": -0.1730952380952381
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 3148,
+          "trades": 3148,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.26035451080050825,
+          "unit_ev_per_trade": -0.26035451080050825
+        },
+        "OTHER": {
+          "opportunities": 6582,
+          "trades": 6582,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.25258492859313275,
+          "unit_ev_per_trade": -0.25258492859313275
+        },
+        "OVERLAP": {
+          "opportunities": 2790,
+          "trades": 2790,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.12936559139784948,
+          "unit_ev_per_trade": -0.12936559139784948
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.27742437779195916,
+          "unit_ev_per_trade": -0.27742437779195916
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.21622782386726228,
+          "unit_ev_per_trade": -0.21622782386726228
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.17543012125079768,
+          "unit_ev_per_trade": -0.17543012125079768
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.080468410976388,
+          "unit_ev_per_trade": -0.080468410976388
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.21622782386726228,
+          "unit_ev_per_trade": -0.21622782386726228
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.314724952137843,
+          "unit_ev_per_trade": -0.314724952137843
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.21622782386726225,
+        "pointwise_day_block_interval_95": [
+          -0.23423952034604686,
+          -0.19878686414314023
+        ],
+        "simultaneous_lower_bound": -0.2745479429861975,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": -0.008316847479259735,
+        "pointwise_day_block_interval_95": [
+          -0.024129547226544534,
+          0.007141584839822378
+        ],
+        "simultaneous_lower_bound": -0.066636966598195,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "random",
+      "timeframe_seconds": 60,
+      "opportunities": 15670,
+      "trades": 15670,
+      "coverage": 1.0,
+      "unit_ev_per_opportunity": -0.20432291001914488,
+      "unit_ev_per_trade": -0.20432291001914488,
+      "uncensored_counterfactual": {
+        "opportunities": 15670,
+        "accepted_trades": 15670,
+        "rejected_signals": 0,
+        "rejection_reasons": {},
+        "wins": 6476,
+        "losses": 8675,
+        "refunds": 519,
+        "win_rate": 0.4274305326381097,
+        "loss_rate": 0.5725694673618903,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416586542320817,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.20432291001914488,
+        "expected_pnl_per_trade": -0.20432291001914488,
+        "total_simulated_pnl": -3201.7400000000002,
+        "max_drawdown": 3201.739999815123,
+        "max_drawdown_fraction": 0.003201739999815123,
+        "profit_factor": 0.6317040030883241,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 21,
+        "coverage": 1.0,
+        "wilson_interval_descriptive_iid": [
+          0.41957266040514574,
+          0.4353251947802611
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 0,
+        "worst_day_pnl": -225.14000000000001,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 15671,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.9970006381620932,
+      "raw_win_rate_minus_break_even": -0.114228121593972,
+      "guarded_economics": {
+        "opportunities": 15670,
+        "accepted_trades": 47,
+        "rejected_signals": 15623,
+        "rejection_reasons": {
+          "consecutive_loss_stop": 15623
+        },
+        "wins": 16,
+        "losses": 31,
+        "refunds": 0,
+        "win_rate": 0.3404255319148936,
+        "loss_rate": 0.6595744680851063,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416216216216216,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.3722127659574468,
+        "expected_pnl_per_trade": -3.7221276595744675,
+        "total_simulated_pnl": -174.93999999999997,
+        "max_drawdown": 174.94000000002052,
+        "max_drawdown_fraction": 0.017494000000002053,
+        "profit_factor": 0.43680381173137595,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 10,
+        "coverage": 0.0029993618379068284,
+        "wilson_interval_descriptive_iid": [
+          0.22167443843771611,
+          0.4832907543805805
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 1,
+        "profitable_days": 0,
+        "worst_day_pnl": -174.93999999999997,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 5223,
+          "trades": 5223,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.21791039632395173,
+          "unit_ev_per_trade": -0.21791039632395173,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2220,
+              "trades": 2220,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.2950855855855856,
+              "unit_ev_per_trade": -0.2950855855855856
+            },
+            "high_volatility": {
+              "opportunities": 3003,
+              "trades": 3003,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.16085780885780887,
+              "unit_ev_per_trade": -0.16085780885780887
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 5223,
+          "trades": 5223,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1962944667815432,
+          "unit_ev_per_trade": -0.1962944667815432,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2027,
+              "trades": 2027,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.28130439072520963,
+              "unit_ev_per_trade": -0.28130439072520963
+            },
+            "high_volatility": {
+              "opportunities": 3196,
+              "trades": 3196,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.14237859824780974,
+              "unit_ev_per_trade": -0.14237859824780974
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 5224,
+          "trades": 5224,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.19876493108728946,
+          "unit_ev_per_trade": -0.19876493108728946,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2311,
+              "trades": 2311,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.23330679359584597,
+              "unit_ev_per_trade": -0.23330679359584597
+            },
+            "high_volatility": {
+              "opportunities": 2913,
+              "trades": 2913,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.17136148300720905,
+              "unit_ev_per_trade": -0.17136148300720905
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 3150,
+          "trades": 3150,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1458888888888889,
+          "unit_ev_per_trade": -0.1458888888888889
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 3148,
+          "trades": 3148,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.22734942820838627,
+          "unit_ev_per_trade": -0.22734942820838627
+        },
+        "OTHER": {
+          "opportunities": 6582,
+          "trades": 6582,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.2506250379823762,
+          "unit_ev_per_trade": -0.2506250379823762
+        },
+        "OVERLAP": {
+          "opportunities": 2790,
+          "trades": 2790,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.13508243727598565,
+          "unit_ev_per_trade": -0.13508243727598565
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.26631397574984045,
+          "unit_ev_per_trade": -0.26631397574984045
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.20432291001914488,
+          "unit_ev_per_trade": -0.20432291001914488
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1629955328653478,
+          "unit_ev_per_trade": -0.1629955328653478
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.06653733248245054,
+          "unit_ev_per_trade": -0.06653733248245054
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.20432291001914488,
+          "unit_ev_per_trade": -0.20432291001914488
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 15670,
+          "trades": 15670,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.3084837268666242,
+          "unit_ev_per_trade": -0.3084837268666242
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.20432291001914488,
+        "pointwise_day_block_interval_95": [
+          -0.23074965584927062,
+          -0.1798893494103358
+        ],
+        "simultaneous_lower_bound": -0.26264302913808013,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": 0.0035880663688576896,
+        "pointwise_day_block_interval_95": [
+          -0.013698726952192052,
+          0.019909399223401444
+        ],
+        "simultaneous_lower_bound": -0.05473205275007757,
+        "family_adjusted_p_value": 0.9997500624843789,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "momentum",
+      "timeframe_seconds": 60,
+      "opportunities": 15670,
+      "trades": 14909,
+      "coverage": 0.9514358647096363,
+      "unit_ev_per_opportunity": -0.209634205488194,
+      "unit_ev_per_trade": -0.22033456301562812,
+      "uncensored_counterfactual": {
+        "opportunities": 15670,
+        "accepted_trades": 14909,
+        "rejected_signals": 761,
+        "rejection_reasons": {
+          "no_signal": 761
+        },
+        "wins": 6041,
+        "losses": 8390,
+        "refunds": 478,
+        "win_rate": 0.41861270875199225,
+        "loss_rate": 0.5813872912480078,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.541657430419124,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.22033456301562812,
+        "expected_pnl_per_trade": -0.22033456301562818,
+        "total_simulated_pnl": -3284.9680000000003,
+        "max_drawdown": 3287.897999821347,
+        "max_drawdown_fraction": 0.0032878939425602218,
+        "profit_factor": 0.6092922042271546,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 21,
+        "coverage": 0.9514358647096363,
+        "wilson_interval_descriptive_iid": [
+          0.41058646685241745,
+          0.4266822688866511
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 0,
+        "worst_day_pnl": -204.252,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 15671,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.990676772419344,
+      "raw_win_rate_minus_break_even": -0.1230447216671317,
+      "guarded_economics": {
+        "opportunities": 15670,
+        "accepted_trades": 139,
+        "rejected_signals": 15531,
+        "rejection_reasons": {
+          "no_signal": 761,
+          "daily_loss_stop": 521,
+          "consecutive_loss_stop": 14249
+        },
+        "wins": 60,
+        "losses": 75,
+        "refunds": 4,
+        "win_rate": 0.4444444444444444,
+        "loss_rate": 0.5555555555555556,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416536536536536,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.17466187050359708,
+        "expected_pnl_per_trade": -1.7466187050359707,
+        "total_simulated_pnl": -242.77999999999994,
+        "max_drawdown": 255.1200000000572,
+        "max_drawdown_fraction": 0.025480556992676765,
+        "profit_factor": 0.676973841773331,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 10,
+        "coverage": 0.008870453095086151,
+        "wilson_interval_descriptive_iid": [
+          0.3633138095245095,
+          0.5286492962552154
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 2,
+        "profitable_days": 0,
+        "worst_day_pnl": -202.69999999999993,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 5223,
+          "trades": 4962,
+          "coverage": 0.9500287191269385,
+          "unit_ev_per_opportunity": -0.20269461995022017,
+          "unit_ev_per_trade": -0.21335630794034663,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2220,
+              "trades": 2047,
+              "coverage": 0.9220720720720721,
+              "unit_ev_per_opportunity": -0.24078558558558558,
+              "unit_ev_per_trade": -0.2611353199804592
+            },
+            "high_volatility": {
+              "opportunities": 3003,
+              "trades": 2915,
+              "coverage": 0.9706959706959707,
+              "unit_ev_per_opportunity": -0.17453546453546454,
+              "unit_ev_per_trade": -0.17980445969125214
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 5223,
+          "trades": 4995,
+          "coverage": 0.9563469270534176,
+          "unit_ev_per_opportunity": -0.2060195290063182,
+          "unit_ev_per_trade": -0.2154234234234234,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2027,
+              "trades": 1874,
+              "coverage": 0.9245189935865812,
+              "unit_ev_per_opportunity": -0.23334879131721756,
+              "unit_ev_per_trade": -0.25240021344717184
+            },
+            "high_volatility": {
+              "opportunities": 3196,
+              "trades": 3121,
+              "coverage": 0.9765331664580726,
+              "unit_ev_per_opportunity": -0.18868648310387984,
+              "unit_ev_per_trade": -0.19322076257609738
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 5224,
+          "trades": 4952,
+          "coverage": 0.9479326186830015,
+          "unit_ev_per_opportunity": -0.22018644716692187,
+          "unit_ev_per_trade": -0.23228069466882065,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2311,
+              "trades": 2133,
+              "coverage": 0.922977066205106,
+              "unit_ev_per_opportunity": -0.24254262224145395,
+              "unit_ev_per_trade": -0.2627829348335678
+            },
+            "high_volatility": {
+              "opportunities": 2913,
+              "trades": 2819,
+              "coverage": 0.9677308616546516,
+              "unit_ev_per_opportunity": -0.20245039478201168,
+              "unit_ev_per_trade": -0.20920113515431005
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 3150,
+          "trades": 3061,
+          "coverage": 0.9717460317460317,
+          "unit_ev_per_opportunity": -0.16132444444444444,
+          "unit_ev_per_trade": -0.16601502776870303
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 3148,
+          "trades": 2988,
+          "coverage": 0.9491740787801779,
+          "unit_ev_per_opportunity": -0.23903303684879287,
+          "unit_ev_per_trade": -0.2518326639892905
+        },
+        "OTHER": {
+          "opportunities": 6582,
+          "trades": 6134,
+          "coverage": 0.931935581890003,
+          "unit_ev_per_opportunity": -0.2214627772713461,
+          "unit_ev_per_trade": -0.23763743071405283
+        },
+        "OVERLAP": {
+          "opportunities": 2790,
+          "trades": 2726,
+          "coverage": 0.9770609318996416,
+          "unit_ev_per_opportunity": -0.2031010752688172,
+          "unit_ev_per_trade": -0.2078694057226706
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.2674612635609445,
+          "unit_ev_per_trade": -0.28111328727614193
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.209634205488194,
+          "unit_ev_per_trade": -0.22033456301562812
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.1710828334396937,
+          "unit_ev_per_trade": -0.17981541350861896
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.08411410338225911,
+          "unit_ev_per_trade": -0.0884075390703602
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.209634205488194,
+          "unit_ev_per_trade": -0.22033456301562812
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.30536809189534136,
+          "unit_ev_per_trade": -0.3209549936280099
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.20963420548819398,
+        "pointwise_day_block_interval_95": [
+          -0.2230437355166391,
+          -0.19720510484422177
+        ],
+        "simultaneous_lower_bound": -0.26795432460712926,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": -0.0017232291001914523,
+        "pointwise_day_block_interval_95": [
+          -0.013234110364145492,
+          0.00953325540793616
+        ],
+        "simultaneous_lower_bound": -0.06004334821912671,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "ma_crossover",
+      "timeframe_seconds": 60,
+      "opportunities": 15670,
+      "trades": 15660,
+      "coverage": 0.9993618379068283,
+      "unit_ev_per_opportunity": -0.20703701340140399,
+      "unit_ev_per_trade": -0.20716922094508305,
+      "uncensored_counterfactual": {
+        "opportunities": 15670,
+        "accepted_trades": 15660,
+        "rejected_signals": 10,
+        "rejection_reasons": {
+          "no_signal": 10
+        },
+        "wins": 6453,
+        "losses": 8698,
+        "refunds": 509,
+        "win_rate": 0.4259124810243548,
+        "loss_rate": 0.5740875189756451,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.541657940694308,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.20716922094508305,
+        "expected_pnl_per_trade": -0.207169220945083,
+        "total_simulated_pnl": -3244.27,
+        "max_drawdown": 3245.6579998148372,
+        "max_drawdown_fraction": 0.0032456562471604635,
+        "profit_factor": 0.6277976241146875,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 16,
+        "coverage": 0.9993618379068283,
+        "wilson_interval_descriptive_iid": [
+          0.4180585759735947,
+          0.43380394557767327
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 1,
+        "worst_day_pnl": -204.586,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 15671,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.9789910600255428,
+      "raw_win_rate_minus_break_even": -0.11574545966995314,
+      "guarded_economics": {
+        "opportunities": 15670,
+        "accepted_trades": 329,
+        "rejected_signals": 15341,
+        "rejection_reasons": {
+          "daily_loss_stop": 1090,
+          "consecutive_loss_stop": 14241,
+          "no_signal": 10
+        },
+        "wins": 146,
+        "losses": 172,
+        "refunds": 11,
+        "win_rate": 0.4591194968553459,
+        "loss_rate": 0.5408805031446541,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.541659017508074,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.1475927051671732,
+        "expected_pnl_per_trade": -1.4759270516717322,
+        "total_simulated_pnl": -485.57999999999987,
+        "max_drawdown": 490.98000000014144,
+        "max_drawdown_fraction": 0.04907150138926395,
+        "profit_factor": 0.7182855087430238,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 10,
+        "coverage": 0.020995532865347798,
+        "wilson_interval_descriptive_iid": [
+          0.4051624328055029,
+          0.5140524499032992
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 4,
+        "profitable_days": 1,
+        "worst_day_pnl": -204.21999999999994,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 5223,
+          "trades": 5221,
+          "coverage": 0.9996170783074861,
+          "unit_ev_per_opportunity": -0.2072069691748038,
+          "unit_ev_per_trade": -0.20728634361233483,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2220,
+              "trades": 2219,
+              "coverage": 0.9995495495495496,
+              "unit_ev_per_opportunity": -0.2805351351351351,
+              "unit_ev_per_trade": -0.28066155926092834
+            },
+            "high_volatility": {
+              "opportunities": 3003,
+              "trades": 3002,
+              "coverage": 0.9996669996669997,
+              "unit_ev_per_opportunity": -0.152998334998335,
+              "unit_ev_per_trade": -0.15304930046635576
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 5223,
+          "trades": 5217,
+          "coverage": 0.9988512349224583,
+          "unit_ev_per_opportunity": -0.19839823856021443,
+          "unit_ev_per_trade": -0.19862641364769024,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2027,
+              "trades": 2024,
+              "coverage": 0.9985199802664035,
+              "unit_ev_per_opportunity": -0.2714346324617662,
+              "unit_ev_per_trade": -0.27183695652173917
+            },
+            "high_volatility": {
+              "opportunities": 3196,
+              "trades": 3193,
+              "coverage": 0.9990613266583229,
+              "unit_ev_per_opportunity": -0.15207634543178972,
+              "unit_ev_per_trade": -0.1522192295646727
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 5224,
+          "trades": 5222,
+          "coverage": 0.9996171516079633,
+          "unit_ev_per_opportunity": -0.21550421133231237,
+          "unit_ev_per_trade": -0.21558674837227113,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2311,
+              "trades": 2309,
+              "coverage": 0.9991345737775854,
+              "unit_ev_per_opportunity": -0.2455075724794461,
+              "unit_ev_per_trade": -0.24572022520571674
+            },
+            "high_volatility": {
+              "opportunities": 2913,
+              "trades": 2913,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.1917013388259526,
+              "unit_ev_per_trade": -0.1917013388259526
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 3150,
+          "trades": 3146,
+          "coverage": 0.9987301587301587,
+          "unit_ev_per_opportunity": -0.17431492063492063,
+          "unit_ev_per_trade": -0.17453655435473617
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 3148,
+          "trades": 3148,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1999669631512071,
+          "unit_ev_per_trade": -0.1999669631512071
+        },
+        "OTHER": {
+          "opportunities": 6582,
+          "trades": 6578,
+          "coverage": 0.9993922819811607,
+          "unit_ev_per_opportunity": -0.2533737465815861,
+          "unit_ev_per_trade": -0.2535278200060809
+        },
+        "OVERLAP": {
+          "opportunities": 2790,
+          "trades": 2788,
+          "coverage": 0.9992831541218637,
+          "unit_ev_per_opportunity": -0.1426437275985663,
+          "unit_ev_per_trade": -0.14274605451936873
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.26880791320995534,
+          "unit_ev_per_trade": -0.26897956577266924
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.20703701340140399,
+          "unit_ev_per_trade": -0.20716922094508305
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.16585641352903635,
+          "unit_ev_per_trade": -0.16596232439335887
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.07487045309508614,
+          "unit_ev_per_trade": -0.07491826309067687
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.20703701340140399,
+          "unit_ev_per_trade": -0.20716922094508305
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.31181684747925975,
+          "unit_ev_per_trade": -0.3120159642401022
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.20703701340140393,
+        "pointwise_day_block_interval_95": [
+          -0.2240254711784728,
+          -0.18886284986128754
+        ],
+        "simultaneous_lower_bound": -0.2653571325203392,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": 0.0008739629865985952,
+        "pointwise_day_block_interval_95": [
+          -0.008993848615031781,
+          0.011838058265751886
+        ],
+        "simultaneous_lower_bound": -0.05744615613233667,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "inverse_momentum",
+      "timeframe_seconds": 60,
+      "opportunities": 15670,
+      "trades": 14909,
+      "coverage": 0.9514358647096363,
+      "unit_ev_per_opportunity": -0.1782111040204212,
+      "unit_ev_per_trade": -0.18730753236300224,
+      "uncensored_counterfactual": {
+        "opportunities": 15670,
+        "accepted_trades": 14909,
+        "rejected_signals": 761,
+        "rejection_reasons": {
+          "no_signal": 761
+        },
+        "wins": 6325,
+        "losses": 8139,
+        "refunds": 445,
+        "win_rate": 0.43729258849557523,
+        "loss_rate": 0.5627074115044248,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416548822052141,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.18730753236300224,
+        "expected_pnl_per_trade": -0.18730753236300224,
+        "total_simulated_pnl": -2792.568,
+        "max_drawdown": 2797.6579998283414,
+        "max_drawdown_fraction": 0.002797645488757715,
+        "profit_factor": 0.6576127416698626,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 15,
+        "coverage": 0.9514358647096363,
+        "wilson_interval_descriptive_iid": [
+          0.4292262022934158,
+          0.44539227447361796
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 0,
+        "worst_day_pnl": -189.15800000000002,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 15671,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.96679857804011,
+      "raw_win_rate_minus_break_even": -0.10436229370963884,
+      "guarded_economics": {
+        "opportunities": 15670,
+        "accepted_trades": 495,
+        "rejected_signals": 15175,
+        "rejection_reasons": {
+          "no_signal": 761,
+          "daily_loss_stop": 1656,
+          "drawdown_or_capital_stop": 12758
+        },
+        "wins": 205,
+        "losses": 270,
+        "refunds": 20,
+        "win_rate": 0.43157894736842106,
+        "loss_rate": 0.5684210526315789,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416671408250355,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.1954343434343434,
+        "expected_pnl_per_trade": -1.9543434343434338,
+        "total_simulated_pnl": -967.3999999999997,
+        "max_drawdown": 1012.1200000001991,
+        "max_drawdown_fraction": 0.10076139504139496,
+        "profit_factor": 0.6424717274003993,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 8,
+        "coverage": 0.03158902361199745,
+        "wilson_interval_descriptive_iid": [
+          0.3877618089871167,
+          0.4764938881697584
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 5,
+        "profitable_days": 0,
+        "worst_day_pnl": -209.69999999999996,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 5223,
+          "trades": 4962,
+          "coverage": 0.9500287191269385,
+          "unit_ev_per_opportunity": -0.18821060693088265,
+          "unit_ev_per_trade": -0.19811043933897624,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2220,
+              "trades": 2047,
+              "coverage": 0.9220720720720721,
+              "unit_ev_per_opportunity": -0.23556036036036035,
+              "unit_ev_per_trade": -0.25546849047386416
+            },
+            "high_volatility": {
+              "opportunities": 3003,
+              "trades": 2915,
+              "coverage": 0.9706959706959707,
+              "unit_ev_per_opportunity": -0.15320679320679323,
+              "unit_ev_per_trade": -0.1578319039451115
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 5223,
+          "trades": 4995,
+          "coverage": 0.9563469270534176,
+          "unit_ev_per_opportunity": -0.16959410300593528,
+          "unit_ev_per_trade": -0.17733533533533533,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2027,
+              "trades": 1874,
+              "coverage": 0.9245189935865812,
+              "unit_ev_per_opportunity": -0.24620029600394672,
+              "unit_ev_per_trade": -0.2663009605122732
+            },
+            "high_volatility": {
+              "opportunities": 3196,
+              "trades": 3121,
+              "coverage": 0.9765331664580726,
+              "unit_ev_per_opportunity": -0.12100813516896121,
+              "unit_ev_per_trade": -0.1239160525472605
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 5224,
+          "trades": 4952,
+          "coverage": 0.9479326186830015,
+          "unit_ev_per_opportunity": -0.17682886676875958,
+          "unit_ev_per_trade": -0.18654159935379644,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2311,
+              "trades": 2133,
+              "coverage": 0.922977066205106,
+              "unit_ev_per_opportunity": -0.2461557767200346,
+              "unit_ev_per_trade": -0.2666976090014065
+            },
+            "high_volatility": {
+              "opportunities": 2913,
+              "trades": 2819,
+              "coverage": 0.9677308616546516,
+              "unit_ev_per_opportunity": -0.12182904222451081,
+              "unit_ev_per_trade": -0.1258914508691025
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 3150,
+          "trades": 3061,
+          "coverage": 0.9717460317460317,
+          "unit_ev_per_opportunity": -0.1511974603174603,
+          "unit_ev_per_trade": -0.15559359686377
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 3148,
+          "trades": 2988,
+          "coverage": 0.9491740787801779,
+          "unit_ev_per_opportunity": -0.18973189326556547,
+          "unit_ev_per_trade": -0.19989156626506027
+        },
+        "OTHER": {
+          "opportunities": 6582,
+          "trades": 6134,
+          "coverage": 0.931935581890003,
+          "unit_ev_per_opportunity": -0.22887693710118506,
+          "unit_ev_per_trade": -0.24559308770785784
+        },
+        "OVERLAP": {
+          "opportunities": 2790,
+          "trades": 2726,
+          "coverage": 0.9770609318996416,
+          "unit_ev_per_opportunity": -0.07618351254480288,
+          "unit_ev_per_trade": -0.07797212032281733
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.23875673261008296,
+          "unit_ev_per_trade": -0.250943591119458
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.1782111040204212,
+          "unit_ev_per_trade": -0.18730753236300224
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.13784735162731335,
+          "unit_ev_per_trade": -0.14488349319203167
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.0558977664326739,
+          "unit_ev_per_trade": -0.058750955798510966
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.1782111040204212,
+          "unit_ev_per_trade": -0.18730753236300224
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 15670,
+          "trades": 14909,
+          "coverage": 0.9514358647096363,
+          "unit_ev_per_opportunity": -0.27066483726866625,
+          "unit_ev_per_trade": -0.2844803809779328
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.1782111040204212,
+        "pointwise_day_block_interval_95": [
+          -0.1940502978363154,
+          -0.16215952952366766
+        ],
+        "simultaneous_lower_bound": -0.23653122313935646,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": 0.02969987236758136,
+        "pointwise_day_block_interval_95": [
+          0.020259943494159677,
+          0.03919614686580372
+        ],
+        "simultaneous_lower_bound": -0.0286202467513539,
+        "family_adjusted_p_value": 0.27193201699575104,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "inverse_ma_crossover",
+      "timeframe_seconds": 60,
+      "opportunities": 15670,
+      "trades": 15660,
+      "coverage": 0.9993618379068283,
+      "unit_ev_per_opportunity": -0.20839629865985962,
+      "unit_ev_per_trade": -0.208529374201788,
+      "uncensored_counterfactual": {
+        "opportunities": 15670,
+        "accepted_trades": 15660,
+        "rejected_signals": 10,
+        "rejection_reasons": {
+          "no_signal": 10
+        },
+        "wins": 6455,
+        "losses": 8721,
+        "refunds": 484,
+        "win_rate": 0.4253426462836057,
+        "loss_rate": 0.5746573537163943,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.541656099958683,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.208529374201788,
+        "expected_pnl_per_trade": -0.208529374201788,
+        "total_simulated_pnl": -3265.57,
+        "max_drawdown": 3269.1179998152656,
+        "max_drawdown_fraction": 0.003269111696967914,
+        "profit_factor": 0.626339764354802,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 21,
+        "coverage": 0.9993618379068283,
+        "wilson_interval_descriptive_iid": [
+          0.4174967032398102,
+          0.4332263753807986
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 0,
+        "worst_day_pnl": -229.138,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 15671,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.9885057471264368,
+      "raw_win_rate_minus_break_even": -0.11631345367507734,
+      "guarded_economics": {
+        "opportunities": 15670,
+        "accepted_trades": 180,
+        "rejected_signals": 15490,
+        "rejection_reasons": {
+          "daily_loss_stop": 581,
+          "consecutive_loss_stop": 14899,
+          "no_signal": 10
+        },
+        "wins": 74,
+        "losses": 100,
+        "refunds": 6,
+        "win_rate": 0.42528735632183906,
+        "loss_rate": 0.5747126436781609,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.54165890027959,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.20811111111111108,
+        "expected_pnl_per_trade": -2.0811111111111105,
+        "total_simulated_pnl": -374.5999999999999,
+        "max_drawdown": 393.8800000000738,
+        "max_drawdown_fraction": 0.03931220606671078,
+        "profit_factor": 0.6261924719594459,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 10,
+        "coverage": 0.01148691767708998,
+        "wilson_interval_descriptive_iid": [
+          0.35422279568265586,
+          0.4995795731664769
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 2,
+        "profitable_days": 0,
+        "worst_day_pnl": -208.09999999999997,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 5223,
+          "trades": 5221,
+          "coverage": 0.9996170783074861,
+          "unit_ev_per_opportunity": -0.21308481715489183,
+          "unit_ev_per_trade": -0.213166443210113,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2220,
+              "trades": 2219,
+              "coverage": 0.9995495495495496,
+              "unit_ev_per_opportunity": -0.24866576576576577,
+              "unit_ev_per_trade": -0.24877782785038305
+            },
+            "high_volatility": {
+              "opportunities": 3003,
+              "trades": 3002,
+              "coverage": 0.9996669996669997,
+              "unit_ev_per_opportunity": -0.18678121878121878,
+              "unit_ev_per_trade": -0.18684343770819453
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 5223,
+          "trades": 5217,
+          "coverage": 0.9988512349224583,
+          "unit_ev_per_opportunity": -0.20499406471376602,
+          "unit_ev_per_trade": -0.2052298255702511,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2027,
+              "trades": 2024,
+              "coverage": 0.9985199802664035,
+              "unit_ev_per_opportunity": -0.2666492353231376,
+              "unit_ev_per_trade": -0.26704446640316204
+            },
+            "high_volatility": {
+              "opportunities": 3196,
+              "trades": 3193,
+              "coverage": 0.9990613266583229,
+              "unit_ev_per_opportunity": -0.16589048811013765,
+              "unit_ev_per_trade": -0.16604635139367363
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 5224,
+          "trades": 5222,
+          "coverage": 0.9996171516079633,
+          "unit_ev_per_opportunity": -0.20711026033690658,
+          "unit_ev_per_trade": -0.20718958253542702,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 2311,
+              "trades": 2309,
+              "coverage": 0.9991345737775854,
+              "unit_ev_per_opportunity": -0.28648550411077456,
+              "unit_ev_per_trade": -0.286733650931139
+            },
+            "high_volatility": {
+              "opportunities": 2913,
+              "trades": 2913,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.14413868863714382,
+              "unit_ev_per_trade": -0.14413868863714382
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 3150,
+          "trades": 3146,
+          "coverage": 0.9987301587301587,
+          "unit_ev_per_opportunity": -0.14733079365079366,
+          "unit_ev_per_trade": -0.14751811824539096
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 3148,
+          "trades": 3148,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.25477954256670904,
+          "unit_ev_per_trade": -0.25477954256670904
+        },
+        "OTHER": {
+          "opportunities": 6582,
+          "trades": 6578,
+          "coverage": 0.9993922819811607,
+          "unit_ev_per_opportunity": -0.2434299604983288,
+          "unit_ev_per_trade": -0.24357798723016116
+        },
+        "OVERLAP": {
+          "opportunities": 2790,
+          "trades": 2788,
+          "coverage": 0.9992831541218637,
+          "unit_ev_per_opportunity": -0.14235698924731183,
+          "unit_ev_per_trade": -0.14245911047345766
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.2701863433312061,
+          "unit_ev_per_trade": -0.2703588761174968
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.20839629865985962,
+          "unit_ev_per_trade": -0.208529374201788
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.16720293554562857,
+          "unit_ev_per_trade": -0.1673097062579821
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.0719189534141672,
+          "unit_ev_per_trade": -0.07196487867177523
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.20839629865985962,
+          "unit_ev_per_trade": -0.208529374201788
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 15670,
+          "trades": 15660,
+          "coverage": 0.9993618379068283,
+          "unit_ev_per_opportunity": -0.30462476068921507,
+          "unit_ev_per_trade": -0.30481928480204346
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.2083962986598596,
+        "pointwise_day_block_interval_95": [
+          -0.22487559050444111,
+          -0.19369620801376947
+        ],
+        "simultaneous_lower_bound": -0.26671641777879485,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": -0.00048532227185705125,
+        "pointwise_day_block_interval_95": [
+          -0.011498082152580746,
+          0.00939280087376406
+        ],
+        "simultaneous_lower_bound": -0.058805441390792315,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "no_trade",
+      "timeframe_seconds": 300,
+      "opportunities": 3094,
+      "trades": 0,
+      "coverage": 0.0,
+      "unit_ev_per_opportunity": 0.0,
+      "unit_ev_per_trade": null,
+      "uncensored_counterfactual": {
+        "opportunities": 3094,
+        "accepted_trades": 0,
+        "rejected_signals": 3094,
+        "rejection_reasons": {
+          "no_signal": 3094
+        },
+        "wins": 0,
+        "losses": 0,
+        "refunds": 0,
+        "win_rate": null,
+        "loss_rate": null,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": null,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": null,
+        "expected_pnl_per_trade": null,
+        "total_simulated_pnl": 0,
+        "max_drawdown": 0.0,
+        "max_drawdown_fraction": 0.0,
+        "profit_factor": null,
+        "profit_factor_status": "NO_LOSSES_OR_NO_TRADES",
+        "longest_losing_streak": 0,
+        "coverage": 0.0,
+        "wilson_interval_descriptive_iid": [
+          0.0,
+          1.0
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 0,
+        "profitable_days": 0,
+        "worst_day_pnl": null,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 3095,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": null,
+      "raw_win_rate_minus_break_even": null,
+      "guarded_economics": {
+        "opportunities": 3094,
+        "accepted_trades": 0,
+        "rejected_signals": 3094,
+        "rejection_reasons": {
+          "no_signal": 3094
+        },
+        "wins": 0,
+        "losses": 0,
+        "refunds": 0,
+        "win_rate": null,
+        "loss_rate": null,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": null,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": null,
+        "expected_pnl_per_trade": null,
+        "total_simulated_pnl": 0,
+        "max_drawdown": 0.0,
+        "max_drawdown_fraction": 0.0,
+        "profit_factor": null,
+        "profit_factor_status": "NO_LOSSES_OR_NO_TRADES",
+        "longest_losing_streak": 0,
+        "coverage": 0.0,
+        "wilson_interval_descriptive_iid": [
+          0.0,
+          1.0
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 0,
+        "profitable_days": 0,
+        "worst_day_pnl": null,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 1031,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 448,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            },
+            "high_volatility": {
+              "opportunities": 583,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 1031,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 355,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            },
+            "high_volatility": {
+              "opportunities": 676,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 1032,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 455,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            },
+            "high_volatility": {
+              "opportunities": 577,
+              "trades": 0,
+              "coverage": 0.0,
+              "unit_ev_per_opportunity": 0.0,
+              "unit_ev_per_trade": null
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 630,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 628,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        "OTHER": {
+          "opportunities": 1278,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        "OVERLAP": {
+          "opportunities": 558,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 3094,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 3094,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 3094,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 3094,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 3094,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 3094,
+          "trades": 0,
+          "coverage": 0.0,
+          "unit_ev_per_opportunity": 0.0,
+          "unit_ev_per_trade": null
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": 0.0,
+        "pointwise_day_block_interval_95": [
+          0.0,
+          0.0
+        ],
+        "simultaneous_lower_bound": -0.05832011911893526,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": 0.1259899806076277,
+        "pointwise_day_block_interval_95": [
+          0.11772575370912797,
+          0.1332359893328401
+        ],
+        "simultaneous_lower_bound": 0.06766986148869245,
+        "family_adjusted_p_value": 0.00024993751562109475,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "MINIMUM_TRADE_COUNT",
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "always_call",
+      "timeframe_seconds": 300,
+      "opportunities": 3094,
+      "trades": 3094,
+      "coverage": 1.0,
+      "unit_ev_per_opportunity": -0.13202585649644474,
+      "unit_ev_per_trade": -0.13202585649644474,
+      "uncensored_counterfactual": {
+        "opportunities": 3094,
+        "accepted_trades": 3094,
+        "rejected_signals": 0,
+        "rejection_reasons": {},
+        "wins": 1442,
+        "losses": 1628,
+        "refunds": 24,
+        "win_rate": 0.46970684039087945,
+        "loss_rate": 0.5302931596091205,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416300730698125,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.13202585649644474,
+        "expected_pnl_per_trade": -0.13202585649644474,
+        "total_simulated_pnl": -408.48800000000006,
+        "max_drawdown": 413.4219999673078,
+        "max_drawdown_fraction": 0.0004134203107319181,
+        "profit_factor": 0.7495941896789317,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 13,
+        "coverage": 1.0,
+        "wilson_interval_descriptive_iid": [
+          0.45210139873153793,
+          0.4873879983334101
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 2,
+        "worst_day_pnl": -39.614000000000004,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 3095,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.8500323206205559,
+      "raw_win_rate_minus_break_even": -0.07192323267893302,
+      "guarded_economics": {
+        "opportunities": 3094,
+        "accepted_trades": 464,
+        "rejected_signals": 2630,
+        "rejection_reasons": {
+          "consecutive_loss_stop": 2630
+        },
+        "wins": 237,
+        "losses": 225,
+        "refunds": 2,
+        "win_rate": 0.512987012987013,
+        "loss_rate": 0.487012987012987,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416263016263017,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.05275431034482756,
+        "expected_pnl_per_trade": -0.5275431034482755,
+        "total_simulated_pnl": -244.7799999999998,
+        "max_drawdown": 285.6400000001995,
+        "max_drawdown_fraction": 0.028447762442679173,
+        "profit_factor": 0.8914279631321689,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 10,
+        "coverage": 0.14996767937944408,
+        "wilson_interval_descriptive_iid": [
+          0.4674905972550663,
+          0.5582692396439052
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 5,
+        "profitable_days": 1,
+        "worst_day_pnl": -121.67999999999995,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 1031,
+          "trades": 1031,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.10617070805043648,
+          "unit_ev_per_trade": -0.10617070805043648,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 448,
+              "trades": 448,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.16528125,
+              "unit_ev_per_trade": -0.16528125
+            },
+            "high_volatility": {
+              "opportunities": 583,
+              "trades": 583,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.06074785591766726,
+              "unit_ev_per_trade": -0.06074785591766726
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 1031,
+          "trades": 1031,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.13197090203685743,
+          "unit_ev_per_trade": -0.13197090203685743,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 355,
+              "trades": 355,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.17777464788732394,
+              "unit_ev_per_trade": -0.17777464788732394
+            },
+            "high_volatility": {
+              "opportunities": 676,
+              "trades": 676,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.1079171597633136,
+              "unit_ev_per_trade": -0.1079171597633136
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 1032,
+          "trades": 1032,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.15791085271317828,
+          "unit_ev_per_trade": -0.15791085271317828,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 455,
+              "trades": 455,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.11496703296703298,
+              "unit_ev_per_trade": -0.11496703296703298
+            },
+            "high_volatility": {
+              "opportunities": 577,
+              "trades": 577,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.1917746967071057,
+              "unit_ev_per_trade": -0.1917746967071057
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 630,
+          "trades": 630,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.13549206349206352,
+          "unit_ev_per_trade": -0.13549206349206352
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 628,
+          "trades": 628,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.10438853503184715,
+          "unit_ev_per_trade": -0.10438853503184715
+        },
+        "OTHER": {
+          "opportunities": 1278,
+          "trades": 1278,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.13419874804381846,
+          "unit_ev_per_trade": -0.13419874804381846
+        },
+        "OVERLAP": {
+          "opportunities": 558,
+          "trades": 558,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.15424014336917563,
+          "unit_ev_per_trade": -0.15424014336917563
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.20193535875888818,
+          "unit_ev_per_trade": -0.20193535875888818
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.13202585649644474,
+          "unit_ev_per_trade": -0.13202585649644474
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.08541952165481577,
+          "unit_ev_per_trade": -0.08541952165481577
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.08398125404007757,
+          "unit_ev_per_trade": -0.08398125404007757
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.13202585649644474,
+          "unit_ev_per_trade": -0.13202585649644474
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.16848351648351648,
+          "unit_ev_per_trade": -0.16848351648351648
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.13202585649644474,
+        "pointwise_day_block_interval_95": [
+          -0.1634648991171868,
+          -0.10080616716580569
+        ],
+        "simultaneous_lower_bound": -0.19034597561538,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": -0.006035875888817066,
+        "pointwise_day_block_interval_95": [
+          -0.03757496252312113,
+          0.02555510454489713
+        ],
+        "simultaneous_lower_bound": -0.06435599500775233,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "always_put",
+      "timeframe_seconds": 300,
+      "opportunities": 3094,
+      "trades": 3094,
+      "coverage": 1.0,
+      "unit_ev_per_opportunity": -0.11995410471881061,
+      "unit_ev_per_trade": -0.11995410471881061,
+      "uncensored_counterfactual": {
+        "opportunities": 3094,
+        "accepted_trades": 3094,
+        "rejected_signals": 0,
+        "rejection_reasons": {},
+        "wins": 1453,
+        "losses": 1600,
+        "refunds": 41,
+        "win_rate": 0.4759253193580085,
+        "loss_rate": 0.5240746806419915,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416361399066935,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.11995410471881061,
+        "expected_pnl_per_trade": -0.11995410471881061,
+        "total_simulated_pnl": -371.13800000000003,
+        "max_drawdown": 384.8659999683732,
+        "max_drawdown_fraction": 0.0003848649015639441,
+        "profit_factor": 0.7685135865056802,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 11,
+        "coverage": 1.0,
+        "wilson_interval_descriptive_iid": [
+          0.45825129373931783,
+          0.49365985311593596
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 4,
+        "worst_day_pnl": -34.988,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 3095,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.7986425339366516,
+      "raw_win_rate_minus_break_even": -0.06571082054868493,
+      "guarded_economics": {
+        "opportunities": 3094,
+        "accepted_trades": 623,
+        "rejected_signals": 2471,
+        "rejection_reasons": {
+          "daily_loss_stop": 118,
+          "drawdown_or_capital_stop": 2353
+        },
+        "wins": 281,
+        "losses": 336,
+        "refunds": 6,
+        "win_rate": 0.4554294975688817,
+        "loss_rate": 0.5445705024311183,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416321345656839,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.1579390048154093,
+        "expected_pnl_per_trade": -1.5793900481540926,
+        "total_simulated_pnl": -983.9599999999997,
+        "max_drawdown": 1012.5000000002619,
+        "max_drawdown_fraction": 0.10096185486623806,
+        "profit_factor": 0.7077497000154448,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 8,
+        "coverage": 0.20135746606334842,
+        "wilson_interval_descriptive_iid": [
+          0.4165305368917571,
+          0.49488001854300057
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 7,
+        "profitable_days": 0,
+        "worst_day_pnl": -200.35999999999996,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 1031,
+          "trades": 1031,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1487992240543162,
+          "unit_ev_per_trade": -0.1487992240543162,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 448,
+              "trades": 448,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.11505803571428573,
+              "unit_ev_per_trade": -0.11505803571428573
+            },
+            "high_volatility": {
+              "opportunities": 583,
+              "trades": 583,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.17472727272727273,
+              "unit_ev_per_trade": -0.17472727272727273
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 1031,
+          "trades": 1031,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.11194180407371485,
+          "unit_ev_per_trade": -0.11194180407371485,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 355,
+              "trades": 355,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.1043943661971831,
+              "unit_ev_per_trade": -0.1043943661971831
+            },
+            "high_volatility": {
+              "opportunities": 676,
+              "trades": 676,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.11590532544378698,
+              "unit_ev_per_trade": -0.11590532544378698
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 1032,
+          "trades": 1032,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.09914147286821705,
+          "unit_ev_per_trade": -0.09914147286821705,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 455,
+              "trades": 455,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.17342857142857143,
+              "unit_ev_per_trade": -0.17342857142857143
+            },
+            "high_volatility": {
+              "opportunities": 577,
+              "trades": 577,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.04056152512998269,
+              "unit_ev_per_trade": -0.04056152512998269
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 630,
+          "trades": 630,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.09096825396825399,
+          "unit_ev_per_trade": -0.09096825396825399
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 628,
+          "trades": 628,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.14061464968152868,
+          "unit_ev_per_trade": -0.14061464968152868
+        },
+        "OTHER": {
+          "opportunities": 1278,
+          "trades": 1278,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1466400625978091,
+          "unit_ev_per_trade": -0.1466400625978091
+        },
+        "OVERLAP": {
+          "opportunities": 558,
+          "trades": 558,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.0683082437275986,
+          "unit_ev_per_trade": -0.0683082437275986
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.19039689722042663,
+          "unit_ev_per_trade": -0.19039689722042663
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.11995410471881061,
+          "unit_ev_per_trade": -0.11995410471881061
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.0729922430510666,
+          "unit_ev_per_trade": -0.0729922430510666
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.06783710407239821,
+          "unit_ev_per_trade": -0.06783710407239821
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.11995410471881061,
+          "unit_ev_per_trade": -0.11995410471881061
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1681118293471235,
+          "unit_ev_per_trade": -0.1681118293471235
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.11995410471881061,
+        "pointwise_day_block_interval_95": [
+          -0.1531432751100298,
+          -0.08654317579258937
+        ],
+        "simultaneous_lower_bound": -0.17827422383774588,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": 0.006035875888817066,
+        "pointwise_day_block_interval_95": [
+          -0.025555104544897126,
+          0.03757496252312114
+        ],
+        "simultaneous_lower_bound": -0.052284243230118196,
+        "family_adjusted_p_value": 0.9972506873281679,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "random",
+      "timeframe_seconds": 300,
+      "opportunities": 3094,
+      "trades": 3094,
+      "coverage": 1.0,
+      "unit_ev_per_opportunity": -0.12014802844214609,
+      "unit_ev_per_trade": -0.12014802844214609,
+      "uncensored_counterfactual": {
+        "opportunities": 3094,
+        "accepted_trades": 3094,
+        "rejected_signals": 0,
+        "rejection_reasons": {},
+        "wins": 1457,
+        "losses": 1604,
+        "refunds": 33,
+        "win_rate": 0.47598823913753674,
+        "loss_rate": 0.5240117608624633,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.541633276530369,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.12014802844214609,
+        "expected_pnl_per_trade": -0.1201480284421461,
+        "total_simulated_pnl": -371.73800000000006,
+        "max_drawdown": 378.2179999680957,
+        "max_drawdown_fraction": 0.00037821554913133713,
+        "profit_factor": 0.7687152283929187,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 13,
+        "coverage": 1.0,
+        "wilson_interval_descriptive_iid": [
+          0.4583370700358646,
+          0.4936996007103725
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 1,
+        "worst_day_pnl": -42.538000000000004,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 3095,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.7766645119586296,
+      "raw_win_rate_minus_break_even": -0.06564503739283223,
+      "guarded_economics": {
+        "opportunities": 3094,
+        "accepted_trades": 691,
+        "rejected_signals": 2403,
+        "rejection_reasons": {
+          "daily_loss_stop": 35,
+          "drawdown_or_capital_stop": 2368
+        },
+        "wins": 322,
+        "losses": 367,
+        "refunds": 2,
+        "win_rate": 0.46734397677793904,
+        "loss_rate": 0.532656023222061,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416247597379672,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.13702170767004337,
+        "expected_pnl_per_trade": -1.3702170767004338,
+        "total_simulated_pnl": -946.8199999999997,
+        "max_drawdown": 1011.6200000002755,
+        "max_drawdown_fraction": 0.10051069072413542,
+        "profit_factor": 0.7425286481136026,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 8,
+        "coverage": 0.2233354880413704,
+        "wilson_interval_descriptive_iid": [
+          0.4303733919704775,
+          0.5046766841658499
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 7,
+        "profitable_days": 0,
+        "worst_day_pnl": -197.99999999999994,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 1031,
+          "trades": 1031,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.12232007759456838,
+          "unit_ev_per_trade": -0.12232007759456838,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 448,
+              "trades": 448,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.14273660714285713,
+              "unit_ev_per_trade": -0.14273660714285713
+            },
+            "high_volatility": {
+              "opportunities": 583,
+              "trades": 583,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.10663121783876503,
+              "unit_ev_per_trade": -0.10663121783876503
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 1031,
+          "trades": 1031,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.11291173617846752,
+          "unit_ev_per_trade": -0.11291173617846752,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 355,
+              "trades": 355,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.07833802816901408,
+              "unit_ev_per_trade": -0.07833802816901408
+            },
+            "high_volatility": {
+              "opportunities": 676,
+              "trades": 676,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.13106804733727812,
+              "unit_ev_per_trade": -0.13106804733727812
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 1032,
+          "trades": 1032,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.12520736434108526,
+          "unit_ev_per_trade": -0.12520736434108526,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 455,
+              "trades": 455,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.1874945054945055,
+              "unit_ev_per_trade": -0.1874945054945055
+            },
+            "high_volatility": {
+              "opportunities": 577,
+              "trades": 577,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.07609012131715773,
+              "unit_ev_per_trade": -0.07609012131715773
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 630,
+          "trades": 630,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.10295238095238098,
+          "unit_ev_per_trade": -0.10295238095238098
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 628,
+          "trades": 628,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.13360828025477708,
+          "unit_ev_per_trade": -0.13360828025477708
+        },
+        "OTHER": {
+          "opportunities": 1278,
+          "trades": 1278,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1214835680751174,
+          "unit_ev_per_trade": -0.1214835680751174
+        },
+        "OVERLAP": {
+          "opportunities": 558,
+          "trades": 558,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.12135483870967743,
+          "unit_ev_per_trade": -0.12135483870967743
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1907847446670976,
+          "unit_ev_per_trade": -0.1907847446670976
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.12014802844214609,
+          "unit_ev_per_trade": -0.12014802844214609
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.07305688429217841,
+          "unit_ev_per_trade": -0.07305688429217841
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.06783710407239821,
+          "unit_ev_per_trade": -0.06783710407239821
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.12014802844214609,
+          "unit_ev_per_trade": -0.12014802844214609
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.16103361344537814,
+          "unit_ev_per_trade": -0.16103361344537814
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.12014802844214609,
+        "pointwise_day_block_interval_95": [
+          -0.1437839722970528,
+          -0.09751513830574737
+        ],
+        "simultaneous_lower_bound": -0.17846814756108134,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": 0.005841952165481578,
+        "pointwise_day_block_interval_95": [
+          -0.01797104249999594,
+          0.02675682512458408
+        ],
+        "simultaneous_lower_bound": -0.052478166953453684,
+        "family_adjusted_p_value": 0.9975006248437891,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "momentum",
+      "timeframe_seconds": 300,
+      "opportunities": 3094,
+      "trades": 3047,
+      "coverage": 0.9848093083387202,
+      "unit_ev_per_opportunity": -0.1522605042016807,
+      "unit_ev_per_trade": -0.15460912372825733,
+      "uncensored_counterfactual": {
+        "opportunities": 3094,
+        "accepted_trades": 3047,
+        "rejected_signals": 47,
+        "rejection_reasons": {
+          "no_signal": 47
+        },
+        "wins": 1380,
+        "losses": 1638,
+        "refunds": 29,
+        "win_rate": 0.4572564612326044,
+        "loss_rate": 0.5427435387673957,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416320097433418,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.15460912372825733,
+        "expected_pnl_per_trade": -0.15460912372825733,
+        "total_simulated_pnl": -471.09400000000005,
+        "max_drawdown": 475.79799996700604,
+        "max_drawdown_fraction": 0.0004757957618237423,
+        "profit_factor": 0.7129810264090063,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 11,
+        "coverage": 0.9848093083387202,
+        "wilson_interval_descriptive_iid": [
+          0.4395488113868795,
+          0.4750727849093448
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 4,
+        "worst_day_pnl": -40.382,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 3095,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.8677387594355104,
+      "raw_win_rate_minus_break_even": -0.08437554851073742,
+      "guarded_economics": {
+        "opportunities": 3094,
+        "accepted_trades": 403,
+        "rejected_signals": 2691,
+        "rejection_reasons": {
+          "no_signal": 47,
+          "daily_loss_stop": 87,
+          "consecutive_loss_stop": 2557
+        },
+        "wins": 187,
+        "losses": 214,
+        "refunds": 2,
+        "win_rate": 0.46633416458852867,
+        "loss_rate": 0.5336658354114713,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.541627013547213,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.1386004962779156,
+        "expected_pnl_per_trade": -1.386004962779156,
+        "total_simulated_pnl": -558.5599999999998,
+        "max_drawdown": 608.7200000001358,
+        "max_drawdown_fraction": 0.06058699875785668,
+        "profit_factor": 0.7395164900761081,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 10,
+        "coverage": 0.13025210084033614,
+        "wilson_interval_descriptive_iid": [
+          0.41805786153798297,
+          0.515249364261837
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 5,
+        "profitable_days": 1,
+        "worst_day_pnl": -200.35999999999996,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 1031,
+          "trades": 1011,
+          "coverage": 0.9806013579049466,
+          "unit_ev_per_opportunity": -0.16209699321047524,
+          "unit_ev_per_trade": -0.16530365974282887,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 448,
+              "trades": 435,
+              "coverage": 0.9709821428571429,
+              "unit_ev_per_opportunity": -0.13654017857142858,
+              "unit_ev_per_trade": -0.1406206896551724
+            },
+            "high_volatility": {
+              "opportunities": 583,
+              "trades": 576,
+              "coverage": 0.9879931389365352,
+              "unit_ev_per_opportunity": -0.18173584905660378,
+              "unit_ev_per_trade": -0.18394444444444447
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 1031,
+          "trades": 1020,
+          "coverage": 0.9893307468477207,
+          "unit_ev_per_opportunity": -0.15605237633365662,
+          "unit_ev_per_trade": -0.15773529411764706,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 355,
+              "trades": 352,
+              "coverage": 0.9915492957746479,
+              "unit_ev_per_opportunity": -0.15846197183098593,
+              "unit_ev_per_trade": -0.15981250000000002
+            },
+            "high_volatility": {
+              "opportunities": 676,
+              "trades": 668,
+              "coverage": 0.9881656804733728,
+              "unit_ev_per_opportunity": -0.15478698224852072,
+              "unit_ev_per_trade": -0.15664071856287426
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 1032,
+          "trades": 1016,
+          "coverage": 0.9844961240310077,
+          "unit_ev_per_opportunity": -0.1386453488372093,
+          "unit_ev_per_trade": -0.14082874015748031,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 455,
+              "trades": 445,
+              "coverage": 0.978021978021978,
+              "unit_ev_per_opportunity": -0.158,
+              "unit_ev_per_trade": -0.16155056179775282
+            },
+            "high_volatility": {
+              "opportunities": 577,
+              "trades": 571,
+              "coverage": 0.9896013864818024,
+              "unit_ev_per_opportunity": -0.1233830155979203,
+              "unit_ev_per_trade": -0.12467950963222418
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 630,
+          "trades": 621,
+          "coverage": 0.9857142857142858,
+          "unit_ev_per_opportunity": -0.20181269841269842,
+          "unit_ev_per_trade": -0.20473752012882449
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 628,
+          "trades": 619,
+          "coverage": 0.9856687898089171,
+          "unit_ev_per_opportunity": -0.15300636942675158,
+          "unit_ev_per_trade": -0.15523101777059772
+        },
+        "OTHER": {
+          "opportunities": 1278,
+          "trades": 1254,
+          "coverage": 0.9812206572769953,
+          "unit_ev_per_opportunity": -0.15657902973395932,
+          "unit_ev_per_trade": -0.15957575757575757
+        },
+        "OVERLAP": {
+          "opportunities": 558,
+          "trades": 553,
+          "coverage": 0.9910394265232975,
+          "unit_ev_per_opportunity": -0.08558422939068103,
+          "unit_ev_per_trade": -0.08635804701627489
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.21916418875242405,
+          "unit_ev_per_trade": -0.2225447981621267
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.1522605042016807,
+          "unit_ev_per_trade": -0.15460912372825733
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.10765804783451843,
+          "unit_ev_per_trade": -0.10931867410567774
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.10201809954751132,
+          "unit_ev_per_trade": -0.10359172957006892
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.1522605042016807,
+          "unit_ev_per_trade": -0.15460912372825733
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.18639107950872655,
+          "unit_ev_per_trade": -0.18926616343944863
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.15226050420168066,
+        "pointwise_day_block_interval_95": [
+          -0.178525328880729,
+          -0.1272796767857655
+        ],
+        "simultaneous_lower_bound": -0.21058062332061592,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": -0.026270523594053,
+        "pointwise_day_block_interval_95": [
+          -0.051993162703053736,
+          -0.0016689312338692673
+        ],
+        "simultaneous_lower_bound": -0.08459064271298826,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "ma_crossover",
+      "timeframe_seconds": 300,
+      "opportunities": 3094,
+      "trades": 3094,
+      "coverage": 1.0,
+      "unit_ev_per_opportunity": -0.1351447963800905,
+      "unit_ev_per_trade": -0.1351447963800905,
+      "uncensored_counterfactual": {
+        "opportunities": 3094,
+        "accepted_trades": 3094,
+        "rejected_signals": 0,
+        "rejection_reasons": {},
+        "wins": 1433,
+        "losses": 1630,
+        "refunds": 31,
+        "win_rate": 0.46784198498204377,
+        "loss_rate": 0.5321580150179562,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416325630233564,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.1351447963800905,
+        "expected_pnl_per_trade": -0.1351447963800905,
+        "total_simulated_pnl": -418.13800000000003,
+        "max_drawdown": 424.84599996719044,
+        "max_drawdown_fraction": 0.0004248442640535275,
+        "profit_factor": 0.7439953664984613,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 10,
+        "coverage": 1.0,
+        "wilson_interval_descriptive_iid": [
+          0.4502229664646845,
+          0.4855415643579315
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 3,
+        "worst_day_pnl": -45.238,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 3095,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.8652230122818358,
+      "raw_win_rate_minus_break_even": -0.07379057804131262,
+      "guarded_economics": {
+        "opportunities": 3094,
+        "accepted_trades": 417,
+        "rejected_signals": 2677,
+        "rejection_reasons": {
+          "daily_loss_stop": 165,
+          "consecutive_loss_stop": 2512
+        },
+        "wins": 178,
+        "losses": 235,
+        "refunds": 4,
+        "win_rate": 0.43099273607748184,
+        "loss_rate": 0.5690072639225182,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416320921405667,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.20271942446043165,
+        "expected_pnl_per_trade": -2.027194244604316,
+        "total_simulated_pnl": -845.3399999999998,
+        "max_drawdown": 886.200000000179,
+        "max_drawdown_fraction": 0.08825937220518754,
+        "profit_factor": 0.641011049864531,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 10,
+        "coverage": 0.13477698771816418,
+        "wilson_interval_descriptive_iid": [
+          0.38408471956689727,
+          0.47917264412897553
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 6,
+        "profitable_days": 0,
+        "worst_day_pnl": -202.65999999999997,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 1031,
+          "trades": 1031,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.16247526673132878,
+          "unit_ev_per_trade": -0.16247526673132878,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 448,
+              "trades": 448,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.1852589285714286,
+              "unit_ev_per_trade": -0.1852589285714286
+            },
+            "high_volatility": {
+              "opportunities": 583,
+              "trades": 583,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.14496740994854201,
+              "unit_ev_per_trade": -0.14496740994854201
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 1031,
+          "trades": 1031,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.13444422890397673,
+          "unit_ev_per_trade": -0.13444422890397673,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 355,
+              "trades": 355,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.09354929577464786,
+              "unit_ev_per_trade": -0.09354929577464786
+            },
+            "high_volatility": {
+              "opportunities": 676,
+              "trades": 676,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.1559201183431953,
+              "unit_ev_per_trade": -0.1559201183431953
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 1032,
+          "trades": 1032,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1085406976744186,
+          "unit_ev_per_trade": -0.1085406976744186,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 455,
+              "trades": 455,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.10903296703296707,
+              "unit_ev_per_trade": -0.10903296703296707
+            },
+            "high_volatility": {
+              "opportunities": 577,
+              "trades": 577,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.10815251299826689,
+              "unit_ev_per_trade": -0.10815251299826689
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 630,
+          "trades": 630,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.0954920634920635,
+          "unit_ev_per_trade": -0.0954920634920635
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 628,
+          "trades": 628,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.12477070063694266,
+          "unit_ev_per_trade": -0.12477070063694266
+        },
+        "OTHER": {
+          "opportunities": 1278,
+          "trades": 1278,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.16213302034428798,
+          "unit_ev_per_trade": -0.16213302034428798
+        },
+        "OVERLAP": {
+          "opportunities": 558,
+          "trades": 558,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1297777777777778,
+          "unit_ev_per_trade": -0.1297777777777778
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.20461797026502912,
+          "unit_ev_per_trade": -0.20461797026502912
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1351447963800905,
+          "unit_ev_per_trade": -0.1351447963800905
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.08882934712346478,
+          "unit_ev_per_trade": -0.08882934712346478
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.0815895281189399,
+          "unit_ev_per_trade": -0.0815895281189399
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1351447963800905,
+          "unit_ev_per_trade": -0.1351447963800905
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.17690303813833225,
+          "unit_ev_per_trade": -0.17690303813833225
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.1351447963800905,
+        "pointwise_day_block_interval_95": [
+          -0.17876547882737553,
+          -0.09130798656438602
+        ],
+        "simultaneous_lower_bound": -0.19346491549902575,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": -0.009154815772462828,
+        "pointwise_day_block_interval_95": [
+          -0.051000817284463,
+          0.03269116381351808
+        ],
+        "simultaneous_lower_bound": -0.0674749348913981,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "inverse_momentum",
+      "timeframe_seconds": 300,
+      "opportunities": 3094,
+      "trades": 3047,
+      "coverage": 0.9848093083387202,
+      "unit_ev_per_opportunity": -0.09411570782159016,
+      "unit_ev_per_trade": -0.09556744338693796,
+      "uncensored_counterfactual": {
+        "opportunities": 3094,
+        "accepted_trades": 3047,
+        "rejected_signals": 47,
+        "rejection_reasons": {
+          "no_signal": 47
+        },
+        "wins": 1474,
+        "losses": 1538,
+        "refunds": 35,
+        "win_rate": 0.4893758300132802,
+        "loss_rate": 0.5106241699867198,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416341839847815,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.09556744338693796,
+        "expected_pnl_per_trade": -0.09556744338693798,
+        "total_simulated_pnl": -291.194,
+        "max_drawdown": 295.27999996906146,
+        "max_drawdown_fraction": 0.0002952797495718338,
+        "profit_factor": 0.8110535925862962,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 9,
+        "coverage": 0.9848093083387202,
+        "wilson_interval_descriptive_iid": [
+          0.47154849776628316,
+          0.507230227550058
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 3,
+        "worst_day_pnl": -33.984,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 3095,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.5881194617656711,
+      "raw_win_rate_minus_break_even": -0.05225835397150125,
+      "guarded_economics": {
+        "opportunities": 3094,
+        "accepted_trades": 1255,
+        "rejected_signals": 1839,
+        "rejection_reasons": {
+          "no_signal": 47,
+          "daily_loss_stop": 131,
+          "drawdown_or_capital_stop": 1661
+        },
+        "wins": 619,
+        "losses": 623,
+        "refunds": 13,
+        "win_rate": 0.49838969404186795,
+        "loss_rate": 0.501610305958132,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416329372851112,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.07917131474103582,
+        "expected_pnl_per_trade": -0.7917131474103581,
+        "total_simulated_pnl": -993.5999999999995,
+        "max_drawdown": 1002.0800000005474,
+        "max_drawdown_fraction": 0.10012309561497325,
+        "profit_factor": 0.8408386088115437,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 9,
+        "coverage": 0.40562378797672916,
+        "wilson_interval_descriptive_iid": [
+          0.4706305042926136,
+          0.526158814306732
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 13,
+        "profitable_days": 2,
+        "worst_day_pnl": -202.67999999999998,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 1031,
+          "trades": 1011,
+          "coverage": 0.9806013579049466,
+          "unit_ev_per_opportunity": -0.08450242483026188,
+          "unit_ev_per_trade": -0.08617408506429278,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 448,
+              "trades": 435,
+              "coverage": 0.9709821428571429,
+              "unit_ev_per_opportunity": -0.13107142857142856,
+              "unit_ev_per_trade": -0.13498850574712642
+            },
+            "high_volatility": {
+              "opportunities": 583,
+              "trades": 576,
+              "coverage": 0.9879931389365352,
+              "unit_ev_per_opportunity": -0.04871698113207548,
+              "unit_ev_per_trade": -0.049309027777777785
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 1031,
+          "trades": 1020,
+          "coverage": 0.9893307468477207,
+          "unit_ev_per_opportunity": -0.08539282250242482,
+          "unit_ev_per_trade": -0.08631372549019607,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 355,
+              "trades": 352,
+              "coverage": 0.9915492957746479,
+              "unit_ev_per_opportunity": -0.12240563380281692,
+              "unit_ev_per_trade": -0.12344886363636366
+            },
+            "high_volatility": {
+              "opportunities": 676,
+              "trades": 668,
+              "coverage": 0.9881656804733728,
+              "unit_ev_per_opportunity": -0.06595562130177517,
+              "unit_ev_per_trade": -0.06674550898203595
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 1032,
+          "trades": 1016,
+          "coverage": 0.9844961240310077,
+          "unit_ev_per_opportunity": -0.11243410852713179,
+          "unit_ev_per_trade": -0.11420472440944883,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 455,
+              "trades": 445,
+              "coverage": 0.978021978021978,
+              "unit_ev_per_opportunity": -0.12294505494505494,
+              "unit_ev_per_trade": -0.12570786516853932
+            },
+            "high_volatility": {
+              "opportunities": 577,
+              "trades": 571,
+              "coverage": 0.9896013864818024,
+              "unit_ev_per_opportunity": -0.10414558058925479,
+              "unit_ev_per_trade": -0.10523992994746062
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 630,
+          "trades": 621,
+          "coverage": 0.9857142857142858,
+          "unit_ev_per_opportunity": -0.019511111111111125,
+          "unit_ev_per_trade": -0.019793880837359112
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 628,
+          "trades": 619,
+          "coverage": 0.9856687898089171,
+          "unit_ev_per_opportunity": -0.08978980891719747,
+          "unit_ev_per_trade": -0.09109531502423265
+        },
+        "OTHER": {
+          "opportunities": 1278,
+          "trades": 1254,
+          "coverage": 0.9812206572769953,
+          "unit_ev_per_opportunity": -0.11702503912363067,
+          "unit_ev_per_trade": -0.11926475279106857
+        },
+        "OVERLAP": {
+          "opportunities": 558,
+          "trades": 553,
+          "coverage": 0.9910394265232975,
+          "unit_ev_per_opportunity": -0.13074551971326165,
+          "unit_ev_per_trade": -0.1319276672694394
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.16557659987071752,
+          "unit_ev_per_trade": -0.16813062028224482
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.09411570782159016,
+          "unit_ev_per_trade": -0.09556744338693796
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.04647511312217196,
+          "unit_ev_per_trade": -0.04719199212340008
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.047606334841628975,
+          "unit_ev_per_trade": -0.048340662947161155
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.09411570782159016,
+          "unit_ev_per_trade": -0.09556744338693796
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 3094,
+          "trades": 3047,
+          "coverage": 0.9848093083387202,
+          "unit_ev_per_opportunity": -0.14009179056237883,
+          "unit_ev_per_trade": -0.14225270758122746
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.09411570782159018,
+        "pointwise_day_block_interval_95": [
+          -0.11893924606103792,
+          -0.06806058049311901
+        ],
+        "simultaneous_lower_bound": -0.15243582694052543,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": 0.03187427278603751,
+        "pointwise_day_block_interval_95": [
+          0.008916378554367029,
+          0.05622282298501747
+        ],
+        "simultaneous_lower_bound": -0.026445846332897753,
+        "family_adjusted_p_value": 0.21969507623094225,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    },
+    {
+      "name": "inverse_ma_crossover",
+      "timeframe_seconds": 300,
+      "opportunities": 3094,
+      "trades": 3094,
+      "coverage": 1.0,
+      "unit_ev_per_opportunity": -0.11683516483516486,
+      "unit_ev_per_trade": -0.11683516483516486,
+      "uncensored_counterfactual": {
+        "opportunities": 3094,
+        "accepted_trades": 3094,
+        "rejected_signals": 0,
+        "rejection_reasons": {},
+        "wins": 1462,
+        "losses": 1598,
+        "refunds": 34,
+        "win_rate": 0.4777777777777778,
+        "loss_rate": 0.5222222222222223,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416336336336336,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.11683516483516486,
+        "expected_pnl_per_trade": -0.11683516483516486,
+        "total_simulated_pnl": -361.48800000000006,
+        "max_drawdown": 371.36199996841606,
+        "max_drawdown_fraction": 0.0003713589058060126,
+        "profit_factor": 0.7742483438083915,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 13,
+        "coverage": 1.0,
+        "wilson_interval_descriptive_iid": [
+          0.46011856040033516,
+          0.4954927198085476
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 26,
+        "profitable_days": 7,
+        "worst_day_pnl": -41.538000000000004,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 1000000,
+          "fixed_stake": 1,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 1,
+          "daily_loss_fraction": 1,
+          "drawdown_fraction": 1,
+          "consecutive_loss_limit": 3095,
+          "min_confidence": 0,
+          "min_ev": -1
+        }
+      },
+      "risk_brake_excluded_fraction": 0.6725921137685844,
+      "raw_win_rate_minus_break_even": -0.06385585585585579,
+      "guarded_economics": {
+        "opportunities": 3094,
+        "accepted_trades": 1013,
+        "rejected_signals": 2081,
+        "rejection_reasons": {
+          "daily_loss_stop": 138,
+          "drawdown_or_capital_stop": 1943
+        },
+        "wins": 494,
+        "losses": 511,
+        "refunds": 8,
+        "win_rate": 0.49154228855721394,
+        "loss_rate": 0.5084577114427861,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416302272421675,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.09193089832181635,
+        "expected_pnl_per_trade": -0.9193089832181635,
+        "total_simulated_pnl": -931.2599999999995,
+        "max_drawdown": 1014.5800000004056,
+        "max_drawdown_fraction": 0.10061963718303191,
+        "profit_factor": 0.8181267796530726,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 8,
+        "coverage": 0.32740788623141565,
+        "wilson_interval_descriptive_iid": [
+          0.460725235264804,
+          0.5224237522680115
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.05,
+        "multiple_testing_family_size": 1,
+        "evaluated_days": 11,
+        "profitable_days": 3,
+        "worst_day_pnl": -192.67999999999998,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        }
+      },
+      "folds": [
+        {
+          "fold": 0,
+          "opportunities": 1031,
+          "trades": 1031,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.09249466537342385,
+          "unit_ev_per_trade": -0.09249466537342385,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 448,
+              "trades": 448,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.09508035714285715,
+              "unit_ev_per_trade": -0.09508035714285715
+            },
+            "high_volatility": {
+              "opportunities": 583,
+              "trades": 583,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.09050771869639797,
+              "unit_ev_per_trade": -0.09050771869639797
+            }
+          }
+        },
+        {
+          "fold": 1,
+          "opportunities": 1031,
+          "trades": 1031,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.10946847720659555,
+          "unit_ev_per_trade": -0.10946847720659555,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 355,
+              "trades": 355,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.18861971830985919,
+              "unit_ev_per_trade": -0.18861971830985919
+            },
+            "high_volatility": {
+              "opportunities": 676,
+              "trades": 676,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.06790236686390534,
+              "unit_ev_per_trade": -0.06790236686390534
+            }
+          }
+        },
+        {
+          "fold": 2,
+          "opportunities": 1032,
+          "trades": 1032,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.14851162790697675,
+          "unit_ev_per_trade": -0.14851162790697675,
+          "regimes_train_boundary": {
+            "low_volatility": {
+              "opportunities": 455,
+              "trades": 455,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.17936263736263736,
+              "unit_ev_per_trade": -0.17936263736263736
+            },
+            "high_volatility": {
+              "opportunities": 577,
+              "trades": 577,
+              "coverage": 1.0,
+              "unit_ev_per_opportunity": -0.1241837088388215,
+              "unit_ev_per_trade": -0.1241837088388215
+            }
+          }
+        }
+      ],
+      "sessions_descriptive_not_selected": {
+        "LONDON_ONLY": {
+          "opportunities": 630,
+          "trades": 630,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.13096825396825396,
+          "unit_ev_per_trade": -0.13096825396825396
+        },
+        "NEW_YORK_ONLY": {
+          "opportunities": 628,
+          "trades": 628,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.12023248407643312,
+          "unit_ev_per_trade": -0.12023248407643312
+        },
+        "OTHER": {
+          "opportunities": 1278,
+          "trades": 1278,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1187057902973396,
+          "unit_ev_per_trade": -0.1187057902973396
+        },
+        "OVERLAP": {
+          "opportunities": 558,
+          "trades": 558,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.09277060931899643,
+          "unit_ev_per_trade": -0.09277060931899643
+        }
+      },
+      "sensitivity_descriptive": [
+        {
+          "payout": 0.7,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.18771428571428572,
+          "unit_ev_per_trade": -0.18771428571428572
+        },
+        {
+          "payout": 0.85,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.11683516483516486,
+          "unit_ev_per_trade": -0.11683516483516486
+        },
+        {
+          "payout": 0.95,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.06958241758241758,
+          "unit_ev_per_trade": -0.06958241758241758
+        },
+        {
+          "slippage_price": 0.0,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.07022882999353589,
+          "unit_ev_per_trade": -0.07022882999353589
+        },
+        {
+          "slippage_price": 1e-05,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.11683516483516486,
+          "unit_ev_per_trade": -0.11683516483516486
+        },
+        {
+          "slippage_price": 2e-05,
+          "opportunities": 3094,
+          "trades": 3094,
+          "coverage": 1.0,
+          "unit_ev_per_opportunity": -0.1596923076923077,
+          "unit_ev_per_trade": -0.1596923076923077
+        }
+      ],
+      "absolute_ev_inference": {
+        "mean_unit_return_per_opportunity": -0.11683516483516486,
+        "pointwise_day_block_interval_95": [
+          -0.1584387984718972,
+          -0.0756824198468804
+        ],
+        "simultaneous_lower_bound": -0.17515528395410013,
+        "family_adjusted_p_value": 1.0,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "advantage_over_random_inference": {
+        "mean_unit_return_per_opportunity": 0.009154815772462828,
+        "pointwise_day_block_interval_95": [
+          -0.03269116381351808,
+          0.051000817284463
+        ],
+        "simultaneous_lower_bound": -0.049165303346472435,
+        "family_adjusted_p_value": 0.9730067483129218,
+        "alpha_spent": 0.008333333333333333,
+        "hypotheses": 32,
+        "day_clusters": 26,
+        "resampling_calendar_clusters": 26,
+        "resamples": 4000,
+        "tail_resolution_adequate": true,
+        "method": "CENTERED_MAXIMUM_PAIRED_TWO_DAY_BLOCK_BOOTSTRAP_APPROXIMATE"
+      },
+      "failed_development_gates": [
+        "INSUFFICIENT_INDEPENDENT_PERIOD_COVERAGE",
+        "SIMULTANEOUS_EVIDENCE_NOT_POSITIVE",
+        "NOT_POSITIVE_IN_ALL_FOLDS",
+        "COST_PAYOUT_ROBUSTNESS"
+      ],
+      "classification": "NO_DEMONSTRATED_EDGE"
+    }
+  ],
+  "model_failure_analysis": {
+    "majority_class": {
+      "folds": [
+        {
+          "fold": 0,
+          "accuracy": 0.4996465717459356,
+          "brier_score": 0.2500003542030437,
+          "log_loss": 0.6931478889661586,
+          "calibration_error": 0.0006921810272339513,
+          "brier_improvement_over_majority": 0.0,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.0
+        },
+        {
+          "fold": 1,
+          "accuracy": 0.5054581872809214,
+          "brier_score": 0.24998988357535004,
+          "log_loss": 0.6931269476838985,
+          "calibration_error": 0.004435694279779134,
+          "brier_improvement_over_majority": 0.0,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.0
+        },
+        {
+          "fold": 2,
+          "accuracy": 0.49416381565707385,
+          "brier_score": 0.2500060379801206,
+          "log_loss": 0.6931592565242315,
+          "calibration_error": 0.006332379316277337,
+          "brier_improvement_over_majority": 0.0,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.0
+        }
+      ],
+      "pooled_economics": {
+        "name": "majority_class",
+        "classification": "INSUFFICIENT_AUTHENTIC_DATA",
+        "opportunities": 31337,
+        "accepted_trades": 0,
+        "rejected_signals": 31337,
+        "rejection_reasons": {
+          "no_signal": 31337
+        },
+        "wins": 0,
+        "losses": 0,
+        "refunds": 0,
+        "win_rate": null,
+        "loss_rate": null,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": null,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": null,
+        "expected_pnl_per_trade": null,
+        "total_simulated_pnl": 0,
+        "max_drawdown": 0.0,
+        "max_drawdown_fraction": 0.0,
+        "profit_factor": null,
+        "profit_factor_status": "NO_LOSSES_OR_NO_TRADES",
+        "longest_losing_streak": 0,
+        "coverage": 0.0,
+        "wilson_interval_descriptive_iid": [
+          0.0,
+          1.0
+        ],
+        "block_bootstrap_unit_ev_interval": null,
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.002777777777777778,
+        "multiple_testing_family_size": 18,
+        "evaluated_days": 0,
+        "profitable_days": 0,
+        "worst_day_pnl": null,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        },
+        "pnl_to_max_drawdown": null
+      },
+      "interpretation": "DEVELOPMENT_DIAGNOSTIC_NOT_A_NEW_SELECTION_TRIAL"
+    },
+    "logistic_regression": {
+      "folds": [
+        {
+          "fold": 0,
+          "accuracy": 0.49944461274361307,
+          "brier_score": 0.25003365657383536,
+          "log_loss": 0.6932115039306472,
+          "calibration_error": 0.007812619928223435,
+          "brier_improvement_over_majority": -3.330237079168796e-05,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.0002872187649593107
+        },
+        {
+          "fold": 1,
+          "accuracy": 0.5020530796194291,
+          "brier_score": 0.2501488127209042,
+          "log_loss": 0.6934438177722798,
+          "calibration_error": 0.005924790849922322,
+          "brier_improvement_over_majority": -0.00015892914555418192,
+          "selected_threshold": 0.65,
+          "trade_coverage": 9.573958831977022e-05
+        },
+        {
+          "fold": 2,
+          "accuracy": 0.49557254980881466,
+          "brier_score": 0.25017582418923806,
+          "log_loss": 0.6934965954899309,
+          "calibration_error": 0.01133488690221429,
+          "brier_improvement_over_majority": -0.00016978620911745068,
+          "selected_threshold": 0.65,
+          "trade_coverage": 9.572125969177755e-05
+        }
+      ],
+      "pooled_economics": {
+        "name": "logistic_regression",
+        "classification": "INSUFFICIENT_AUTHENTIC_DATA",
+        "opportunities": 31337,
+        "accepted_trades": 5,
+        "rejected_signals": 31332,
+        "rejection_reasons": {
+          "no_signal": 31332
+        },
+        "wins": 4,
+        "losses": 1,
+        "refunds": 0,
+        "win_rate": 0.8,
+        "loss_rate": 0.2,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416216216216216,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": 0.4780000000000001,
+        "expected_pnl_per_trade": 4.78,
+        "total_simulated_pnl": 23.900000000000002,
+        "max_drawdown": 10.020000000000437,
+        "max_drawdown_fraction": 0.0010011510239317496,
+        "profit_factor": 3.385229540918164,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 1,
+        "coverage": 0.00015955579666209274,
+        "wilson_interval_descriptive_iid": [
+          0.23379945432918225,
+          0.9812855758304287
+        ],
+        "block_bootstrap_unit_ev_interval": [
+          -0.3853333333333333,
+          0.8480000000000002
+        ],
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.002777777777777778,
+        "multiple_testing_family_size": 18,
+        "evaluated_days": 5,
+        "profitable_days": 4,
+        "worst_day_pnl": -10.02,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        },
+        "pnl_to_max_drawdown": 2.38522954091806
+      },
+      "interpretation": "DEVELOPMENT_DIAGNOSTIC_NOT_A_NEW_SELECTION_TRIAL"
+    },
+    "random_forest": {
+      "folds": [
+        {
+          "fold": 0,
+          "accuracy": 0.5006563667575482,
+          "brier_score": 0.2500946777371878,
+          "log_loss": 0.693336610218976,
+          "calibration_error": 0.0047003827857357355,
+          "brier_improvement_over_majority": -9.432353414412509e-05,
+          "selected_threshold": 0.55,
+          "trade_coverage": 0.0004786979415988511
+        },
+        {
+          "fold": 1,
+          "accuracy": 0.4945418127190786,
+          "brier_score": 0.286027686810696,
+          "log_loss": 0.7704974839579206,
+          "calibration_error": 0.18988806846415596,
+          "brier_improvement_over_majority": -0.03603780323534597,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.04959310674964098
+        },
+        {
+          "fold": 2,
+          "accuracy": 0.49416381565707385,
+          "brier_score": 0.39220825721160296,
+          "log_loss": 1.1052291033179593,
+          "calibration_error": 0.37715025949248965,
+          "brier_improvement_over_majority": -0.14220221923148235,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.008806355891643533
+        }
+      ],
+      "pooled_economics": {
+        "name": "random_forest",
+        "classification": "NO_DEMONSTRATED_EDGE",
+        "opportunities": 31337,
+        "accepted_trades": 521,
+        "rejected_signals": 30816,
+        "rejection_reasons": {
+          "no_signal": 10440,
+          "overlapping_exposure": 516,
+          "daily_loss_stop": 5513,
+          "drawdown_or_capital_stop": 14347
+        },
+        "wins": 217,
+        "losses": 281,
+        "refunds": 23,
+        "win_rate": 0.4357429718875502,
+        "loss_rate": 0.5642570281124498,
+        "break_even_no_refund_win_rate": 0.5416216216216216,
+        "break_even_decisive_win_rate": 0.5416715510691413,
+        "ev_filter_assumption": "DIRECTIONAL_PROBABILITY_NO_REFUND_MODEL",
+        "expected_unit_return_per_trade": -0.18731669865642991,
+        "expected_pnl_per_trade": -1.8731669865642988,
+        "total_simulated_pnl": -975.9199999999997,
+        "max_drawdown": 1009.8400000002257,
+        "max_drawdown_fraction": 0.10064262023219499,
+        "profit_factor": 0.6534473452458738,
+        "profit_factor_status": "DEFINED",
+        "longest_losing_streak": 8,
+        "coverage": 0.01662571401219006,
+        "wilson_interval_descriptive_iid": [
+          0.3709903151758701,
+          0.5027639879831639
+        ],
+        "block_bootstrap_unit_ev_interval": [
+          -0.28758558965706554,
+          -0.07626213824443914
+        ],
+        "block_bootstrap_interval_scope": "POINTWISE_95_PERCENT_DESCRIPTIVE",
+        "familywise_alpha": 0.002777777777777778,
+        "multiple_testing_family_size": 18,
+        "evaluated_days": 8,
+        "profitable_days": 1,
+        "worst_day_pnl": -203.57999999999993,
+        "policy": {
+          "payout": 0.85,
+          "cost_rate": 0.002,
+          "slippage_price": 1e-05,
+          "initial_capital": 10000.0,
+          "fixed_stake": 10.0,
+          "stake_fraction": 0.001,
+          "sizing": "fixed",
+          "max_exposure_fraction": 0.01,
+          "daily_loss_fraction": 0.02,
+          "drawdown_fraction": 0.1,
+          "consecutive_loss_limit": 10,
+          "min_confidence": 0.0,
+          "min_ev": -1.0
+        },
+        "pnl_to_max_drawdown": -0.9664105204782754
+      },
+      "interpretation": "DEVELOPMENT_DIAGNOSTIC_NOT_A_NEW_SELECTION_TRIAL"
+    }
+  },
+  "limitations": [
+    "No sealed holdout performance was used or evaluated.",
+    "Day-block inference is approximate under weak dependence/local stationarity.",
+    "Prospective alpha spending does not repair unknown prior research selection bias.",
+    "Derived 5-minute bars and assumed payouts do not validate native Blitz execution.",
+    "Uncensored results are counterfactual; guarded risk settings remain separate.",
+    "Session and volatility summaries are descriptive, not post-hoc selected strategies."
+  ]
+}

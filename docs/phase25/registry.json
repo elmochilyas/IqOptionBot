@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "runs": [
+    {
+      "slot": 1,
+      "protocol_hash": "36cd0063b9b250a9949677b8d0f9402ab2780b1adfcd348a1feedef8fc5a6a5d",
+      "alpha": 0.025
+    },
+    {
+      "slot": 2,
+      "protocol_hash": "c90a7dc78dbb2247a24aaaa4331206a093739f8a79c4e0cd31584e9b1e844e06",
+      "alpha": 0.008333333333333333
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "observed_date": "2026-11-17",
+  "status": "EXPANSION_BLOCKED_CREDENTIALS_UNAVAILABLE",
+  "secure_vault_backend": true,
+  "saved_credentials_available": false,
+  "environment_credentials_available": false,
+  "broker_network_requests_made": 0,
+  "new_authentic_broker_candles": 0,
+  "reason": "No authenticated session can be established without a usable local login.",
+  "pilot_request_cap": 4,
+  "pilot_new_candle_cap": 2000,
+  "symbol": "EURUSD",
+  "timeframe_seconds": 60
+}

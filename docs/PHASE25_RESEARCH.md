@@ -87,6 +87,26 @@ verified per-ticket terms would be needed for that claim.
    have been explored before. No retrospective adjustment can make that work a
    fresh independent confirmation.
 
+## Recorded comparative result
+
+Every trading rule has negative primary net unit EV under the declared assumptions.
+The least-negative result is inverse momentum on derived five-minute bars:
+**−0.0941 per common opportunity**, with simultaneous lower bound **−0.1524**.
+That is not an edge. No-trade has zero return and is a preservation control, not a
+profitable prediction system. All candidates fail the development gates.
+
+Both logistic regression and random forest have worse Brier scores than the
+class-frequency baseline in all three development folds. RF's deterioration versus
+that baseline reaches approximately 0.0360 and 0.1422 in the later two folds.
+This establishes unreliable out-of-sample probabilities, without pretending that
+the diagnostic alone identifies whether fitting, calibration drift or weak features
+caused the failure. Additional model complexity is not justified by these results.
+
+The captured final protocol uses registry slot 2, alpha **0.0083333**, across
+32 joint hypotheses. The initial implementation trial's slot is retained rather
+than deleted to recover a larger budget. Both final repetitions at the same code,
+data and protocol produce identical JSON reports.
+
 ## Frozen family and fair comparison
 
 The declared family contains eight strategies: no-trade, always CALL, always PUT,
@@ -191,6 +211,11 @@ source/development/derived fingerprints, code revision, implementation hash, see
 package versions, registry slot, alpha and assumptions. A different revision field
 after a report-only commit is expected; implementation/data fingerprints and
 numerical comparisons remain the relevant reproduction checks.
+The preserved workspace contains the verified native data and current registry.
+For a clean-copy reproduction, the recorded ledger is also available as
+`phase25/registry.json`; initialize a missing working registry from that snapshot
+only once, and never overwrite an existing experiment ledger. Native quote data
+is not replaced by fixtures if absent.
 
 For a later locally authenticated operator, the existing read-only connector can
 run a bounded pilot without any trade:

@@ -4,12 +4,14 @@ All exceptions are designed to be safe to display: they never include
 credentials, tokens, cookies, or full authentication payloads.
 """
 
+_BuiltinConnectionError = ConnectionError
+
 
 class IQOptionError(Exception):
     """Base error for the IQ Option connector."""
 
 
-class ConnectionError(IQOptionError):
+class ConnectionError(IQOptionError, _BuiltinConnectionError):
     """WebSocket or HTTP transport failure."""
 
 

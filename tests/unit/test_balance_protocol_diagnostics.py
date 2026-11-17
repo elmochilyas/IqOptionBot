@@ -194,7 +194,8 @@ async def test_existing_success_status_representations(
         ("2000", "UNRECOGNIZED", "STRING", "2000", None),
         ("success", "UNRECOGNIZED", "STRING", "success", None),
         (2001, "UNRECOGNIZED", "INTEGER", None, 2001),
-        (0, "UNRECOGNIZED", "INTEGER", None, 0),
+        ("0", "UNRECOGNIZED", "STRING", None, None),
+        (0.0, "UNRECOGNIZED", "NUMBER", None, None),
         (-1, "UNRECOGNIZED", "INTEGER", None, None),
         (True, "UNRECOGNIZED", "BOOLEAN", None, None),
         ({"status": 2000}, "UNRECOGNIZED", "OBJECT", None, None),
@@ -248,9 +249,7 @@ async def test_status_wire_code_ignores_payload_status() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("request_id", ["ABSENT", "DIFFERENT"])
 async def test_uncorrelated_balance_does_not_establish_a_wallet(request_id: str) -> None:
-    obs, _ = make_observer(
-        {"name": "balances", "status": 2000, "msg": WALLETS}, request_id=request_id
-    )
+    obs, _ = make_observer({"name": "balances", "status": 0, "msg": WALLETS}, request_id=request_id)
     assert not await obs.async_refresh_account_state(timeout_seconds=0.02)
     assert obs._last_refresh_failure == "BALANCES_RESPONSE_TIMEOUT"
     assert obs.practice_balance is None
@@ -269,6 +268,15 @@ async def test_uncorrelated_balance_does_not_establish_a_wallet(request_id: str)
         (
             {"name": "error", "status": 4000, "msg": {"secret": "DO-NOT-LOG"}},
             "BALANCES_RESPONSE_REJECTED",
+        ),
+        ({"name": "error", "status": 0, "msg": WALLETS}, "BALANCES_RESPONSE_REJECTED"),
+        (
+            {"name": "result", "status": 0, "msg": WALLETS},
+            "BALANCES_RESPONSE_STATUS_UNRECOGNIZED",
+        ),
+        (
+            {"name": "balances", "status": 0, "body": WALLETS},
+            "BALANCES_RESPONSE_STATUS_UNRECOGNIZED",
         ),
         (
             {"name": "balances", "status": "unexpected-private-status", "msg": WALLETS},
@@ -301,7 +309,7 @@ async def test_classifies_correlated_failures_without_payloads(
     ],
 )
 async def test_invalid_or_duplicate_wallets_do_not_authorize_partial_snapshot(bad: Any) -> None:
-    obs, _ = make_observer({"name": "balances", "msg": [WALLETS[0], bad]})
+    obs, _ = make_observer({"name": "balances", "status": 0, "msg": [WALLETS[0], bad]})
     assert not await obs.async_refresh_account_state(timeout_seconds=0.05)
     assert obs._last_refresh_failure == "BALANCES_RESPONSE_INVALID"
     assert obs.practice_balance is None
@@ -311,7 +319,7 @@ async def test_invalid_or_duplicate_wallets_do_not_authorize_partial_snapshot(ba
 @pytest.mark.asyncio
 async def test_multiple_practice_wallets_do_not_choose_one() -> None:
     extra = {"id": 982345673, "type": 4, "amount": 50, "currency": "USD"}
-    obs, _ = make_observer({"name": "balances", "status": 2000, "msg": [*WALLETS, extra]})
+    obs, _ = make_observer({"name": "balances", "status": 0, "msg": [*WALLETS, extra]})
     assert not await obs.async_refresh_account_state(timeout_seconds=0.05)
     assert obs._last_refresh_failure == "PRACTICE_WALLET_AMBIGUOUS"
     assert obs.practice_balance is None
@@ -325,7 +333,7 @@ async def test_multiple_practice_wallets_do_not_choose_one() -> None:
 async def test_success_status_does_not_replace_required_wallets(
     balances: list[dict[str, Any]], error: str
 ) -> None:
-    obs, _ = make_observer({"name": "balances", "status": 2000, "msg": balances})
+    obs, _ = make_observer({"name": "balances", "status": 0, "msg": balances})
     assert not await obs.async_refresh_account_state(timeout_seconds=0.05)
     assert obs._last_refresh_failure == error
     assert obs.practice_balance is None

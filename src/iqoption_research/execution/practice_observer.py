@@ -675,10 +675,20 @@ class PassivePracticeObserver:
     @staticmethod
     def _balance_status(message: dict[str, Any]) -> str:
         status = message.get("status")
-        if message.get("name") == "error" or status is False:
+        name = message.get("name")
+        if name == "error" or status is False:
             return "REJECTED"
         if status is None:
             return "ABSENT"
+        # The authenticated IQ Option get-balances v1.0 reply uses integer 0
+        # on its balances/list envelope. Snapshot and request ID checks still apply.
+        if (
+            type(status) is int
+            and status == 0
+            and name == "balances"
+            and isinstance(message.get("msg"), list)
+        ):
+            return "SUCCESS"
         if isinstance(status, (int, float)) and not isinstance(status, bool):
             if status == 2000:
                 return "SUCCESS"

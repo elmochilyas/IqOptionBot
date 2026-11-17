@@ -77,10 +77,12 @@ class ScriptedSocket:
         auth: Any = True,
         profile: Any = None,
         balances: Any = None,
+        balance_status: int = 2000,
     ) -> None:
         self.obs = obs
         self.auth = auth
         self.profile = {"user_id": 123} if profile is None else profile
+        self.balance_status = balance_status
         self.balances = (
             [
                 {"id": 101, "type": 4, "amount": 9000, "currency": "USD"},
@@ -106,7 +108,7 @@ class ScriptedSocket:
         elif frame["msg"]["name"] == "get-balances":
             self.obs._handle_incoming_frame({
                 "name": "balances",
-                "status": 2000,
+                "status": self.balance_status,
                 "msg": self.balances,
                 "request_id": frame["request_id"],
             })
@@ -122,22 +124,36 @@ class ScriptedSocket:
 
 
 @pytest.mark.asyncio
-async def test_unsolicited_session_profile_and_correlated_balance(monkeypatch: Any) -> None:
-    obs = PassivePracticeObserver(ssid="private-ssid")
-    socket = ScriptedSocket(obs)
+@pytest.mark.parametrize("balance_status", [0, 2000])
+async def test_unsolicited_session_profile_and_correlated_balance(
+    monkeypatch: Any, balance_status: int
+) -> None:
+    obs = PassivePracticeObserver(ssid="private-ssid", balance_diagnostics=True)
+    socket = ScriptedSocket(obs, balance_status=balance_status)
     connector = AsyncMock(return_value=socket)
     monkeypatch.setattr(observer_module, "ws_connect", connector)
     await obs.async_connect()
     assert connector.call_args.kwargs["logger"].disabled is True
     assert obs.practice_balance is not None and str(obs.practice_balance.id) == "101"
+    assert obs.real_balance is not None and str(obs.real_balance.id) == "102"
     assert obs.failure_diagnostics()["last_successful_stage"] == "PRACTICE_WALLET_ESTABLISHED"
     assert [f["name"] for f in socket.sent] == ["authenticate", "sendMessage", "sendMessage"]
     assert [f["msg"]["name"] for f in socket.sent[1:]] == ["get-profile", "get-balances"]
-    assert await obs.async_get_options_history() == {
-        **history(),
-        "request_id": socket.sent[-1]["request_id"],
-    }
-    assert socket.sent[-1]["msg"]["name"] == "get-options"
+    result = await recover_history(obs, asset="EURUSD", stake=1000, start=1, end=2)
+    assert result["history_status"] == "HISTORY_NOT_FOUND"
+    assert obs.failure_diagnostics()["history_response_correlated"] is True
+    assert [f["msg"]["name"] for f in socket.sent[1:]] == [
+        "get-profile",
+        "get-balances",
+        "get-options",
+        "get-profile",
+        "get-balances",
+    ]
+    for snapshot in obs.balance_protocol_diagnostics():
+        assert snapshot["initialization_condition"] == "BALANCE_SNAPSHOT_ACCEPTED"
+        response = snapshot["responses"][0]
+        assert response["status"] == "SUCCESS"
+        assert response["status_wire_code"] == balance_status
     await obs.async_close()
 
 

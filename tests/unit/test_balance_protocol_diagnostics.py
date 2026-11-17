@@ -99,6 +99,7 @@ async def test_correlated_envelopes_use_existing_request_schema(
         "request_id": "MATCH",
         "status": "SUCCESS",
         "status_wire_type": "INTEGER",
+        "status_wire_code": 2000,
         "status_wire_constant": "2000",
         "envelope": shape,
         "balance_array_detected": True,
@@ -183,26 +184,35 @@ async def test_existing_success_status_representations(
     assert obs.practice_balance is not None and obs.practice_balance.type == AccountType.PRACTICE
     assert obs.real_balance is not None and obs.real_balance.type == AccountType.REAL
     assert obs.balance_protocol_diagnostics()[0]["responses"][0]["status_wire_type"] == wire_type
+    assert "status_wire_code" not in obs.balance_protocol_diagnostics()[0]["responses"][0]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("status", "classification", "wire_type", "wire_constant"),
+    ("status", "classification", "wire_type", "wire_constant", "wire_code"),
     [
-        ("2000", "UNRECOGNIZED", "STRING", "2000"),
-        ("success", "UNRECOGNIZED", "STRING", "success"),
-        (2001, "UNRECOGNIZED", "INTEGER", None),
-        (True, "UNRECOGNIZED", "BOOLEAN", None),
-        ({"status": 2000}, "UNRECOGNIZED", "OBJECT", None),
-        (["PRIVATE-STATUS"], "UNRECOGNIZED", "ARRAY", None),
-        (False, "REJECTED", "BOOLEAN", None),
-        ("error", "REJECTED", "STRING", "error"),
-        (4000, "REJECTED", "INTEGER", "4000"),
-        (4789, "REJECTED", "INTEGER", None),
+        ("2000", "UNRECOGNIZED", "STRING", "2000", None),
+        ("success", "UNRECOGNIZED", "STRING", "success", None),
+        (2001, "UNRECOGNIZED", "INTEGER", None, 2001),
+        (0, "UNRECOGNIZED", "INTEGER", None, 0),
+        (-1, "UNRECOGNIZED", "INTEGER", None, None),
+        (True, "UNRECOGNIZED", "BOOLEAN", None, None),
+        ({"status": 2000}, "UNRECOGNIZED", "OBJECT", None, None),
+        (["PRIVATE-STATUS"], "UNRECOGNIZED", "ARRAY", None, None),
+        (False, "REJECTED", "BOOLEAN", None, None),
+        ("error", "REJECTED", "STRING", "error", None),
+        (4000, "REJECTED", "INTEGER", "4000", 4000),
+        (9999, "REJECTED", "INTEGER", None, 9999),
+        (10000, "REJECTED", "INTEGER", None, None),
+        (982345671, "REJECTED", "INTEGER", None, None),
     ],
 )
 async def test_only_documented_statuses_pass_even_with_valid_wallets(
-    status: Any, classification: str, wire_type: str, wire_constant: str | None
+    status: Any,
+    classification: str,
+    wire_type: str,
+    wire_constant: str | None,
+    wire_code: int | None,
 ) -> None:
     obs, _ = make_observer({"name": "balances", "status": status, "msg": WALLETS})
     assert not await obs.async_refresh_account_state(timeout_seconds=0.05)
@@ -213,7 +223,26 @@ async def test_only_documented_statuses_pass_even_with_valid_wallets(
     assert response["status"] == classification
     assert response["status_wire_type"] == wire_type
     assert response.get("status_wire_constant") == wire_constant
-    assert "PRIVATE-STATUS" not in json.dumps(response)
+    if wire_code is None:
+        assert "status_wire_code" not in response
+    else:
+        assert type(response["status_wire_code"]) is int
+        assert response["status_wire_code"] == wire_code
+    serialized = json.dumps(response)
+    assert "PRIVATE-STATUS" not in serialized
+    assert "982345671" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_status_wire_code_ignores_payload_status() -> None:
+    obs, _ = make_observer({
+        "name": "balances",
+        "msg": {"balances": WALLETS, "status": 2001},
+    })
+    assert await obs.async_refresh_account_state(timeout_seconds=0.05)
+    response = obs.balance_protocol_diagnostics()[0]["responses"][0]
+    assert response["status_wire_type"] == "MISSING"
+    assert "status_wire_code" not in response
 
 
 @pytest.mark.asyncio

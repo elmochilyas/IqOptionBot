@@ -690,7 +690,7 @@ class PassivePracticeObserver:
         return "UNRECOGNIZED"
 
     @staticmethod
-    def _balance_status_metadata(message: dict[str, Any]) -> dict[str, str]:
+    def _balance_status_metadata(message: dict[str, Any]) -> dict[str, str | int]:
         """Describe the wire representation without echoing arbitrary status values."""
         if "status" not in message:
             return {"status_wire_type": "MISSING"}
@@ -704,7 +704,11 @@ class PassivePracticeObserver:
             dict: "OBJECT",
             list: "ARRAY",
         }.get(type(status), "OTHER")
-        metadata = {"status_wire_type": wire_type}
+        metadata: dict[str, str | int] = {"status_wire_type": wire_type}
+        # Limit diagnostic output to the protocol's small numeric code space.
+        # A code in this range is not necessarily a recognized status.
+        if type(status) is int and 0 <= status <= 9999:
+            metadata["status_wire_code"] = status
         # String forms are traced separately and do not inherit numeric success semantics.
         if isinstance(status, str) and status in {"2000", "4000", "success", "error"}:
             metadata["status_wire_constant"] = status

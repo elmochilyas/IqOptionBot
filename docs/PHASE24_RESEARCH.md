@@ -185,9 +185,13 @@ or hardware changes should be treated as different experiments.
 
 Baseline `b7ba371`: 1,733 tests passed, with one inherited failure in
 `test_session_reuse_open_socket_exception_cleans_up` (old exception-message regex
-versus the wrapped connection error). Phase 24 full suite: 1,766 passed, the same
+versus the wrapped connection error). Phase 24 full suite: 1,767 passed, the same
 one failure and the same three getpass warnings. Final targeted/static checks and
-benchmark results are recorded in the draft PR.
+benchmark results are recorded in the draft PR. The final targeted run passes
+50 tests, including 34 new Phase 24 cases. Ruff, formatting (283 files), MyPy
+(174 source files), the offline security check and `git diff --check` pass.
+Two identical authentic-data runs produce matching JSON reports; the confirmation
+reservation hash remains unchanged.
 
 Tests cover synthetic/mixed provenance, tampering, UTC ordering, missing/duplicate
 data, future-feature mutations, next-candle labels, overlap purge, holdout isolation,

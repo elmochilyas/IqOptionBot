@@ -614,9 +614,11 @@ def write_reports(report: dict[str, Any], output: Path) -> None:
         "",
     ]
     for group in report["coverage"]["datasets"]:
+        count = group.get("unique_candles")
+        verified_count = f"{count:,}" if count is not None else "UNVERIFIED"
         lines.append(
             f"- {group['symbol']} {group['timeframe_seconds']}s / {group['source']}: "
-            f"{group['status']}; {group.get('unique_candles', 0):,} unique candles."
+            f"{group['status']}; {verified_count} unique candles."
         )
     lines += [
         "",

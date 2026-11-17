@@ -50,7 +50,7 @@ from iqoption_research.execution.modes import (
     RealAccountExecutionBlockedError,
     UnsupportedProductOperationError,
 )
-from iqoption_research.execution.practice_history import recover_history
+from iqoption_research.execution.practice_history import normalize_history_asset, recover_history
 from iqoption_research.execution.practice_observer import (
     MockPassivePracticeObserver,
     ObservedPracticeTradeRecord,
@@ -2280,7 +2280,7 @@ def practice_observe_command(
                             end=time.time(),
                         )
                         console.print("Read-only history reconciliation after missed event:")
-                        console.print_json(json.dumps(history))
+                        console.print_json(json.dumps(_history_classifications(history)))
                         if record:
                             await asyncio.to_thread(
                                 Path(record).write_text,
@@ -2491,17 +2491,38 @@ def practice_observe_command(
 practice_observe = practice_observe_command
 
 
+def _history_classifications(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "history_status": result["history_status"],
+        "position_status": result["position_status"],
+        "wallet_status": result["wallet_status"],
+        "settlement_status": result["settlement_status"],
+        "candidate_count": result["candidate_count"],
+        "incomplete_candidate_count": len(result["incomplete_candidates"]),
+        "real_wallet_status": result["account"]["real_wallet_status"],
+        "history_may_be_truncated": result["query_limit_may_truncate_history"],
+        "operator_reconciliation_required": True,
+    }
+
+
 def practice_history_command(
     live: bool = typer.Option(False, "--live", help="Connect to broker read-only."),
-    asset: str = typer.Option(..., "--asset", help="Exact asset, e.g. EURUSD or EURUSD-OTC."),
+    asset: str = typer.Option(
+        ..., "--asset", help="Exact asset: EURUSD, EURUSD-OTC or EURUSD_OP (Blitz history)."
+    ),
     stake: float = typer.Option(..., "--stake", help="Exact virtual trade stake."),
     start: str = typer.Option(..., "--start", help="Inclusive ISO-8601 start with UTC offset."),
     end: str = typer.Option(..., "--end", help="Inclusive ISO-8601 end with UTC offset."),
     limit: int = typer.Option(100, "--limit", min=1, max=1000),
     ticket: str | None = typer.Option(None, "--ticket", help="Exact broker ticket if known."),
+    balance_diagnostics: bool = typer.Option(
+        False,
+        "--balance-diagnostics",
+        help="Print sanitized account and history protocol metadata and bounded record shapes.",
+    ),
     record: str | None = typer.Option(None, "--record", help="Save allowlisted evidence JSON."),
 ) -> None:
-    """Query broker history for classic binary/turbo options; never submits orders."""
+    """Query broker options history; never submits orders."""
     if not live:
         raise typer.BadParameter("Explicit --live is required for a broker history query.")
     try:
@@ -2510,16 +2531,22 @@ def practice_history_command(
             raise ValueError("Timestamps must include a UTC offset")
         if start_dt >= end_dt:
             raise ValueError("Start must be earlier than end")
-        from iqoption_research.market_data.instruments import InstrumentRegistry
-
-        InstrumentRegistry.normalize_symbol(asset)
+        normalize_history_asset(asset)
     except (ValueError, TypeError) as exc:
         raise typer.BadParameter(str(exc)) from exc
+    search_window_utc = {
+        "start": start_dt.astimezone(UTC).isoformat(),
+        "end": end_dt.astimezone(UTC).isoformat(),
+    }
     email = os.environ.get("IQOPTION_EMAIL") or typer.prompt("IQ Option Account Email")
     password = os.environ.get("IQOPTION_PASSWORD") or typer.prompt(
         "IQ Option Password", hide_input=True
     )
-    observer = PassivePracticeObserver(credentials=Credentials(email=email, password=password))
+    observer = PassivePracticeObserver(
+        credentials=Credentials(email=email, password=password),
+        balance_diagnostics=balance_diagnostics,
+        history_only=True,
+    )
 
     async def run() -> dict[str, Any]:
         try:
@@ -2538,14 +2565,31 @@ def practice_history_command(
 
     try:
         result = asyncio.run(run())
-    except Exception as exc:
-        # Broker payloads and credentials must not be echoed in exception text.
-        console.print(
-            f"[red]History query failed ({type(exc).__name__}); history unverified.[/red]"
+    except Exception:  # noqa: BLE001 - never expose broker or transport errors
+        console.print("[red]Read-only history query failed; history is unverified.[/red]")
+        console.print_json(
+            json.dumps({
+                **observer.failure_diagnostics(),
+                "search_window_utc": search_window_utc,
+            })
         )
-        raise typer.Exit(code=1) from exc
-    console.print_json(json.dumps(result))
+        raise typer.Exit(code=1) from None
+    if balance_diagnostics:
+        console.print_json(json.dumps(observer.account_protocol_diagnostics()))
+    # Display only non-personal classifications; detailed evidence is opt-in on disk.
+    console.print_json(
+        json.dumps({
+            **_history_classifications(result),
+            **observer.profile_verification_diagnostics(),
+            "search_window_utc": search_window_utc,
+            "evidence_export_requested": record is not None,
+        })
+    )
     if record:
-        Path(record).write_text(json.dumps(result, indent=2), encoding="utf-8")
+        try:
+            Path(record).write_text(json.dumps(result, indent=2), encoding="utf-8")
+        except (OSError, ValueError):
+            console.print("[red]Unable to save history evidence.[/red]")
+            raise typer.Exit(code=1) from None
     if result["account"]["real_wallet_status"] == "MUTATED":
         raise typer.Exit(code=1)

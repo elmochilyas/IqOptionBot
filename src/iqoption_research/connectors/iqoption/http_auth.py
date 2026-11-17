@@ -19,7 +19,6 @@ from iqoption_research.connectors.iqoption.exceptions import (
 from iqoption_research.models.connection import ConnectionConfig
 from iqoption_research.security import (
     create_tls_context,
-    redact_dict,
     validate_https_endpoint,
 )
 from iqoption_research.security.credentials import Credentials
@@ -111,12 +110,8 @@ async def async_login(
             except (aiohttp.ContentTypeError, ValueError):
                 payload = None
 
-            # Log sanitized response only; never log raw auth payloads.
-            logger.debug(
-                "Login response: status=%s, payload=%s",
-                response.status,
-                redact_dict(payload or {}),
-            )
+            # Broker payloads may contain unexpected personal or secret fields.
+            logger.debug("Login response: status=%s", response.status)
 
             if response.status != 200:
                 err_msg = f"Login failed: HTTP {response.status}"

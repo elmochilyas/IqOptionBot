@@ -134,7 +134,7 @@ def simulate(
     maximum_drawdown_ratio = 0.0
     day = -1
     day_capital = capital
-    day_streak = streak = longest = 0
+    streak = longest = 0
     busy_until = 0
     accepted = np.zeros(len(indices), dtype=np.int64)
     returns = np.zeros(len(indices), dtype=float)
@@ -148,7 +148,7 @@ def simulate(
         timestamp = int(data.timestamps[index])
         current_day = timestamp // 86400
         if current_day != day:
-            day, day_capital, day_streak = current_day, capital, 0
+            day, day_capital = current_day, capital
         confidence = (
             (float(probabilities[offset]) if direction == 1 else 1 - float(probabilities[offset]))
             if probabilities is not None
@@ -161,7 +161,7 @@ def simulate(
             reason = "drawdown_or_capital_stop"
         elif day_capital - capital >= day_capital * policy.daily_loss_fraction:
             reason = "daily_loss_stop"
-        elif day_streak >= policy.consecutive_loss_limit:
+        elif streak >= policy.consecutive_loss_limit:
             reason = "consecutive_loss_stop"
         elif (policy.min_confidence > 0 or policy.min_ev > -1) and confidence is None:
             reason = "probabilistic_evidence_unavailable"
@@ -198,7 +198,6 @@ def simulate(
         pnls.append(pnl)
         counts[str(settlement.outcome)] += 1
         streak = streak + 1 if pnl < 0 else 0
-        day_streak = day_streak + 1 if pnl < 0 else 0
         longest = max(longest, streak)
         periods.setdefault(str(current_day), []).append(pnl)
     trades = len(pnls)

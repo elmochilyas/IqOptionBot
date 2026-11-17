@@ -338,3 +338,25 @@ def test_refund_costs_raise_decisive_break_even_and_percent_sizing_compounds() -
     assert metrics["break_even_decisive_win_rate"] == pytest.approx(1.015 / 1.85)
     assert metrics["break_even_no_refund_win_rate"] == pytest.approx(1.01 / 1.85)
     assert metrics["accepted_trades"] == 3
+
+
+def test_global_loss_streak_brake_cannot_reset_at_midnight() -> None:
+    data = simple_data([-1, -1, -1])
+    data = replace(
+        data,
+        timestamps=np.asarray([86340, 86400, 86460]),
+        entry_timestamps=np.asarray([86340, 86400, 86460]),
+        exit_timestamps=np.asarray([86400, 86460, 86520]),
+    )
+    result = simulate(
+        data,
+        np.arange(3),
+        np.ones(3),
+        SimulationPolicy(
+            consecutive_loss_limit=1,
+            slippage_price=0,
+        ),
+        bootstrap=False,
+    )
+    assert result["accepted_trades"] == 1
+    assert result["rejection_reasons"]["consecutive_loss_stop"] == 2

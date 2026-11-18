@@ -1,0 +1,68 @@
+name: Safe Offline CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'codex/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Lint, Typecheck, Security & Offline Test Suite
+    runs-on: windows-latest
+    env:
+      IQOPTION_EMAIL: ""
+      IQOPTION_PASSWORD: ""
+      IQOPTION_SSID: ""
+      OPENAI_API_KEY: ""
+      CI: "true"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Upgrade pip and install package with dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Verify dependency consistency
+        run: |
+          python -m pip check
+
+      - name: Run Ruff Linter
+        run: |
+          python -m ruff check src tests
+
+      - name: Check Ruff Formatting
+        run: |
+          python -m ruff format src tests --check
+
+      - name: Run MyPy Type Checker
+        run: |
+          python -m mypy src
+
+      - name: Run Application Security Check
+        run: |
+          python -m iqoption_research.cli.main security-check --json
+
+      - name: Run Full Offline Pytest Suite
+        run: |
+          python -m pytest -q

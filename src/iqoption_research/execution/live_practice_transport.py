@@ -1621,10 +1621,7 @@ class IQOptionLivePracticeTransport:
         if self._thread is not None and self._thread.is_alive():
             return
 
-        if hasattr(asyncio, "SelectorEventLoop"):
-            self._loop = asyncio.SelectorEventLoop()
-        else:
-            self._loop = asyncio.new_event_loop()
+        self._loop = asyncio.new_event_loop()
         connected_event = threading.Event()
         conn_error: list[Exception] = []
 

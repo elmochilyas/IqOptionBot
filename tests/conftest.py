@@ -51,9 +51,13 @@ if sys.platform == "win32":
             self._csock = None
             self._internal_fds -= 1
 
+        _dummy_overlapped = _overlapped.Overlapped()
+
         def _sandbox_write_to_self(self: Any) -> None:
             if self._proactor is not None and getattr(self._proactor, "_iocp", None) is not None:
-                _overlapped.PostQueuedCompletionStatus(self._proactor._iocp, 0, 0, 0)
+                _overlapped.PostQueuedCompletionStatus(
+                    self._proactor._iocp, 0, 0, _dummy_overlapped.address
+                )
 
         def _noop(*_args: Any, **_kwargs: Any) -> None:
             pass

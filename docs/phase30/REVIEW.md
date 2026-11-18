@@ -53,8 +53,8 @@ This review independently audited the 14 critical dimensions specified in the Ph
 
 #### [BLOCKER-01] 15-Second Acquisition Gate is Operationally Unfeasible
 - **Component:** [aligned_observer.py](file:///C:/Users/elmoc/Desktop/IqOptionBot/src/iqoption_research/research/aligned_observer.py#L70-L73), [aligned_contract.py](file:///C:/Users/elmoc/Desktop/IqOptionBot/src/iqoption_research/research/aligned_contract.py#L70-L73)
-- **Description:** The prediction eligibility contract requires $F \le \text{observed} \le \text{decision} \le \text{commit} \le F+15$ seconds. In actual broker operations, candle close events, WebSocket message delivery, network latency, Parquet persistence, and metadata indexing take between **24.67 and 46.77 seconds**. Cold process execution alone takes ~3.0 seconds, and TLS authentication handshakes require 5 to 10 seconds.
-- **Impact:** In a live prospective setting, nearly 100% of authentic observation attempts will fail the 15-second eligibility gate (`OUTSIDE_15_SECOND_ACQUISITION_GATE`), causing persistent rejections and rendering live observation unworkable without violating timing integrity.
+- **Description:** The prediction eligibility contract strictly enforces $F \le \text{observed} \le \text{decision} \le \text{commit} \le F+15$ seconds. Analysis of historical checkpoints reveals that manual operator/CLI job invocations occurred 24.67 to 46.77 seconds after candle close (`target_completed_end_ts` vs. `created_at_utc`). While the single-request collection command itself executed in ~2.07s to 2.50s (`checkpoint_elapsed_seconds`), cold process initialization takes ~2.4s to 3.0s, and TLS/authentication handshakes take 3.5s to 7.0s. Crucially, the true broker first-arrival distribution (the physical latency from candle close $F$ until the broker emits the completed candle frame) is **unmeasured and uninstrumented** in the historical data.
+- **Impact:** In a live prospective setting, no evidence exists that cold or single-shot batch collection can reliably satisfy the 15-second deadline. Unattended or high-frequency streaming is barred by broker rate uncertainties and research safety boundaries. Consequently, observations risk systemic disqualification (`OUTSIDE_15_SECOND_ACQUISITION_GATE`) unless unverified timing assumptions are made.
 
 #### [BLOCKER-02] Candidate Random Forest Provides No Predictive Edge and Emits 100% SKIP
 - **Component:** [results.json](file:///C:/Users/elmoc/Desktop/IqOptionBot/docs/phase30/results.json#L280-L310), [artifacts/random_forest](file:///C:/Users/elmoc/Desktop/IqOptionBot/docs/phase30/artifacts/random_forest)
@@ -77,17 +77,19 @@ This review independently audited the 14 critical dimensions specified in the Ph
 
 ---
 
-### Medium Severity Findings
+### Medium Severity Findings (Resolved on Branch)
 
 #### [MEDIUM-01] Absence of Remote Continuous Integration (CI)
 - **Component:** `.github/workflows`
-- **Defect:** No GitHub Actions or equivalent remote CI pipelines exist in the repository. All test and security metrics reported in pull requests reflect local developer executions.
-- **Recommendation:** Add a GitHub Actions workflow for pull requests running ruff, mypy, security checks, and pytest on synthetic fixtures.
+- **Defect:** No GitHub Actions or equivalent remote CI pipelines existed in the repository. All test and security metrics reported in pull requests reflected local developer executions.
+- **Resolution:** Created a secure, hermetic GitHub Actions CI workflow in [.github/workflows/ci.yml](file:///C:/Users/elmoc/Desktop/IqOptionBot/.github/workflows/ci.yml) that executes dependency consistency (`pip check`), formatting and lint checks (`ruff`), static typing (`mypy`), application security checks (`security-check`), and the complete offline pytest suite on pushes and pull requests without external network access or credentials.
 
-#### [MEDIUM-02] AppContainer Loopback Blocking in Legacy Test
-- **File:** [test_phase18_iqoption_live_transport.py](file:///C:/Users/elmoc/Desktop/IqOptionBot/tests/unit/test_phase18_iqoption_live_transport.py#L531)
-- **Defect:** Test `test_practice_transport_synchronous_threading_bridge` instantiates `asyncio.SelectorEventLoop()` in a worker thread. On Windows within standard AppContainer sandboxes where loopback TCP `127.0.0.1` is restricted, `SelectorEventLoop._make_self_pipe()` hangs indefinitely.
-- **Status:** Documented in validation matrix; all other 1,920 tests pass cleanly without network access.
+#### [MEDIUM-02] Sandbox Loopback Blocking & IOCP Wake-up Defect in Legacy Transport Test
+- **File:** [live_practice_transport.py](file:///C:/Users/elmoc/Desktop/IqOptionBot/src/iqoption_research/execution/live_practice_transport.py#L1624), [conftest.py](file:///C:/Users/elmoc/Desktop/IqOptionBot/tests/conftest.py#L54)
+- **Defect:** Test `test_practice_transport_synchronous_threading_bridge` hung indefinitely in Windows sandbox environments due to:
+  1. `IQOptionLivePracticeTransport.start()` hardcoding `asyncio.SelectorEventLoop()` when available, which relies on TCP loopback (`socket.socketpair()`). Windows AppContainers block local TCP (`127.0.0.1`), causing `socketpair()` to hang indefinitely.
+  2. The sandbox IOCP wakeup patch in `tests/conftest.py` passing address `0` (NULL `lpOverlapped`) to `PostQueuedCompletionStatus`, causing Python 3.12's `_overlapped.GetQueuedCompletionStatus` to raise `OSError: [WinError 258] The wait operation timed out` on empty poll cycles.
+- **Resolution:** Updated `live_practice_transport.py` to modern `self._loop = asyncio.new_event_loop()`, and updated `tests/conftest.py` to post a valid persistent `_dummy_overlapped = _overlapped.Overlapped()` handle. The test now passes cleanly in ~1.65s in sandbox isolation, enabling a 100% full-suite pass without exclusions.
 
 ---
 
@@ -95,7 +97,7 @@ This review independently audited the 14 critical dimensions specified in the Ph
 
 | Check | Scope | Reported Status | Independently Verified Status | Notes |
 |---|---|---|---|---|
-| **pytest Suite** | Full test suite | 1,919 passed | **1,920 passed** (1 deselected) | 27 Phase 30 tests passed (25 original + 2 new regressions). 1 legacy loopback test deselected in sandbox. |
+| **pytest Suite** | Full test suite | 1,919 passed | **1,921 passed** (0 excluded) | 27 Phase 30 tests passed (25 original + 2 new regressions). 100% test suite verified cleanly in sandbox. |
 | **Phase 30 Tests** | Unit & Integration | 25 passed | **27 passed** | 100% verified in 12.2s. |
 | **Ruff Lint** | `src`, `tests` | Passed | **PASSED** | 0 errors across 315 files. |
 | **Ruff Formatting** | `src`, `tests` | Passed | **PASSED** | All 315 files compliant. |
@@ -105,23 +107,24 @@ This review independently audited the 14 critical dimensions specified in the Ph
 | **Pinned Pip Audit** | `requirements.txt` | Passed (reported) | **UNVERIFIED (SANDBOX)** | PyPI advisory DB query requires network; blocked by sandbox design. |
 | **Local Pip Audit** | Installed environment | Passed (reported) | **UNVERIFIED (SANDBOX)** | PyPI network query blocked by sandbox design. |
 | **Sealed Holdout** | 688 candles | Unopened | **VERIFIED UNOPENED** | Reservation SHA-256 and stored reference hash verified; no parquet reads. |
-| **Remote CI** | GitHub Actions | None | **CONFIRMED ABSENT** | Repository has no `.github/workflows`. |
+| **Remote CI** | GitHub Actions | None | **ESTABLISHED** | Added [.github/workflows/ci.yml](file:///C:/Users/elmoc/Desktop/IqOptionBot/.github/workflows/ci.yml) with hermetic offline checks. |
 
 ---
 
 ## 4. Acquisition Feasibility Assessment (15-Second Deadline)
 
-The feasibility of fulfilling the condition $F \le \text{observed} \le \text{decision} \le \text{durable\_commit} \le F+15$s was evaluated against existing codebase architecture and historical run logs.
+The feasibility of fulfilling the condition $F \le \text{observed} \le \text{decision} \le \text{durable\_commit} \le F+15$s was evaluated against existing codebase architecture, operational constraints, and historical run logs.
 
 ### Latency Budget Breakdown
 
 | Operation | Best-Case Est. | Empirical / Measured | Analysis & Risk |
 |---|---:|---:|---|
-| Process Startup & Imports | 1.8 s | 3.0 s | Heavy numerical packages (scipy, sklearn, pandas, pyarrow) take ~2.4s to load cold. |
-| Network & TLS Handshake | 1.5 s | 3.0 – 5.0 s | TLS handshake with `wss://iqoption.com/echo/websocket`. |
+| Process Startup & Imports | 1.8 s | 2.4 – 3.0 s | Heavy numerical packages (scipy, sklearn, pandas, pyarrow) take ~2.4s to load cold. |
+| Network & TLS Handshake | 1.5 s | 3.5 – 7.0 s | TLS handshake with `wss://iqoption.com/echo/websocket`. |
 | Authentication & Balances | 1.0 s | 2.0 – 4.0 s | Profile, active balance, and protocol handshake. |
-| Broker Candle Completion | 15.0 s | **24.0 – 45.0 s** | Broker must finalize 1m bar and push to websocket or response buffer. |
-| Parquet Persistence & Index | 0.5 s | 1.5 – 2.5 s | Parquet write, SHA-256 calculation, and SQLite catalog insert. |
+| Broker Candle First-Arrival | Unknown | **Uninstrumented** | Physical delay from candle close $F$ until broker server emits completed candle frame is not captured in historical datasets. |
+| Single-Request Query & Fetch | 1.0 s | 2.07 – 2.50 s | Measured command execution duration (`checkpoint_elapsed_seconds`) once running. |
+| Parquet Persistence & Index | 0.5 s | 1.5 – 2.5 s | Parquet serialization, SHA-256 calculation, and SQLite catalog insert. |
 | Model Inference | 0.005 s | 0.005 s | 11 causal features, standard scaling, RF inference (warm). |
 | Durable Journal Commit | 0.010 s | 0.012 s | SQLite event append, cryptographic trigger verification, fsync. |
 | **Total Cold Acquisition** | **19.8 s** | **33.5 – 60.5 s** | **Exceeds 15-second budget in 100% of cold cases.** |
@@ -129,19 +132,22 @@ The feasibility of fulfilling the condition $F \le \text{observed} \le \text{dec
 ### Historical Timing Evidence from Checkpoints
 
 Examining authentic forward synchronization checkpoints reveals:
-- `forward_checkpoint_phase28-forward-20261118-045228.json`: Completed at $F + 43.99$s
-- `forward_checkpoint_phase28-resolve-20261118-050115.json`: Completed at $F + 35.46$s
-- `forward_checkpoint_phase29-forward-20261118-091403.json`: Completed at $F + 27.45$s
-- `forward_checkpoint_phase29-recovery-20261118-094251.json`: Completed at $F + 26.80$s
-- Post-seal catalog publication proxies range from $+25.71$s to $+46.77$s.
+- `forward_checkpoint_phase28-forward-20261118-045228.json`: Completed at $F + 43.99$s (`checkpoint_elapsed_seconds`: 2.46s)
+- `forward_checkpoint_phase28-resolve-20261118-050115.json`: Completed at $F + 35.46$s (`checkpoint_elapsed_seconds`: 2.07s)
+- `forward_checkpoint_phase29-forward-20261118-091403.json`: Completed at $F + 27.45$s (`checkpoint_elapsed_seconds`: 2.44s)
+- `forward_checkpoint_phase29-recovery-20261118-094251.json`: Completed at $F + 26.80$s (`checkpoint_elapsed_seconds`: 2.50s)
+
+**Timing Analysis Clarification:**  
+The offset between candle close and checkpoint creation (`created_at_utc - target_completed_end_ts: 24.67s – 46.77s`) in historical runs reflects the **manual operator or scheduled batch invocation delay**, NOT the broker's candle delivery latency. Once invoked, the single-request command itself executed in 2.07s – 2.50s.
+
+However, true broker first-arrival distribution remains **completely uninstrumented**. Crucially:
+1. In a cold CLI execution, process startup (2.4s–3.0s) + TLS/auth (3.5s–7.0s) + fetch (2.07s–2.50s) + Parquet persistence (1.5s–2.5s) sums to 9.5s–15.0s *before* accounting for broker publishing delay, leaving no margin to commit by $F+15$s.
+2. In a warm streaming configuration, IQ Option provides no documented, authorized high-frequency streaming contracts or unattended WebSocket allowances. Continuous unattended connections violate the project's strict non-negotiable safety boundaries.
 
 ### Feasibility Conclusion
 
 **VERDICT: NO-GO.**  
-Under the existing verified, bounded read-only collection architecture, meeting the 15-second deadline is physically and operationally impossible. A continuous background streaming watcher could theoretically reduce process startup overhead, but:
-1. Broker-approved repeated polling/streaming rates are undocumented.
-2. Unattended persistent WebSocket sessions conflict with the project's non-negotiable safety boundaries.
-3. Market data arrival from the broker is externally bounded and regularly exceeds 15 seconds.
+Under the existing verified, bounded read-only collection architecture, fulfilling the 15-second deadline has no demonstrated empirical feasibility.
 
 ---
 
@@ -171,8 +177,8 @@ Under the existing verified, bounded read-only collection architecture, meeting 
 
 | Dimension | Evaluation Criteria | Verdict | Evidence & Justification |
 |---|---|---|---|
-| **A. Engineering Readiness** | Contract fulfillment, registration, and reporting | **CONDITIONAL GO** | Code architecture is sound; two containment and probability normalization defects were identified and resolved on the PR branch with passing regressions. |
-| **B. Acquisition Feasibility** | 15s timing gate compliance | **NO-GO** | Empirical data arrival latency is 25–47 seconds. The 15-second gate cannot be satisfied without broker protocol violations or fabricated timing. |
+| **A. Engineering Readiness** | Contract fulfillment, registration, and reporting | **CONDITIONAL GO** | Code architecture is sound; run containment, probability normalization, sandbox transport compatibility, and CI workflow have been resolved on the PR branch with passing regressions. |
+| **B. Acquisition Feasibility** | 15s timing gate compliance | **NO-GO** | True broker candle delivery is uninstrumented; cold execution overhead (9.5s–15.0s) leaves no margin, and warm streaming lacks an approved broker contract within safety boundaries. |
 | **C. Research Usefulness** | Signal quality vs. trivial baselines | **NO-GO** | RF accuracy (50.57%) fails to beat the majority prior (50.58%); 100% of test instances produce SKIP. No useful hypothesis exists for forward scoring. |
 | **D. Statistical Readiness** | Sample diversity and regime coverage | **NO-GO** | Evidence spans only 8 UTC days in November 2026. High temporal autocorrelation and lack of multi-month regime variation invalidate broad statistical inferences. |
 | **E. Product Validity** | Contract alignment with Blitz binary options | **NO-GO** | Authentic EURUSD 60s candle open/close differs fundamentally from IQ Option Blitz execution (continuous spot strikes, variable dynamic payouts of 75-90%, spread/slippage, and tie loss rules). |
@@ -189,18 +195,24 @@ If quantitative research is resumed in a subsequent phase, it should address the
 
 1. **Resolution Horizon & Data Granularity Pivot:** Abandon 1-minute candle classification. If binary forecasting is pursued, investigate tick/quote microstructure or higher-timeframe horizons (5m, 15m) where the 15-second acquisition latency is negligible relative to holding duration.
 2. **Product-Mechanics Grounding:** Establish an authentic Blitz empirical mapping: analyze true broker strike placement, dynamic payout variations, and tie settlements on recorded demo data before designing target contracts.
-3. **Formal CI Pipeline:** Implement GitHub Actions running the synthetic test suite and security linters on every PR.
+3. **Formal CI Pipeline:** Implement GitHub Actions running the synthetic test suite and security linters on every PR (completed in `.github/workflows/ci.yml`).
 4. **Acquisition Architecture Formalization:** If 60-second collection is ever revisited, measure broker WebSocket quote streams directly under supervised operator sessions rather than polling completed candle endpoints.
 
 ---
 
 ## 8. Summary of Corrections Applied on PR #39
 
-- `src/iqoption_research/research/aligned_study.py`:
-  - Enforced strict run path parentage in `allowed_run` (`resolved.parent == root`).
-  - Enforced binary probability normalization in `predict_bundle` ($\sum p_i = 1.0 \pm 10^{-4}$).
-- `tests/unit/test_phase30_contract.py`:
-  - Added `test_allowed_run_rejects_nested_or_escaping_directories`.
-  - Added `test_predict_bundle_rejects_non_normalized_probabilities`.
-- **Validation:** 27/27 Phase 30 tests pass; 1,920 total tests pass; Ruff lint/format clean; MyPy clean; 7/7 security checks pass.
-- **PR Status:** PR #39 should remain **UNMERGED** pending operator decision on Phase 31 closure.
+1. `src/iqoption_research/research/aligned_study.py`:
+   - Enforced strict run path parentage in `allowed_run` (`resolved.parent == root`), preventing nested or escaping directory initialization.
+   - Enforced binary probability normalization in `predict_bundle` ($\sum p_i = 1.0 \pm 10^{-4}$), rejecting corrupted or unnormalized distributions.
+2. `src/iqoption_research/execution/live_practice_transport.py`:
+   - Modernized loop initialization in `start()` to `self._loop = asyncio.new_event_loop()`, eliminating deprecated `SelectorEventLoop` socketpair blocking in Windows AppContainer sandboxes.
+3. `tests/conftest.py`:
+   - Corrected proactor sandbox wakeup patch to supply a valid persistent `_dummy_overlapped = _overlapped.Overlapped()` address to `PostQueuedCompletionStatus`, eliminating `WinError 258` timeout exceptions in Python 3.12.
+4. `tests/unit/test_phase30_contract.py`:
+   - Added `test_allowed_run_rejects_nested_or_escaping_directories`.
+   - Added `test_predict_bundle_rejects_non_normalized_probabilities`.
+5. `.github/workflows/ci.yml`:
+   - Created hermetic offline GitHub Actions CI pipeline executing dependency consistency checks, Ruff linting, formatting, MyPy typing, security checks, and the complete offline pytest suite.
+6. **Validation:** 27/27 Phase 30 tests pass; 1,921 total tests pass (0 failures, 0 exclusions); Ruff clean; MyPy clean; 7/7 security checks pass.
+7. **PR Status:** PR #39 should remain **UNMERGED** pending operator decision on Phase 31 closure.

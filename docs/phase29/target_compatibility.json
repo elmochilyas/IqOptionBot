@@ -1,0 +1,88 @@
+{
+  "declared_lineage": {
+    "created_at_utc": "2026-11-14T14:41:11.032779+00:00",
+    "dataset_candles": 62871,
+    "development_disclaimer": "EXPERIMENTAL DEVELOPMENT ARTIFACT ONLY. NOT A VALIDATED TRADING EDGE. DO NOT DEPLOY FOR REAL-MONEY TRADING OR CONSUME AS INDEPENDENT CONFIRMATION.",
+    "feature_count": 13,
+    "horizon_bars": 1,
+    "independent_confirmation_consumed": false,
+    "is_frozen": false,
+    "lifecycle_stage": "DEVELOPMENT_ONLY",
+    "model_family": "random_forest",
+    "model_provenance": "authentic_trained",
+    "protocol_version": "v2-development",
+    "source_dataset": "authentic_iqoption_eurusd_60s",
+    "stationary_features_only": true,
+    "training_rows": 37609,
+    "validation_rows": 6268
+  },
+  "development_targets": [
+    {
+      "compatibility": "INCOMPATIBLE_DELAY_AND_TIE_POLICY",
+      "family": "Phase10/13/14 directional models and baselines",
+      "horizons": "configured h; Phase14 defaults 1,3,5",
+      "models": "majority, logistic, RF and configured tabular comparisons",
+      "target": "int(round(close[t+h]-open[t+1],9)>0)"
+    },
+    {
+      "compatibility": "UNVERIFIED_ARTIFACT_SPEC_AND_DIFFERENT_PRICE_ANCHOR",
+      "family": "generic Phase4 target API",
+      "target": "close[t+h]-close[t], rounded 9dp; binary/ternary/return + deadband"
+    },
+    {
+      "compatibility": "INCOMPATIBLE_NON_DIRECTIONAL_TARGET",
+      "family": "Phase15 significant movement",
+      "limitation": "h loop reuses supplied clean geometry without rebuilding",
+      "target": "abs(clean.exit_prices-clean.entry_prices)*10000 >= threshold_pips"
+    },
+    {
+      "compatibility": "INCOMPATIBLE_PATH_DEPENDENT_TARGET",
+      "family": "Phase15 triple barrier RF",
+      "target": "tb_arr == +1; first barrier hit or timeout; other events class 0"
+    },
+    {
+      "compatibility": "UNVERIFIED_NO_MATCHING_FROZEN_BUNDLE_ATTESTATION",
+      "family": "Phase24/25 majority, logistic and RF",
+      "limitation": "feature-relative latency differs from clock entry when data lags",
+      "target": "close[t+h+latency] > open[t+1+latency]",
+      "ties": "training/calibration exclude isclose(atol=1e-9,rtol=0) prices"
+    }
+  ],
+  "forecasting_skill_proof_allowed": false,
+  "known_mismatches": [
+    "ENTRY_DELAY",
+    "FEATURE_RELATIVE_HORIZON",
+    "TIE_AND_ROUNDING_POLICY"
+  ],
+  "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+  "observer_target": {
+    "entry": "(floor(recorded_at_ts/60)+2)*60; future candle OPEN",
+    "expiry": "entry+60; same candle CLOSE",
+    "latency": "60 to 120 seconds after decision, plus variable source age",
+    "price_source": "verified authentic EURUSD minute candles; Blitz identity unverified",
+    "ties": "exact equal prices; excluded from directional accuracy and calibration"
+  },
+  "pooling_allowed": false,
+  "required_followup": "Separately register any changed model/target/latency/scoring study",
+  "schema_version": 1,
+  "source_sha256": {
+    "generic_targets": "ce316bc4cbedb4e3ccd7bff3ab91b38d7960ef813c9ae1a1599ee40a907125d3",
+    "observer": "3f0022e37bc086237088872de0b815536fc0ce3e289d98ee03bd028a2e1d7950",
+    "phase10_labels": "2b24b67e3f2871c8b2e6d95a26000fb7220f78e2f89abd351171e6d833ce7162",
+    "phase13_candidate": "51e1178144c49cdf1cfc22294c35ecf8d9d7b8693aa2704c7d51a1fb081cfa09",
+    "phase14_development": "e7171307d0f70cfc855f4b59842f47a629cb99b131f9aa7a0e823e9952523235",
+    "phase15_opportunities": "b5b9b58b547b4cd065f0a3e041ef2909a25a76e9974481a1320381fc2d065254",
+    "phase24_25_development": "9a46747ada2bb6ccadb18226a26461d0dd1c79544faa7e753dd2b655f33a9323"
+  },
+  "source_trace": {
+    "calibration": "Platt validation uses the same training labels",
+    "candidate": "phase13.train_and_save_candidate_bundle -> phase10.prepare_clean_dataset",
+    "entry": "open[t+1], at feature candle close, zero full-bar latency",
+    "expiry": "close[t+h]; h=1 holds the immediately following candle",
+    "label": "int(round(close[t+h] - open[t+1], 9) > 0)",
+    "price_source": "authentic_iqoption_eurusd_60s (declared artifact lineage)",
+    "ties": "rounded differences <= 0 map to class 0, including ties"
+  },
+  "status": "TARGET_UNVERIFIED",
+  "training_lineage_independently_reconstructed": false
+}

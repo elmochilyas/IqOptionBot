@@ -1,0 +1,120 @@
+{
+  "installed_environment_audit": {
+    "command": ".\\.venv\\Scripts\\python.exe -m pip_audit --local --format json",
+    "known_vulnerabilities": 0,
+    "package_entries": 84,
+    "passed": true,
+    "skipped": [
+      {
+        "name": "iqoption-research",
+        "skip_reason": "Dependency not found on PyPI and could not be audited: iqoption-research (0.1.0)"
+      }
+    ]
+  },
+  "merge_authority": "Explicit user request, conditional on successful review and validation",
+  "mypy": {
+    "command": ".\\.venv\\Scripts\\python.exe -m mypy src",
+    "passed": true,
+    "source_files": 189
+  },
+  "orders": 0,
+  "phase": 29,
+  "pinned_runtime_audit": {
+    "command": ".\\.venv\\Scripts\\python.exe -m pip_audit -r requirements.txt --no-deps --disable-pip",
+    "packages": 15,
+    "passed": true,
+    "transitive_resolution": false
+  },
+  "pip_check": {
+    "command": ".\\.venv\\Scripts\\python.exe -m pip check",
+    "passed": true
+  },
+  "preservation": {
+    "intentional_or_transient_differences": [
+      "data\\datasets\\catalog.db-shm",
+      "data\\datasets\\catalog.db-wal",
+      "docs\\phase29\\README.md"
+    ],
+    "mutable_bot_snapshots_restored": true,
+    "original_journals_reports_models_sources_and_holdout_unchanged": true,
+    "snapshot_files": 1623,
+    "unchanged_exact_hashes": 1620
+  },
+  "pytest": {
+    "command": ".\\.venv\\Scripts\\python.exe -m pytest -q",
+    "passed": 1894,
+    "phase29_tests": 34,
+    "seconds": 146.49,
+    "warnings": 3
+  },
+  "remaining_limitations": [
+    "TARGET_UNVERIFIED",
+    "CONTINUOUS_AUTHENTICATED_ACQUISITION_UNVERIFIED",
+    "LEGACY_OPERATOR_IMPLEMENTATION_FINGERPRINT_MISMATCH",
+    "BLITZ_PRODUCT_EVIDENCE_REQUIRED"
+  ],
+  "remote_ci": "NO_CHECKS_CONFIGURED_AT_REVIEW",
+  "retraining": false,
+  "reviewed_initial_commit": "bc926900c62d63c63c90abf8e000a9a40261be3e",
+  "ruff_format": {
+    "command": ".\\.venv\\Scripts\\python.exe -m ruff format src tests --check",
+    "files": 305,
+    "passed": true
+  },
+  "ruff_lint": {
+    "command": ".\\.venv\\Scripts\\python.exe -m ruff check src tests",
+    "passed": true
+  },
+  "security": {
+    "checks": [
+      {
+        "detail": "hostname + certificate verification required, minimum TLS 1.2",
+        "name": "tls_context",
+        "passed": true
+      },
+      {
+        "detail": "hardcoded IQ Option endpoints only; unknown URLs rejected",
+        "name": "endpoint_allowlist",
+        "passed": true
+      },
+      {
+        "detail": "no verify=False / CERT_NONE / disabled hostname verification",
+        "name": "no_insecure_tls_patterns",
+        "passed": true
+      },
+      {
+        "detail": "no buy/sell/close/change_balance attributes on AsyncIQOption",
+        "name": "read_only_posture",
+        "passed": true
+      },
+      {
+        "detail": "all runtime dependencies pinned with ==",
+        "name": "dependency_pinning",
+        "passed": true
+      },
+      {
+        "detail": "Settings has no credential fields; getpass is required at runtime",
+        "name": "no_credential_settings",
+        "passed": true
+      },
+      {
+        "detail": "network I/O disabled by default",
+        "name": "offline_default",
+        "passed": true
+      }
+    ],
+    "command": ".\\.venv\\Scripts\\python.exe -m iqoption_research.cli.main security-check --json",
+    "passed": true
+  },
+  "smoke": {
+    "authenticated_sessions": 0,
+    "broker_requests": 0,
+    "duration_seconds": 1,
+    "new_predictions": 0
+  },
+  "toolchain": {
+    "pip": "26.3",
+    "pytest": "9.2.0",
+    "pytest-asyncio": "1.5.0"
+  }
+}

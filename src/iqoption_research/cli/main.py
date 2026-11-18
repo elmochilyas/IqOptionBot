@@ -21,6 +21,7 @@ from iqoption_research.cli.commands.execution_cmd import (
     practice_test_command,
 )
 from iqoption_research.cli.commands.ml_cmd import ml_app
+from iqoption_research.cli.commands.observation_cmd import app as observation_app
 from iqoption_research.cli.commands.paper_cmd import paper_app
 from iqoption_research.cli.commands.practice_watch import practice_watch_command
 from iqoption_research.cli.commands.probe import probe_command
@@ -69,6 +70,7 @@ app.command("practice-watch", help="Watch Practice activity and reconcile histor
 )
 app.add_typer(research_app, name="research")
 app.add_typer(prospective_app, name="prospective")
+app.add_typer(observation_app, name="observation")
 app.add_typer(ml_app, name="ml")
 app.add_typer(paper_app, name="paper")
 app.add_typer(bot_app, name="bot")

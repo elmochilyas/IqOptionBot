@@ -1,0 +1,63 @@
+﻿{
+  "protocol_name": "OPERATOR_SUPERVISED_ACQUISITION_TIMING_PROTOCOL_V1",
+  "protocol_version": "SUPERVISED_TIMING_V1",
+  "status": "SPECIFICATION_ONLY_UNEXECUTED",
+  "operational_mode": "STRICTLY_READ_ONLY_OFFLINE_DEFINED",
+  "execution_rules": {
+    "interactive_operator_presence": "REQUIRED; operator must supervise entire window",
+    "credential_handling": "INTERACTIVE_PROMPT_ONLY; no stored credentials or .env",
+    "cli_opt_in_flags": [
+      "--live",
+      "--yes-i-understand"
+    ],
+    "max_duration_seconds": 300,
+    "max_candle_cycles": 5,
+    "reconnection_policy": "FAIL_CLOSED_NO_RECONNECT_LOOP",
+    "broker_order_policy": "FORBIDDEN; zero real/demo trades, zero wallet switching"
+  },
+  "measurement_schema": {
+    "clock_sources": {
+      "high_res_monotonic": "time.perf_counter_ns() for intra-session elapsed durations",
+      "high_res_utc_epoch": "time.time_ns() for wall-clock UTC synchronization anchor",
+      "clock_discipline_anchor": "utc_anchor_ns = time.time_ns() - time.perf_counter_ns() sampled at start. Relates monotonic socket arrival to UTC epoch: t_utc = t_mono + anchor.",
+      "clock_uncertainty_budget": "System NTP synchronization uncertainty (+/-10-50ms) plus broker round-trip timeSync skew estimation ((t_send + t_recv)/2 - t_broker)."
+    },
+    "instrumented_checkpoints": [
+      {
+        "stage": "F",
+        "description": "Nominal discrete candle close in UTC epoch nanoseconds"
+      },
+      {
+        "stage": "t_socket_recv",
+        "description": "time.perf_counter_ns() when frame is read from OS socket"
+      },
+      {
+        "stage": "t_socket_recv_utc",
+        "description": "t_socket_recv + utc_anchor_ns (disciplined UTC arrival)"
+      },
+      {
+        "stage": "t_parsed",
+        "description": "time.perf_counter_ns() when JSON decoding completes"
+      },
+      {
+        "stage": "t_inferred",
+        "description": "time.perf_counter_ns() when model predict_bundle completes"
+      },
+      {
+        "stage": "t_committed",
+        "description": "time.perf_counter_ns() on SQLite journal commit completion"
+      }
+    ],
+    "computed_metrics": [
+      "broker_candle_delivery_latency_ms = ((t_socket_recv + utc_anchor_ns) - F_ns) / 1e6 +/- clock_uncertainty",
+      "local_pipeline_latency_ms = (t_committed - t_socket_recv) / 1e6 (pure monotonic, zero clock drift)",
+      "total_close_to_commit_latency_ms = ((t_committed + utc_anchor_ns) - F_ns) / 1e6 +/- clock_uncertainty"
+    ]
+  },
+  "output_destination": "data/phase31/supervised_timing_evidence.json",
+  "acceptance_criteria": {
+    "safe_termination": "Process shuts down cleanly within 300s or on socket drop",
+    "zero_broker_mutations": "Account balance and trade history verify unchanged",
+    "evidence_integrity": "Output contains valid JSON with monotonic stage timestamps"
+  }
+}

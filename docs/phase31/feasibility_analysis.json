@@ -1,0 +1,200 @@
+﻿{
+  "architectures": {
+    "cold_cli_batch": {
+      "architecture_name": "COLD_CLI_BATCH_COLLECTION",
+      "stages": [
+        {
+          "name": "cli_startup",
+          "best_case_seconds": 2.4,
+          "typical_seconds": 2.7,
+          "worst_case_seconds": 3.2,
+          "description": "Python process initialization and numerical module imports"
+        },
+        {
+          "name": "tls_auth",
+          "best_case_seconds": 3.5,
+          "typical_seconds": 5.0,
+          "worst_case_seconds": 7.5,
+          "description": "TLS 1.2+ handshake and HTTPS OAuth login/MFA verification"
+        },
+        {
+          "name": "websocket_handshake",
+          "best_case_seconds": 2.0,
+          "typical_seconds": 3.0,
+          "worst_case_seconds": 4.5,
+          "description": "WSS connection, authentication, and profile verification"
+        },
+        {
+          "name": "single_page_fetch",
+          "best_case_seconds": 2.07,
+          "typical_seconds": 2.25,
+          "worst_case_seconds": 2.5,
+          "description": "Broker getCandles request-response round-trip"
+        },
+        {
+          "name": "parquet_persistence",
+          "best_case_seconds": 1.5,
+          "typical_seconds": 2.0,
+          "worst_case_seconds": 2.5,
+          "description": "Parquet serialization, SHA-256 digest, and SQLite index"
+        },
+        {
+          "name": "inference",
+          "best_case_seconds": 0.005,
+          "typical_seconds": 0.008,
+          "worst_case_seconds": 0.012,
+          "description": "11 causal features, StandardScaler, RF predict_bundle"
+        },
+        {
+          "name": "journal_commit",
+          "best_case_seconds": 0.01,
+          "typical_seconds": 0.012,
+          "worst_case_seconds": 0.018,
+          "description": "SQLite prospective event append and receipt verification"
+        }
+      ],
+      "total_best_case_seconds": 12.485,
+      "total_typical_seconds": 17.97,
+      "total_worst_case_seconds": 23.23,
+      "probability_meeting_15s_gate": 0.234,
+      "model_compliance_nature": "EMPIRICALLY_REFUTED_HISTORICAL_WORKFLOW",
+      "read_only_safety_compliant": true,
+      "verified_in_codebase": true
+    },
+    "warm_polling": {
+      "architecture_name": "WARM_BACKGROUND_POLLING",
+      "stages": [
+        {
+          "name": "query_and_network",
+          "best_case_seconds": 1.5,
+          "typical_seconds": 2.0,
+          "worst_case_seconds": 2.5,
+          "description": "Over-the-wire getCandles query on existing WebSocket"
+        },
+        {
+          "name": "validation_and_parsing",
+          "best_case_seconds": 0.2,
+          "typical_seconds": 0.4,
+          "worst_case_seconds": 0.8,
+          "description": "Candle normalization and series consistency check"
+        },
+        {
+          "name": "disk_persistence",
+          "best_case_seconds": 0.5,
+          "typical_seconds": 1.0,
+          "worst_case_seconds": 1.8,
+          "description": "Parquet dataset append and catalog commit"
+        },
+        {
+          "name": "inference",
+          "best_case_seconds": 0.005,
+          "typical_seconds": 0.008,
+          "worst_case_seconds": 0.012,
+          "description": "Causal pipeline and Random Forest evaluation"
+        },
+        {
+          "name": "journal_commit",
+          "best_case_seconds": 0.01,
+          "typical_seconds": 0.012,
+          "worst_case_seconds": 0.018,
+          "description": "Prospective SQLite event append"
+        }
+      ],
+      "total_best_case_seconds": 3.215,
+      "total_typical_seconds": 4.42,
+      "total_worst_case_seconds": 6.13,
+      "probability_meeting_15s_gate": 1.0,
+      "model_compliance_nature": "HYPOTHETICAL_CALCULATION_UNVERIFIED_BROKER_LATENCY",
+      "read_only_safety_compliant": false,
+      "verified_in_codebase": false
+    },
+    "streaming_websocket": {
+      "architecture_name": "STREAMING_WEBSOCKET_CANDLE_GENERATED",
+      "stages": [
+        {
+          "name": "socket_frame_dispatch",
+          "best_case_seconds": 0.001,
+          "typical_seconds": 0.003,
+          "worst_case_seconds": 0.01,
+          "description": "Event loop frame dispatch to queue"
+        },
+        {
+          "name": "candle_normalization",
+          "best_case_seconds": 0.005,
+          "typical_seconds": 0.01,
+          "worst_case_seconds": 0.02,
+          "description": "Field normalization and price validation"
+        },
+        {
+          "name": "inference",
+          "best_case_seconds": 0.005,
+          "typical_seconds": 0.008,
+          "worst_case_seconds": 0.012,
+          "description": "Causal pipeline transform and bundle prediction"
+        },
+        {
+          "name": "journal_commit",
+          "best_case_seconds": 0.01,
+          "typical_seconds": 0.012,
+          "worst_case_seconds": 0.018,
+          "description": "SQLite journal commit"
+        }
+      ],
+      "total_best_case_seconds": 1.021,
+      "total_typical_seconds": 1.033,
+      "total_worst_case_seconds": 1.06,
+      "probability_meeting_15s_gate": 1.0,
+      "model_compliance_nature": "HYPOTHETICAL_CALCULATION_UNVERIFIED_BROKER_LATENCY",
+      "read_only_safety_compliant": false,
+      "verified_in_codebase": false
+    }
+  },
+  "phase30_gate_verdict": {
+    "contract_requirement": "F <= observed <= decision <= commit <= F+15s",
+    "current_verified_workflow_status": "DEFINITIVE_NO_GO",
+    "reasoning": "The current verified workflow relies on cold CLI invocation. Cold process startup (~2.7s) + TLS/HTTPS login (~5.0s) + WebSocket profile handshake (~3.0s) + fetch (~2.25s) + parquet persistence (~2.0s) sums to ~15.0s before accounting for operator invocation jitter or broker delivery latency. Historical checkpoints exhibit 26.8s - 44.0s total offsets from candle close, leaving 0% empirical probability of satisfying F+15s.",
+    "gate_relaxation_policy": "STRICTLY_PROHIBITED; do not relax or redefine the frozen contract"
+  },
+  "horizon_scaling_evaluations": [
+    {
+      "timeframe_seconds": 60,
+      "timeframe_label": "1m (Current Phase 30)",
+      "cold_latency_fraction": 0.25,
+      "warm_latency_fraction": 0.0583,
+      "available_pre_entry_seconds": 120,
+      "cold_pre_entry_margin_seconds": 105.0,
+      "statistical_signal_quality": "EXTREME_MARTINGALE_NOISE",
+      "feasibility_verdict": "NO-GO: High noise, negative pre-entry margin under cold execution"
+    },
+    {
+      "timeframe_seconds": 300,
+      "timeframe_label": "5m (Conceptual Alternative)",
+      "cold_latency_fraction": 0.05,
+      "warm_latency_fraction": 0.0117,
+      "available_pre_entry_seconds": 300,
+      "cold_pre_entry_margin_seconds": 285.0,
+      "statistical_signal_quality": "UNVERIFIED_LONGER_HORIZON_HYPOTHESIS",
+      "feasibility_verdict": "FEASIBLE_ALTERNATIVE_CONTRACT: 285s conceptual margin before entry"
+    },
+    {
+      "timeframe_seconds": 900,
+      "timeframe_label": "15m (Conceptual Alternative)",
+      "cold_latency_fraction": 0.0167,
+      "warm_latency_fraction": 0.0039,
+      "available_pre_entry_seconds": 900,
+      "cold_pre_entry_margin_seconds": 885.0,
+      "statistical_signal_quality": "UNVERIFIED_LONGER_HORIZON_HYPOTHESIS",
+      "feasibility_verdict": "FEASIBLE_ALTERNATIVE_CONTRACT: 885s conceptual margin before entry"
+    },
+    {
+      "timeframe_seconds": 3600,
+      "timeframe_label": "1h (Conceptual Alternative)",
+      "cold_latency_fraction": 0.0042,
+      "warm_latency_fraction": 0.001,
+      "available_pre_entry_seconds": 3600,
+      "cold_pre_entry_margin_seconds": 3585.0,
+      "statistical_signal_quality": "UNVERIFIED_LONGER_HORIZON_HYPOTHESIS",
+      "feasibility_verdict": "FEASIBLE_ALTERNATIVE_CONTRACT: 3585s conceptual margin before entry"
+    }
+  ]
+}

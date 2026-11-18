@@ -30,6 +30,7 @@ from iqoption_research.cli.commands.prospective_cmd import app as prospective_ap
 from iqoption_research.cli.commands.research_cmd import research_app
 from iqoption_research.cli.commands.security_check_cmd import security_check_command
 from iqoption_research.cli.commands.simulate import simulate_command
+from iqoption_research.cli.commands.timing_cmd import app as timing_app
 from iqoption_research.cli.commands.validate_data import validate_command
 from iqoption_research.security.logging import configure_logging
 
@@ -79,6 +80,7 @@ app.add_typer(bot_app, name="bot")
 app.add_typer(auth_app, name="auth")
 app.add_typer(data_app, name="data")
 app.add_typer(execution_app, name="execution")
+app.add_typer(timing_app, name="timing")
 
 
 @app.callback()

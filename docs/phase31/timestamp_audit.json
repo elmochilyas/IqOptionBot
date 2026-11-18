@@ -1,0 +1,933 @@
+﻿{
+  "timestamp_audit_summary": {
+    "checkpoints_examined": 6,
+    "checkpoints_meeting_15s_gate": 0,
+    "single_request_batches": [
+      {
+        "job_id": "phase28-forward-20261118-045228",
+        "source": "forward_checkpoint_phase28-forward-20261118-045228.json",
+        "target_completed_end_ts": 1794977520,
+        "requests_made": 1,
+        "new_records_saved": 53,
+        "invocation_delay_seconds": 41.493,
+        "collection_duration_seconds": 2.5,
+        "total_offset_seconds": 43.993,
+        "single_request_batch": true,
+        "satisfies_phase30_15s_gate": false,
+        "timestamp_records": [
+          {
+            "name": "target_completed_end_ts",
+            "role": "NOMINAL_BUCKET_BOUNDARY",
+            "quality": "NOMINAL_DISCRETE_LABEL",
+            "timestamp_epoch": 1794977520,
+            "timestamp_iso": "2026-11-18T04:52:00+00:00",
+            "description": "Nominal candle close boundary F (bucket label, not packet arrival)",
+            "source_context": "forward_checkpoint_phase28-forward-20261118-045228.json"
+          },
+          {
+            "name": "created_at_utc",
+            "role": "CLIENT_INVOCATION_CLOCK",
+            "quality": "GENUINELY_MEASURED",
+            "timestamp_epoch": 1794977561.49315,
+            "timestamp_iso": "2026-11-18T04:52:41.493150+00:00",
+            "description": "Client wall clock when operator or script invoked collection process",
+            "source_context": "forward_checkpoint_phase28-forward-20261118-045228.json"
+          },
+          {
+            "name": "updated_at_utc",
+            "role": "CLIENT_STORAGE_PERSIST",
+            "quality": "GENUINELY_MEASURED",
+            "timestamp_epoch": 1794977563.993136,
+            "timestamp_iso": "2026-11-18T04:52:43.993136+00:00",
+            "description": "Client wall clock when parquet persistence and catalog commit finished",
+            "source_context": "forward_checkpoint_phase28-forward-20261118-045228.json"
+          },
+          {
+            "name": "broker_first_candle_arrival",
+            "role": "CLIENT_SOCKET_RECEIVE",
+            "quality": "UNMEASURED_UNKNOWN",
+            "timestamp_epoch": null,
+            "timestamp_iso": null,
+            "description": "Actual instant broker completed candle frame arrived at client socket",
+            "source_context": "forward_checkpoint_phase28-forward-20261118-045228.json"
+          }
+        ],
+        "latency_intervals": [
+          {
+            "name": "operator_invocation_offset",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_INVOCATION_CLOCK",
+            "duration_seconds": 41.493,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Elapsed time from candle close until collection command execution began"
+          },
+          {
+            "name": "collection_execution_duration",
+            "start_role": "CLIENT_INVOCATION_CLOCK",
+            "end_role": "CLIENT_STORAGE_PERSIST",
+            "duration_seconds": 2.5,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Duration of startup, TLS/auth, network fetch, and parquet persistence"
+          },
+          {
+            "name": "total_offset_from_candle_close",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_STORAGE_PERSIST",
+            "duration_seconds": 43.993,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Total elapsed time from nominal candle close to parquet persistence"
+          },
+          {
+            "name": "broker_delivery_latency",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_SOCKET_RECEIVE",
+            "duration_seconds": null,
+            "quality": "UNMEASURED_UNKNOWN",
+            "description": "Physical server-to-socket transmission latency (uninstrumented in batch)"
+          }
+        ]
+      },
+      {
+        "job_id": "phase28-resolve-20261118-050115",
+        "source": "forward_checkpoint_phase28-resolve-20261118-050115.json",
+        "target_completed_end_ts": 1794978060,
+        "requests_made": 1,
+        "new_records_saved": 9,
+        "invocation_delay_seconds": 33.282,
+        "collection_duration_seconds": 2.177,
+        "total_offset_seconds": 35.459,
+        "single_request_batch": true,
+        "satisfies_phase30_15s_gate": false,
+        "timestamp_records": [
+          {
+            "name": "target_completed_end_ts",
+            "role": "NOMINAL_BUCKET_BOUNDARY",
+            "quality": "NOMINAL_DISCRETE_LABEL",
+            "timestamp_epoch": 1794978060,
+            "timestamp_iso": "2026-11-18T05:01:00+00:00",
+            "description": "Nominal candle close boundary F (bucket label, not packet arrival)",
+            "source_context": "forward_checkpoint_phase28-resolve-20261118-050115.json"
+          },
+          {
+            "name": "created_at_utc",
+            "role": "CLIENT_INVOCATION_CLOCK",
+            "quality": "GENUINELY_MEASURED",
+            "timestamp_epoch": 1794978093.28171,
+            "timestamp_iso": "2026-11-18T05:01:33.281710+00:00",
+            "description": "Client wall clock when operator or script invoked collection process",
+            "source_context": "forward_checkpoint_phase28-resolve-20261118-050115.json"
+          },
+          {
+            "name": "updated_at_utc",
+            "role": "CLIENT_STORAGE_PERSIST",
+            "quality": "GENUINELY_MEASURED",
+            "timestamp_epoch": 1794978095.458846,
+            "timestamp_iso": "2026-11-18T05:01:35.458846+00:00",
+            "description": "Client wall clock when parquet persistence and catalog commit finished",
+            "source_context": "forward_checkpoint_phase28-resolve-20261118-050115.json"
+          },
+          {
+            "name": "broker_first_candle_arrival",
+            "role": "CLIENT_SOCKET_RECEIVE",
+            "quality": "UNMEASURED_UNKNOWN",
+            "timestamp_epoch": null,
+            "timestamp_iso": null,
+            "description": "Actual instant broker completed candle frame arrived at client socket",
+            "source_context": "forward_checkpoint_phase28-resolve-20261118-050115.json"
+          }
+        ],
+        "latency_intervals": [
+          {
+            "name": "operator_invocation_offset",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_INVOCATION_CLOCK",
+            "duration_seconds": 33.282,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Elapsed time from candle close until collection command execution began"
+          },
+          {
+            "name": "collection_execution_duration",
+            "start_role": "CLIENT_INVOCATION_CLOCK",
+            "end_role": "CLIENT_STORAGE_PERSIST",
+            "duration_seconds": 2.177,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Duration of startup, TLS/auth, network fetch, and parquet persistence"
+          },
+          {
+            "name": "total_offset_from_candle_close",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_STORAGE_PERSIST",
+            "duration_seconds": 35.459,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Total elapsed time from nominal candle close to parquet persistence"
+          },
+          {
+            "name": "broker_delivery_latency",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_SOCKET_RECEIVE",
+            "duration_seconds": null,
+            "quality": "UNMEASURED_UNKNOWN",
+            "description": "Physical server-to-socket transmission latency (uninstrumented in batch)"
+          }
+        ]
+      },
+      {
+        "job_id": "phase29-forward-20261118-091403",
+        "source": "forward_checkpoint_phase29-forward-20261118-091403.json",
+        "target_completed_end_ts": 1794993240,
+        "requests_made": 1,
+        "new_records_saved": 253,
+        "invocation_delay_seconds": 25.378,
+        "collection_duration_seconds": 2.072,
+        "total_offset_seconds": 27.45,
+        "single_request_batch": true,
+        "satisfies_phase30_15s_gate": false,
+        "timestamp_records": [
+          {
+            "name": "target_completed_end_ts",
+            "role": "NOMINAL_BUCKET_BOUNDARY",
+            "quality": "NOMINAL_DISCRETE_LABEL",
+            "timestamp_epoch": 1794993240,
+            "timestamp_iso": "2026-11-18T09:14:00+00:00",
+            "description": "Nominal candle close boundary F (bucket label, not packet arrival)",
+            "source_context": "forward_checkpoint_phase29-forward-20261118-091403.json"
+          },
+          {
+            "name": "created_at_utc",
+            "role": "CLIENT_INVOCATION_CLOCK",
+            "quality": "GENUINELY_MEASURED",
+            "timestamp_epoch": 1794993265.378006,
+            "timestamp_iso": "2026-11-18T09:14:25.378006+00:00",
+            "description": "Client wall clock when operator or script invoked collection process",
+            "source_context": "forward_checkpoint_phase29-forward-20261118-091403.json"
+          },
+          {
+            "name": "updated_at_utc",
+            "role": "CLIENT_STORAGE_PERSIST",
+            "quality": "GENUINELY_MEASURED",
+            "timestamp_epoch": 1794993267.450481,
+            "timestamp_iso": "2026-11-18T09:14:27.450481+00:00",
+            "description": "Client wall clock when parquet persistence and catalog commit finished",
+            "source_context": "forward_checkpoint_phase29-forward-20261118-091403.json"
+          },
+          {
+            "name": "broker_first_candle_arrival",
+            "role": "CLIENT_SOCKET_RECEIVE",
+            "quality": "UNMEASURED_UNKNOWN",
+            "timestamp_epoch": null,
+            "timestamp_iso": null,
+            "description": "Actual instant broker completed candle frame arrived at client socket",
+            "source_context": "forward_checkpoint_phase29-forward-20261118-091403.json"
+          }
+        ],
+        "latency_intervals": [
+          {
+            "name": "operator_invocation_offset",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_INVOCATION_CLOCK",
+            "duration_seconds": 25.378,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Elapsed time from candle close until collection command execution began"
+          },
+          {
+            "name": "collection_execution_duration",
+            "start_role": "CLIENT_INVOCATION_CLOCK",
+            "end_role": "CLIENT_STORAGE_PERSIST",
+            "duration_seconds": 2.072,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Duration of startup, TLS/auth, network fetch, and parquet persistence"
+          },
+          {
+            "name": "total_offset_from_candle_close",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_STORAGE_PERSIST",
+            "duration_seconds": 27.45,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Total elapsed time from nominal candle close to parquet persistence"
+          },
+          {
+            "name": "broker_delivery_latency",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_SOCKET_RECEIVE",
+            "duration_seconds": null,
+            "quality": "UNMEASURED_UNKNOWN",
+            "description": "Physical server-to-socket transmission latency (uninstrumented in batch)"
+          }
+        ]
+      },
+      {
+        "job_id": "phase29-recovery-20261118-094251",
+        "source": "forward_checkpoint_phase29-recovery-20261118-094251.json",
+        "target_completed_end_ts": 1794994980,
+        "requests_made": 1,
+        "new_records_saved": 29,
+        "invocation_delay_seconds": 24.67,
+        "collection_duration_seconds": 2.129,
+        "total_offset_seconds": 26.799,
+        "single_request_batch": true,
+        "satisfies_phase30_15s_gate": false,
+        "timestamp_records": [
+          {
+            "name": "target_completed_end_ts",
+            "role": "NOMINAL_BUCKET_BOUNDARY",
+            "quality": "NOMINAL_DISCRETE_LABEL",
+            "timestamp_epoch": 1794994980,
+            "timestamp_iso": "2026-11-18T09:43:00+00:00",
+            "description": "Nominal candle close boundary F (bucket label, not packet arrival)",
+            "source_context": "forward_checkpoint_phase29-recovery-20261118-094251.json"
+          },
+          {
+            "name": "created_at_utc",
+            "role": "CLIENT_INVOCATION_CLOCK",
+            "quality": "GENUINELY_MEASURED",
+            "timestamp_epoch": 1794995004.670318,
+            "timestamp_iso": "2026-11-18T09:43:24.670318+00:00",
+            "description": "Client wall clock when operator or script invoked collection process",
+            "source_context": "forward_checkpoint_phase29-recovery-20261118-094251.json"
+          },
+          {
+            "name": "updated_at_utc",
+            "role": "CLIENT_STORAGE_PERSIST",
+            "quality": "GENUINELY_MEASURED",
+            "timestamp_epoch": 1794995006.799372,
+            "timestamp_iso": "2026-11-18T09:43:26.799372+00:00",
+            "description": "Client wall clock when parquet persistence and catalog commit finished",
+            "source_context": "forward_checkpoint_phase29-recovery-20261118-094251.json"
+          },
+          {
+            "name": "broker_first_candle_arrival",
+            "role": "CLIENT_SOCKET_RECEIVE",
+            "quality": "UNMEASURED_UNKNOWN",
+            "timestamp_epoch": null,
+            "timestamp_iso": null,
+            "description": "Actual instant broker completed candle frame arrived at client socket",
+            "source_context": "forward_checkpoint_phase29-recovery-20261118-094251.json"
+          }
+        ],
+        "latency_intervals": [
+          {
+            "name": "operator_invocation_offset",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_INVOCATION_CLOCK",
+            "duration_seconds": 24.67,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Elapsed time from candle close until collection command execution began"
+          },
+          {
+            "name": "collection_execution_duration",
+            "start_role": "CLIENT_INVOCATION_CLOCK",
+            "end_role": "CLIENT_STORAGE_PERSIST",
+            "duration_seconds": 2.129,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Duration of startup, TLS/auth, network fetch, and parquet persistence"
+          },
+          {
+            "name": "total_offset_from_candle_close",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_STORAGE_PERSIST",
+            "duration_seconds": 26.799,
+            "quality": "GENUINELY_MEASURED",
+            "description": "Total elapsed time from nominal candle close to parquet persistence"
+          },
+          {
+            "name": "broker_delivery_latency",
+            "start_role": "NOMINAL_BUCKET_BOUNDARY",
+            "end_role": "CLIENT_SOCKET_RECEIVE",
+            "duration_seconds": null,
+            "quality": "UNMEASURED_UNKNOWN",
+            "description": "Physical server-to-socket transmission latency (uninstrumented in batch)"
+          }
+        ]
+      }
+    ]
+  },
+  "checkpoints": [
+    {
+      "job_id": "eurusd-forward-1m",
+      "source": "forward_checkpoint_eurusd-forward-1m.json",
+      "target_completed_end_ts": 1794821340,
+      "requests_made": 4,
+      "new_records_saved": 688,
+      "invocation_delay_seconds": 45.454,
+      "collection_duration_seconds": 4876.585,
+      "total_offset_seconds": 4922.039,
+      "single_request_batch": false,
+      "satisfies_phase30_15s_gate": false,
+      "timestamp_records": [
+        {
+          "name": "target_completed_end_ts",
+          "role": "NOMINAL_BUCKET_BOUNDARY",
+          "quality": "NOMINAL_DISCRETE_LABEL",
+          "timestamp_epoch": 1794821340,
+          "timestamp_iso": "2026-11-16T09:29:00+00:00",
+          "description": "Nominal candle close boundary F (bucket label, not packet arrival)",
+          "source_context": "forward_checkpoint_eurusd-forward-1m.json"
+        },
+        {
+          "name": "created_at_utc",
+          "role": "CLIENT_INVOCATION_CLOCK",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794821385.454152,
+          "timestamp_iso": "2026-11-16T09:29:45.454152+00:00",
+          "description": "Client wall clock when operator or script invoked collection process",
+          "source_context": "forward_checkpoint_eurusd-forward-1m.json"
+        },
+        {
+          "name": "updated_at_utc",
+          "role": "CLIENT_STORAGE_PERSIST",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794826262.038661,
+          "timestamp_iso": "2026-11-16T10:51:02.038661+00:00",
+          "description": "Client wall clock when parquet persistence and catalog commit finished",
+          "source_context": "forward_checkpoint_eurusd-forward-1m.json"
+        },
+        {
+          "name": "broker_first_candle_arrival",
+          "role": "CLIENT_SOCKET_RECEIVE",
+          "quality": "UNMEASURED_UNKNOWN",
+          "timestamp_epoch": null,
+          "timestamp_iso": null,
+          "description": "Actual instant broker completed candle frame arrived at client socket",
+          "source_context": "forward_checkpoint_eurusd-forward-1m.json"
+        }
+      ],
+      "latency_intervals": [
+        {
+          "name": "operator_invocation_offset",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_INVOCATION_CLOCK",
+          "duration_seconds": 45.454,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Elapsed time from candle close until collection command execution began"
+        },
+        {
+          "name": "collection_execution_duration",
+          "start_role": "CLIENT_INVOCATION_CLOCK",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 4876.585,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Duration of startup, TLS/auth, network fetch, and parquet persistence"
+        },
+        {
+          "name": "total_offset_from_candle_close",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 4922.039,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Total elapsed time from nominal candle close to parquet persistence"
+        },
+        {
+          "name": "broker_delivery_latency",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_SOCKET_RECEIVE",
+          "duration_seconds": null,
+          "quality": "UNMEASURED_UNKNOWN",
+          "description": "Physical server-to-socket transmission latency (uninstrumented in batch)"
+        }
+      ]
+    },
+    {
+      "job_id": "phase27-forward-20261118",
+      "source": "forward_checkpoint_phase27-forward-20261118.json",
+      "target_completed_end_ts": 1794974340,
+      "requests_made": 6,
+      "new_records_saved": 2550,
+      "invocation_delay_seconds": 45.691,
+      "collection_duration_seconds": 527.155,
+      "total_offset_seconds": 572.846,
+      "single_request_batch": false,
+      "satisfies_phase30_15s_gate": false,
+      "timestamp_records": [
+        {
+          "name": "target_completed_end_ts",
+          "role": "NOMINAL_BUCKET_BOUNDARY",
+          "quality": "NOMINAL_DISCRETE_LABEL",
+          "timestamp_epoch": 1794974340,
+          "timestamp_iso": "2026-11-18T03:59:00+00:00",
+          "description": "Nominal candle close boundary F (bucket label, not packet arrival)",
+          "source_context": "forward_checkpoint_phase27-forward-20261118.json"
+        },
+        {
+          "name": "created_at_utc",
+          "role": "CLIENT_INVOCATION_CLOCK",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794974385.691363,
+          "timestamp_iso": "2026-11-18T03:59:45.691363+00:00",
+          "description": "Client wall clock when operator or script invoked collection process",
+          "source_context": "forward_checkpoint_phase27-forward-20261118.json"
+        },
+        {
+          "name": "updated_at_utc",
+          "role": "CLIENT_STORAGE_PERSIST",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794974912.846339,
+          "timestamp_iso": "2026-11-18T04:08:32.846339+00:00",
+          "description": "Client wall clock when parquet persistence and catalog commit finished",
+          "source_context": "forward_checkpoint_phase27-forward-20261118.json"
+        },
+        {
+          "name": "broker_first_candle_arrival",
+          "role": "CLIENT_SOCKET_RECEIVE",
+          "quality": "UNMEASURED_UNKNOWN",
+          "timestamp_epoch": null,
+          "timestamp_iso": null,
+          "description": "Actual instant broker completed candle frame arrived at client socket",
+          "source_context": "forward_checkpoint_phase27-forward-20261118.json"
+        }
+      ],
+      "latency_intervals": [
+        {
+          "name": "operator_invocation_offset",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_INVOCATION_CLOCK",
+          "duration_seconds": 45.691,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Elapsed time from candle close until collection command execution began"
+        },
+        {
+          "name": "collection_execution_duration",
+          "start_role": "CLIENT_INVOCATION_CLOCK",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 527.155,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Duration of startup, TLS/auth, network fetch, and parquet persistence"
+        },
+        {
+          "name": "total_offset_from_candle_close",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 572.846,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Total elapsed time from nominal candle close to parquet persistence"
+        },
+        {
+          "name": "broker_delivery_latency",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_SOCKET_RECEIVE",
+          "duration_seconds": null,
+          "quality": "UNMEASURED_UNKNOWN",
+          "description": "Physical server-to-socket transmission latency (uninstrumented in batch)"
+        }
+      ]
+    },
+    {
+      "job_id": "phase28-forward-20261118-045228",
+      "source": "forward_checkpoint_phase28-forward-20261118-045228.json",
+      "target_completed_end_ts": 1794977520,
+      "requests_made": 1,
+      "new_records_saved": 53,
+      "invocation_delay_seconds": 41.493,
+      "collection_duration_seconds": 2.5,
+      "total_offset_seconds": 43.993,
+      "single_request_batch": true,
+      "satisfies_phase30_15s_gate": false,
+      "timestamp_records": [
+        {
+          "name": "target_completed_end_ts",
+          "role": "NOMINAL_BUCKET_BOUNDARY",
+          "quality": "NOMINAL_DISCRETE_LABEL",
+          "timestamp_epoch": 1794977520,
+          "timestamp_iso": "2026-11-18T04:52:00+00:00",
+          "description": "Nominal candle close boundary F (bucket label, not packet arrival)",
+          "source_context": "forward_checkpoint_phase28-forward-20261118-045228.json"
+        },
+        {
+          "name": "created_at_utc",
+          "role": "CLIENT_INVOCATION_CLOCK",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794977561.49315,
+          "timestamp_iso": "2026-11-18T04:52:41.493150+00:00",
+          "description": "Client wall clock when operator or script invoked collection process",
+          "source_context": "forward_checkpoint_phase28-forward-20261118-045228.json"
+        },
+        {
+          "name": "updated_at_utc",
+          "role": "CLIENT_STORAGE_PERSIST",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794977563.993136,
+          "timestamp_iso": "2026-11-18T04:52:43.993136+00:00",
+          "description": "Client wall clock when parquet persistence and catalog commit finished",
+          "source_context": "forward_checkpoint_phase28-forward-20261118-045228.json"
+        },
+        {
+          "name": "broker_first_candle_arrival",
+          "role": "CLIENT_SOCKET_RECEIVE",
+          "quality": "UNMEASURED_UNKNOWN",
+          "timestamp_epoch": null,
+          "timestamp_iso": null,
+          "description": "Actual instant broker completed candle frame arrived at client socket",
+          "source_context": "forward_checkpoint_phase28-forward-20261118-045228.json"
+        }
+      ],
+      "latency_intervals": [
+        {
+          "name": "operator_invocation_offset",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_INVOCATION_CLOCK",
+          "duration_seconds": 41.493,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Elapsed time from candle close until collection command execution began"
+        },
+        {
+          "name": "collection_execution_duration",
+          "start_role": "CLIENT_INVOCATION_CLOCK",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 2.5,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Duration of startup, TLS/auth, network fetch, and parquet persistence"
+        },
+        {
+          "name": "total_offset_from_candle_close",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 43.993,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Total elapsed time from nominal candle close to parquet persistence"
+        },
+        {
+          "name": "broker_delivery_latency",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_SOCKET_RECEIVE",
+          "duration_seconds": null,
+          "quality": "UNMEASURED_UNKNOWN",
+          "description": "Physical server-to-socket transmission latency (uninstrumented in batch)"
+        }
+      ]
+    },
+    {
+      "job_id": "phase28-resolve-20261118-050115",
+      "source": "forward_checkpoint_phase28-resolve-20261118-050115.json",
+      "target_completed_end_ts": 1794978060,
+      "requests_made": 1,
+      "new_records_saved": 9,
+      "invocation_delay_seconds": 33.282,
+      "collection_duration_seconds": 2.177,
+      "total_offset_seconds": 35.459,
+      "single_request_batch": true,
+      "satisfies_phase30_15s_gate": false,
+      "timestamp_records": [
+        {
+          "name": "target_completed_end_ts",
+          "role": "NOMINAL_BUCKET_BOUNDARY",
+          "quality": "NOMINAL_DISCRETE_LABEL",
+          "timestamp_epoch": 1794978060,
+          "timestamp_iso": "2026-11-18T05:01:00+00:00",
+          "description": "Nominal candle close boundary F (bucket label, not packet arrival)",
+          "source_context": "forward_checkpoint_phase28-resolve-20261118-050115.json"
+        },
+        {
+          "name": "created_at_utc",
+          "role": "CLIENT_INVOCATION_CLOCK",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794978093.28171,
+          "timestamp_iso": "2026-11-18T05:01:33.281710+00:00",
+          "description": "Client wall clock when operator or script invoked collection process",
+          "source_context": "forward_checkpoint_phase28-resolve-20261118-050115.json"
+        },
+        {
+          "name": "updated_at_utc",
+          "role": "CLIENT_STORAGE_PERSIST",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794978095.458846,
+          "timestamp_iso": "2026-11-18T05:01:35.458846+00:00",
+          "description": "Client wall clock when parquet persistence and catalog commit finished",
+          "source_context": "forward_checkpoint_phase28-resolve-20261118-050115.json"
+        },
+        {
+          "name": "broker_first_candle_arrival",
+          "role": "CLIENT_SOCKET_RECEIVE",
+          "quality": "UNMEASURED_UNKNOWN",
+          "timestamp_epoch": null,
+          "timestamp_iso": null,
+          "description": "Actual instant broker completed candle frame arrived at client socket",
+          "source_context": "forward_checkpoint_phase28-resolve-20261118-050115.json"
+        }
+      ],
+      "latency_intervals": [
+        {
+          "name": "operator_invocation_offset",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_INVOCATION_CLOCK",
+          "duration_seconds": 33.282,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Elapsed time from candle close until collection command execution began"
+        },
+        {
+          "name": "collection_execution_duration",
+          "start_role": "CLIENT_INVOCATION_CLOCK",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 2.177,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Duration of startup, TLS/auth, network fetch, and parquet persistence"
+        },
+        {
+          "name": "total_offset_from_candle_close",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 35.459,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Total elapsed time from nominal candle close to parquet persistence"
+        },
+        {
+          "name": "broker_delivery_latency",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_SOCKET_RECEIVE",
+          "duration_seconds": null,
+          "quality": "UNMEASURED_UNKNOWN",
+          "description": "Physical server-to-socket transmission latency (uninstrumented in batch)"
+        }
+      ]
+    },
+    {
+      "job_id": "phase29-forward-20261118-091403",
+      "source": "forward_checkpoint_phase29-forward-20261118-091403.json",
+      "target_completed_end_ts": 1794993240,
+      "requests_made": 1,
+      "new_records_saved": 253,
+      "invocation_delay_seconds": 25.378,
+      "collection_duration_seconds": 2.072,
+      "total_offset_seconds": 27.45,
+      "single_request_batch": true,
+      "satisfies_phase30_15s_gate": false,
+      "timestamp_records": [
+        {
+          "name": "target_completed_end_ts",
+          "role": "NOMINAL_BUCKET_BOUNDARY",
+          "quality": "NOMINAL_DISCRETE_LABEL",
+          "timestamp_epoch": 1794993240,
+          "timestamp_iso": "2026-11-18T09:14:00+00:00",
+          "description": "Nominal candle close boundary F (bucket label, not packet arrival)",
+          "source_context": "forward_checkpoint_phase29-forward-20261118-091403.json"
+        },
+        {
+          "name": "created_at_utc",
+          "role": "CLIENT_INVOCATION_CLOCK",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794993265.378006,
+          "timestamp_iso": "2026-11-18T09:14:25.378006+00:00",
+          "description": "Client wall clock when operator or script invoked collection process",
+          "source_context": "forward_checkpoint_phase29-forward-20261118-091403.json"
+        },
+        {
+          "name": "updated_at_utc",
+          "role": "CLIENT_STORAGE_PERSIST",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794993267.450481,
+          "timestamp_iso": "2026-11-18T09:14:27.450481+00:00",
+          "description": "Client wall clock when parquet persistence and catalog commit finished",
+          "source_context": "forward_checkpoint_phase29-forward-20261118-091403.json"
+        },
+        {
+          "name": "broker_first_candle_arrival",
+          "role": "CLIENT_SOCKET_RECEIVE",
+          "quality": "UNMEASURED_UNKNOWN",
+          "timestamp_epoch": null,
+          "timestamp_iso": null,
+          "description": "Actual instant broker completed candle frame arrived at client socket",
+          "source_context": "forward_checkpoint_phase29-forward-20261118-091403.json"
+        }
+      ],
+      "latency_intervals": [
+        {
+          "name": "operator_invocation_offset",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_INVOCATION_CLOCK",
+          "duration_seconds": 25.378,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Elapsed time from candle close until collection command execution began"
+        },
+        {
+          "name": "collection_execution_duration",
+          "start_role": "CLIENT_INVOCATION_CLOCK",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 2.072,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Duration of startup, TLS/auth, network fetch, and parquet persistence"
+        },
+        {
+          "name": "total_offset_from_candle_close",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 27.45,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Total elapsed time from nominal candle close to parquet persistence"
+        },
+        {
+          "name": "broker_delivery_latency",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_SOCKET_RECEIVE",
+          "duration_seconds": null,
+          "quality": "UNMEASURED_UNKNOWN",
+          "description": "Physical server-to-socket transmission latency (uninstrumented in batch)"
+        }
+      ]
+    },
+    {
+      "job_id": "phase29-recovery-20261118-094251",
+      "source": "forward_checkpoint_phase29-recovery-20261118-094251.json",
+      "target_completed_end_ts": 1794994980,
+      "requests_made": 1,
+      "new_records_saved": 29,
+      "invocation_delay_seconds": 24.67,
+      "collection_duration_seconds": 2.129,
+      "total_offset_seconds": 26.799,
+      "single_request_batch": true,
+      "satisfies_phase30_15s_gate": false,
+      "timestamp_records": [
+        {
+          "name": "target_completed_end_ts",
+          "role": "NOMINAL_BUCKET_BOUNDARY",
+          "quality": "NOMINAL_DISCRETE_LABEL",
+          "timestamp_epoch": 1794994980,
+          "timestamp_iso": "2026-11-18T09:43:00+00:00",
+          "description": "Nominal candle close boundary F (bucket label, not packet arrival)",
+          "source_context": "forward_checkpoint_phase29-recovery-20261118-094251.json"
+        },
+        {
+          "name": "created_at_utc",
+          "role": "CLIENT_INVOCATION_CLOCK",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794995004.670318,
+          "timestamp_iso": "2026-11-18T09:43:24.670318+00:00",
+          "description": "Client wall clock when operator or script invoked collection process",
+          "source_context": "forward_checkpoint_phase29-recovery-20261118-094251.json"
+        },
+        {
+          "name": "updated_at_utc",
+          "role": "CLIENT_STORAGE_PERSIST",
+          "quality": "GENUINELY_MEASURED",
+          "timestamp_epoch": 1794995006.799372,
+          "timestamp_iso": "2026-11-18T09:43:26.799372+00:00",
+          "description": "Client wall clock when parquet persistence and catalog commit finished",
+          "source_context": "forward_checkpoint_phase29-recovery-20261118-094251.json"
+        },
+        {
+          "name": "broker_first_candle_arrival",
+          "role": "CLIENT_SOCKET_RECEIVE",
+          "quality": "UNMEASURED_UNKNOWN",
+          "timestamp_epoch": null,
+          "timestamp_iso": null,
+          "description": "Actual instant broker completed candle frame arrived at client socket",
+          "source_context": "forward_checkpoint_phase29-recovery-20261118-094251.json"
+        }
+      ],
+      "latency_intervals": [
+        {
+          "name": "operator_invocation_offset",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_INVOCATION_CLOCK",
+          "duration_seconds": 24.67,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Elapsed time from candle close until collection command execution began"
+        },
+        {
+          "name": "collection_execution_duration",
+          "start_role": "CLIENT_INVOCATION_CLOCK",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 2.129,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Duration of startup, TLS/auth, network fetch, and parquet persistence"
+        },
+        {
+          "name": "total_offset_from_candle_close",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_STORAGE_PERSIST",
+          "duration_seconds": 26.799,
+          "quality": "GENUINELY_MEASURED",
+          "description": "Total elapsed time from nominal candle close to parquet persistence"
+        },
+        {
+          "name": "broker_delivery_latency",
+          "start_role": "NOMINAL_BUCKET_BOUNDARY",
+          "end_role": "CLIENT_SOCKET_RECEIVE",
+          "duration_seconds": null,
+          "quality": "UNMEASURED_UNKNOWN",
+          "description": "Physical server-to-socket transmission latency (uninstrumented in batch)"
+        }
+      ]
+    }
+  ],
+  "prospective_journals": {
+    "Phase 28": [
+      {
+        "prediction_key": "prediction:1794974280",
+        "feature_close_F": 1794974340,
+        "observed_at_ts": 1794977264.0,
+        "decided_at_ts": 1794977264.0,
+        "committed_at_ts": 1794977264.0,
+        "entry_ts": 1794977340,
+        "offset_observed_from_F": 2924.0,
+        "offset_decided_from_F": 2924.0,
+        "offset_committed_from_F": 2924.0,
+        "decision": "SKIP",
+        "meets_phase29_gate": true,
+        "meets_phase30_gate": false
+      },
+      {
+        "prediction_key": "prediction:1794977460",
+        "feature_close_F": 1794977520,
+        "observed_at_ts": 1794977589.0,
+        "decided_at_ts": 1794977589.0,
+        "committed_at_ts": 1794977589.0,
+        "entry_ts": 1794977700,
+        "offset_observed_from_F": 69.0,
+        "offset_decided_from_F": 69.0,
+        "offset_committed_from_F": 69.0,
+        "decision": "SKIP",
+        "meets_phase29_gate": true,
+        "meets_phase30_gate": false
+      }
+    ],
+    "Phase 29": [
+      {
+        "prediction_key": "prediction:1794993180",
+        "feature_close_F": 1794993240,
+        "observed_at_ts": 1794993292.0,
+        "decided_at_ts": 1794993292.0,
+        "committed_at_ts": 1794993292.0,
+        "entry_ts": 1794993360,
+        "offset_observed_from_F": 52.0,
+        "offset_decided_from_F": 52.0,
+        "offset_committed_from_F": 52.0,
+        "decision": "SKIP",
+        "meets_phase29_gate": true,
+        "meets_phase30_gate": false
+      },
+      {
+        "prediction_key": "prediction:1794994920",
+        "feature_close_F": 1794994980,
+        "observed_at_ts": 1794995020.0,
+        "decided_at_ts": 1794995020.0,
+        "committed_at_ts": 1794995020.0,
+        "entry_ts": 1794995100,
+        "offset_observed_from_F": 40.0,
+        "offset_decided_from_F": 40.0,
+        "offset_committed_from_F": 40.0,
+        "decision": "SKIP",
+        "meets_phase29_gate": true,
+        "meets_phase30_gate": false
+      }
+    ],
+    "Phase 30": []
+  },
+  "epistemic_findings": {
+    "genuinely_measured_timestamps": [
+      "checkpoint.created_at_utc (Client wall-clock invocation timestamp)",
+      "checkpoint.updated_at_utc (Client wall-clock persistence completion timestamp)",
+      "journal.data_observed_at_ts (Client wall-clock dataset read timestamp)",
+      "journal.recorded_at_ts (Client wall-clock model decision timestamp)",
+      "receipt.observed_at_ts (Client wall-clock journal commit timestamp)"
+    ],
+    "proxy_and_discrete_timestamps": [
+      "candle.from_ts / to_ts (Nominal discrete bucket boundary; not packet arrival)",
+      "feature_row.available_at_ts (Hardcoded to candle.to_ts in pipeline.py; causal proxy)",
+      "checkpoint.target_completed_end_ts (Client-computed discrete target boundary)"
+    ],
+    "unmeasured_physical_events": [
+      "Broker candle frame assembly and WebSocket emit timestamp",
+      "Network wire transit duration",
+      "Client OS socket receive timestamp (time.perf_counter_ns of frame receipt)"
+    ],
+    "critical_conclusion": "Historical catalog and checkpoint timestamps reflect manual operator or scheduled batch invocation offset (24.7s - 46.8s), NOT broker delivery latency. The broker's first candle availability distribution is completely uninstrumented in existing data."
+  }
+}

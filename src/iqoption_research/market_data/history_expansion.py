@@ -37,6 +37,9 @@ from iqoption_research.market_data.parquet_storage import read_candles_parquet
 from iqoption_research.market_data.sessions import get_market_schedule
 from iqoption_research.models.market import Candle
 
+MAX_CATALOG_SHARDS = 20_000
+MAX_SOURCE_PAGES = 40_000
+
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
     """Flush and atomically replace a derived report or checkpoint."""
@@ -87,6 +90,8 @@ class HistoryIndex:
         return fresh
 
     def rebuild(self) -> None:
+        if self.collector.catalog.count_datasets() > MAX_CATALOG_SHARDS:
+            raise DataAcquisitionError("Catalog exceeds bounded metadata limit")
         for entry in self.collector.catalog.find_datasets(symbol="EURUSD", candle_size_seconds=60):
             if entry.is_synthetic or entry.source.lower() != BACKFILL_SOURCE:
                 key = "synthetic" if entry.is_synthetic else entry.source
@@ -97,7 +102,15 @@ class HistoryIndex:
             path = self.collector.storage_dir / entry.file_path
             if path.stat().st_size > 64_000_000:
                 raise DataAcquisitionError("Shard exceeds bounded file size limit")
-            if entry.candle_count > 100_000 or pq.ParquetFile(path).metadata.num_rows > 100_000:
+            metadata = pq.ParquetFile(path).metadata
+            if (
+                entry.candle_count > 100_000
+                or metadata.num_rows > 100_000
+                or sum(
+                    metadata.row_group(i).total_byte_size for i in range(metadata.num_row_groups)
+                )
+                > 128_000_000
+            ):
                 raise DataAcquisitionError("Shard exceeds bounded validation memory limit")
             candles = read_candles_parquet(path, catalog_entry=entry)
             if len(candles) != entry.candle_count:
@@ -247,7 +260,12 @@ def validate_history(storage: Path) -> dict[str, Any]:
             report = index.report()
             archives = 0
             source_digest = hashlib.sha256()
-            for path in sorted((storage / "phase26_sources").glob("*/*.json")):
+            paths = []
+            for path in (storage / "phase26_sources").glob("*/*.json"):
+                paths.append(path)
+                if len(paths) > MAX_SOURCE_PAGES:
+                    raise DataAcquisitionError("Source archive exceeds bounded manifest limit")
+            for path in sorted(paths):
                 if path.stat().st_size > 4_000_000:
                     raise DataAcquisitionError("Source archive exceeds page memory bound")
                 payload = path.read_bytes()
@@ -348,7 +366,14 @@ async def _collect_locked(
             started = True
             archive = storage / "phase26_sources" / job_id
             archive.mkdir(parents=True, exist_ok=True)
+            source_pages = sum(1 for _ in (storage / "phase26_sources").glob("*/*.json"))
             while state["cursor"] > state["target_ts"]:
+                if source_pages >= MAX_SOURCE_PAGES:
+                    state["status"] = "ARCHIVE_LIMIT"
+                    break
+                if collector.catalog.count_datasets() >= MAX_CATALOG_SHARDS:
+                    state["status"] = "SHARD_LIMIT"
+                    break
                 new_count = (
                     index.db.execute("SELECT COUNT(*) FROM bars").fetchone()[0]
                     - state["initial_count"]
@@ -427,6 +452,7 @@ async def _collect_locked(
                     stream.write(payload)
                     stream.flush()
                     os.fsync(stream.fileno())
+                source_pages += 1
                 if str(result.source).lower() != "iqoption" or result.errors:
                     raise DataAcquisitionError("Unverified provenance or rejected broker records")
                 strict_candles(batch)

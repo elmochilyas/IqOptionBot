@@ -68,11 +68,16 @@ and existing bounded connection recovery are separate from the candle-call budge
 There are no orders, wallet changes, or market subscriptions in this workflow.
 
 SQLite uses a 4 MiB page cache. Validation reads one immutable shard at a time,
-rejecting shards above 100,000 rows or 64 MB on disk, instead of accumulating all
+rejecting shards above 100,000 rows, 64 MB on disk, or 128 MB of uncompressed Parquet
+row-group data, instead of accumulating all
 candles in Python. New source archives are capped at 4 MB per response and page
 records at the requested count. Gap samples are capped at 1,000, while full gap
 counts and the full dataset fingerprint still cover every indexed candle. These
 are input and cache bounds, not an exact process-RSS promise for Python/Arrow.
+Catalog metadata is capped at 20,000 shards and offline archive manifests at 40,000
+pages; a collector reaching the shard cap stops with `SHARD_LIMIT` before requesting
+another page.
+The source-page cap similarly stops collection with `ARCHIVE_LIMIT`.
 
 ## Exact operator PowerShell commands
 

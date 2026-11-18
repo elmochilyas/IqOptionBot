@@ -1,0 +1,134 @@
+{
+  "created_at_utc": "2026-11-18T10:45:01.849423+00:00",
+  "files": [
+    {
+      "path": "bundle_metadata.json",
+      "sha256": "8ca0019c1167bfedda9f6ad30ddd76a3bbb919b4422de6f9cd330f61fa4b412a",
+      "size": 3165
+    },
+    {
+      "path": "calibrator.json",
+      "sha256": "40dcc7cef823a1ba945db841a0044c6b6adcc4799c7e31adba30bc13c379eeda",
+      "size": 206
+    },
+    {
+      "path": "metadata.json",
+      "sha256": "5c7f39563cc19d306454ee647ac4d7bae0675ef197ac949c01f1d4839a767d11",
+      "size": 734
+    },
+    {
+      "path": "model.joblib",
+      "sha256": "fb16fa2ad0d8e13d1ed1a2b9721e9cde8b149ea1a99f9ff11458830bd9315258",
+      "size": 588793
+    },
+    {
+      "path": "scaler.json",
+      "sha256": "8a2c817b48218b7b0ed1516ec00e16a02679a8d4757a1555fd266b20598b77f2",
+      "size": 1913
+    }
+  ],
+  "manifest_version": "1.0",
+  "metadata": {
+    "bundle_format_version": "1.0",
+    "calibrator_method": "sigmoid",
+    "created_at_utc": "2026-11-18T10:45:01.811330+00:00",
+    "feature_names": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio"
+    ],
+    "has_calibrator": true,
+    "has_scaler": true,
+    "kind": "model_bundle",
+    "metadata": {
+      "calibration_rows": 8801,
+      "contract_hash": "ee8f0c34822d44640cd70792ca474bc1dc9b531602eee52c25d41156cb3148fe",
+      "features": [
+        "return_1",
+        "log_return_1",
+        "intrabar_return",
+        "sma_ratio_5",
+        "sma_ratio_20",
+        "volatility_10",
+        "volatility_20",
+        "candle_range",
+        "body_to_range",
+        "upper_shadow_ratio",
+        "lower_shadow_ratio"
+      ],
+      "independent_confirmation_consumed": false,
+      "lifecycle_stage": "DEVELOPMENT_ONLY",
+      "model_provenance": "authentic_trained",
+      "study_config_hash": "8e9a23bc5cb1729a5b5114e2731cc333af8f466cc5209e244b1ffe431200a4d3",
+      "target_contract": {
+        "blitz": "UNVERIFIED_NOT_SCORED",
+        "confidence_threshold": 0.6,
+        "context_bars": 21,
+        "entry_delay_from_feature_close": 120,
+        "entry_price": "AUTHENTIC_EURUSD_CANDLE_OPEN_AT_F_PLUS_120",
+        "expiry_price": "SAME_CANDLE_CLOSE_AT_F_PLUS_180",
+        "feature_availability": "CANDLE_CLOSE_F_IS_EARLIEST_NOT_ATTESTED_ARRIVAL",
+        "historical_latency": "UNKNOWN; conditional contract, no imputed real arrival times",
+        "holding_seconds": 60,
+        "labels": {
+          "DOWN": 0,
+          "TIE": -1,
+          "UP": 1
+        },
+        "live_gate": "F <= data_observed <= decision <= durable_commit <= F+15",
+        "max_source_age_seconds": 15,
+        "missing_policy": "REJECT_NONCONTIGUOUS_CONTEXT_LATENCY_OR_OUTCOME;NO_FILL",
+        "probability": "P(UP | DECISIVE); not unconditional probability of winning",
+        "ties": "EXACT_EQUALITY_EXCLUDED_FROM_FITTING_CALIBRATION_DIRECTIONAL_METRICS",
+        "timeframe": 60,
+        "version": "EURUSD_DELAYED_CONDITIONAL_DIRECTION_V1"
+      },
+      "training_rows": 35272
+    },
+    "model": {
+      "class_name": "RandomForestModel",
+      "classes": [
+        0,
+        1
+      ],
+      "feature_names": [
+        "return_1",
+        "log_return_1",
+        "intrabar_return",
+        "sma_ratio_5",
+        "sma_ratio_20",
+        "volatility_10",
+        "volatility_20",
+        "candle_range",
+        "body_to_range",
+        "upper_shadow_ratio",
+        "lower_shadow_ratio"
+      ],
+      "hyperparameters": {
+        "bootstrap": true,
+        "class_weight": null,
+        "max_depth": 6,
+        "max_features": "sqrt",
+        "min_samples_leaf": 100,
+        "min_samples_split": 20,
+        "n_estimators": 128,
+        "n_jobs": 1,
+        "random_state": 30
+      },
+      "is_fitted": true,
+      "model_type": "tabular",
+      "name": "random_forest",
+      "saved_at_utc": "2026-11-18T10:45:01.811330+00:00",
+      "version": "1.0.0"
+    },
+    "security_note": "Trusted local artifact only. Do not load joblib/pickle artifacts from untrusted sources."
+  }
+}

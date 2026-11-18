@@ -1,0 +1,94 @@
+{
+  "bundle_format_version": "1.0",
+  "calibrator_method": null,
+  "created_at_utc": "2026-11-18T10:44:57.815269+00:00",
+  "feature_names": [
+    "return_1",
+    "log_return_1",
+    "intrabar_return",
+    "sma_ratio_5",
+    "sma_ratio_20",
+    "volatility_10",
+    "volatility_20",
+    "candle_range",
+    "body_to_range",
+    "upper_shadow_ratio",
+    "lower_shadow_ratio"
+  ],
+  "has_calibrator": false,
+  "has_scaler": true,
+  "metadata": {
+    "calibration_rows": 8801,
+    "contract_hash": "ee8f0c34822d44640cd70792ca474bc1dc9b531602eee52c25d41156cb3148fe",
+    "features": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio"
+    ],
+    "independent_confirmation_consumed": false,
+    "lifecycle_stage": "DEVELOPMENT_ONLY",
+    "model_provenance": "authentic_trained",
+    "study_config_hash": "8e9a23bc5cb1729a5b5114e2731cc333af8f466cc5209e244b1ffe431200a4d3",
+    "target_contract": {
+      "blitz": "UNVERIFIED_NOT_SCORED",
+      "confidence_threshold": 0.6,
+      "context_bars": 21,
+      "entry_delay_from_feature_close": 120,
+      "entry_price": "AUTHENTIC_EURUSD_CANDLE_OPEN_AT_F_PLUS_120",
+      "expiry_price": "SAME_CANDLE_CLOSE_AT_F_PLUS_180",
+      "feature_availability": "CANDLE_CLOSE_F_IS_EARLIEST_NOT_ATTESTED_ARRIVAL",
+      "historical_latency": "UNKNOWN; conditional contract, no imputed real arrival times",
+      "holding_seconds": 60,
+      "labels": {
+        "DOWN": 0,
+        "TIE": -1,
+        "UP": 1
+      },
+      "live_gate": "F <= data_observed <= decision <= durable_commit <= F+15",
+      "max_source_age_seconds": 15,
+      "missing_policy": "REJECT_NONCONTIGUOUS_CONTEXT_LATENCY_OR_OUTCOME;NO_FILL",
+      "probability": "P(UP | DECISIVE); not unconditional probability of winning",
+      "ties": "EXACT_EQUALITY_EXCLUDED_FROM_FITTING_CALIBRATION_DIRECTIONAL_METRICS",
+      "timeframe": 60,
+      "version": "EURUSD_DELAYED_CONDITIONAL_DIRECTION_V1"
+    },
+    "training_rows": 35272
+  },
+  "model": {
+    "class_name": "MajorityClassModel",
+    "classes": [
+      0,
+      1
+    ],
+    "feature_names": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio"
+    ],
+    "hyperparameters": {
+      "smoothing": 0.0
+    },
+    "is_fitted": true,
+    "model_type": "baseline",
+    "name": "majority_class",
+    "saved_at_utc": "2026-11-18T10:44:57.815269+00:00",
+    "version": "1.0.0"
+  },
+  "security_note": "Trusted local artifact only. Do not load joblib/pickle artifacts from untrusted sources."
+}

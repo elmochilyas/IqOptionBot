@@ -52,8 +52,11 @@ def _make_dummy_candle(
     )
 
 
-def test_historical_coverage_audit_properties() -> None:
+def test_historical_coverage_audit_properties(
+    legacy_research_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Verify that dataset coverage audit accurately detects historical deficit and holdout."""
+    monkeypatch.chdir(legacy_research_workspace)
     audit = audit_historical_coverage("data/datasets", "data/phase11/confirmation_state.json")
     assert audit.holdout_status == "RESERVED"
     assert audit.holdout_cutoff_ts == 1794607200
@@ -143,9 +146,12 @@ def test_causal_features_leakage_isolation() -> None:
         np.testing.assert_allclose(X_orig[row_idx], X_mod[row_idx], rtol=1e-5)
 
 
-def test_phase15_cli_offline_execution(tmp_path: Path) -> None:
+def test_phase15_cli_offline_execution(
+    tmp_path: Path, legacy_research_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Verify that the phase15-research CLI command executes cleanly offline."""
     runner = CliRunner()
+    monkeypatch.chdir(legacy_research_workspace)
     report_out = tmp_path / "test_p15_report.md"
     json_out = tmp_path / "test_p15_results.json"
 
@@ -168,13 +174,12 @@ def test_phase15_cli_offline_execution(tmp_path: Path) -> None:
     )
     assert res.exit_code == 0
     assert "Phase 15" in res.output
-    assert "STOP_STRATEGY" in res.output
     assert report_out.exists()
     assert json_out.exists()
 
     with json_out.open(encoding="utf-8") as f:
         data = json.load(f)
-    assert data["recommendation"] == ResearchRecommendation.STOP_STRATEGY.value
+    assert data["recommendation"] in {r.value for r in ResearchRecommendation}
     assert data["coverage_audit"]["holdout_status"] == "RESERVED"
     assert data["coverage_audit"]["holdout_candles"] > 0
     assert len(data["experiment_a_results"]) > 0

@@ -1,0 +1,2973 @@
+{
+  "blitz_settlements": 0,
+  "broker_orders": 0,
+  "candidates": {
+    "constant_half": {
+      "by_regime": {
+        "DOWN_HIGH_VOL": {
+          "accuracy": 0.48668280871670705,
+          "always_call_accuracy": 0.48668280871670705,
+          "always_put_accuracy": 0.513317191283293,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1239,
+              "observed_up": 0.48668280871670705,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1239,
+          "ece": 0.01331719128329295,
+          "log_loss": 0.6931471805599454,
+          "raw_brier": 0.25,
+          "rows": 1270,
+          "tie_frequency": 0.024409448818897637,
+          "ties": 31,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.45893601398442174,
+            0.5145119268081932
+          ]
+        },
+        "DOWN_LOW_VOL": {
+          "accuracy": 0.4991248541423571,
+          "always_call_accuracy": 0.4991248541423571,
+          "always_put_accuracy": 0.5008751458576429,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 3428,
+              "observed_up": 0.4991248541423571,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 3428,
+          "ece": 0.0008751458576429227,
+          "log_loss": 0.6931471805599453,
+          "raw_brier": 0.25,
+          "rows": 3616,
+          "tie_frequency": 0.051991150442477874,
+          "ties": 188,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.48239745615832663,
+            0.5158542113292323
+          ]
+        },
+        "UP_HIGH_VOL": {
+          "accuracy": 0.49853372434017595,
+          "always_call_accuracy": 0.49853372434017595,
+          "always_put_accuracy": 0.501466275659824,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1023,
+              "observed_up": 0.49853372434017595,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1023,
+          "ece": 0.0014662756598240456,
+          "log_loss": 0.6931471805599453,
+          "raw_brier": 0.25,
+          "rows": 1041,
+          "tie_frequency": 0.01729106628242075,
+          "ties": 18,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.46795730456515494,
+            0.5291211149179799
+          ]
+        },
+        "UP_LOW_VOL": {
+          "accuracy": 0.4903815830968149,
+          "always_call_accuracy": 0.4903815830968149,
+          "always_put_accuracy": 0.5096184169031851,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 3171,
+              "observed_up": 0.4903815830968149,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 3171,
+          "ece": 0.0096184169031851,
+          "log_loss": 0.6931471805599452,
+          "raw_brier": 0.25,
+          "rows": 3377,
+          "tie_frequency": 0.06100088836245188,
+          "ties": 206,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4730041333044788,
+            0.5077823088561136
+          ]
+        }
+      },
+      "by_utc_day": {
+        "2026-11-05": {
+          "accuracy": 0.49960348929421095,
+          "always_call_accuracy": 0.49960348929421095,
+          "always_put_accuracy": 0.500396510705789,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1261,
+              "observed_up": 0.49960348929421095,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1261,
+          "ece": 0.0003965107057890549,
+          "log_loss": 0.6931471805599453,
+          "raw_brier": 0.25,
+          "rows": 1310,
+          "tie_frequency": 0.03740458015267176,
+          "ties": 49,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.47204972541294854,
+            0.5271596616663362
+          ]
+        },
+        "2026-11-06": {
+          "accuracy": 0.46796875,
+          "always_call_accuracy": 0.46796875,
+          "always_put_accuracy": 0.53203125,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1280,
+              "observed_up": 0.46796875,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1280,
+          "ece": 0.03203125000000001,
+          "log_loss": 0.6931471805599453,
+          "raw_brier": 0.25,
+          "rows": 1318,
+          "tie_frequency": 0.028831562974203338,
+          "ties": 38,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4407702858788317,
+            0.4953588993592558
+          ]
+        },
+        "2026-11-08": {
+          "accuracy": 0.47191011235955055,
+          "always_call_accuracy": 0.47191011235955055,
+          "always_put_accuracy": 0.5280898876404494,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 89,
+              "observed_up": 0.47191011235955055,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 89,
+          "ece": 0.02808988764044945,
+          "log_loss": 0.6931471805599453,
+          "raw_brier": 0.25,
+          "rows": 98,
+          "tie_frequency": 0.09183673469387756,
+          "ties": 9,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.37152022402743146,
+            0.5746245257049423
+          ]
+        },
+        "2026-11-09": {
+          "accuracy": 0.5231788079470199,
+          "always_call_accuracy": 0.5231788079470199,
+          "always_put_accuracy": 0.4768211920529801,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1359,
+              "observed_up": 0.5231788079470199,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1359,
+          "ece": 0.023178807947019875,
+          "log_loss": 0.6931471805599453,
+          "raw_brier": 0.25,
+          "rows": 1440,
+          "tie_frequency": 0.05625,
+          "ties": 81,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4965961561126878,
+            0.5496307909707357
+          ]
+        },
+        "2026-11-10": {
+          "accuracy": 0.505526897568165,
+          "always_call_accuracy": 0.505526897568165,
+          "always_put_accuracy": 0.49447310243183495,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1357,
+              "observed_up": 0.505526897568165,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1357,
+          "ece": 0.005526897568165046,
+          "log_loss": 0.6931471805599453,
+          "raw_brier": 0.25,
+          "rows": 1440,
+          "tie_frequency": 0.05763888888888889,
+          "ties": 83,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.478947638539903,
+            0.5320749533298353
+          ]
+        },
+        "2026-11-11": {
+          "accuracy": 0.4772058823529412,
+          "always_call_accuracy": 0.4772058823529412,
+          "always_put_accuracy": 0.5227941176470587,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1360,
+              "observed_up": 0.4772058823529412,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1360,
+          "ece": 0.022794117647058798,
+          "log_loss": 0.6931471805599453,
+          "raw_brier": 0.25,
+          "rows": 1440,
+          "tie_frequency": 0.05555555555555555,
+          "ties": 80,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4507615543419698,
+            0.5037786162922246
+          ]
+        },
+        "2026-11-12": {
+          "accuracy": 0.4834293948126801,
+          "always_call_accuracy": 0.4834293948126801,
+          "always_put_accuracy": 0.5165706051873199,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1388,
+              "observed_up": 0.4834293948126801,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1388,
+          "ece": 0.016570605187319898,
+          "log_loss": 0.6931471805599454,
+          "raw_brier": 0.25,
+          "rows": 1440,
+          "tie_frequency": 0.03611111111111111,
+          "ties": 52,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4572217486324901,
+            0.5097285101714286
+          ]
+        },
+        "2026-11-13": {
+          "accuracy": 0.5097783572359843,
+          "always_call_accuracy": 0.5097783572359843,
+          "always_put_accuracy": 0.4902216427640157,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 767,
+              "observed_up": 0.5097783572359843,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 767,
+          "ece": 0.009778357235984303,
+          "log_loss": 0.6931471805599453,
+          "raw_brier": 0.25,
+          "rows": 818,
+          "tie_frequency": 0.06234718826405868,
+          "ties": 51,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4744395254656454,
+            0.5450197288704516
+          ]
+        }
+      },
+      "conclusion": "NO_DEMONSTRATED_EDGE",
+      "decision_rates": {
+        "CALL": 0.0,
+        "PUT": 0.0,
+        "SKIP": 1.0
+      },
+      "decisions": {
+        "CALL": 0,
+        "PUT": 0,
+        "SKIP": 9304
+      },
+      "delay_sensitivity": {
+        "180": {
+          "metrics": {
+            "accuracy": 0.4942995823456372,
+            "always_call_accuracy": 0.4942995823456372,
+            "always_put_accuracy": 0.5057004176543628,
+            "brier": 0.25,
+            "calibration_bins": [
+              {
+                "lower": 0.5,
+                "n": 8859,
+                "observed_up": 0.4942995823456372,
+                "predicted_up": 0.5,
+                "upper": 0.6
+              }
+            ],
+            "decisive": 8859,
+            "ece": 0.005700417654362799,
+            "log_loss": 0.6931471805599453,
+            "raw_brier": 0.25,
+            "rows": 9302,
+            "tie_frequency": 0.0476241668458396,
+            "ties": 443,
+            "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+            "wilson_95": [
+              0.4838931877428023,
+              0.5047109184606906
+            ]
+          },
+          "missing": 2,
+          "status": "DIFFERENT_TARGET_DIAGNOSTIC_NOT_POOLED_OR_MODEL_SELECTED"
+        },
+        "60": {
+          "metrics": {
+            "accuracy": 0.4941880148967385,
+            "always_call_accuracy": 0.4941880148967385,
+            "always_put_accuracy": 0.5058119851032614,
+            "brier": 0.25,
+            "calibration_bins": [
+              {
+                "lower": 0.5,
+                "n": 8861,
+                "observed_up": 0.4941880148967385,
+                "predicted_up": 0.5,
+                "upper": 0.6
+              }
+            ],
+            "decisive": 8861,
+            "ece": 0.0058119851032614744,
+            "log_loss": 0.6931471805599453,
+            "raw_brier": 0.25,
+            "rows": 9304,
+            "tie_frequency": 0.04761392949269132,
+            "ties": 443,
+            "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+            "wilson_95": [
+              0.4837828690502982,
+              0.5045981978330228
+            ]
+          },
+          "missing": 0,
+          "status": "DIFFERENT_TARGET_DIAGNOSTIC_NOT_POOLED_OR_MODEL_SELECTED"
+        }
+      },
+      "dependence": {
+        "accuracy_day_block_95": [
+          0.4817178866463159,
+          0.5101272827891533
+        ],
+        "brier_day_block_95": [
+          0.25,
+          0.25
+        ],
+        "day_clusters": 8,
+        "independent_sample_size": null,
+        "limits": "Weak-dependence/stationarity assumptions unverified; not promotion evidence",
+        "method": "CIRCULAR_TWO_UTC_DAY_BLOCKS_1000_RESAMPLES_DESCRIPTIVE",
+        "multiple_comparisons_adjusted": false
+      },
+      "directional_quality": {
+        "accuracy": 0.4941880148967385,
+        "always_call_accuracy": 0.4941880148967385,
+        "always_put_accuracy": 0.5058119851032614,
+        "brier": 0.25,
+        "calibration_bins": [
+          {
+            "lower": 0.5,
+            "n": 8861,
+            "observed_up": 0.4941880148967385,
+            "predicted_up": 0.5,
+            "upper": 0.6
+          }
+        ],
+        "decisive": 8861,
+        "ece": 0.0058119851032614744,
+        "log_loss": 0.6931471805599453,
+        "raw_brier": 0.25,
+        "rows": 9304,
+        "tie_frequency": 0.04761392949269132,
+        "ties": 443,
+        "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+        "wilson_95": [
+          0.4837828690502982,
+          0.5045981978330228
+        ]
+      },
+      "hypothetical_economics": [
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        }
+      ],
+      "missing_data_stress": {
+        "policy": "REMOVE_UTC_BAR_WHEN_FROM_MINUTE_MOD_100_EQUALS_0",
+        "remaining_rows": 7064,
+        "skipped_rows": 2240,
+        "survivor_metrics": {
+          "accuracy": 0.49294100163471544,
+          "always_call_accuracy": 0.49294100163471544,
+          "always_put_accuracy": 0.5070589983652846,
+          "brier": 0.25,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 6729,
+              "observed_up": 0.49294100163471544,
+              "predicted_up": 0.5,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 6729,
+          "ece": 0.007058998365284563,
+          "log_loss": 0.6931471805599453,
+          "raw_brier": 0.25,
+          "rows": 7064,
+          "tie_frequency": 0.04742355605889015,
+          "ties": 335,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4810030684079235,
+            0.5048869899602947
+          ]
+        }
+      },
+      "movement_counts": {
+        "-1": 443,
+        "0": 4482,
+        "1": 4379
+      },
+      "observation_frequency_is_independent_n": false,
+      "selected_directional_quality": {
+        "accuracy": null,
+        "brier": null,
+        "calibration_bins": [],
+        "decisive": 0,
+        "ece": null,
+        "log_loss": null,
+        "raw_brier": null,
+        "rows": 0,
+        "tie_frequency": null,
+        "ties": 0,
+        "wilson_95": [
+          0.0,
+          1.0
+        ]
+      },
+      "verified_blitz_economics": {
+        "profit": null,
+        "settlements": 0
+      }
+    },
+    "logistic_regression": {
+      "by_regime": {
+        "DOWN_HIGH_VOL": {
+          "accuracy": 0.48668280871670705,
+          "always_call_accuracy": 0.48668280871670705,
+          "always_put_accuracy": 0.513317191283293,
+          "brier": 0.2555007193687335,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1239,
+              "observed_up": 0.48668280871670705,
+              "predicted_up": 0.5620357575351673,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1239,
+          "ece": 0.07535294881846027,
+          "log_loss": 0.7042255911023759,
+          "raw_brier": 0.25017281305158845,
+          "rows": 1270,
+          "tie_frequency": 0.024409448818897637,
+          "ties": 31,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.45893601398442174,
+            0.5145119268081932
+          ]
+        },
+        "DOWN_LOW_VOL": {
+          "accuracy": 0.4991248541423571,
+          "always_call_accuracy": 0.4991248541423571,
+          "always_put_accuracy": 0.5008751458576429,
+          "brier": 0.25395701616502353,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 3428,
+              "observed_up": 0.4991248541423571,
+              "predicted_up": 0.5620357595269896,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 3428,
+          "ece": 0.06291090538463251,
+          "log_loss": 0.7011221945036501,
+          "raw_brier": 0.25013586554561873,
+          "rows": 3616,
+          "tie_frequency": 0.051991150442477874,
+          "ties": 188,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.48239745615832663,
+            0.5158542113292323
+          ]
+        },
+        "UP_HIGH_VOL": {
+          "accuracy": 0.49853372434017595,
+          "always_call_accuracy": 0.49853372434017595,
+          "always_put_accuracy": 0.501466275659824,
+          "brier": 0.25403035847082733,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1023,
+              "observed_up": 0.49853372434017595,
+              "predicted_up": 0.5620357596200017,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1023,
+          "ece": 0.06350203527982579,
+          "log_loss": 0.7012696388181349,
+          "raw_brier": 0.24983161838786133,
+          "rows": 1041,
+          "tie_frequency": 0.01729106628242075,
+          "ties": 18,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.46795730456515494,
+            0.5291211149179799
+          ]
+        },
+        "UP_LOW_VOL": {
+          "accuracy": 0.4903815830968149,
+          "always_call_accuracy": 0.4903815830968149,
+          "always_put_accuracy": 0.5096184169031851,
+          "brier": 0.25504180719835506,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 3171,
+              "observed_up": 0.4903815830968149,
+              "predicted_up": 0.5620357604394065,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 3171,
+          "ece": 0.07165417734259161,
+          "log_loss": 0.7033030132030684,
+          "raw_brier": 0.2500913539894662,
+          "rows": 3377,
+          "tie_frequency": 0.06100088836245188,
+          "ties": 206,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4730041333044788,
+            0.5077823088561136
+          ]
+        }
+      },
+      "by_utc_day": {
+        "2026-11-05": {
+          "accuracy": 0.49960348929421095,
+          "always_call_accuracy": 0.49960348929421095,
+          "always_put_accuracy": 0.500396510705789,
+          "brier": 0.25389763109289076,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1261,
+              "observed_up": 0.49960348929421095,
+              "predicted_up": 0.5620357593726438,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1261,
+          "ece": 0.06243227007843288,
+          "log_loss": 0.7010028092271238,
+          "raw_brier": 0.24990530286516136,
+          "rows": 1310,
+          "tie_frequency": 0.03740458015267176,
+          "ties": 49,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.47204972541294854,
+            0.5271596616663362
+          ]
+        },
+        "2026-11-06": {
+          "accuracy": 0.46796875,
+          "always_call_accuracy": 0.46796875,
+          "always_put_accuracy": 0.53203125,
+          "brier": 0.25782260130449247,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1280,
+              "observed_up": 0.46796875,
+              "predicted_up": 0.5620357592350478,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1280,
+          "ece": 0.0940670092350478,
+          "log_loss": 0.7088934058130227,
+          "raw_brier": 0.2500619254594081,
+          "rows": 1318,
+          "tie_frequency": 0.028831562974203338,
+          "ties": 38,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4407702858788317,
+            0.4953588993592558
+          ]
+        },
+        "2026-11-08": {
+          "accuracy": 0.47191011235955055,
+          "always_call_accuracy": 0.47191011235955055,
+          "always_put_accuracy": 0.5280898876404494,
+          "brier": 0.25733359054539373,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 89,
+              "observed_up": 0.47191011235955055,
+              "predicted_up": 0.562035759588025,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 89,
+          "ece": 0.09012564722847444,
+          "log_loss": 0.7079103189580768,
+          "raw_brier": 0.25015083088066725,
+          "rows": 98,
+          "tie_frequency": 0.09183673469387756,
+          "ties": 9,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.37152022402743146,
+            0.5746245257049423
+          ]
+        },
+        "2026-11-09": {
+          "accuracy": 0.5231788079470199,
+          "always_call_accuracy": 0.5231788079470199,
+          "always_put_accuracy": 0.4768211920529801,
+          "brier": 0.2509726056191628,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1359,
+              "observed_up": 0.5231788079470199,
+              "predicted_up": 0.5620357599880373,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1359,
+          "ece": 0.03885695204101747,
+          "log_loss": 0.6951224598845784,
+          "raw_brier": 0.250180186660404,
+          "rows": 1440,
+          "tie_frequency": 0.05625,
+          "ties": 81,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4965961561126878,
+            0.5496307909707357
+          ]
+        },
+        "2026-11-10": {
+          "accuracy": 0.505526897568165,
+          "always_call_accuracy": 0.505526897568165,
+          "always_put_accuracy": 0.49447310243183495,
+          "brier": 0.2531627048611684,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1357,
+              "observed_up": 0.505526897568165,
+              "predicted_up": 0.5620357595533895,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1357,
+          "ece": 0.05650886198522442,
+          "log_loss": 0.6995253441512257,
+          "raw_brier": 0.25002446579088744,
+          "rows": 1440,
+          "tie_frequency": 0.05763888888888889,
+          "ties": 83,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.478947638539903,
+            0.5320749533298353
+          ]
+        },
+        "2026-11-11": {
+          "accuracy": 0.4772058823529412,
+          "always_call_accuracy": 0.4772058823529412,
+          "always_put_accuracy": 0.5227941176470587,
+          "brier": 0.25667653633088233,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1360,
+              "observed_up": 0.4772058823529412,
+              "predicted_up": 0.562035759721514,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1360,
+          "ece": 0.08482987736857278,
+          "log_loss": 0.7065894045407772,
+          "raw_brier": 0.25011419976344185,
+          "rows": 1440,
+          "tie_frequency": 0.05555555555555555,
+          "ties": 80,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4507615543419698,
+            0.5037786162922246
+          ]
+        },
+        "2026-11-12": {
+          "accuracy": 0.4834293948126801,
+          "always_call_accuracy": 0.4834293948126801,
+          "always_put_accuracy": 0.5165706051873199,
+          "brier": 0.25590437564611146,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 1388,
+              "observed_up": 0.4834293948126801,
+              "predicted_up": 0.5620357594815452,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1388,
+          "ece": 0.07860636466886506,
+          "log_loss": 0.7050370848703128,
+          "raw_brier": 0.25011360647355657,
+          "rows": 1440,
+          "tie_frequency": 0.03611111111111111,
+          "ties": 52,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4572217486324901,
+            0.5097285101714286
+          ]
+        },
+        "2026-11-13": {
+          "accuracy": 0.5097783572359843,
+          "always_call_accuracy": 0.5097783572359843,
+          "always_put_accuracy": 0.4902216427640157,
+          "brier": 0.2526352199177646,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 767,
+              "observed_up": 0.5097783572359843,
+              "predicted_up": 0.5620357598132686,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 767,
+          "ece": 0.052257402577284284,
+          "log_loss": 0.6984649104003783,
+          "raw_brier": 0.25030370913948813,
+          "rows": 818,
+          "tie_frequency": 0.06234718826405868,
+          "ties": 51,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4744395254656454,
+            0.5450197288704516
+          ]
+        }
+      },
+      "conclusion": "NO_DEMONSTRATED_EDGE",
+      "decision_rates": {
+        "CALL": 0.0,
+        "PUT": 0.0,
+        "SKIP": 1.0
+      },
+      "decisions": {
+        "CALL": 0,
+        "PUT": 0,
+        "SKIP": 9304
+      },
+      "delay_sensitivity": {
+        "180": {
+          "metrics": {
+            "accuracy": 0.4942995823456372,
+            "always_call_accuracy": 0.4942995823456372,
+            "always_put_accuracy": 0.5057004176543628,
+            "brier": 0.2545556949274335,
+            "calibration_bins": [
+              {
+                "lower": 0.5,
+                "n": 8859,
+                "observed_up": 0.4942995823456372,
+                "predicted_up": 0.5620357595883704,
+                "upper": 0.6
+              }
+            ],
+            "decisive": 8859,
+            "ece": 0.06773617724273318,
+            "log_loss": 0.7023257533436332,
+            "raw_brier": 0.24995062546806154,
+            "rows": 9302,
+            "tie_frequency": 0.0476241668458396,
+            "ties": 443,
+            "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+            "wilson_95": [
+              0.4838931877428023,
+              0.5047109184606906
+            ]
+          },
+          "missing": 2,
+          "status": "DIFFERENT_TARGET_DIAGNOSTIC_NOT_POOLED_OR_MODEL_SELECTED"
+        },
+        "60": {
+          "metrics": {
+            "accuracy": 0.4941880148967385,
+            "always_call_accuracy": 0.4941880148967385,
+            "always_put_accuracy": 0.5058119851032614,
+            "brier": 0.25456953729428405,
+            "calibration_bins": [
+              {
+                "lower": 0.5,
+                "n": 8861,
+                "observed_up": 0.4941880148967385,
+                "predicted_up": 0.5620357595846224,
+                "upper": 0.6
+              }
+            ],
+            "decisive": 8861,
+            "ece": 0.06784774468788385,
+            "log_loss": 0.7023535814617274,
+            "raw_brier": 0.2500498094882962,
+            "rows": 9304,
+            "tie_frequency": 0.04761392949269132,
+            "ties": 443,
+            "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+            "wilson_95": [
+              0.4837828690502982,
+              0.5045981978330228
+            ]
+          },
+          "missing": 0,
+          "status": "DIFFERENT_TARGET_DIAGNOSTIC_NOT_POOLED_OR_MODEL_SELECTED"
+        }
+      },
+      "dependence": {
+        "accuracy_day_block_95": [
+          0.4817178866463159,
+          0.5101272827891533
+        ],
+        "brier_day_block_95": [
+          0.25259192813888276,
+          0.25611672505505056
+        ],
+        "day_clusters": 8,
+        "independent_sample_size": null,
+        "limits": "Weak-dependence/stationarity assumptions unverified; not promotion evidence",
+        "method": "CIRCULAR_TWO_UTC_DAY_BLOCKS_1000_RESAMPLES_DESCRIPTIVE",
+        "multiple_comparisons_adjusted": false
+      },
+      "directional_quality": {
+        "accuracy": 0.4941880148967385,
+        "always_call_accuracy": 0.4941880148967385,
+        "always_put_accuracy": 0.5058119851032614,
+        "brier": 0.25456953730427734,
+        "calibration_bins": [
+          {
+            "lower": 0.5,
+            "n": 8861,
+            "observed_up": 0.4941880148967385,
+            "predicted_up": 0.5620357595857366,
+            "upper": 0.6
+          }
+        ],
+        "decisive": 8861,
+        "ece": 0.06784774468899807,
+        "log_loss": 0.7023535814820266,
+        "raw_brier": 0.25008997760666724,
+        "rows": 9304,
+        "tie_frequency": 0.04761392949269132,
+        "ties": 443,
+        "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+        "wilson_95": [
+          0.4837828690502982,
+          0.5045981978330228
+        ]
+      },
+      "hypothetical_economics": [
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        }
+      ],
+      "missing_data_stress": {
+        "policy": "REMOVE_UTC_BAR_WHEN_FROM_MINUTE_MOD_100_EQUALS_0",
+        "remaining_rows": 7064,
+        "skipped_rows": 2240,
+        "survivor_metrics": {
+          "accuracy": 0.49294100163471544,
+          "always_call_accuracy": 0.49294100163471544,
+          "always_put_accuracy": 0.5070589983652846,
+          "brier": 0.2547242561362644,
+          "calibration_bins": [
+            {
+              "lower": 0.5,
+              "n": 6729,
+              "observed_up": 0.49294100163471544,
+              "predicted_up": 0.5620357595429384,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 6729,
+          "ece": 0.06909475790822295,
+          "log_loss": 0.7026646217757494,
+          "raw_brier": 0.2501176404831423,
+          "rows": 7064,
+          "tie_frequency": 0.04742355605889015,
+          "ties": 335,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4810030684079235,
+            0.5048869899602947
+          ]
+        }
+      },
+      "movement_counts": {
+        "-1": 443,
+        "0": 4482,
+        "1": 4379
+      },
+      "observation_frequency_is_independent_n": false,
+      "selected_directional_quality": {
+        "accuracy": null,
+        "brier": null,
+        "calibration_bins": [],
+        "decisive": 0,
+        "ece": null,
+        "log_loss": null,
+        "raw_brier": null,
+        "rows": 0,
+        "tie_frequency": null,
+        "ties": 0,
+        "wilson_95": [
+          0.0,
+          1.0
+        ]
+      },
+      "verified_blitz_economics": {
+        "profit": null,
+        "settlements": 0
+      }
+    },
+    "majority_direction_prior": {
+      "by_regime": {
+        "DOWN_HIGH_VOL": {
+          "accuracy": 0.513317191283293,
+          "always_call_accuracy": 0.48668280871670705,
+          "always_put_accuracy": 0.513317191283293,
+          "brier": 0.24996090017680897,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1239,
+              "observed_up": 0.48668280871670705,
+              "predicted_up": 0.4984406894987527,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1239,
+          "ece": 0.011757880782045649,
+          "log_loss": 0.6930689806679265,
+          "raw_brier": 0.24996090017680897,
+          "rows": 1270,
+          "tie_frequency": 0.024409448818897637,
+          "ties": 31,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4854880731918068,
+            0.5410639860155783
+          ]
+        },
+        "DOWN_LOW_VOL": {
+          "accuracy": 0.5008751458576429,
+          "always_call_accuracy": 0.4991248541423571,
+          "always_put_accuracy": 0.5008751458576429,
+          "brier": 0.24999970220098738,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 3428,
+              "observed_up": 0.4991248541423571,
+              "predicted_up": 0.49844068949875275,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 3428,
+          "ece": 0.0006841646436043236,
+          "log_loss": 0.693146584967872,
+          "raw_brier": 0.24999970220098738,
+          "rows": 3616,
+          "tie_frequency": 0.051991150442477874,
+          "ties": 188,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4841457886707678,
+            0.5176025438416735
+          ]
+        },
+        "UP_HIGH_VOL": {
+          "accuracy": 0.501466275659824,
+          "always_call_accuracy": 0.49853372434017595,
+          "always_put_accuracy": 0.501466275659824,
+          "brier": 0.24999785869117114,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1023,
+              "observed_up": 0.49853372434017595,
+              "predicted_up": 0.49844068949875264,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1023,
+          "ece": 9.303484142331175e-05,
+          "log_loss": 0.6931428979362861,
+          "raw_brier": 0.24999785869117114,
+          "rows": 1041,
+          "tie_frequency": 0.01729106628242075,
+          "ties": 18,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.47087888508202014,
+            0.5320426954348451
+          ]
+        },
+        "UP_LOW_VOL": {
+          "accuracy": 0.5096184169031851,
+          "always_call_accuracy": 0.4903815830968149,
+          "always_put_accuracy": 0.5096184169031851,
+          "brier": 0.2499724352522743,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 3171,
+              "observed_up": 0.4903815830968149,
+              "predicted_up": 0.4984406894987527,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 3171,
+          "ece": 0.008059106401937799,
+          "log_loss": 0.6930920508936494,
+          "raw_brier": 0.2499724352522743,
+          "rows": 3377,
+          "tie_frequency": 0.06100088836245188,
+          "ties": 206,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4922176911438863,
+            0.5269958666955211
+          ]
+        }
+      },
+      "by_utc_day": {
+        "2026-11-05": {
+          "accuracy": 0.500396510705789,
+          "always_call_accuracy": 0.49960348929421095,
+          "always_put_accuracy": 0.500396510705789,
+          "brier": 0.25000119488262457,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1261,
+              "observed_up": 0.49960348929421095,
+              "predicted_up": 0.49844068949875264,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1261,
+          "ece": 0.0011627997954583025,
+          "log_loss": 0.6931495703408246,
+          "raw_brier": 0.25000119488262457,
+          "rows": 1310,
+          "tie_frequency": 0.03740458015267176,
+          "ties": 49,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.47284033833366385,
+            0.5279502745870515
+          ]
+        },
+        "2026-11-06": {
+          "accuracy": 0.53203125,
+          "always_call_accuracy": 0.46796875,
+          "always_put_accuracy": 0.53203125,
+          "brier": 0.24990253812025315,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1280,
+              "observed_up": 0.46796875,
+              "predicted_up": 0.49844068949875264,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1280,
+          "ece": 0.030471939498752654,
+          "log_loss": 0.692952256176401,
+          "raw_brier": 0.24990253812025315,
+          "rows": 1318,
+          "tie_frequency": 0.028831562974203338,
+          "ties": 38,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.5046411006407441,
+            0.5592297141211682
+          ]
+        },
+        "2026-11-08": {
+          "accuracy": 0.5280898876404494,
+          "always_call_accuracy": 0.47191011235955055,
+          "always_put_accuracy": 0.5280898876404494,
+          "brier": 0.24991482973568613,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 89,
+              "observed_up": 0.47191011235955055,
+              "predicted_up": 0.49844068949875264,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 89,
+          "ece": 0.026530577139202094,
+          "log_loss": 0.6929768394869645,
+          "raw_brier": 0.24991482973568613,
+          "rows": 98,
+          "tie_frequency": 0.09183673469387756,
+          "ties": 9,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4253754742950576,
+            0.6284797759725685
+          ]
+        },
+        "2026-11-09": {
+          "accuracy": 0.4768211920529801,
+          "always_call_accuracy": 0.5231788079470199,
+          "always_put_accuracy": 0.4768211920529801,
+          "brier": 0.25007471736651565,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1359,
+              "observed_up": 0.5231788079470199,
+              "predicted_up": 0.49844068949875264,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1359,
+          "ece": 0.024738118448267232,
+          "log_loss": 0.6932966157853195,
+          "raw_brier": 0.25007471736651565,
+          "rows": 1440,
+          "tie_frequency": 0.05625,
+          "ties": 81,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.45036920902926425,
+            0.5034038438873122
+          ]
+        },
+        "2026-11-10": {
+          "accuracy": 0.49447310243183495,
+          "always_call_accuracy": 0.505526897568165,
+          "always_put_accuracy": 0.49447310243183495,
+          "brier": 0.250019667748074,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1357,
+              "observed_up": 0.505526897568165,
+              "predicted_up": 0.49844068949875264,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1357,
+          "ece": 0.007086208069412403,
+          "log_loss": 0.6931865161915,
+          "raw_brier": 0.250019667748074,
+          "rows": 1440,
+          "tie_frequency": 0.05763888888888889,
+          "ties": 83,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.46792504667016466,
+            0.521052361460097
+          ]
+        },
+        "2026-11-11": {
+          "accuracy": 0.5227941176470589,
+          "always_call_accuracy": 0.4772058823529412,
+          "always_put_accuracy": 0.5227941176470587,
+          "brier": 0.24993134523521185,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1360,
+              "observed_up": 0.4772058823529412,
+              "predicted_up": 0.4984406894987526,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1360,
+          "ece": 0.021234807145811385,
+          "log_loss": 0.693009870593101,
+          "raw_brier": 0.24993134523521185,
+          "rows": 1440,
+          "tie_frequency": 0.05555555555555555,
+          "ties": 80,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4962213837077753,
+            0.5492384456580301
+          ]
+        },
+        "2026-11-12": {
+          "accuracy": 0.5165706051873199,
+          "always_call_accuracy": 0.4834293948126801,
+          "always_put_accuracy": 0.5165706051873199,
+          "brier": 0.24995075401187808,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1388,
+              "observed_up": 0.4834293948126801,
+              "predicted_up": 0.4984406894987527,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1388,
+          "ece": 0.015011294686072596,
+          "log_loss": 0.6930486882722781,
+          "raw_brier": 0.24995075401187808,
+          "rows": 1440,
+          "tie_frequency": 0.03611111111111111,
+          "ties": 52,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4902714898285714,
+            0.5427782513675099
+          ]
+        },
+        "2026-11-13": {
+          "accuracy": 0.49022164276401564,
+          "always_call_accuracy": 0.5097783572359843,
+          "always_put_accuracy": 0.4902216427640157,
+          "brier": 0.2500329264394853,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 767,
+              "observed_up": 0.5097783572359843,
+              "predicted_up": 0.4984406894987527,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 767,
+          "ece": 0.011337667737231605,
+          "log_loss": 0.6932130336602906,
+          "raw_brier": 0.2500329264394853,
+          "rows": 818,
+          "tie_frequency": 0.06234718826405868,
+          "ties": 51,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4549802711295483,
+            0.5255604745343545
+          ]
+        }
+      },
+      "conclusion": "NO_DEMONSTRATED_EDGE",
+      "decision_rates": {
+        "CALL": 0.0,
+        "PUT": 0.0,
+        "SKIP": 1.0
+      },
+      "decisions": {
+        "CALL": 0,
+        "PUT": 0,
+        "SKIP": 9304
+      },
+      "delay_sensitivity": {
+        "180": {
+          "metrics": {
+            "accuracy": 0.5057004176543628,
+            "always_call_accuracy": 0.4942995823456372,
+            "always_put_accuracy": 0.5057004176543628,
+            "brier": 0.24998465400701936,
+            "calibration_bins": [
+              {
+                "lower": 0.4,
+                "n": 8859,
+                "observed_up": 0.4942995823456372,
+                "predicted_up": 0.49844068949875264,
+                "upper": 0.5
+              }
+            ],
+            "decisive": 8859,
+            "ece": 0.004141107153115442,
+            "log_loss": 0.693116488482365,
+            "raw_brier": 0.24998465400701936,
+            "rows": 9302,
+            "tie_frequency": 0.0476241668458396,
+            "ties": 443,
+            "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+            "wilson_95": [
+              0.4952890815393094,
+              0.5161068122571977
+            ]
+          },
+          "missing": 2,
+          "status": "DIFFERENT_TARGET_DIAGNOSTIC_NOT_POOLED_OR_MODEL_SELECTED"
+        },
+        "60": {
+          "metrics": {
+            "accuracy": 0.5058119851032615,
+            "always_call_accuracy": 0.4941880148967385,
+            "always_put_accuracy": 0.5058119851032614,
+            "brier": 0.24998430607043007,
+            "calibration_bins": [
+              {
+                "lower": 0.4,
+                "n": 8861,
+                "observed_up": 0.4941880148967385,
+                "predicted_up": 0.49844068949875253,
+                "upper": 0.5
+              }
+            ],
+            "decisive": 8861,
+            "ece": 0.004252674602014006,
+            "log_loss": 0.6931157926069303,
+            "raw_brier": 0.24998430607043007,
+            "rows": 9304,
+            "tie_frequency": 0.04761392949269132,
+            "ties": 443,
+            "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+            "wilson_95": [
+              0.49540180216697716,
+              0.5162171309497018
+            ]
+          },
+          "missing": 0,
+          "status": "DIFFERENT_TARGET_DIAGNOSTIC_NOT_POOLED_OR_MODEL_SELECTED"
+        }
+      },
+      "dependence": {
+        "accuracy_day_block_95": [
+          0.4898727172108467,
+          0.5182821133536841
+        ],
+        "brier_day_block_95": [
+          0.24994541646656449,
+          0.2500340146060437
+        ],
+        "day_clusters": 8,
+        "independent_sample_size": null,
+        "limits": "Weak-dependence/stationarity assumptions unverified; not promotion evidence",
+        "method": "CIRCULAR_TWO_UTC_DAY_BLOCKS_1000_RESAMPLES_DESCRIPTIVE",
+        "multiple_comparisons_adjusted": false
+      },
+      "directional_quality": {
+        "accuracy": 0.5058119851032615,
+        "always_call_accuracy": 0.4941880148967385,
+        "always_put_accuracy": 0.5058119851032614,
+        "brier": 0.24998430607043007,
+        "calibration_bins": [
+          {
+            "lower": 0.4,
+            "n": 8861,
+            "observed_up": 0.4941880148967385,
+            "predicted_up": 0.49844068949875253,
+            "upper": 0.5
+          }
+        ],
+        "decisive": 8861,
+        "ece": 0.004252674602014006,
+        "log_loss": 0.6931157926069303,
+        "raw_brier": 0.24998430607043007,
+        "rows": 9304,
+        "tie_frequency": 0.04761392949269132,
+        "ties": 443,
+        "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+        "wilson_95": [
+          0.49540180216697716,
+          0.5162171309497018
+        ]
+      },
+      "hypothetical_economics": [
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        }
+      ],
+      "missing_data_stress": {
+        "policy": "REMOVE_UTC_BAR_WHEN_FROM_MINUTE_MOD_100_EQUALS_0",
+        "remaining_rows": 7064,
+        "skipped_rows": 2240,
+        "survivor_metrics": {
+          "accuracy": 0.5070589983652846,
+          "always_call_accuracy": 0.49294100163471544,
+          "always_put_accuracy": 0.5070589983652846,
+          "brier": 0.24998041710868074,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 6729,
+              "observed_up": 0.49294100163471544,
+              "predicted_up": 0.49844068949875264,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 6729,
+          "ece": 0.005499687864037206,
+          "log_loss": 0.693108014658216,
+          "raw_brier": 0.24998041710868074,
+          "rows": 7064,
+          "tie_frequency": 0.04742355605889015,
+          "ties": 335,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4951130100397052,
+            0.5189969315920764
+          ]
+        }
+      },
+      "movement_counts": {
+        "-1": 443,
+        "0": 4482,
+        "1": 4379
+      },
+      "observation_frequency_is_independent_n": false,
+      "selected_directional_quality": {
+        "accuracy": null,
+        "brier": null,
+        "calibration_bins": [],
+        "decisive": 0,
+        "ece": null,
+        "log_loss": null,
+        "raw_brier": null,
+        "rows": 0,
+        "tie_frequency": null,
+        "ties": 0,
+        "wilson_95": [
+          0.0,
+          1.0
+        ]
+      },
+      "verified_blitz_economics": {
+        "profit": null,
+        "settlements": 0
+      }
+    },
+    "random_forest": {
+      "by_regime": {
+        "DOWN_HIGH_VOL": {
+          "accuracy": 0.513317191283293,
+          "always_call_accuracy": 0.48668280871670705,
+          "always_put_accuracy": 0.513317191283293,
+          "brier": 0.24972859494361085,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1239,
+              "observed_up": 0.48668280871670705,
+              "predicted_up": 0.48957553068209214,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1239,
+          "ece": 0.002892721965385092,
+          "log_loss": 0.6926042905721612,
+          "raw_brier": 0.24941594424836078,
+          "rows": 1270,
+          "tie_frequency": 0.024409448818897637,
+          "ties": 31,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4854880731918068,
+            0.5410639860155783
+          ]
+        },
+        "DOWN_LOW_VOL": {
+          "accuracy": 0.5008751458576429,
+          "always_call_accuracy": 0.4991248541423571,
+          "always_put_accuracy": 0.5008751458576429,
+          "brier": 0.2500801661856795,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 3428,
+              "observed_up": 0.4991248541423571,
+              "predicted_up": 0.4909328838712644,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 3428,
+          "ece": 0.008191970271092697,
+          "log_loss": 0.6933075390376034,
+          "raw_brier": 0.25016378796971434,
+          "rows": 3616,
+          "tie_frequency": 0.051991150442477874,
+          "ties": 188,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4841457886707678,
+            0.5176025438416735
+          ]
+        },
+        "UP_HIGH_VOL": {
+          "accuracy": 0.501466275659824,
+          "always_call_accuracy": 0.49853372434017595,
+          "always_put_accuracy": 0.501466275659824,
+          "brier": 0.24999050668425823,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1023,
+              "observed_up": 0.49853372434017595,
+              "predicted_up": 0.4909602351629738,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1023,
+          "ece": 0.007573489177202131,
+          "log_loss": 0.6931281445616436,
+          "raw_brier": 0.2497488305163476,
+          "rows": 1041,
+          "tie_frequency": 0.01729106628242075,
+          "ties": 18,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.47087888508202014,
+            0.5320426954348451
+          ]
+        },
+        "UP_LOW_VOL": {
+          "accuracy": 0.5093030589719332,
+          "always_call_accuracy": 0.4903815830968149,
+          "always_put_accuracy": 0.5096184169031851,
+          "brier": 0.24988911832794278,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 3168,
+              "observed_up": 0.49053030303030304,
+              "predicted_up": 0.49206404658095954,
+              "upper": 0.5
+            },
+            {
+              "lower": 0.5,
+              "n": 3,
+              "observed_up": 0.3333333333333333,
+              "predicted_up": 0.5003474998344931,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 3171,
+          "ece": 0.0016903002421896124,
+          "log_loss": 0.692925394092583,
+          "raw_brier": 0.25003627210395707,
+          "rows": 3377,
+          "tie_frequency": 0.06100088836245188,
+          "ties": 206,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4919025074388806,
+            0.5266810976844809
+          ]
+        }
+      },
+      "by_utc_day": {
+        "2026-11-05": {
+          "accuracy": 0.500396510705789,
+          "always_call_accuracy": 0.49960348929421095,
+          "always_put_accuracy": 0.500396510705789,
+          "brier": 0.24998228095294397,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1261,
+              "observed_up": 0.49960348929421095,
+              "predicted_up": 0.49102360902907105,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1261,
+          "ece": 0.008579880265139894,
+          "log_loss": 0.693111698711266,
+          "raw_brier": 0.2495829584467445,
+          "rows": 1310,
+          "tie_frequency": 0.03740458015267176,
+          "ties": 49,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.47284033833366385,
+            0.5279502745870515
+          ]
+        },
+        "2026-11-06": {
+          "accuracy": 0.53125,
+          "always_call_accuracy": 0.46796875,
+          "always_put_accuracy": 0.53203125,
+          "brier": 0.24946237120218945,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1279,
+              "observed_up": 0.4683346364347146,
+              "predicted_up": 0.49079584167500173,
+              "upper": 0.5
+            },
+            {
+              "lower": 0.5,
+              "n": 1,
+              "observed_up": 0.0,
+              "predicted_up": 0.5002919397321867,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1280,
+          "ece": 0.022834510501608906,
+          "log_loss": 0.6920717644933377,
+          "raw_brier": 0.24972545555767764,
+          "rows": 1318,
+          "tie_frequency": 0.028831562974203338,
+          "ties": 38,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.5038594866417441,
+            0.5584535033698779
+          ]
+        },
+        "2026-11-08": {
+          "accuracy": 0.5280898876404494,
+          "always_call_accuracy": 0.47191011235955055,
+          "always_put_accuracy": 0.5280898876404494,
+          "brier": 0.24951234697452435,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 89,
+              "observed_up": 0.47191011235955055,
+              "predicted_up": 0.49110013180846157,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 89,
+          "ece": 0.019190019448911022,
+          "log_loss": 0.6921713068906699,
+          "raw_brier": 0.24986190607333716,
+          "rows": 98,
+          "tie_frequency": 0.09183673469387756,
+          "ties": 9,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4253754742950576,
+            0.6284797759725685
+          ]
+        },
+        "2026-11-09": {
+          "accuracy": 0.4768211920529801,
+          "always_call_accuracy": 0.5231788079470199,
+          "always_put_accuracy": 0.4768211920529801,
+          "brier": 0.25040677445340126,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1359,
+              "observed_up": 0.5231788079470199,
+              "predicted_up": 0.4915755598327754,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1359,
+          "ece": 0.031603248114244475,
+          "log_loss": 0.6939608111308897,
+          "raw_brier": 0.24971037463431034,
+          "rows": 1440,
+          "tie_frequency": 0.05625,
+          "ties": 81,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.45036920902926425,
+            0.5034038438873122
+          ]
+        },
+        "2026-11-10": {
+          "accuracy": 0.49447310243183495,
+          "always_call_accuracy": 0.505526897568165,
+          "always_put_accuracy": 0.49447310243183495,
+          "brier": 0.25019050723361236,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1357,
+              "observed_up": 0.505526897568165,
+              "predicted_up": 0.4910109025873842,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 1357,
+          "ece": 0.014515994980780822,
+          "log_loss": 0.6935282768960982,
+          "raw_brier": 0.2502258267766853,
+          "rows": 1440,
+          "tie_frequency": 0.05763888888888889,
+          "ties": 83,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.46792504667016466,
+            0.521052361460097
+          ]
+        },
+        "2026-11-11": {
+          "accuracy": 0.5220588235294118,
+          "always_call_accuracy": 0.4772058823529412,
+          "always_put_accuracy": 0.5227941176470587,
+          "brier": 0.2496483451730279,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1359,
+              "observed_up": 0.4775570272259014,
+              "predicted_up": 0.491260277607003,
+              "upper": 0.5
+            },
+            {
+              "lower": 0.5,
+              "n": 1,
+              "observed_up": 0.0,
+              "predicted_up": 0.5002345288856971,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1360,
+          "ece": 0.014060993968237383,
+          "log_loss": 0.6924437876824727,
+          "raw_brier": 0.24992371320618126,
+          "rows": 1440,
+          "tie_frequency": 0.05555555555555555,
+          "ties": 80,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.49548641350682227,
+            0.5485069697504089
+          ]
+        },
+        "2026-11-12": {
+          "accuracy": 0.5172910662824207,
+          "always_call_accuracy": 0.4834293948126801,
+          "always_put_accuracy": 0.5165706051873199,
+          "brier": 0.24982582001662246,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 1387,
+              "observed_up": 0.4830569574621485,
+              "predicted_up": 0.4910708629366155,
+              "upper": 0.5
+            },
+            {
+              "lower": 0.5,
+              "n": 1,
+              "observed_up": 1.0,
+              "predicted_up": 0.5005160308855955,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 1388,
+          "ece": 0.008367990534726331,
+          "log_loss": 0.6927988190248972,
+          "raw_brier": 0.2503016590240339,
+          "rows": 1440,
+          "tie_frequency": 0.03611111111111111,
+          "ties": 52,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4909912413155459,
+            0.5434954451499301
+          ]
+        },
+        "2026-11-13": {
+          "accuracy": 0.49022164276401564,
+          "always_call_accuracy": 0.5097783572359843,
+          "always_put_accuracy": 0.4902216427640157,
+          "brier": 0.2503126710010095,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 767,
+              "observed_up": 0.5097783572359843,
+              "predicted_up": 0.49140245053747694,
+              "upper": 0.5
+            }
+          ],
+          "decisive": 767,
+          "ece": 0.01837590669850736,
+          "log_loss": 0.6937726118966123,
+          "raw_brier": 0.25046634998476736,
+          "rows": 818,
+          "tie_frequency": 0.06234718826405868,
+          "ties": 51,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4549802711295483,
+            0.5255604745343545
+          ]
+        }
+      },
+      "conclusion": "NO_DEMONSTRATED_EDGE",
+      "decision_rates": {
+        "CALL": 0.0,
+        "PUT": 0.0,
+        "SKIP": 1.0
+      },
+      "decisions": {
+        "CALL": 0,
+        "PUT": 0,
+        "SKIP": 9304
+      },
+      "delay_sensitivity": {
+        "180": {
+          "metrics": {
+            "accuracy": 0.5060390563268992,
+            "always_call_accuracy": 0.4942995823456372,
+            "always_put_accuracy": 0.5057004176543628,
+            "brier": 0.24996376960344463,
+            "calibration_bins": [
+              {
+                "lower": 0.4,
+                "n": 8856,
+                "observed_up": 0.4941282746160795,
+                "predicted_up": 0.4911487280719634,
+                "upper": 0.5
+              },
+              {
+                "lower": 0.5,
+                "n": 3,
+                "observed_up": 1.0,
+                "predicted_up": 0.5003474998344931,
+                "upper": 0.6
+              }
+            ],
+            "decisive": 8859,
+            "ece": 0.003147739213815168,
+            "log_loss": 0.693074718464018,
+            "raw_brier": 0.2500194253769643,
+            "rows": 9302,
+            "tie_frequency": 0.0476241668458396,
+            "ties": 443,
+            "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+            "wilson_95": [
+              0.4956276561690992,
+              0.5164452214172993
+            ]
+          },
+          "missing": 2,
+          "status": "DIFFERENT_TARGET_DIAGNOSTIC_NOT_POOLED_OR_MODEL_SELECTED"
+        },
+        "60": {
+          "metrics": {
+            "accuracy": 0.5059248391829365,
+            "always_call_accuracy": 0.4941880148967385,
+            "always_put_accuracy": 0.5058119851032614,
+            "brier": 0.24996052365611174,
+            "calibration_bins": [
+              {
+                "lower": 0.4,
+                "n": 8858,
+                "observed_up": 0.49412960036125536,
+                "predicted_up": 0.49115080149276125,
+                "upper": 0.5
+              },
+              {
+                "lower": 0.5,
+                "n": 3,
+                "observed_up": 0.6666666666666666,
+                "predicted_up": 0.5003474998344931,
+                "upper": 0.6
+              }
+            ],
+            "decisive": 8861,
+            "ece": 0.0030340997491950556,
+            "log_loss": 0.6930682250350347,
+            "raw_brier": 0.2500131122547443,
+            "rows": 9304,
+            "tie_frequency": 0.04761392949269132,
+            "ties": 443,
+            "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+            "wilson_95": [
+              0.4955146349055914,
+              0.5163299085628676
+            ]
+          },
+          "missing": 0,
+          "status": "DIFFERENT_TARGET_DIAGNOSTIC_NOT_POOLED_OR_MODEL_SELECTED"
+        }
+      },
+      "dependence": {
+        "accuracy_day_block_95": [
+          0.48998339789706696,
+          0.5180592795766974
+        ],
+        "brier_day_block_95": [
+          0.24972477155293923,
+          0.2502168633511005
+        ],
+        "day_clusters": 8,
+        "independent_sample_size": null,
+        "limits": "Weak-dependence/stationarity assumptions unverified; not promotion evidence",
+        "method": "CIRCULAR_TWO_UTC_DAY_BLOCKS_1000_RESAMPLES_DESCRIPTIVE",
+        "multiple_comparisons_adjusted": false
+      },
+      "directional_quality": {
+        "accuracy": 0.5056991310235865,
+        "always_call_accuracy": 0.4941880148967385,
+        "always_put_accuracy": 0.5058119851032614,
+        "brier": 0.24995228770743097,
+        "calibration_bins": [
+          {
+            "lower": 0.4,
+            "n": 8858,
+            "observed_up": 0.49424249266200043,
+            "predicted_up": 0.4911507370248373,
+            "upper": 0.5
+          },
+          {
+            "lower": 0.5,
+            "n": 3,
+            "observed_up": 0.3333333333333333,
+            "predicted_up": 0.5003474998344931,
+            "upper": 0.6
+          }
+        ],
+        "decisive": 8861,
+        "ece": 0.00314725357561161,
+        "log_loss": 0.6930517409314924,
+        "raw_brier": 0.249965680232905,
+        "rows": 9304,
+        "tie_frequency": 0.04761392949269132,
+        "ties": 443,
+        "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+        "wilson_95": [
+          0.4952889699584862,
+          0.5161043528064125
+        ]
+      },
+      "hypothetical_economics": [
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.7,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.85,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.002,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "refund",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        },
+        {
+          "assumed_cost": 0.01,
+          "assumed_payout": 0.95,
+          "assumed_tie_policy": "loss",
+          "directional_losses": 0,
+          "hypothetical_net_units": 0.0,
+          "selected": 0,
+          "ties": 0,
+          "verified_broker_profit": false,
+          "wins": 0
+        }
+      ],
+      "missing_data_stress": {
+        "policy": "REMOVE_UTC_BAR_WHEN_FROM_MINUTE_MOD_100_EQUALS_0",
+        "remaining_rows": 7064,
+        "skipped_rows": 2240,
+        "survivor_metrics": {
+          "accuracy": 0.5070589983652846,
+          "always_call_accuracy": 0.49294100163471544,
+          "always_put_accuracy": 0.5070589983652846,
+          "brier": 0.2499385265335979,
+          "calibration_bins": [
+            {
+              "lower": 0.4,
+              "n": 6727,
+              "observed_up": 0.4929389029284971,
+              "predicted_up": 0.4910944007628411,
+              "upper": 0.5
+            },
+            {
+              "lower": 0.5,
+              "n": 2,
+              "observed_up": 0.5,
+              "predicted_up": 0.5004039853088911,
+              "upper": 0.6
+            }
+          ],
+          "decisive": 6729,
+          "ece": 0.0018440740138186643,
+          "log_loss": 0.6930242176886424,
+          "raw_brier": 0.250004387305091,
+          "rows": 7064,
+          "tie_frequency": 0.04742355605889015,
+          "ties": 335,
+          "uncertainty_note": "Wilson assumes independence; inspect block/day/regime diagnostics",
+          "wilson_95": [
+            0.4951130100397052,
+            0.5189969315920764
+          ]
+        }
+      },
+      "movement_counts": {
+        "-1": 443,
+        "0": 4482,
+        "1": 4379
+      },
+      "observation_frequency_is_independent_n": false,
+      "selected_directional_quality": {
+        "accuracy": null,
+        "brier": null,
+        "calibration_bins": [],
+        "decisive": 0,
+        "ece": null,
+        "log_loss": null,
+        "raw_brier": null,
+        "rows": 0,
+        "tie_frequency": null,
+        "ties": 0,
+        "wilson_95": [
+          0.0,
+          1.0
+        ]
+      },
+      "verified_blitz_economics": {
+        "profit": null,
+        "settlements": 0
+      }
+    }
+  },
+  "contract": {
+    "blitz": "UNVERIFIED_NOT_SCORED",
+    "confidence_threshold": 0.6,
+    "context_bars": 21,
+    "entry_delay_from_feature_close": 120,
+    "entry_price": "AUTHENTIC_EURUSD_CANDLE_OPEN_AT_F_PLUS_120",
+    "expiry_price": "SAME_CANDLE_CLOSE_AT_F_PLUS_180",
+    "feature_availability": "CANDLE_CLOSE_F_IS_EARLIEST_NOT_ATTESTED_ARRIVAL",
+    "historical_latency": "UNKNOWN; conditional contract, no imputed real arrival times",
+    "holding_seconds": 60,
+    "labels": {
+      "DOWN": 0,
+      "TIE": -1,
+      "UP": 1
+    },
+    "live_gate": "F <= data_observed <= decision <= durable_commit <= F+15",
+    "max_source_age_seconds": 15,
+    "missing_policy": "REJECT_NONCONTIGUOUS_CONTEXT_LATENCY_OR_OUTCOME;NO_FILL",
+    "probability": "P(UP | DECISIVE); not unconditional probability of winning",
+    "ties": "EXACT_EQUALITY_EXCLUDED_FROM_FITTING_CALIBRATION_DIRECTIONAL_METRICS",
+    "timeframe": 60,
+    "version": "EURUSD_DELAYED_CONDITIONAL_DIRECTION_V1"
+  },
+  "dataset_fingerprint": "0b84c99e4bf114f4f8a9c2da12c894685ee01add777f08fe3bd32c78a5634812",
+  "evidence_class": "INTERNAL_DEVELOPMENT_OOS_NOT_PROSPECTIVE_CONFIRMATION",
+  "limitations": [
+    "Historical arrival latency unknown; live 15-second gate required",
+    "Prior research reused these development dates; no independent confirmation",
+    "Conditional decisive probabilities do not predict ties or unconditional win rate",
+    "Internal model selection and dependent windows invalidate naive significance claims",
+    "No verified Blitz economics; no promotion or threshold tuning"
+  ],
+  "matrix_and_labels_fingerprint": "6d6758907e859aa6268b175a095e334e6d6db7408b6ed524e9c6b3e0ec80b474",
+  "model_manifest_hashes": {
+    "logistic_regression": "077bf5b0d72d0c364588a12aeb90d638afff6672fc2abe20cdf12a3b5eaa5450",
+    "majority_direction_prior": "166b3db2831150e7bb5c72091a3ca872013d13f25b70ce81b7648fbb03ccecac",
+    "random_forest": "90a53ae068dabb0a582ad66f4e74db4b96b3dc66c6d84310ec6280dfd134915b"
+  },
+  "model_promotion_allowed": false,
+  "phase": 30,
+  "prospective_observations": 0,
+  "purged_rows": 72,
+  "research_conclusion": "NO_DEMONSTRATED_EDGE",
+  "rows": 62164,
+  "selected_development_model": "random_forest",
+  "selection_brier": {
+    "logistic_regression": 0.25296443886892617,
+    "random_forest": 0.25022732946110027
+  },
+  "source_availability_proven": false,
+  "source_exclusions": {
+    "identical_duplicates": 10
+  },
+  "source_inventory_hash": "f161ee75d6bdefa0bbac302cc8befeee4aceb9605a9120b34cff9df96112c6e5",
+  "splits": {
+    "calibration": {
+      "decisive": 8801,
+      "first_context_ts": 1792558800,
+      "last_feature_close": 1793292300,
+      "last_label_expiry": 1793292480,
+      "rows": 9301
+    },
+    "selection": {
+      "decisive": 5965,
+      "first_context_ts": 1793292540,
+      "last_feature_close": 1793843100,
+      "last_label_expiry": 1793843280,
+      "rows": 6192
+    },
+    "test": {
+      "decisive": 8861,
+      "first_context_ts": 1793843340,
+      "last_feature_close": 1794577020,
+      "last_label_expiry": 1794577200,
+      "rows": 9304
+    },
+    "train": {
+      "decisive": 35272,
+      "first_context_ts": 1789448460,
+      "last_feature_close": 1792558560,
+      "last_label_expiry": 1792558740,
+      "rows": 37295
+    }
+  },
+  "study_config_hash": "8e9a23bc5cb1729a5b5114e2731cc333af8f466cc5209e244b1ffe431200a4d3",
+  "ties_total": 3194,
+  "unique_development_candles": 62371,
+  "window_exclusions": {
+    "insufficient_context": 180,
+    "missing_latency_or_outcome": 27
+  }
+}

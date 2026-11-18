@@ -8,6 +8,17 @@ from typing import Any
 import pytest
 
 from iqoption_research.security.credentials import Credentials
+from tests.research_isolation import build_legacy_workspace, install_sealed_read_guard
+
+SEALED_PATHS = install_sealed_read_guard(Path(__file__).resolve().parents[1])
+
+
+@pytest.fixture(scope="session")
+def legacy_research_workspace(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return build_legacy_workspace(
+        tmp_path_factory.mktemp("legacy-synthetic"), Path(__file__).resolve().parents[1]
+    )
+
 
 # Windows sandbox isolation: Windows AppContainer sandboxes block loopback TCP (127.0.0.1)
 # which prevents Python's standard ProactorEventLoop from creating its self-pipe socketpair.

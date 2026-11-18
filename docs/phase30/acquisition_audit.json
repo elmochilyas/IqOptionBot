@@ -1,0 +1,22 @@
+{
+  "agent_authenticated_requests": 0,
+  "manual_protocol": "One explicit bounded cycle against NEW isolated post-seal store",
+  "not_established": [
+    "Broker-approved repeated acquisition rate",
+    "Safe persistent subscription/reconnection behavior",
+    "Reliable end-to-end acquisition within 15 seconds"
+  ],
+  "repeated_acquisition": "BLOCKED_NO_NEW_BROKER_REQUEST_TYPES",
+  "source_sha256": {
+    "src/iqoption_research/cli/commands/backfill_cmd.py": "9b202bc311d0e80eeaa70d311a346d17cb4968718c0a173cc158b33fc5055343",
+    "src/iqoption_research/connectors/iqoption/client.py": "7d6092ceb460fb583a7bf7ab66bd4f44bebb967a09c2b45377dc4512b4a9dc4a",
+    "src/iqoption_research/market_data/forward_sync.py": "dc9ea67aec5e10f562083060dbe1b734ef4aa17cb77e187c37118537d52b5f34"
+  },
+  "verified_behavior": [
+    "Explicit live flags and interactive local login",
+    "Fixed completed target and persisted request budget",
+    "Read-only client capability assertion",
+    "Client close and auth logout in finally"
+  ],
+  "wallet_switches": 0
+}

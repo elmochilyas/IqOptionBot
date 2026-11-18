@@ -1,0 +1,33 @@
+{
+  "name": "logistic_regression",
+  "version": "1.0.0",
+  "model_type": "baseline",
+  "class_name": "LogisticRegressionModel",
+  "hyperparameters": {
+    "C": 0.1,
+    "penalty": "l2",
+    "solver": "lbfgs",
+    "max_iter": 1000,
+    "random_state": 30,
+    "class_weight": null
+  },
+  "feature_names": [
+    "return_1",
+    "log_return_1",
+    "intrabar_return",
+    "sma_ratio_5",
+    "sma_ratio_20",
+    "volatility_10",
+    "volatility_20",
+    "candle_range",
+    "body_to_range",
+    "upper_shadow_ratio",
+    "lower_shadow_ratio"
+  ],
+  "classes": [
+    0,
+    1
+  ],
+  "single_class": null,
+  "is_fitted": true
+}

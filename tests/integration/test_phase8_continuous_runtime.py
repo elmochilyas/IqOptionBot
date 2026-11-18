@@ -154,9 +154,12 @@ async def test_continuous_runtime_gated_observe_only_rejects_without_token() -> 
         await runtime.run()
 
 
-def test_cli_bot_run_replay_command() -> None:
+def test_cli_bot_run_replay_command(
+    legacy_research_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """CLI 'bot run' executes offline replay cleanly with badges displayed."""
     runner = CliRunner()
+    monkeypatch.chdir(legacy_research_workspace)
     result = runner.invoke(app, ["bot", "run", "--bars", "10"])
     assert result.exit_code == 0
     assert "OFFLINE REPLAY" in result.output

@@ -1,0 +1,32 @@
+{
+  "name": "majority_class",
+  "version": "1.0.0",
+  "model_type": "baseline",
+  "class_name": "MajorityClassModel",
+  "hyperparameters": {
+    "smoothing": 0.0
+  },
+  "feature_names": [
+    "return_1",
+    "log_return_1",
+    "intrabar_return",
+    "sma_ratio_5",
+    "sma_ratio_20",
+    "volatility_10",
+    "volatility_20",
+    "candle_range",
+    "body_to_range",
+    "upper_shadow_ratio",
+    "lower_shadow_ratio"
+  ],
+  "classes": [
+    0,
+    1
+  ],
+  "class_frequencies": [
+    0.5015593105012475,
+    0.49844068949875253
+  ],
+  "majority_class": 0,
+  "is_fitted": true
+}

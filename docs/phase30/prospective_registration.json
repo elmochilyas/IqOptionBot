@@ -1,0 +1,103 @@
+{
+  "events": [
+    {
+      "compatibility": {
+        "blitz_equivalence": false,
+        "historical_availability_verified": false,
+        "status": "ALGEBRAICALLY_ALIGNED_CONDITIONAL_ON_MEASURED_LIVE_GATE",
+        "target_hash": "ee8f0c34822d44640cd70792ca474bc1dc9b531602eee52c25d41156cb3148fe",
+        "version": 1
+      },
+      "contract": {
+        "blitz": "UNVERIFIED_NOT_SCORED",
+        "confidence_threshold": 0.6,
+        "context_bars": 21,
+        "entry_delay_from_feature_close": 120,
+        "entry_price": "AUTHENTIC_EURUSD_CANDLE_OPEN_AT_F_PLUS_120",
+        "expiry_price": "SAME_CANDLE_CLOSE_AT_F_PLUS_180",
+        "feature_availability": "CANDLE_CLOSE_F_IS_EARLIEST_NOT_ATTESTED_ARRIVAL",
+        "historical_latency": "UNKNOWN; conditional contract, no imputed real arrival times",
+        "holding_seconds": 60,
+        "labels": {
+          "DOWN": 0,
+          "TIE": -1,
+          "UP": 1
+        },
+        "live_gate": "F <= data_observed <= decision <= durable_commit <= F+15",
+        "max_source_age_seconds": 15,
+        "missing_policy": "REJECT_NONCONTIGUOUS_CONTEXT_LATENCY_OR_OUTCOME;NO_FILL",
+        "probability": "P(UP | DECISIVE); not unconditional probability of winning",
+        "ties": "EXACT_EQUALITY_EXCLUDED_FROM_FITTING_CALIBRATION_DIRECTIONAL_METRICS",
+        "timeframe": 60,
+        "version": "EURUSD_DELAYED_CONDITIONAL_DIRECTION_V1"
+      },
+      "created_at_ts": 1794998905.896698,
+      "economic_scenarios": {
+        "costs": [
+          0,
+          0.002,
+          0.01
+        ],
+        "payouts": [
+          0.7,
+          0.85,
+          0.95
+        ],
+        "ties": [
+          "refund",
+          "loss"
+        ]
+      },
+      "execution_authority": "NONE",
+      "implementation_fingerprint": "1e435076923e528dffcc5441b34ba8ce2e1efae290fce098431dfa3a51a8f11c",
+      "key": "config",
+      "kind": "CONFIG",
+      "lifecycle_stage": "DEVELOPMENT_ONLY",
+      "model_manifest_sha256": "90a53ae068dabb0a582ad66f4e74db4b96b3dc66c6d84310ec6280dfd134915b",
+      "model_name": "random_forest",
+      "phase": 30,
+      "policy": {
+        "no_threshold_tuning": true,
+        "threshold": 0.6,
+        "ties": "EXCLUDED_FROM_DIRECTION"
+      },
+      "project": "C:\\Users\\elmoc\\Desktop\\IqOptionBot",
+      "protection": {
+        "candles": 688,
+        "consumed_by_phase28": false,
+        "end_exclusive": 1794821340,
+        "fingerprint_sha256": "22b1e069cec4117080f617fd3f3e8ed34eca46492f15df0d93823ca77a9a4402",
+        "original_last_open_ts": 1794821280,
+        "original_start_ts": 1794607200,
+        "reservation_sha256": "36baa802e16e38e864bb4b7273e60c8295c7f4e39669128ab03e3404ffa1e45a",
+        "sealed_candle_hash_recomputed": false,
+        "status": "RESERVED",
+        "verification": "RESERVATION_BYTES_AND_PRIOR_HASH_REFERENCE_ONLY_NO_SEALED_PRICE_READ"
+      },
+      "purpose": "ALIGNED_PROSPECTIVE_OBSERVATION",
+      "runtime": {
+        "packages": {
+          "joblib": "1.5.3",
+          "numpy": "2.4.6",
+          "pandas": "3.0.3",
+          "pyarrow": "24.0.0",
+          "pydantic": "2.13.4",
+          "scikit-learn": "1.9.0",
+          "scipy": "1.17.1"
+        },
+        "platform": "win32",
+        "python": "3.12.10"
+      },
+      "source_identity": "AUTHENTIC_IQOPTION_EURUSD_60S",
+      "storage": "C:\\Users\\elmoc\\Desktop\\IqOptionBot\\data\\phase30\\collection-001",
+      "study_config_hash": "8e9a23bc5cb1729a5b5114e2731cc333af8f466cc5209e244b1ffe431200a4d3"
+    },
+    {
+      "feature_close": 1794998880,
+      "key": "rejection:1794998880:NO_NEW_FEATURE_CANDLE_AFTER_REGISTRATION",
+      "kind": "REJECTION",
+      "observed_at_ts": 1794998908.2362125,
+      "reason": "NO_NEW_FEATURE_CANDLE_AFTER_REGISTRATION"
+    }
+  ]
+}

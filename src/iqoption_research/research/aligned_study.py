@@ -59,8 +59,9 @@ def new_journal(run: Path, config: dict[str, Any]) -> None:
 
 def allowed_run(run: Path, project: Path) -> None:
     root = (project / "data/phase30").resolve()
-    if not run.resolve().is_relative_to(root) or run.resolve() == root:
-        raise ValueError("Create a NEW run under project/data/phase30")
+    resolved = run.resolve()
+    if not resolved.is_relative_to(root) or resolved == root or resolved.parent != root:
+        raise ValueError("Create a NEW run directly under project/data/phase30")
 
 
 def register_study(
@@ -144,6 +145,7 @@ def predict_bundle(bundle: ModelBundle, X: np.ndarray) -> tuple[np.ndarray, np.n
         values.shape != (len(X), 2)
         or not np.isfinite(values).all()
         or np.any((values < 0) | (values > 1))
+        or np.any(np.abs(values.sum(axis=1) - 1.0) > 1e-4)
         for values in (raw, calibrated)
     ):
         raise ValueError("Invalid model probability distribution")

@@ -1,0 +1,538 @@
+{
+  "analysis_kind": "READ_ONLY_FROZEN_INFERENCE_NO_FIT_NO_THRESHOLD_TUNING",
+  "broker_login_or_request": false,
+  "existing_checkpoint_proxies": [
+    {
+      "checkpoint": "forward_checkpoint_eurusd-forward-1m.json",
+      "checkpoint_elapsed_seconds": 4876.584508895874,
+      "created_at_utc": "2026-11-16T09:29:45.454152+00:00",
+      "created_minus_target_seconds": 45.45415210723877,
+      "cycle": 1,
+      "requests_made": 4,
+      "state": "completed",
+      "target_completed_end_ts": 1794821340,
+      "updated_at_utc": "2026-11-16T10:51:02.038661+00:00",
+      "updated_minus_target_seconds": 4922.038661003113
+    },
+    {
+      "checkpoint": "forward_checkpoint_phase27-forward-20261118.json",
+      "checkpoint_elapsed_seconds": 527.1549758911133,
+      "created_at_utc": "2026-11-18T03:59:45.691363+00:00",
+      "created_minus_target_seconds": 45.69136309623718,
+      "cycle": 1,
+      "requests_made": 6,
+      "state": "completed",
+      "target_completed_end_ts": 1794974340,
+      "updated_at_utc": "2026-11-18T04:08:32.846339+00:00",
+      "updated_minus_target_seconds": 572.8463389873505
+    },
+    {
+      "checkpoint": "forward_checkpoint_phase28-forward-20261118-045228.json",
+      "checkpoint_elapsed_seconds": 2.499985933303833,
+      "created_at_utc": "2026-11-18T04:52:41.493150+00:00",
+      "created_minus_target_seconds": 41.49314999580383,
+      "cycle": 1,
+      "requests_made": 1,
+      "state": "completed",
+      "target_completed_end_ts": 1794977520,
+      "updated_at_utc": "2026-11-18T04:52:43.993136+00:00",
+      "updated_minus_target_seconds": 43.993135929107666
+    },
+    {
+      "checkpoint": "forward_checkpoint_phase28-resolve-20261118-050115.json",
+      "checkpoint_elapsed_seconds": 2.177136182785034,
+      "created_at_utc": "2026-11-18T05:01:33.281710+00:00",
+      "created_minus_target_seconds": 33.28170990943909,
+      "cycle": 1,
+      "requests_made": 1,
+      "state": "completed",
+      "target_completed_end_ts": 1794978060,
+      "updated_at_utc": "2026-11-18T05:01:35.458846+00:00",
+      "updated_minus_target_seconds": 35.45884609222412
+    },
+    {
+      "checkpoint": "forward_checkpoint_phase29-forward-20261118-091403.json",
+      "checkpoint_elapsed_seconds": 2.072474956512451,
+      "created_at_utc": "2026-11-18T09:14:25.378006+00:00",
+      "created_minus_target_seconds": 25.378005981445312,
+      "cycle": 1,
+      "requests_made": 1,
+      "state": "completed",
+      "target_completed_end_ts": 1794993240,
+      "updated_at_utc": "2026-11-18T09:14:27.450481+00:00",
+      "updated_minus_target_seconds": 27.450480937957764
+    },
+    {
+      "checkpoint": "forward_checkpoint_phase29-recovery-20261118-094251.json",
+      "checkpoint_elapsed_seconds": 2.129054069519043,
+      "created_at_utc": "2026-11-18T09:43:24.670318+00:00",
+      "created_minus_target_seconds": 24.670317888259888,
+      "cycle": 1,
+      "requests_made": 1,
+      "state": "completed",
+      "target_completed_end_ts": 1794994980,
+      "updated_at_utc": "2026-11-18T09:43:26.799372+00:00",
+      "updated_minus_target_seconds": 26.79937195777893
+    }
+  ],
+  "limits": [
+    "No measured login/authentication/network/first-arrival distribution",
+    "Publication/checkpoint times are only proxies; resumed jobs include other delays",
+    "Local timing does not establish broker permission or end-to-end reliability",
+    "No new predictions were added to any registered journal"
+  ],
+  "model_distributions": {
+    "constant_half": {
+      "calibrated_probability": {
+        "max": 0.5,
+        "mean": 0.5,
+        "min": 0.5,
+        "p01": 0.5,
+        "p50": 0.5,
+        "p99": 0.5
+      },
+      "confidence": {
+        "max": 0.5,
+        "mean": 0.5,
+        "min": 0.5,
+        "p01": 0.5,
+        "p50": 0.5,
+        "p99": 0.5
+      },
+      "decisions": {
+        "CALL": 0,
+        "PUT": 0,
+        "SKIP": 9304
+      },
+      "fixed_threshold": 0.6,
+      "frozen_calibration": null,
+      "raw_probability": {
+        "max": 0.5,
+        "mean": 0.5,
+        "min": 0.5,
+        "p01": 0.5,
+        "p50": 0.5,
+        "p99": 0.5
+      }
+    },
+    "logistic_regression": {
+      "calibrated_probability": {
+        "max": 0.5620357663389243,
+        "mean": 0.5620357596072432,
+        "min": 0.5620357200815734,
+        "p01": 0.5620357549749837,
+        "p50": 0.5620357598338767,
+        "p99": 0.5620357619298965
+      },
+      "confidence": {
+        "max": 0.5620357663389243,
+        "mean": 0.5620357596072432,
+        "min": 0.5620357200815734,
+        "p01": 0.5620357549749837,
+        "p50": 0.5620357598338767,
+        "p99": 0.5620357619298965
+      },
+      "decisions": {
+        "CALL": 0,
+        "PUT": 0,
+        "SKIP": 9304
+      },
+      "fixed_threshold": 0.6,
+      "frozen_calibration": {
+        "classes": [
+          0,
+          1
+        ],
+        "clip_eps": 1e-15,
+        "is_fitted": true,
+        "method": "sigmoid",
+        "parameters": {
+          "intercept": 0.24942771486393434,
+          "slope": 1e-06
+        }
+      },
+      "raw_probability": {
+        "max": 0.5254430275926445,
+        "mean": 0.4980953200708315,
+        "min": 0.3375207995341111,
+        "p01": 0.47927659120394334,
+        "p50": 0.49901602661782063,
+        "p99": 0.5075311861766199
+      }
+    },
+    "majority_direction_prior": {
+      "calibrated_probability": {
+        "max": 0.49844068949875253,
+        "mean": 0.4984406894987527,
+        "min": 0.49844068949875253,
+        "p01": 0.49844068949875253,
+        "p50": 0.49844068949875253,
+        "p99": 0.49844068949875253
+      },
+      "confidence": {
+        "max": 0.5015593105012475,
+        "mean": 0.5015593105012474,
+        "min": 0.5015593105012475,
+        "p01": 0.5015593105012475,
+        "p50": 0.5015593105012475,
+        "p99": 0.5015593105012475
+      },
+      "decisions": {
+        "CALL": 0,
+        "PUT": 0,
+        "SKIP": 9304
+      },
+      "fixed_threshold": 0.6,
+      "frozen_calibration": null,
+      "raw_probability": {
+        "max": 0.49844068949875253,
+        "mean": 0.4984406894987527,
+        "min": 0.49844068949875253,
+        "p01": 0.49844068949875253,
+        "p50": 0.49844068949875253,
+        "p99": 0.49844068949875253
+      }
+    },
+    "random_forest": {
+      "calibrated_probability": {
+        "max": 0.5005160308855955,
+        "mean": 0.4911718273069866,
+        "min": 0.4776895454412744,
+        "p01": 0.4849598139288726,
+        "p50": 0.49126243986037743,
+        "p99": 0.49597260967975854
+      },
+      "confidence": {
+        "max": 0.5223104545587256,
+        "mean": 0.5088283967900693,
+        "min": 0.5001778015153298,
+        "p01": 0.5040273903202415,
+        "p50": 0.5087375601396226,
+        "p99": 0.5150401860711273
+      },
+      "decisions": {
+        "CALL": 0,
+        "PUT": 0,
+        "SKIP": 9304
+      },
+      "fixed_threshold": 0.6,
+      "frozen_calibration": {
+        "classes": [
+          0,
+          1
+        ],
+        "clip_eps": 1e-15,
+        "is_fitted": true,
+        "method": "sigmoid",
+        "parameters": {
+          "intercept": -0.38734478853789384,
+          "slope": 0.7054980129306883
+        }
+      },
+      "raw_probability": {
+        "max": 0.5519631603149556,
+        "mean": 0.4989777563141893,
+        "min": 0.4224585560920952,
+        "p01": 0.4637375064709524,
+        "p50": 0.49949253317388514,
+        "p99": 0.5262025860396523
+      }
+    }
+  },
+  "new_models_trained": false,
+  "offline_timing_sample_size": 3,
+  "offline_timing_workers": [
+    {
+      "benchmark_is_prediction": false,
+      "broker_calls": 0,
+      "cold_import_load_and_first_inference_seconds": 2.297547600001053,
+      "parent_measured_process_seconds": 3.0015955999988364,
+      "two_durable_marker_events_seconds": [
+        0.010965899999064277,
+        0.008385299999645213,
+        0.00850669999999809,
+        0.009507599999778904,
+        0.009780800000953604,
+        0.008897100000467617,
+        0.010300300000380957,
+        0.009407300000020768,
+        0.014677099999971688,
+        0.011664800000289688,
+        0.01114909999887459,
+        0.010445500000059837,
+        0.010605500001474866,
+        0.01053209999918181,
+        0.010816500000146334,
+        0.01090459999977611,
+        0.010227900000245427,
+        0.013368199999604258,
+        0.011305500000162283,
+        0.009335000000646687,
+        0.009407900000951486,
+        0.01129899999978079,
+        0.011590500000238535,
+        0.010749599998234771,
+        0.009158900000329595,
+        0.010527799999181298,
+        0.011181899999428424,
+        0.0111321999993379,
+        0.013048599999819999,
+        0.011447200000475277
+      ],
+      "warm_inference_seconds": [
+        0.00451460000113002,
+        0.004312200000640587,
+        0.00400189999891154,
+        0.004182600001513492,
+        0.004928899999868008,
+        0.00466220000089379,
+        0.005678000001353212,
+        0.004557799999020062,
+        0.00419799999872339,
+        0.004786499999681837,
+        0.0050747000004776055,
+        0.004965399999491638,
+        0.0046808000006421935,
+        0.0043888000000151806,
+        0.0049617999993643025,
+        0.00560829999994894,
+        0.005181200000151875,
+        0.004157600000326056,
+        0.004930000000967993,
+        0.005409399998825393,
+        0.004874500000369153,
+        0.004774500001076376,
+        0.00452930000028573,
+        0.0047599000008631265,
+        0.00465749999966647,
+        0.004519100000834442,
+        0.004853800001001218,
+        0.005154799999218085,
+        0.004775899999003741,
+        0.0045356999999057734
+      ]
+    },
+    {
+      "benchmark_is_prediction": false,
+      "broker_calls": 0,
+      "cold_import_load_and_first_inference_seconds": 2.266117799999847,
+      "parent_measured_process_seconds": 3.032356700001401,
+      "two_durable_marker_events_seconds": [
+        0.008587399999669287,
+        0.008680499999172753,
+        0.008293199998661294,
+        0.009854300000370131,
+        0.010266100000080769,
+        0.009650699999838253,
+        0.00985709999986284,
+        0.009497000000919797,
+        0.011007900000549853,
+        0.01247489999877871,
+        0.008449300001302618,
+        0.010419899999760673,
+        0.010351299999456387,
+        0.010792999999466701,
+        0.012498399999458343,
+        0.012030699999741046,
+        0.01001650000034715,
+        0.009776799999599461,
+        0.009787599999981467,
+        0.009526099998765858,
+        0.008798999999271473,
+        0.009369800000058603,
+        0.025460700000621728,
+        0.010118899999724817,
+        0.011605400000917143,
+        0.013204100001530605,
+        0.01105230000030133,
+        0.015152099998886115,
+        0.01505639999959385,
+        0.013688400000319234
+      ],
+      "warm_inference_seconds": [
+        0.004426499999681255,
+        0.004304400001274189,
+        0.004069299999173381,
+        0.0044120999991719145,
+        0.004578399999445537,
+        0.005324100000507315,
+        0.004884799998762901,
+        0.005157999999937601,
+        0.004396700000143028,
+        0.005260799998723087,
+        0.004955399999744259,
+        0.005120499999975436,
+        0.004630499999620952,
+        0.004437499999767169,
+        0.004992600001060055,
+        0.005210799999986193,
+        0.0047481000001425855,
+        0.00457769999957236,
+        0.004999599999791826,
+        0.004351400000814465,
+        0.004748999999719672,
+        0.004627100001016515,
+        0.004667600000175298,
+        0.006461499999204534,
+        0.005044899999120389,
+        0.004926499999783118,
+        0.0054705999991711,
+        0.005442600000606035,
+        0.006397899998773937,
+        0.005987600001390092
+      ]
+    },
+    {
+      "benchmark_is_prediction": false,
+      "broker_calls": 0,
+      "cold_import_load_and_first_inference_seconds": 2.4103438000001915,
+      "parent_measured_process_seconds": 3.0477773000002344,
+      "two_durable_marker_events_seconds": [
+        0.010223199999018107,
+        0.009528999999020016,
+        0.009770799999387236,
+        0.009471800000028452,
+        0.010549599999649217,
+        0.009280599999328842,
+        0.010414600001240615,
+        0.00839810000070429,
+        0.012026700000205892,
+        0.009339899999758927,
+        0.01000930000009248,
+        0.009523300001092139,
+        0.00909499999943364,
+        0.009974799999326933,
+        0.011109700000815792,
+        0.009003200000734068,
+        0.009064399999260786,
+        0.009678599999460857,
+        0.007245300001159194,
+        0.008798799999567564,
+        0.009724599998662597,
+        0.009563199999320204,
+        0.009647000000768458,
+        0.009534400000120513,
+        0.009615499999199528,
+        0.009927499999321299,
+        0.009989399999540183,
+        0.008617400000730413,
+        0.009940300000380375,
+        0.010771100000056322
+      ],
+      "warm_inference_seconds": [
+        0.0047897000004013535,
+        0.004438500000105705,
+        0.004598499999701744,
+        0.003930499999114545,
+        0.004316099999414291,
+        0.0043865999996342,
+        0.004425699999046628,
+        0.004773800001203199,
+        0.004867400000875932,
+        0.005343699998775264,
+        0.004313499999625492,
+        0.004508100000748527,
+        0.004372999999759486,
+        0.004464799998459057,
+        0.003995099999883678,
+        0.004369300000689691,
+        0.0047599000008631265,
+        0.0045405999990180135,
+        0.004340299999967101,
+        0.004213199999867356,
+        0.0042542999999568565,
+        0.004586600000038743,
+        0.004404400000566966,
+        0.004405199999382603,
+        0.004446799999641371,
+        0.0046922000001359265,
+        0.004251999998814426,
+        0.004262399999788613,
+        0.004482100001041545,
+        0.0044214999998075655
+      ]
+    }
+  ],
+  "post_seal_catalog_publication_proxies": [
+    {
+      "catalog_created_at": "2026-11-18T04:08:31.680694+00:00",
+      "created_minus_last_close_seconds": 150511.68069410324,
+      "dataset_id": "ds_eurusd_60s_1794821340_1794824400_46b08febba44",
+      "last_candle_close_ts": 1794824400,
+      "meaning": "Catalog publication lag proxy, not instrumented source/network receipt"
+    },
+    {
+      "catalog_created_at": "2026-11-18T03:59:47.212505+00:00",
+      "created_minus_last_close_seconds": 119987.21250510216,
+      "dataset_id": "ds_eurusd_60s_1794824400_1794854400_0b512eda67c4",
+      "last_candle_close_ts": 1794854400,
+      "meaning": "Catalog publication lag proxy, not instrumented source/network receipt"
+    },
+    {
+      "catalog_created_at": "2026-11-18T03:59:47.105354+00:00",
+      "created_minus_last_close_seconds": 89987.10535407066,
+      "dataset_id": "ds_eurusd_60s_1794854400_1794884400_e15a35c65844",
+      "last_candle_close_ts": 1794884400,
+      "meaning": "Catalog publication lag proxy, not instrumented source/network receipt"
+    },
+    {
+      "catalog_created_at": "2026-11-18T03:59:46.993264+00:00",
+      "created_minus_last_close_seconds": 59986.993263959885,
+      "dataset_id": "ds_eurusd_60s_1794884400_1794914400_b30e1f851022",
+      "last_candle_close_ts": 1794914400,
+      "meaning": "Catalog publication lag proxy, not instrumented source/network receipt"
+    },
+    {
+      "catalog_created_at": "2026-11-18T03:59:46.885239+00:00",
+      "created_minus_last_close_seconds": 29986.88523888588,
+      "dataset_id": "ds_eurusd_60s_1794914400_1794944400_c235a716c146",
+      "last_candle_close_ts": 1794944400,
+      "meaning": "Catalog publication lag proxy, not instrumented source/network receipt"
+    },
+    {
+      "catalog_created_at": "2026-11-18T03:59:46.774381+00:00",
+      "created_minus_last_close_seconds": 46.774380922317505,
+      "dataset_id": "ds_eurusd_60s_1794944400_1794974340_2f17ffbd8b86",
+      "last_candle_close_ts": 1794974340,
+      "meaning": "Catalog publication lag proxy, not instrumented source/network receipt"
+    },
+    {
+      "catalog_created_at": "2026-11-18T04:52:42.653130+00:00",
+      "created_minus_last_close_seconds": 42.65313005447388,
+      "dataset_id": "ds_eurusd_60s_1794974340_1794977520_c12e41403d5e",
+      "last_candle_close_ts": 1794977520,
+      "meaning": "Catalog publication lag proxy, not instrumented source/network receipt"
+    },
+    {
+      "catalog_created_at": "2026-11-18T05:01:34.324179+00:00",
+      "created_minus_last_close_seconds": 34.32417893409729,
+      "dataset_id": "ds_eurusd_60s_1794977520_1794978060_490d093c62c7",
+      "last_candle_close_ts": 1794978060,
+      "meaning": "Catalog publication lag proxy, not instrumented source/network receipt"
+    },
+    {
+      "catalog_created_at": "2026-11-18T09:14:26.372104+00:00",
+      "created_minus_last_close_seconds": 26.372103929519653,
+      "dataset_id": "ds_eurusd_60s_1794978060_1794993240_5beae5033ec9",
+      "last_candle_close_ts": 1794993240,
+      "meaning": "Catalog publication lag proxy, not instrumented source/network receipt"
+    },
+    {
+      "catalog_created_at": "2026-11-18T09:43:25.712483+00:00",
+      "created_minus_last_close_seconds": 25.712482929229736,
+      "dataset_id": "ds_eurusd_60s_1794993240_1794994980_8cef17cbcc9e",
+      "last_candle_close_ts": 1794994980,
+      "meaning": "Catalog publication lag proxy, not instrumented source/network receipt"
+    }
+  ],
+  "registered_dataset_and_matrix_fingerprints_reproduced": true,
+  "reviewed_commit": "11f946e7c63a48daaca10c89002a865b7b5a4c0c",
+  "sealed_content_opened": false,
+  "test_windows": 9304,
+  "verified_defect_reproductions": {
+    "nested_frozen_model_destination_accepted_without_creating_it": "data\\phase30\\study-001\\models\\random_forest\\nested-prospective",
+    "non_normalized_probability_accepted": [
+      0.8
+    ]
+  }
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -95,10 +96,49 @@ def test_threshold_frozen_and_ties_not_directional_losses() -> None:
 
 
 def test_production_sealed_paths_are_denied_without_reading() -> None:
-    from pathlib import Path
-
     from tests.conftest import SEALED_PATHS
 
     for path in SEALED_PATHS:
         with pytest.raises(PermissionError, match="SEALED_HOLDOUT"):
             Path(path).read_bytes()
+
+
+def test_allowed_run_rejects_nested_or_escaping_directories(tmp_path: Path) -> None:
+    from iqoption_research.research.aligned_study import allowed_run
+
+    project = tmp_path
+    # Valid direct child of data/phase30
+    allowed_run(project / "data/phase30/study-001", project)
+    allowed_run(project / "data/phase30/prospective-001", project)
+
+    # Root itself is rejected
+    with pytest.raises(ValueError, match="directly under"):
+        allowed_run(project / "data/phase30", project)
+
+    # Escaping root is rejected
+    with pytest.raises(ValueError, match="directly under"):
+        allowed_run(project / "data/other", project)
+
+    # Nested inside a study directory is rejected
+    with pytest.raises(ValueError, match="directly under"):
+        allowed_run(project / "data/phase30/study-001/models/random_forest/nested", project)
+
+
+def test_predict_bundle_rejects_non_normalized_probabilities() -> None:
+    from unittest.mock import MagicMock
+
+    from iqoption_research.ml.tracking.artifacts import ModelBundle
+    from iqoption_research.research.aligned_study import predict_bundle
+
+    # Model returning non-normalized probability (0.8, 0.8) which does not sum to 1.0
+    mock_model = MagicMock()
+    mock_model.predict_proba.return_value = np.array([[0.8, 0.8]])
+    bad_bundle = ModelBundle(model=mock_model, scaler=None, calibrator=None, metadata={})
+    with pytest.raises(ValueError, match="Invalid model probability distribution"):
+        predict_bundle(bad_bundle, np.zeros((1, 11)))
+
+    # Model returning valid normalized probability (0.2, 0.8)
+    mock_model.predict_proba.return_value = np.array([[0.2, 0.8]])
+    valid_bundle = ModelBundle(model=mock_model, scaler=None, calibrator=None, metadata={})
+    raw, prob = predict_bundle(valid_bundle, np.zeros((1, 11)))
+    assert raw[0] == 0.8 and prob[0] == 0.8

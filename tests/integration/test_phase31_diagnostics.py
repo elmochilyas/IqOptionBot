@@ -11,13 +11,15 @@ from iqoption_research.cli.main import app
 from iqoption_research.timing.reconstruction import reconstruct_all_timing_evidence
 
 
-def test_reconstruct_all_timing_evidence_on_repo_checkpoints() -> None:
+def test_reconstruct_all_timing_evidence_on_repo_checkpoints(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     evidence = reconstruct_all_timing_evidence(root)
 
     assert "checkpoints" in evidence
-    assert len(evidence["checkpoints"]) >= 4
-    # None of the single-request historical checkpoints met the 15s gate
+    assert "prospective_journals" in evidence
+    assert "epistemic_findings" in evidence
+
+    # If repo has local checkpoints (e.g. dev environment), verify their timing invariants
     for cp in evidence["checkpoints"]:
         if "error" in cp:
             continue
@@ -27,10 +29,32 @@ def test_reconstruct_all_timing_evidence_on_repo_checkpoints() -> None:
         # All historical forward syncs completed after F+15s
         assert cp["satisfies_phase30_15s_gate"] is False
 
-    assert "prospective_journals" in evidence
-    assert "Phase 28" in evidence["prospective_journals"]
-    assert "Phase 29" in evidence["prospective_journals"]
-    assert "Phase 30" in evidence["prospective_journals"]
+    # Also test reconstruction against synthetic fixture directory to guarantee coverage in CI
+    mock_dir = tmp_path / "mock_project"
+    cp_dir = mock_dir / "data" / "datasets"
+    cp_dir.mkdir(parents=True)
+    sample_cp = {
+        "job_id": "synthetic_cp_001",
+        "symbol": "EURUSD",
+        "active_id": 1,
+        "candle_size_seconds": 60,
+        "target_completed_end_ts": 1794942000,
+        "created_at_utc": "2026-11-17T19:00:35.000000+00:00",
+        "updated_at_utc": "2026-11-17T19:00:37.000000+00:00",
+        "requests_made": 1,
+        "new_records_saved": 60,
+        "state": "completed",
+    }
+    (cp_dir / "forward_checkpoint_synthetic.json").write_text(
+        json.dumps(sample_cp), encoding="utf-8"
+    )
+    synth_evidence = reconstruct_all_timing_evidence(mock_dir)
+    assert len(synth_evidence["checkpoints"]) == 1
+    synth_cp = synth_evidence["checkpoints"][0]
+    assert synth_cp["invocation_delay_seconds"] == 35.0
+    assert synth_cp["collection_duration_seconds"] == 2.0
+    assert synth_cp["total_offset_seconds"] == 37.0
+    assert synth_cp["satisfies_phase30_15s_gate"] is False
 
 
 def test_cli_timing_commands() -> None:

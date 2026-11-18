@@ -43,9 +43,13 @@ htmlcov/
 
 # Generated research workspaces, agent state, and archives
 data/*
+!data/phase11/
 !data/phase13/
 !data/phase14/
 !data/phase15/
+!data/bot_sessions/
+data/bot_sessions/*
+!data/bot_sessions/session_1794842044_summary.json
 .agents/
 *.zip
 

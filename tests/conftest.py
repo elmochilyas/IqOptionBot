@@ -1,13 +1,28 @@
 """Pytest configuration, shared fixtures, and offline mocks."""
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
+# Normalize terminal output for CLI testing to prevent ANSI styling artifacts
+os.environ.setdefault("TERM", "dumb")
+
 import pytest
 
 from iqoption_research.security.credentials import Credentials
+from tests.research_isolation import build_legacy_workspace, install_sealed_read_guard
+
+SEALED_PATHS = install_sealed_read_guard(Path(__file__).resolve().parents[1])
+
+
+@pytest.fixture(scope="session")
+def legacy_research_workspace(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return build_legacy_workspace(
+        tmp_path_factory.mktemp("legacy-synthetic"), Path(__file__).resolve().parents[1]
+    )
+
 
 # Windows sandbox isolation: Windows AppContainer sandboxes block loopback TCP (127.0.0.1)
 # which prevents Python's standard ProactorEventLoop from creating its self-pipe socketpair.
@@ -40,9 +55,13 @@ if sys.platform == "win32":
             self._csock = None
             self._internal_fds -= 1
 
+        _dummy_overlapped = _overlapped.Overlapped()
+
         def _sandbox_write_to_self(self: Any) -> None:
             if self._proactor is not None and getattr(self._proactor, "_iocp", None) is not None:
-                _overlapped.PostQueuedCompletionStatus(self._proactor._iocp, 0, 0, 0)
+                _overlapped.PostQueuedCompletionStatus(
+                    self._proactor._iocp, 0, 0, _dummy_overlapped.address
+                )
 
         def _noop(*_args: Any, **_kwargs: Any) -> None:
             pass

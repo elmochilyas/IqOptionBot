@@ -148,6 +148,8 @@ module = [
     "lightgbm.*",
     "xgboost.*",
     "catboost.*",
+    "pyarrow.*",
+    "pyarrow",
 ]
 ignore_missing_imports = true
 

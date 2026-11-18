@@ -1,0 +1,131 @@
+{
+  "created_at_utc": "2026-11-18T10:44:57.947386+00:00",
+  "files": [
+    {
+      "path": "bundle_metadata.json",
+      "sha256": "23a5d5526ef82249f4c79b4db7d41e2b1f9ebf1542a5184b95215a8212889bcf",
+      "size": 3078
+    },
+    {
+      "path": "calibrator.json",
+      "sha256": "9ad8d6fd3a6231ca899c0e4e9b447c11905ed05ac72a4f3d0618e1d3fd2f262a",
+      "size": 192
+    },
+    {
+      "path": "metadata.json",
+      "sha256": "72444988ddd4f0df840476a7582c86e78fc8eae4c7f7637e7e065c3fcddd92f8",
+      "size": 653
+    },
+    {
+      "path": "model.joblib",
+      "sha256": "154e1bf6c7f81840bc8665225b675543610f0b3fe416a477903aa407a3fe1e53",
+      "size": 959
+    },
+    {
+      "path": "scaler.json",
+      "sha256": "8a2c817b48218b7b0ed1516ec00e16a02679a8d4757a1555fd266b20598b77f2",
+      "size": 1913
+    }
+  ],
+  "manifest_version": "1.0",
+  "metadata": {
+    "bundle_format_version": "1.0",
+    "calibrator_method": "sigmoid",
+    "created_at_utc": "2026-11-18T10:44:57.914606+00:00",
+    "feature_names": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio"
+    ],
+    "has_calibrator": true,
+    "has_scaler": true,
+    "kind": "model_bundle",
+    "metadata": {
+      "calibration_rows": 8801,
+      "contract_hash": "ee8f0c34822d44640cd70792ca474bc1dc9b531602eee52c25d41156cb3148fe",
+      "features": [
+        "return_1",
+        "log_return_1",
+        "intrabar_return",
+        "sma_ratio_5",
+        "sma_ratio_20",
+        "volatility_10",
+        "volatility_20",
+        "candle_range",
+        "body_to_range",
+        "upper_shadow_ratio",
+        "lower_shadow_ratio"
+      ],
+      "independent_confirmation_consumed": false,
+      "lifecycle_stage": "DEVELOPMENT_ONLY",
+      "model_provenance": "authentic_trained",
+      "study_config_hash": "8e9a23bc5cb1729a5b5114e2731cc333af8f466cc5209e244b1ffe431200a4d3",
+      "target_contract": {
+        "blitz": "UNVERIFIED_NOT_SCORED",
+        "confidence_threshold": 0.6,
+        "context_bars": 21,
+        "entry_delay_from_feature_close": 120,
+        "entry_price": "AUTHENTIC_EURUSD_CANDLE_OPEN_AT_F_PLUS_120",
+        "expiry_price": "SAME_CANDLE_CLOSE_AT_F_PLUS_180",
+        "feature_availability": "CANDLE_CLOSE_F_IS_EARLIEST_NOT_ATTESTED_ARRIVAL",
+        "historical_latency": "UNKNOWN; conditional contract, no imputed real arrival times",
+        "holding_seconds": 60,
+        "labels": {
+          "DOWN": 0,
+          "TIE": -1,
+          "UP": 1
+        },
+        "live_gate": "F <= data_observed <= decision <= durable_commit <= F+15",
+        "max_source_age_seconds": 15,
+        "missing_policy": "REJECT_NONCONTIGUOUS_CONTEXT_LATENCY_OR_OUTCOME;NO_FILL",
+        "probability": "P(UP | DECISIVE); not unconditional probability of winning",
+        "ties": "EXACT_EQUALITY_EXCLUDED_FROM_FITTING_CALIBRATION_DIRECTIONAL_METRICS",
+        "timeframe": 60,
+        "version": "EURUSD_DELAYED_CONDITIONAL_DIRECTION_V1"
+      },
+      "training_rows": 35272
+    },
+    "model": {
+      "class_name": "LogisticRegressionModel",
+      "classes": [
+        0,
+        1
+      ],
+      "feature_names": [
+        "return_1",
+        "log_return_1",
+        "intrabar_return",
+        "sma_ratio_5",
+        "sma_ratio_20",
+        "volatility_10",
+        "volatility_20",
+        "candle_range",
+        "body_to_range",
+        "upper_shadow_ratio",
+        "lower_shadow_ratio"
+      ],
+      "hyperparameters": {
+        "C": 0.1,
+        "class_weight": null,
+        "max_iter": 1000,
+        "penalty": "l2",
+        "random_state": 30,
+        "solver": "lbfgs"
+      },
+      "is_fitted": true,
+      "model_type": "baseline",
+      "name": "logistic_regression",
+      "saved_at_utc": "2026-11-18T10:44:57.914606+00:00",
+      "version": "1.0.0"
+    },
+    "security_note": "Trusted local artifact only. Do not load joblib/pickle artifacts from untrusted sources."
+  }
+}

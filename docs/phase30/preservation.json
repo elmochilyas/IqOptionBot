@@ -1,0 +1,46 @@
+{
+  "catalog_metadata_unchanged": true,
+  "changed_protected_files": [],
+  "eligible_source_shards_reverified": 128,
+  "holdout_reference": {
+    "candles": 688,
+    "consumed_by_phase28": false,
+    "end_exclusive": 1794821340,
+    "fingerprint_sha256": "22b1e069cec4117080f617fd3f3e8ed34eca46492f15df0d93823ca77a9a4402",
+    "original_last_open_ts": 1794821280,
+    "original_start_ts": 1794607200,
+    "reservation_sha256": "36baa802e16e38e864bb4b7273e60c8295c7f4e39669128ab03e3404ffa1e45a",
+    "sealed_candle_hash_recomputed": false,
+    "status": "RESERVED",
+    "verification": "RESERVATION_BYTES_AND_PRIOR_HASH_REFERENCE_ONLY_NO_SEALED_PRICE_READ"
+  },
+  "mutable_bot_runtime_snapshots_restored": true,
+  "original_models_journals_reports_reservation_unchanged": true,
+  "original_research_files_verified": 94,
+  "scope": "File hashes for research artifacts and eligible sources; stored references/stat only for sealed data",
+  "sealed_content_files_read": 0,
+  "sealed_file_hashes_recomputed": false,
+  "sealed_shard_stat_and_catalog_hashes_unchanged": {
+    "C:\\Users\\elmoc\\Desktop\\IqOptionBot\\data\\datasets\\broker_authentic_collection\\eurusd\\60s\\year=2026\\month=11\\candles_1794577200_1794607200_8b2e624c91a4.parquet": {
+      "catalog_sha256": "bc2882f29e57d67e79d66f6a1babf81bdbfac610ce2202abe5f1ac1c142b14d4",
+      "mtime_ns": 1794607979869118000,
+      "size": 35364
+    },
+    "C:\\Users\\elmoc\\Desktop\\IqOptionBot\\data\\datasets\\broker_authentic_collection\\eurusd\\60s\\year=2026\\month=11\\candles_1794601200_1794607200_1340af2a728f.parquet": {
+      "catalog_sha256": "bc80fd1d37f42b50eda5209aeaaec0757c1c26caf0aa1ba4184441f6e4e4c1a9",
+      "mtime_ns": 1794607700092639300,
+      "size": 10761
+    },
+    "C:\\Users\\elmoc\\Desktop\\IqOptionBot\\data\\datasets\\broker_authentic_collection\\eurusd\\60s\\year=2026\\month=11\\candles_1794780060_1794791400_cb16ab663131.parquet": {
+      "catalog_sha256": "ee7eebbe11fb519265184bde70193879d55f426970b32920e75391378313f889",
+      "mtime_ns": 1794826261005028600,
+      "size": 15711
+    },
+    "C:\\Users\\elmoc\\Desktop\\IqOptionBot\\data\\datasets\\broker_authentic_collection\\eurusd\\60s\\year=2026\\month=11\\candles_1794791400_1794821340_ea9961b9d7a1.parquet": {
+      "catalog_sha256": "1b7446ca81d8ff06e80d5095ca4dd58dffe1f71aa3a5ad98d0992fa087e5bd13",
+      "mtime_ns": 1794822640904576300,
+      "size": 31564
+    }
+  },
+  "test_guard": "Python open audit hook and Arrow read guard; legacy production-data tests isolated with synthetic fixtures"
+}

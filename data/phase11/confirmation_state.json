@@ -1,0 +1,14 @@
+{
+  "confirmation_dataset_fingerprint": null,
+  "confirmation_days": 14,
+  "confirmation_end_ts": null,
+  "confirmation_start_ts": null,
+  "evaluated_at_utc": null,
+  "evaluation_started_at_utc": null,
+  "evaluation_status": "RESERVED",
+  "full_dataset_fingerprint_at_evaluation": null,
+  "prior_evaluated_dataset_fingerprint": "70d8b1e906d5b76f97b93346ad4399e23abe1630dca66e14b1a1828a617e6632",
+  "prior_evaluation_cutoff_ts": 1794607200,
+  "prior_evaluation_cutoff_utc": "2026-11-13T22:00:00+00:00",
+  "schema_version": 1
+}

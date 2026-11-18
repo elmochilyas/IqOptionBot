@@ -1,0 +1,5 @@
+# Preserve Phase30's frozen implementation bytes across Windows checkouts.
+src/iqoption_research/research/aligned_*.py text eol=lf
+src/iqoption_research/cli/commands/aligned_cmd.py text eol=lf
+# Serialized Windows JSON is hashed byte-for-byte, including CRLF.
+docs/phase30/artifacts/** -text whitespace=trailing-space,space-before-tab,cr-at-eol

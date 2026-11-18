@@ -1,0 +1,120 @@
+{
+  "authenticated_broker_sessions": 0,
+  "automatic_merge_authorized": false,
+  "base_main": "7251f520be648999c70ea527a0e95a4465e917e9",
+  "installed_dependency_audit": {
+    "command": ".\\.venv\\Scripts\\python.exe -m pip_audit --local",
+    "entries": 84,
+    "known_vulnerabilities": 0,
+    "passed": true,
+    "skipped": [
+      {
+        "name": "iqoption-research",
+        "skip_reason": "Dependency not found on PyPI and could not be audited: iqoption-research (0.1.0)"
+      }
+    ]
+  },
+  "local_registration_not_external_timestamp_attestation": true,
+  "mypy": {
+    "command": ".\\.venv\\Scripts\\python.exe -m mypy src",
+    "passed": true,
+    "source_files": 196
+  },
+  "new_authentic_acquisition": 0,
+  "new_experimental_models_fitted": [
+    "majority_direction_prior",
+    "logistic_regression",
+    "random_forest"
+  ],
+  "new_prospective_predictions": 0,
+  "offline_cli_smoke": [
+    "aligned register",
+    "aligned train",
+    "aligned seed-collection",
+    "aligned init",
+    "aligned record",
+    "aligned report",
+    "data forward-plan against isolated store",
+    "ml inspect new published bundle"
+  ],
+  "old_models_retrained": false,
+  "orders": 0,
+  "original_holdout_read": false,
+  "phase": 30,
+  "pinned_runtime_audit": {
+    "command": ".\\.venv\\Scripts\\python.exe -m pip_audit -r requirements.txt --no-deps --disable-pip",
+    "packages": 15,
+    "passed": true,
+    "transitive_resolution": false
+  },
+  "pip_check": {
+    "command": ".\\.venv\\Scripts\\python.exe -m pip check",
+    "passed": true
+  },
+  "pytest": {
+    "command": ".\\.venv\\Scripts\\python.exe -m pytest -q",
+    "passed": 1919,
+    "phase30_tests": 25,
+    "sealed_read_guard_active": true,
+    "seconds": 136.55,
+    "skipped": 0,
+    "test_data": "Synthetic temporary fixtures; no sealed production data",
+    "warnings": 3
+  },
+  "ruff_format": {
+    "command": ".\\.venv\\Scripts\\python.exe -m ruff format src tests --check",
+    "files": 315,
+    "passed": true
+  },
+  "ruff_lint": {
+    "command": ".\\.venv\\Scripts\\python.exe -m ruff check src tests",
+    "passed": true
+  },
+  "security": {
+    "checks": [
+      {
+        "detail": "hostname + certificate verification required, minimum TLS 1.2",
+        "name": "tls_context",
+        "passed": true
+      },
+      {
+        "detail": "hardcoded IQ Option endpoints only; unknown URLs rejected",
+        "name": "endpoint_allowlist",
+        "passed": true
+      },
+      {
+        "detail": "no verify=False / CERT_NONE / disabled hostname verification",
+        "name": "no_insecure_tls_patterns",
+        "passed": true
+      },
+      {
+        "detail": "no buy/sell/close/change_balance attributes on AsyncIQOption",
+        "name": "read_only_posture",
+        "passed": true
+      },
+      {
+        "detail": "all runtime dependencies pinned with ==",
+        "name": "dependency_pinning",
+        "passed": true
+      },
+      {
+        "detail": "Settings has no credential fields; getpass is required at runtime",
+        "name": "no_credential_settings",
+        "passed": true
+      },
+      {
+        "detail": "network I/O disabled by default",
+        "name": "offline_default",
+        "passed": true
+      }
+    ],
+    "command": ".\\.venv\\Scripts\\python.exe -m iqoption_research.cli.main security-check --json",
+    "passed": true
+  },
+  "toolchain": {
+    "pip": "26.3",
+    "pytest": "9.2.0",
+    "pytest-asyncio": "1.5.0"
+  },
+  "wallet_switches": 0
+}

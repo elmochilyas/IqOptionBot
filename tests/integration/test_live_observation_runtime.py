@@ -474,8 +474,11 @@ async def test_runtime_timeout_deadline_bounds_silent_stream():
 
 
 @pytest.mark.asyncio
-async def test_candidate_rf_model_warmup_and_prediction_pipeline():
+async def test_candidate_rf_model_warmup_and_prediction_pipeline(
+    legacy_research_workspace: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Validate candidate RF bundle integration with causal warm-up and calibrated prediction."""
+    monkeypatch.chdir(legacy_research_workspace)
     bundle_path = Path("data/phase13/candidate_models/candidate_h1_rf")
     assert bundle_path.exists(), "candidate_h1_rf bundle must exist"
 
@@ -483,7 +486,7 @@ async def test_candidate_rf_model_warmup_and_prediction_pipeline():
     bundle, report = loader.load(bundle_path)
     assert report.is_valid is True
 
-    # Pre-warm controller with authentic candles from storage
+    # Pre-warm with isolated synthetic data; no production candles are opened.
     from iqoption_research.market_data.collector import HistoricalDataCollector
 
     collector = HistoricalDataCollector()
@@ -507,12 +510,12 @@ async def test_candidate_rf_model_warmup_and_prediction_pipeline():
     )
     controller.start()
 
-    # Pre-warm buffer with 25 authentic candles
+    # Pre-warm buffer with 25 synthetic test candles.
     warm_count = controller.warm_up(stored_candles[:25])
     assert warm_count == 25
     assert controller.engine.feature_buffer.status.value == "ready"
 
-    # Now ingest the 26th authentic candle as live
+    # Ingest the 26th synthetic candle with a simulated observation clock.
     step_result = controller.process_candle(
         stored_candles[25], now_ts=float(stored_candles[25].to_ts)
     )
@@ -573,10 +576,13 @@ async def test_zero_broker_trading_frames_sent():
 
 
 @pytest.mark.asyncio
-async def test_telemetry_candle_classification_and_inference_invariants():
+async def test_telemetry_candle_classification_and_inference_invariants(
+    legacy_research_workspace: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Verify telemetry correctly classifies forming updates, duplicates, and errors,
     and guarantees ML inference executes strictly once per completed candle.
     """
+    monkeypatch.chdir(legacy_research_workspace)
     bundle_path = Path("data/phase13/candidate_models/candidate_h1_rf")
     assert bundle_path.exists(), "candidate_h1_rf bundle must exist"
 
@@ -607,7 +613,7 @@ async def test_telemetry_candle_classification_and_inference_invariants():
     )
     controller.start()
 
-    # Pre-warm buffer with 25 authentic candles
+    # Pre-warm buffer with 25 synthetic test candles.
     warm_count = controller.warm_up(stored_candles[:25])
     assert warm_count == 25
     assert controller.engine.feature_buffer.status.value == "ready"

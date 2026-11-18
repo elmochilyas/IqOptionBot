@@ -1,0 +1,217 @@
+{
+  "broker_orders": 0,
+  "by_regime": {},
+  "by_utc_day": {},
+  "compatibility": {
+    "blitz_equivalence": false,
+    "historical_availability_verified": false,
+    "status": "ALGEBRAICALLY_ALIGNED_CONDITIONAL_ON_MEASURED_LIVE_GATE",
+    "target_hash": "ee8f0c34822d44640cd70792ca474bc1dc9b531602eee52c25d41156cb3148fe",
+    "version": 1
+  },
+  "contract": {
+    "blitz": "UNVERIFIED_NOT_SCORED",
+    "confidence_threshold": 0.6,
+    "context_bars": 21,
+    "entry_delay_from_feature_close": 120,
+    "entry_price": "AUTHENTIC_EURUSD_CANDLE_OPEN_AT_F_PLUS_120",
+    "expiry_price": "SAME_CANDLE_CLOSE_AT_F_PLUS_180",
+    "feature_availability": "CANDLE_CLOSE_F_IS_EARLIEST_NOT_ATTESTED_ARRIVAL",
+    "historical_latency": "UNKNOWN; conditional contract, no imputed real arrival times",
+    "holding_seconds": 60,
+    "labels": {
+      "DOWN": 0,
+      "TIE": -1,
+      "UP": 1
+    },
+    "live_gate": "F <= data_observed <= decision <= durable_commit <= F+15",
+    "max_source_age_seconds": 15,
+    "missing_policy": "REJECT_NONCONTIGUOUS_CONTEXT_LATENCY_OR_OUTCOME;NO_FILL",
+    "probability": "P(UP | DECISIVE); not unconditional probability of winning",
+    "ties": "EXACT_EQUALITY_EXCLUDED_FROM_FITTING_CALIBRATION_DIRECTIONAL_METRICS",
+    "timeframe": 60,
+    "version": "EURUSD_DELAYED_CONDITIONAL_DIRECTION_V1"
+  },
+  "data_freshness_required_seconds": 15,
+  "decisions": {},
+  "directional_quality": {
+    "accuracy": null,
+    "brier": null,
+    "calibration_bins": [],
+    "decisive": 0,
+    "ece": null,
+    "log_loss": null,
+    "raw_brier": null,
+    "rows": 0,
+    "tie_frequency": null,
+    "ties": 0,
+    "wilson_95": [
+      0.0,
+      1.0
+    ]
+  },
+  "hypothetical_economics": [
+    {
+      "assumed_cost": 0,
+      "assumed_payout": 0.7,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0,
+      "assumed_payout": 0.7,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.002,
+      "assumed_payout": 0.7,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.002,
+      "assumed_payout": 0.7,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.01,
+      "assumed_payout": 0.7,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.01,
+      "assumed_payout": 0.7,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0,
+      "assumed_payout": 0.85,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0,
+      "assumed_payout": 0.85,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.002,
+      "assumed_payout": 0.85,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.002,
+      "assumed_payout": 0.85,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.01,
+      "assumed_payout": 0.85,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.01,
+      "assumed_payout": 0.85,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0,
+      "assumed_payout": 0.95,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0,
+      "assumed_payout": 0.95,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.002,
+      "assumed_payout": 0.95,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.002,
+      "assumed_payout": 0.95,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.01,
+      "assumed_payout": 0.95,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    },
+    {
+      "assumed_cost": 0.01,
+      "assumed_payout": 0.95,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "selected": 0,
+      "verified_broker_profit": false
+    }
+  ],
+  "hypothetical_only": true,
+  "independent_sample_size": null,
+  "lifecycle_stage": "DEVELOPMENT_ONLY",
+  "pending": 0,
+  "phase": 30,
+  "promotion_allowed": false,
+  "registration_hash": "60120315be08f89a437d23a71bfd4a1caad22753bc27c576d306b596ec9626e6",
+  "rejections": {
+    "NO_NEW_FEATURE_CANDLE_AFTER_REGISTRATION": 1
+  },
+  "research_conclusion": "NO_DEMONSTRATED_EDGE",
+  "resolved": 0,
+  "sample_sufficient": false,
+  "timing_eligible": 0,
+  "timing_unverified": 0,
+  "total_predictions": 0,
+  "verified_blitz_profit": null,
+  "verified_blitz_settlements": 0
+}

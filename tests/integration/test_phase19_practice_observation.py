@@ -513,8 +513,10 @@ def test_wallet_provenance_is_separate_from_attribution() -> None:
     assert history_only.report()["position_samples"][0]["wallet_evidence"] == "HISTORY_PER_RECORD"
 
     both = tracker_for()
-    feed(both, "option-opened", **evidence())
-    both.reconcile(history(row), time.time() - 5, time.time())
+    both_ev = evidence()
+    both_row = {**both_ev, "win": "win", "win_amount": 1800}
+    feed(both, "option-opened", **both_ev)
+    both.reconcile(history(both_row), time.time() - 5, time.time())
     sample = both.report()["position_samples"][0]
     assert sample["wallet_status"] == "PRACTICE_WALLET_CONFIRMED"
     assert sample["wallet_evidence"] == "LIVE_AND_HISTORY_PER_RECORD"

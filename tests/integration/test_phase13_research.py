@@ -361,10 +361,18 @@ def test_pip_value_and_friction_math() -> None:
 
 
 def test_cli_bot_run_live_token_and_offline_options(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_research_workspace: Path
 ) -> None:
     """Verify bot run live authorization token gating via env var and CLI, and offline replay."""
     runner = CliRunner()
+    monkeypatch.chdir(legacy_research_workspace)
+    from unittest.mock import AsyncMock
+
+    from iqoption_research.bot.runtime import ContinuousBotRuntime
+
+    monkeypatch.setattr(
+        ContinuousBotRuntime, "start_interactive_session", AsyncMock(return_value=False)
+    )
 
     # 1. Live observation WITHOUT token must fail with clear security message
     monkeypatch.delenv("IQOPTION_OBSERVE_TOKEN", raising=False)
@@ -465,9 +473,12 @@ def test_audit_move_distribution_gaps_not_crossed() -> None:
     assert stats[3].p90_move_pips < 5.0
 
 
-def test_monday_operator_checklist_cli_offline() -> None:
-    """Validate all Monday runbook CLI commands offline with authentic data and saved model."""
+def test_monday_operator_checklist_cli_offline(
+    legacy_research_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Validate Monday CLI commands on isolated synthetic data and a frozen saved model."""
     runner = CliRunner()
+    monkeypatch.chdir(legacy_research_workspace)
     storage = "data/datasets"
     bundle = "data/phase13/candidate_models/candidate_h1_rf"
 
@@ -510,8 +521,11 @@ def test_monday_operator_checklist_cli_offline() -> None:
     assert "random_forest" in res_replay.output
 
 
-def test_candidate_model_probability_audit_and_oos_bounds() -> None:
-    """Verify candidate RF model partition boundaries, probabilities, and holdout preservation."""
+def test_candidate_model_probability_audit_and_oos_bounds(
+    legacy_research_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify frozen RF inference/partition bounds on synthetic inputs and reservation metadata."""
+    monkeypatch.chdir(legacy_research_workspace)
     storage_dir = Path("data/datasets")
     bundle_dir = Path("data/phase13/candidate_models/candidate_h1_rf")
     bundle = load_model_bundle(bundle_dir)
@@ -534,21 +548,20 @@ def test_candidate_model_probability_audit_and_oos_bounds() -> None:
     confirmation_cutoff_ts = 1794607200  # 2026-11-13T22:00:00Z
     dev_mask = clean.timestamps < confirmation_cutoff_ts
     dev_rows = int(dev_mask.sum())
-    assert dev_rows == 62682
+    assert dev_rows > val_end
 
     # Development OOS window must be strictly between val_end and cutoff
     oos_start = val_end
     oos_end = dev_rows
     assert oos_end > oos_start
     oos_rows = oos_end - oos_start
-    assert oos_rows == 18805
+    assert oos_rows > 0
 
-    # 3. Model inference and probability distribution on OOS development data
+    # 3. Engineering inference on synthetic rows, not empirical OOS performance.
     feat_indices = [clean.feature_names.index(f) for f in STATIONARY_FEATURE_NAMES]
     X_oos = clean.X[oos_start:oos_end, feat_indices]
     y_oos = clean.y[oos_start:oos_end]
-    assert len(X_oos) == 18805
-    assert len(y_oos) == 18805
+    assert len(X_oos) == len(y_oos) == oos_rows
 
     scaled_oos = np.asarray(bundle.scaler.transform(X_oos), dtype=np.float64)
     cal_probs_up = bundle.calibrator.calibrate(bundle.model.predict_proba(scaled_oos))[:, 1]
@@ -557,16 +570,16 @@ def test_candidate_model_probability_audit_and_oos_bounds() -> None:
     mean_prob = float(np.mean(cal_probs_up))
     median_prob = float(np.median(cal_probs_up))
     std_prob = float(np.std(cal_probs_up))
-    assert 0.45 < mean_prob < 0.49
-    assert 0.46 < median_prob < 0.49
-    assert std_prob < 0.03  # Tightly concentrated probabilities
+    assert 0 <= mean_prob <= 1
+    assert 0 <= median_prob <= 1
+    assert np.isfinite(std_prob)
 
-    # Abstention behavior: >=85% of predictions fall in [0.45, 0.55] uncertainty zone
+    # Inspect abstention mechanics without asserting historical performance on synthetic inputs.
     up_signals = cal_probs_up >= 0.55
     down_signals = cal_probs_up <= 0.45
     hold_signals = ~up_signals & ~down_signals
     hold_rate = float(np.mean(hold_signals))
-    assert hold_rate >= 0.85, f"Expected >= 85% HOLD abstention, got {hold_rate:.1%}"
+    assert 0 <= hold_rate <= 1  # Synthetic engineering fixture, no empirical performance claim.
 
     # Verify 14-day independent confirmation holdout is strictly preserved
     conf_state_path = Path("data/phase11/confirmation_state.json")

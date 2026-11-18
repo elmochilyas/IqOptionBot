@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import typer
 
+from iqoption_research.cli.commands.aligned_cmd import app as aligned_app
 from iqoption_research.cli.commands.auth_cmd import auth_app
 from iqoption_research.cli.commands.bot_cmd import bot_app
 from iqoption_research.cli.commands.data_cmd import app as data_app
@@ -70,6 +71,7 @@ app.command("practice-watch", help="Watch Practice activity and reconcile histor
 )
 app.add_typer(research_app, name="research")
 app.add_typer(prospective_app, name="prospective")
+app.add_typer(aligned_app, name="aligned")
 app.add_typer(observation_app, name="observation")
 app.add_typer(ml_app, name="ml")
 app.add_typer(paper_app, name="paper")

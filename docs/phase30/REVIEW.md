@@ -51,10 +51,10 @@ This review independently audited the 14 critical dimensions specified in the Ph
 
 ### Blocker Findings
 
-#### [BLOCKER-01] 15-Second Acquisition Gate is Operationally Unfeasible
+#### [BLOCKER-01] 15-Second Acquisition Gate Has No Demonstrated Feasibility in Current Verified Workflow
 - **Component:** [aligned_observer.py](file:///C:/Users/elmoc/Desktop/IqOptionBot/src/iqoption_research/research/aligned_observer.py#L70-L73), [aligned_contract.py](file:///C:/Users/elmoc/Desktop/IqOptionBot/src/iqoption_research/research/aligned_contract.py#L70-L73)
-- **Description:** The prediction eligibility contract strictly enforces $F \le \text{observed} \le \text{decision} \le \text{commit} \le F+15$ seconds. Analysis of historical checkpoints reveals that manual operator/CLI job invocations occurred 24.67 to 46.77 seconds after candle close (`target_completed_end_ts` vs. `created_at_utc`). While the single-request collection command itself executed in ~2.07s to 2.50s (`checkpoint_elapsed_seconds`), cold process initialization takes ~2.4s to 3.0s, and TLS/authentication handshakes take 3.5s to 7.0s. Crucially, the true broker first-arrival distribution (the physical latency from candle close $F$ until the broker emits the completed candle frame) is **unmeasured and uninstrumented** in the historical data.
-- **Impact:** In a live prospective setting, no evidence exists that cold or single-shot batch collection can reliably satisfy the 15-second deadline. Unattended or high-frequency streaming is barred by broker rate uncertainties and research safety boundaries. Consequently, observations risk systemic disqualification (`OUTSIDE_15_SECOND_ACQUISITION_GATE`) unless unverified timing assumptions are made.
+- **Description:** The prediction eligibility contract requires $F \le \text{observed} \le \text{decision} \le \text{commit} \le F+15$ seconds. Historical catalog publication timestamps and checkpoint creation timestamps (`created_at_utc - target_completed_end_ts: 24.67s – 46.77s`) record when manual operator runs or scheduled batch jobs were triggered relative to candle close, NOT direct measurements of broker first candle availability. Once running, single-request collection executed in ~2.07s to 2.50s (`checkpoint_elapsed_seconds`). However, true broker first-arrival distribution remains unmeasured and uninstrumented.
+- **Impact:** For the current verified, bounded read-only collection workflow, cold startup (~2.4s–3.0s), TLS authentication (~3.5s–7.0s), network fetch (~2.07s–2.50s), and Parquet persistence (~1.5s–2.5s) leave no operational margin to complete durable commitment by $F+15$s. While continuous streaming or warm-socket polling might theoretically reduce local overhead, no broker-approved repeated polling rate or unattended streaming protocol exists within the project's strict read-only safety limits. Consequently, the current verified collection workflow cannot reliably satisfy the 15-second gate.
 
 #### [BLOCKER-02] Candidate Random Forest Provides No Predictive Edge and Emits 100% SKIP
 - **Component:** [results.json](file:///C:/Users/elmoc/Desktop/IqOptionBot/docs/phase30/results.json#L280-L310), [artifacts/random_forest](file:///C:/Users/elmoc/Desktop/IqOptionBot/docs/phase30/artifacts/random_forest)
@@ -146,8 +146,11 @@ However, true broker first-arrival distribution remains **completely uninstrumen
 
 ### Feasibility Conclusion
 
-**VERDICT: NO-GO.**  
-Under the existing verified, bounded read-only collection architecture, fulfilling the 15-second deadline has no demonstrated empirical feasibility.
+**VERDICT: NO-GO for Current Verified Workflow.**  
+Within the existing verified, bounded read-only batch collection architecture, meeting the 15-second deadline has no demonstrated empirical feasibility. This is not an assertion of universal physical impossibility for all conceivable collection architectures; rather, it reflects that:
+1. True broker candle publication delay is unmeasured and uninstrumented in existing data.
+2. Cold CLI execution overhead (startup, auth, query, persistence) leaves no margin within the 15-second envelope.
+3. Warm continuous streaming or high-frequency polling is currently unverified, has no documented broker rate limits, and poses operational safety risks barred by project boundaries.
 
 ---
 
@@ -178,10 +181,10 @@ Under the existing verified, bounded read-only collection architecture, fulfilli
 | Dimension | Evaluation Criteria | Verdict | Evidence & Justification |
 |---|---|---|---|
 | **A. Engineering Readiness** | Contract fulfillment, registration, and reporting | **CONDITIONAL GO** | Code architecture is sound; run containment, probability normalization, sandbox transport compatibility, and CI workflow have been resolved on the PR branch with passing regressions. |
-| **B. Acquisition Feasibility** | 15s timing gate compliance | **NO-GO** | True broker candle delivery is uninstrumented; cold execution overhead (9.5s–15.0s) leaves no margin, and warm streaming lacks an approved broker contract within safety boundaries. |
+| **B. Acquisition Feasibility** | 15s timing gate compliance | **NO-GO** | Current verified batch workflow cannot demonstrate compliance with $F+15$s. Broker first-arrival latency is uninstrumented; cold execution (9.5s–15.0s) leaves no margin, and warm streaming lacks an approved broker contract within safety boundaries. |
 | **C. Research Usefulness** | Signal quality vs. trivial baselines | **NO-GO** | RF accuracy (50.57%) fails to beat the majority prior (50.58%); 100% of test instances produce SKIP. No useful hypothesis exists for forward scoring. |
 | **D. Statistical Readiness** | Sample diversity and regime coverage | **NO-GO** | Evidence spans only 8 UTC days in November 2026. High temporal autocorrelation and lack of multi-month regime variation invalidate broad statistical inferences. |
-| **E. Product Validity** | Contract alignment with Blitz binary options | **NO-GO** | Authentic EURUSD 60s candle open/close differs fundamentally from IQ Option Blitz execution (continuous spot strikes, variable dynamic payouts of 75-90%, spread/slippage, and tie loss rules). |
+| **E. Product Validity** | Contract alignment with Blitz binary options | **NO-GO** | The mathematical contract is defined strictly on authentic EURUSD 60s candle open/close prices. Actual broker Blitz contract mechanics (strike determination, real-time spreads, dynamic payouts, and tie refund vs. loss settlements) remain unobserved and unverified. No equivalence to live Blitz options is asserted. |
 | **F. Opportunity Cost** | Continued model iteration vs. research pause | **PAUSE** | Further training on 1-minute candle bars with tabular models is exhausted. Resources should not be spent recording prospective SKIPs. |
 
 ### Consolidated Phase 31 Recommendation: **NO-GO**
@@ -194,7 +197,7 @@ Live prospective observation for Phase 31 should **NOT** proceed. The combinatio
 If quantitative research is resumed in a subsequent phase, it should address the core structural blockers before training new models:
 
 1. **Resolution Horizon & Data Granularity Pivot:** Abandon 1-minute candle classification. If binary forecasting is pursued, investigate tick/quote microstructure or higher-timeframe horizons (5m, 15m) where the 15-second acquisition latency is negligible relative to holding duration.
-2. **Product-Mechanics Grounding:** Establish an authentic Blitz empirical mapping: analyze true broker strike placement, dynamic payout variations, and tie settlements on recorded demo data before designing target contracts.
+2. **Product-Mechanics Grounding:** Avoid unverified assumptions regarding Blitz contract economics (such as assumed fixed payouts, spreads, or tie loss rules). If live option trading economics are ever investigated, authentic broker terms and settlement rules must be directly observed and verified rather than assumed.
 3. **Formal CI Pipeline:** Implement GitHub Actions running the synthetic test suite and security linters on every PR (completed in `.github/workflows/ci.yml`).
 4. **Acquisition Architecture Formalization:** If 60-second collection is ever revisited, measure broker WebSocket quote streams directly under supervised operator sessions rather than polling completed candle endpoints.
 

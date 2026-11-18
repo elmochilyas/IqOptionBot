@@ -1,0 +1,166 @@
+{
+  "command": ".\\.venv\\Scripts\\python.exe -m pip_audit --local --format json",
+  "entries_scanned": 84,
+  "exit_code": 1,
+  "findings": [
+    {
+      "advisories": [
+        {
+          "aliases": [
+            "GHSA-4xh5-x5gv-qwph",
+            "CVE-2025-8869"
+          ],
+          "fix_versions": [
+            "25.3"
+          ],
+          "id": "PYSEC-2026-1795"
+        },
+        {
+          "aliases": [
+            "CVE-2026-1703",
+            "GHSA-6vgw-5pg2-w6jp"
+          ],
+          "fix_versions": [
+            "26.0"
+          ],
+          "id": "PYSEC-2026-1796"
+        },
+        {
+          "aliases": [
+            "CVE-2026-3219",
+            "GHSA-58qw-9mgm-455v"
+          ],
+          "fix_versions": [
+            "26.1"
+          ],
+          "id": "PYSEC-2026-2875"
+        },
+        {
+          "aliases": [
+            "CVE-2026-6357",
+            "GHSA-jp4c-xjxw-mgf9"
+          ],
+          "fix_versions": [
+            "26.1"
+          ],
+          "id": "PYSEC-2026-2876"
+        },
+        {
+          "aliases": [
+            "CVE-2026-8643",
+            "GHSA-wf93-45jw-7689"
+          ],
+          "fix_versions": [
+            "26.1.2"
+          ],
+          "id": "PYSEC-2026-196"
+        },
+        {
+          "aliases": [
+            "GHSA-4xh5-x5gv-qwph",
+            "CVE-2025-8869"
+          ],
+          "fix_versions": [
+            "25.3"
+          ],
+          "id": "PYSEC-2026-1795"
+        },
+        {
+          "aliases": [
+            "CVE-2026-1703",
+            "GHSA-6vgw-5pg2-w6jp"
+          ],
+          "fix_versions": [
+            "26.0"
+          ],
+          "id": "PYSEC-2026-1796"
+        },
+        {
+          "aliases": [
+            "CVE-2026-8643",
+            "GHSA-wf93-45jw-7689"
+          ],
+          "fix_versions": [
+            "26.1.2"
+          ],
+          "id": "PYSEC-2026-196"
+        },
+        {
+          "aliases": [
+            "CVE-2026-3219",
+            "GHSA-58qw-9mgm-455v"
+          ],
+          "fix_versions": [
+            "26.1"
+          ],
+          "id": "PYSEC-2026-2875"
+        },
+        {
+          "aliases": [
+            "CVE-2026-6357",
+            "GHSA-jp4c-xjxw-mgf9"
+          ],
+          "fix_versions": [
+            "26.1"
+          ],
+          "id": "PYSEC-2026-2876"
+        },
+        {
+          "aliases": [
+            "GHSA-qwm4-qh6w-59xr",
+            "CVE-2026-13346"
+          ],
+          "fix_versions": [
+            "26.2"
+          ],
+          "id": "PYSEC-2026-3721"
+        },
+        {
+          "aliases": [
+            "GHSA-qwm4-qh6w-59xr",
+            "CVE-2026-13346"
+          ],
+          "fix_versions": [
+            "26.2.0"
+          ],
+          "id": "PYSEC-2026-3721"
+        }
+      ],
+      "name": "pip",
+      "version": "25.0.1"
+    },
+    {
+      "advisories": [
+        {
+          "aliases": [
+            "CVE-2025-71176",
+            "GHSA-6w46-j5rx-g56g"
+          ],
+          "fix_versions": [
+            "9.0.3"
+          ],
+          "id": "PYSEC-2026-1845"
+        },
+        {
+          "aliases": [
+            "CVE-2025-71176",
+            "GHSA-6w46-j5rx-g56g"
+          ],
+          "fix_versions": [
+            "9.0.3"
+          ],
+          "id": "PYSEC-2026-1845"
+        }
+      ],
+      "name": "pytest",
+      "version": "8.4.2"
+    }
+  ],
+  "remediation_performed": false,
+  "skipped": [
+    {
+      "name": "iqoption-research",
+      "reason": "Dependency not found on PyPI and could not be audited: iqoption-research (0.1.0)"
+    }
+  ]
+}

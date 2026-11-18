@@ -1,0 +1,63 @@
+{
+  "base_main": "a4b5a29508acb9a526c284a210026ed85cf99a5b",
+  "credential_access": false,
+  "direct_runtime_dependency_audit": {
+    "command": ".\\.venv\\Scripts\\python.exe -m pip_audit -r requirements.txt --no-deps --disable-pip",
+    "known_vulnerabilities": 0,
+    "packages": 15,
+    "transitive_resolution": false
+  },
+  "implementation_smoke": {
+    "authenticated_sessions": 0,
+    "broker_requests": 0,
+    "duration_seconds": 1,
+    "new_predictions": 0,
+    "status": "COMPLETED"
+  },
+  "installed_dependency_audit": {
+    "advisory_entries": 14,
+    "affected_packages": 2,
+    "passed": false,
+    "report": "installed_dependency_findings.json",
+    "unique_advisory_ids": 7
+  },
+  "mypy": {
+    "command": ".\\.venv\\Scripts\\python.exe -m mypy src",
+    "passed": true,
+    "source_files": 188
+  },
+  "orders": 0,
+  "phase": 29,
+  "preservation": {
+    "changed_mutable_or_transient_files": [
+      "data\\bot_sessions\\latest_session.json",
+      "data\\bot_sessions\\latest_snapshot.json",
+      "data\\datasets\\catalog.db-shm",
+      "data\\datasets\\catalog.db-wal"
+    ],
+    "exact_hashes_unchanged": 1547,
+    "snapshotted_existing_files": 1551,
+    "source_models_phase28_research_and_holdout_unchanged": true
+  },
+  "pytest": {
+    "command": ".\\.venv\\Scripts\\python.exe -m pytest -q",
+    "passed": 1878,
+    "phase29_tests": 18,
+    "seconds": 128.26,
+    "warnings": 3
+  },
+  "retraining": false,
+  "ruff_format": {
+    "command": ".\\.venv\\Scripts\\python.exe -m ruff format src tests --check",
+    "files": 304,
+    "passed": true
+  },
+  "ruff_lint": {
+    "command": ".\\.venv\\Scripts\\python.exe -m ruff check src tests",
+    "passed": true
+  },
+  "security": {
+    "checks_passed": 7,
+    "command": ".\\.venv\\Scripts\\python.exe -m iqoption_research.cli.main security-check --json"
+  }
+}

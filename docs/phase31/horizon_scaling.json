@@ -7,7 +7,7 @@
     "available_pre_entry_seconds": 120,
     "cold_pre_entry_margin_seconds": 105.0,
     "statistical_signal_quality": "EXTREME_MARTINGALE_NOISE",
-    "feasibility_verdict": "NO-GO: High noise, 0% margin for cold execution"
+    "feasibility_verdict": "NO-GO: High noise, negative pre-entry margin under cold execution"
   },
   {
     "timeframe_seconds": 300,
@@ -16,8 +16,8 @@
     "warm_latency_fraction": 0.0117,
     "available_pre_entry_seconds": 300,
     "cold_pre_entry_margin_seconds": 285.0,
-    "statistical_signal_quality": "MACRO_TREND_ORDER_FLOW_AGGREGATION",
-    "feasibility_verdict": "FEASIBLE: 285s margin before entry, 5% latency ratio"
+    "statistical_signal_quality": "UNVERIFIED_LONGER_HORIZON_HYPOTHESIS",
+    "feasibility_verdict": "FEASIBLE_ALTERNATIVE_CONTRACT: 285s conceptual margin before entry"
   },
   {
     "timeframe_seconds": 900,
@@ -26,8 +26,8 @@
     "warm_latency_fraction": 0.0039,
     "available_pre_entry_seconds": 900,
     "cold_pre_entry_margin_seconds": 885.0,
-    "statistical_signal_quality": "MACRO_TREND_ORDER_FLOW_AGGREGATION",
-    "feasibility_verdict": "HIGHLY FEASIBLE: 885s margin before entry, 1.7% latency ratio"
+    "statistical_signal_quality": "UNVERIFIED_LONGER_HORIZON_HYPOTHESIS",
+    "feasibility_verdict": "FEASIBLE_ALTERNATIVE_CONTRACT: 885s conceptual margin before entry"
   },
   {
     "timeframe_seconds": 3600,
@@ -36,7 +36,7 @@
     "warm_latency_fraction": 0.001,
     "available_pre_entry_seconds": 3600,
     "cold_pre_entry_margin_seconds": 3585.0,
-    "statistical_signal_quality": "MACRO_TREND_ORDER_FLOW_AGGREGATION",
-    "feasibility_verdict": "NEGLIGIBLE LATENCY: 3585s margin before entry, 0.4% latency ratio"
+    "statistical_signal_quality": "UNVERIFIED_LONGER_HORIZON_HYPOTHESIS",
+    "feasibility_verdict": "FEASIBLE_ALTERNATIVE_CONTRACT: 3585s conceptual margin before entry"
   }
 ]

@@ -50,7 +50,11 @@ class ArchitectureBudget:
         )
 
     def probability_of_meeting_15s(self) -> float:
-        """Estimate compliance probability based on stage distributions."""
+        """Estimate hypothetical model compliance ratio based on assumed stage distributions.
+
+        NOTE: This is an unverified model calculation based on assumed parameter ranges,
+        NOT an empirical probability or proven operational rate.
+        """
         if self.total_best_case > 15.0:
             return 0.0
         if self.total_worst_case <= 15.0:
@@ -69,6 +73,11 @@ class ArchitectureBudget:
             "total_typical_seconds": round(self.total_typical, 3),
             "total_worst_case_seconds": round(self.total_worst_case, 3),
             "probability_meeting_15s_gate": round(self.probability_of_meeting_15s(), 3),
+            "model_compliance_nature": (
+                "HYPOTHETICAL_CALCULATION_UNVERIFIED_BROKER_LATENCY"
+                if not self.verified_in_codebase
+                else "EMPIRICALLY_REFUTED_HISTORICAL_WORKFLOW"
+            ),
             "read_only_safety_compliant": self.read_only_safety_compliant,
             "verified_in_codebase": self.verified_in_codebase,
         }
@@ -214,7 +223,7 @@ def evaluate_horizon_scaling() -> list[HorizonScalingEvaluation]:
             15.0,
             3.5,
             120,
-            "NO-GO: High noise, 0% margin for cold execution",
+            "NO-GO: High noise, negative pre-entry margin under cold execution",
         ),
         (
             300,
@@ -222,7 +231,7 @@ def evaluate_horizon_scaling() -> list[HorizonScalingEvaluation]:
             15.0,
             3.5,
             300,
-            "FEASIBLE: 285s margin before entry, 5% latency ratio",
+            "FEASIBLE_ALTERNATIVE_CONTRACT: 285s conceptual margin before entry",
         ),
         (
             900,
@@ -230,7 +239,7 @@ def evaluate_horizon_scaling() -> list[HorizonScalingEvaluation]:
             15.0,
             3.5,
             900,
-            "HIGHLY FEASIBLE: 885s margin before entry, 1.7% latency ratio",
+            "FEASIBLE_ALTERNATIVE_CONTRACT: 885s conceptual margin before entry",
         ),
         (
             3600,
@@ -238,7 +247,7 @@ def evaluate_horizon_scaling() -> list[HorizonScalingEvaluation]:
             15.0,
             3.5,
             3600,
-            "NEGLIGIBLE LATENCY: 3585s margin before entry, 0.4% latency ratio",
+            "FEASIBLE_ALTERNATIVE_CONTRACT: 3585s conceptual margin before entry",
         ),
     ]
 
@@ -247,7 +256,7 @@ def evaluate_horizon_scaling() -> list[HorizonScalingEvaluation]:
         cold_frac = round(cold_lat / tf, 4)
         warm_frac = round(warm_lat / tf, 4)
         margin = round(entry_delay - cold_lat, 2)
-        signal = "EXTREME_MARTINGALE_NOISE" if tf == 60 else "MACRO_TREND_ORDER_FLOW_AGGREGATION"
+        signal = "EXTREME_MARTINGALE_NOISE" if tf == 60 else "UNVERIFIED_LONGER_HORIZON_HYPOTHESIS"
         results.append(
             HorizonScalingEvaluation(
                 timeframe_seconds=tf,

@@ -1,4 +1,6 @@
 {
+  "provenance": "SYNTHETIC_REDACTED_RECORD",
+  "provenance_notes": "Redacted operator practice record; original account balance identifiers and raw ticket IDs preserved locally offline only.",
   "history_status": "HISTORY_UNVERIFIED",
   "response_status": "HISTORY_RESPONSE_RECEIVED",
   "position_status": "INCOMPLETE_CANDIDATES",
@@ -25,10 +27,9 @@
   "conflicting_ticket_count": 0,
   "query_limit_may_truncate_history": true,
   "account": {
-    "practice_balance_id": "1253682583",
-    "practice_amount": 10930.0,
-    "real_balance_id": "1253682582",
-    "real_amount": 0.0,
+    "practice_balance_verified": true,
+    "practice_wallet_isolated": true,
+    "real_balance_verified_zero": true,
     "real_wallet_status": "UNCHANGED_BETWEEN_SNAPSHOTS"
   },
   "search": {

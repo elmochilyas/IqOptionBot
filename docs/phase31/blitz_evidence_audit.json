@@ -32,7 +32,7 @@
     {
       "dimension": "blitz_option_instrument_identity",
       "empirical_status": "VERIFIED_FACT",
-      "evidence_source": "blitz_history_evidence.json (ticket 14459353015)",
+      "evidence_source": "blitz_history_evidence.json (redacted practice option record)",
       "details": "Blitz options on EURUSD use symbol 'EURUSD_OP' and reference active_id 1861.",
       "research_impact": "EURUSD spot (1) and EURUSD_OP (1861) are distinct API entities."
     },
@@ -40,7 +40,7 @@
       "dimension": "blitz_option_contract_duration",
       "empirical_status": "VERIFIED_FACT",
       "evidence_source": "blitz_history_evidence.json: opened=1794907530, expires=1794907560",
-      "details": "Practice ticket demonstrates a fixed 30.0-second option holding duration.",
+      "details": "Redacted practice record demonstrates a fixed 30.0-second option holding duration.",
       "research_impact": "Option duration (30s) differs from the 60s candle duration modeled in Phase 30."
     },
     {

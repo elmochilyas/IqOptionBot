@@ -156,7 +156,7 @@ def feasibility_command(
     table.add_column("Best Case", justify="right")
     table.add_column("Typical", justify="right")
     table.add_column("Worst Case", justify="right")
-    table.add_column("P(<= 15s Gate)", justify="center")
+    table.add_column("Model 15s Ratio", justify="center")
     table.add_column("Safety Compliant", justify="center")
     table.add_column("Verified in Repo", justify="center")
 

@@ -38,19 +38,32 @@ class SupervisedMeasurementProtocol:
             "measurement_schema": {
                 "clock_sources": {
                     "high_res_monotonic": (
-                        "time.perf_counter_ns() for intra-session latency intervals"
+                        "time.perf_counter_ns() for intra-session elapsed durations"
                     ),
-                    "system_wall_clock": "datetime.now(UTC) for absolute event correlation",
-                    "broker_server_time": "timeSync / server_time_ns from broker protocol frames",
+                    "high_res_utc_epoch": (
+                        "time.time_ns() for wall-clock UTC synchronization anchor"
+                    ),
+                    "clock_discipline_anchor": (
+                        "utc_anchor_ns = time.time_ns() - time.perf_counter_ns() sampled at start. "
+                        "Relates monotonic socket arrival to UTC epoch: t_utc = t_mono + anchor."
+                    ),
+                    "clock_uncertainty_budget": (
+                        "System NTP synchronization uncertainty (+/-10-50ms) plus broker "
+                        "round-trip timeSync skew estimation ((t_send + t_recv)/2 - t_broker)."
+                    ),
                 },
                 "instrumented_checkpoints": [
                     {
                         "stage": "F",
-                        "description": "Nominal candle close boundary in epoch seconds",
+                        "description": "Nominal discrete candle close in UTC epoch nanoseconds",
                     },
                     {
                         "stage": "t_socket_recv",
-                        "description": "time.perf_counter_ns() when frame is read from socket",
+                        "description": "time.perf_counter_ns() when frame is read from OS socket",
+                    },
+                    {
+                        "stage": "t_socket_recv_utc",
+                        "description": "t_socket_recv + utc_anchor_ns (disciplined UTC arrival)",
                     },
                     {
                         "stage": "t_parsed",
@@ -66,9 +79,18 @@ class SupervisedMeasurementProtocol:
                     },
                 ],
                 "computed_metrics": [
-                    "broker_candle_delivery_latency_ms = (t_socket_recv - F_ns) / 1e6",
-                    "local_pipeline_latency_ms = (t_committed - t_socket_recv) / 1e6",
-                    "total_close_to_commit_latency_ms = (t_committed - F_ns) / 1e6",
+                    (
+                        "broker_candle_delivery_latency_ms = "
+                        "((t_socket_recv + utc_anchor_ns) - F_ns) / 1e6 +/- clock_uncertainty"
+                    ),
+                    (
+                        "local_pipeline_latency_ms = "
+                        "(t_committed - t_socket_recv) / 1e6 (pure monotonic, zero clock drift)"
+                    ),
+                    (
+                        "total_close_to_commit_latency_ms = "
+                        "((t_committed + utc_anchor_ns) - F_ns) / 1e6 +/- clock_uncertainty"
+                    ),
                 ],
             },
             "output_destination": "data/phase31/supervised_timing_evidence.json",

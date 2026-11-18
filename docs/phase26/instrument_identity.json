@@ -1,0 +1,29 @@
+{
+  "observed_date": "2026-11-18",
+  "EURUSD": {
+    "active_id": 1,
+    "contract_type": "MARKET_CANDLE_SERIES_NOT_AN_OPTION_CONTRACT",
+    "price_source": "IQ_OPTION_BROKER_QUOTES_NOT_EXCHANGE_TAPE",
+    "native_timeframe_seconds": 60,
+    "provenance": "CHECKSUM_VERIFIED_EXISTING_BROKER_AUTHENTIC_COLLECTION",
+    "payout_assumption": null,
+    "expiration_rules": null,
+    "settlement_evidence": null
+  },
+  "EURUSD_OP": {
+    "native_active_id": null,
+    "contract_type": "BLITZ_OPTIONS_OPERATOR_LABEL_MAPPING_UNVERIFIED",
+    "native_historical_candles": "NO_VERIFIED_PRODUCT_SPECIFIC_SOURCE",
+    "equivalent_to_EURUSD": "NOT_ESTABLISHED",
+    "price_source": "UNVERIFIED",
+    "current_payout": "UNVERIFIED_NO_ASSUMPTION",
+    "expiration_rules": "UNVERIFIED_FOR_THIS_PRODUCT_ACCOUNT_AND_PERIOD",
+    "settlement_schema": "UNVERIFIED",
+    "collection_policy": "REJECT_UNSUPPORTED_MAPPING_NO_ALIAS",
+    "vendor_context_only": "https://blog.iqoption.com/en/iq-option-introduces-blitz-options-up-to-95-profit-from-5-seconds/"
+  },
+  "broker_network_requests_made_during_phase26_implementation": 0,
+  "new_authentic_candles_acquired": 0,
+  "credentials": "NO_VAULT_ENVIRONMENT_OR_SECRET_FILE_INSPECTION",
+  "research_conclusion": "NO_DEMONSTRATED_EDGE"
+}

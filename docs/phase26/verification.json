@@ -1,0 +1,20 @@
+{
+  "observed_date": "2026-11-18",
+  "ruff_check": {"scope": "src tests", "status": "PASSED"},
+  "ruff_format": {"scope": "src tests", "status": "PASSED", "files": 291},
+  "mypy": {"scope": "src", "status": "PASSED", "source_files": 179},
+  "pytest": {"scope": "tests", "passed": 1816, "failed": 0, "warnings": 3},
+  "phase26_offline_tests": {"passed": 22, "authentic_acquisition_evidence": false},
+  "security_check": {"passed": true, "checks": 7},
+  "pip_audit": {
+    "status": "NO_KNOWN_VULNERABILITIES_FOUND",
+    "scope": "15 pinned requirements with --no-deps --disable-pip; transitive dependencies not resolved"
+  },
+  "broker_network_requests_during_implementation": 0,
+  "additional_authentic_candles_acquired": 0,
+  "broker_order_submissions": 0,
+  "wallet_changes": 0,
+  "credential_inspection": "NONE",
+  "research_execution": "NONE",
+  "research_conclusion": "NO_DEMONSTRATED_EDGE"
+}

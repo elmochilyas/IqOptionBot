@@ -210,8 +210,12 @@ async def test_session_reuse_open_socket_exception_cleans_up() -> None:
         "iqoption_research.connectors.iqoption.client.async_logout",
         new=AsyncMock(return_value=True),
     ) as mock_logout:
-        with pytest.raises(ConnectionError, match="Transport socket connection failed"):
+        with pytest.raises(
+            ConnectionError, match="WebSocket connect failed: ConnectionError"
+        ) as error:
             await client.connect()
+
+        assert "Transport socket connection failed" not in str(error.value)
 
         assert client.ws is None
         assert client._ssid is None

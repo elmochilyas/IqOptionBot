@@ -132,6 +132,11 @@ prospective experiment registration, joint day-block uncertainty, and bounded
 read-only expansion support. It reports `NO_DEMONSTRATED_EDGE` when evidence fails.
 See the [Phase 25 research protocol and reproduction commands](docs/PHASE25_RESEARCH.md).
 
+Phase 26 adds bounded backward historical collection with interactive-only local
+authentication, durable request budgets, immutable source evidence, and offline
+coverage validation. No additional authentic candles were acquired during implementation.
+See the [Phase 26 operator commands and evidence](docs/phase26/README.md).
+
 ```powershell
 python -m iqoption_research.cli.main research evaluate --mode all --output-dir data/phase24
 ```

@@ -24,6 +24,7 @@ from iqoption_research.cli.commands.ml_cmd import ml_app
 from iqoption_research.cli.commands.paper_cmd import paper_app
 from iqoption_research.cli.commands.practice_watch import practice_watch_command
 from iqoption_research.cli.commands.probe import probe_command
+from iqoption_research.cli.commands.prospective_cmd import app as prospective_app
 from iqoption_research.cli.commands.research_cmd import research_app
 from iqoption_research.cli.commands.security_check_cmd import security_check_command
 from iqoption_research.cli.commands.simulate import simulate_command
@@ -67,6 +68,7 @@ app.command("practice-watch", help="Watch Practice activity and reconcile histor
     practice_watch_command
 )
 app.add_typer(research_app, name="research")
+app.add_typer(prospective_app, name="prospective")
 app.add_typer(ml_app, name="ml")
 app.add_typer(paper_app, name="paper")
 app.add_typer(bot_app, name="bot")

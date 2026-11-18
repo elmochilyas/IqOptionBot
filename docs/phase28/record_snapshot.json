@@ -1,0 +1,81 @@
+{
+  "events": [
+    {
+      "assessment_rules": {
+        "ece_alert": 0.05,
+        "log_loss_excess_over_chance": 0.02,
+        "min_regime_decisive": 50,
+        "min_regimes": 2,
+        "threshold_tuning": "FORBIDDEN_WITHIN_RUN"
+      },
+      "baseline_fingerprint": "67f5e2ed6ea0e8ee182d4ed32bfa6872c5f8c9e87eba8171437749a0f9b68719",
+      "baseline_unique_candles": 66109,
+      "blitz_settlement": "UNVERIFIED_NOT_SCORED",
+      "created_at_ts": 1794976592,
+      "entry_assumption": "OPEN_OF_MINUTE_AFTER_ONE_FULL_MINUTE_LATENCY",
+      "execution_authority": "NONE_PAPER_OBSERVATION_ONLY",
+      "expiry_assumption": "ENTRY_PLUS_60_SECONDS_CANDLE_CLOSE",
+      "implementation_fingerprint": "d3eb210d82fcd2d49852e96c1ebc18b7a41386d93f69347a16a03e5708cfaad3",
+      "key": "config",
+      "kind": "CONFIG",
+      "model_lineage": {
+        "created_at_utc": "2026-11-14T14:41:11.032779+00:00",
+        "dataset_candles": 62871,
+        "development_disclaimer": "EXPERIMENTAL DEVELOPMENT ARTIFACT ONLY. NOT A VALIDATED TRADING EDGE. DO NOT DEPLOY FOR REAL-MONEY TRADING OR CONSUME AS INDEPENDENT CONFIRMATION.",
+        "feature_count": 13,
+        "horizon_bars": 1,
+        "independent_confirmation_consumed": false,
+        "is_frozen": false,
+        "lifecycle_stage": "DEVELOPMENT_ONLY",
+        "model_family": "random_forest",
+        "model_provenance": "authentic_trained",
+        "protocol_version": "v2-development",
+        "source_dataset": "authentic_iqoption_eurusd_60s",
+        "stationary_features_only": true,
+        "training_rows": 37609,
+        "validation_rows": 6268
+      },
+      "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+      "model_name": "random_forest",
+      "model_version": "1.0.0",
+      "policy": {
+        "assumed_payout": 0.85,
+        "cost_per_unit": 0.002,
+        "max_staleness_seconds": 120,
+        "min_days": 20,
+        "min_decisive": 500,
+        "threshold": 0.6
+      },
+      "prospective_after_ts": 1794976592,
+      "schema_version": 1,
+      "source": "AUTHENTIC_IQOPTION_EURUSD_60S",
+      "tie_assumption": "ZERO_GROSS_RETURN_MINUS_ASSUMED_COST"
+    },
+    {
+      "broker_settlement_verified": false,
+      "confidence": null,
+      "data_cutoff_ts": 1794976595,
+      "data_fingerprint": "67f5e2ed6ea0e8ee182d4ed32bfa6872c5f8c9e87eba8171437749a0f9b68719",
+      "data_observed_at_ts": 1794976597,
+      "decision": "SKIP",
+      "entry_ts": 1794976680,
+      "expiry_ts": 1794976740,
+      "feature_candle_from_ts": 1794974280,
+      "feature_max_available_ts": 1794974340,
+      "feature_window_fingerprint": "33b37b172384d4b40e9323924418136bc1759fdd8feca2ef52ab7183c5776e3b",
+      "hypothetical_stake_units": 1,
+      "key": "prediction:1794974280",
+      "kind": "PREDICTION",
+      "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+      "model_name": "random_forest",
+      "model_version": "1.0.0",
+      "price_basis": "FUTURE_EURUSD_CANDLE_OPEN_TO_CLOSE_HYPOTHETICAL",
+      "probability_up": null,
+      "raw_probability_up": null,
+      "recorded_at_ts": 1794976597,
+      "regime": "UNCLASSIFIED",
+      "skip_reason": "STALE_SOURCE_DATA"
+    }
+  ],
+  "evidence_kind": "ACTUAL_OFFLINE_STALE_SKIP_CHECK_NOT_SCORED_PERFORMANCE"
+}

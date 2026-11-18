@@ -109,9 +109,22 @@ The instrumentation architecture (`src/iqoption_research/timing/instrumentation.
 3. **Clock Stability Monitoring**: Evaluated continuously against incoming frames:
    $$\Delta_{\text{drift}} = |(\text{time.time\_ns}() - \text{time.perf\_counter\_ns}()) - \text{anchor\_utc\_ns}|$$
    If $\Delta_{\text{drift}} > 50\text{ ms}$, the system flags `CLOCK_STEP_OR_ROLLBACK_DETECTED` and fails closed.
-4. **Clock Uncertainty Budget**:
-   $$\delta_{\text{total}} = \delta_{\text{ntp}} + \delta_{\text{skew}} + \frac{\delta_{\text{rtt}}}{2}$$
-   Default symmetric uncertainty is $\pm 25.0\text{ ms}$.
+4. **Epistemic Qualifications on Clock Uncertainty**:
+   - `ntp_status = "ASSUMED_UNVERIFIED_LOCAL_CLOCK"`: The default $\pm 25.0\text{ ms}$ uncertainty is an assumed local clock uncertainty budget, **NOT** externally verified NTP daemon synchronization.
+   - `broker_time_sync_source = "BROKER_WEBSOCKET_TIMESYNC_ESTIMATE"`: Broker `timeSync` estimates reflect round-trip heuristics subject to asymmetric transit latency and broker daemon bias, **NOT** independent atomic ground truth.
+
+### 4.2 Timestamp Attribution & Correlation
+1. **Correlated Frame Receipt**: Every measurement refers to the actual correlated response frame (`request_id` matching `candles-*`). Interleaved background messages (`heartbeat`, `timeSync`, `profile`, `balances`) are strictly isolated and never overwrite candle response timestamps.
+2. **Zero Fabricated Timestamps**: Parsing and validation timestamps reflect true monotonic measurements without artificial offsets (e.g. `+1_000_000` ns offsets have been completely removed).
+3. **Request-Completion Preservation**: High-level method return is recorded separately as `STAGE_REQUEST_COMPLETED`, preserving both genuine wire-level receipt and application-level completion.
+
+### 4.3 Stage Eligibility & Prediction Gate Hierarchy
+The system strictly distinguishes between three non-interchangeable compliance tiers:
+1. **Candle Received Within 15s**: $F \le t_{\text{recv}} \le F+15\text{s}$ with valid chronology ($t_{\text{recv}} \ge t_{\text{req}}$).
+2. **Completed Candle Validated Within 15s**: $F \le t_{\text{recv}} \le t_{\text{validated}} \le F+15\text{s}$ with `is_complete=True`.
+3. **Full Phase 30 Prediction Contract**:
+   $$F \le t_{\text{observed}} \le t_{\text{decision}} \le t_{\text{committed}} \le F + 15\text{s}$$
+   Requires genuine evidence for **every** required event (completion, feature computation, model inference, and durable journal commit). Absent stages, simulated events, unconfirmed commits, negative intervals, or excessive clock uncertainty **fail closed**. Live timing measurement sessions never manufacture fake 0.5 probabilities or simulated commits; unmeasured prediction stages are explicitly recorded as `NOT_MEASURED`.
 
 ### 4.2 Latency Decomposition Formulae
 - **Broker Delivery Offset**:
@@ -163,13 +176,16 @@ The measurement capability (`src/iqoption_research/timing/supervised_session.py`
 All timing measurements are recorded in a dedicated Phase 32 evidence registry:
 - **Registry Schema**: `PHASE_32_TIMING_V1`
 - **Output Destination**: `data/phase32/supervised_timing_evidence.json`
+- **Create-Only Protection**: Evidence persistence enforces create-only semantics by default. Any attempt to overwrite an existing research record without an explicit `--overwrite` flag raises `FileExistsError`.
+- **Atomic Persistence**: Files are written to a unique staging file and atomically renamed to prevent partial writes.
+- **Duplicate Boundary Prevention**: Registries strictly reject duplicate observations sharing the same candle boundary $F$.
 - **Preserved Metadata**:
   - Session UUID and UTC creation timestamp.
   - SHA-256 code fingerprints across all 7 timing modules.
-  - Clock discipline state: anchor, NTP uncertainty, broker skew, and RTT.
+  - Clock discipline state: anchor, NTP uncertainty qualification, broker skew status, and RTT.
   - Full stage timing records with monotonic nanoseconds, disciplined UTC nanoseconds, and wall-clock nanoseconds.
   - Rejection reasons, gate verdicts, and failure classifications.
-  - Cryptographic integrity hash over canonical JSON representation.
+  - Cryptographic integrity hash over all scientifically relevant fields (stages, timestamps, flags, verdicts).
 - **Sanitization**: Private keys (`password`, `token`, `ssid`, `cookie`, `balance`, `amount`, `user_id`, `ticket_id`, `account_id`, `email`) are scrubbed and replaced with `[REDACTED_SENSITIVE_VALUE]`.
 
 ---

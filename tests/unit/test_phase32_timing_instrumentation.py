@@ -68,6 +68,7 @@ def test_candle_timing_observation_gate_evaluation() -> None:
     recorder.record_stage("STAGE_8_INFERENCE", mono_ns=t_recv_ns + int(30 * 1e6))
     recorder.record_stage("STAGE_9_JOURNAL_COMMIT", mono_ns=t_comm_ns)
 
+    obs.decision = "SKIP"
     obs.compute_latencies_and_gate(clock)
 
     assert obs.phase30_gate_satisfied is True
@@ -212,3 +213,182 @@ def test_supervised_session_config_safety_invariants() -> None:
     # Live mode without operator confirmation fails
     with pytest.raises(ValueError, match="requires explicit operator confirmation"):
         SupervisedSessionConfig(live_mode=True, operator_confirmed=False).validate()
+
+    # Zero or negative duration limits fail
+    with pytest.raises(ValueError, match="must be positive"):
+        SupervisedSessionConfig(max_duration_seconds=0).validate()
+    with pytest.raises(ValueError, match="must be positive"):
+        SupervisedSessionConfig(max_duration_seconds=-10).validate()
+
+    # Zero or negative cycle limits fail
+    with pytest.raises(ValueError, match="must be positive"):
+        SupervisedSessionConfig(max_candle_cycles=0).validate()
+    with pytest.raises(ValueError, match="must be positive"):
+        SupervisedSessionConfig(max_candle_cycles=-5).validate()
+
+
+def test_interleaved_websocket_messages_do_not_overwrite_candle_timing() -> None:
+    """Verify unrelated frames (heartbeats, timeSync, profile) do not corrupt candle timing."""
+    clock = ClockDiscipline(anchor_utc_ns=0)
+    recorder = TimingRecorder("corr_test", clock=clock, enable_clock_stability_check=False)
+    obs = recorder.start_candle_observation(1795000000)
+
+    # Send candle request
+    req_id = "candles-99"
+    recorder.record_request_sent(req_id, "sendMessage", mono_ns=100_000_000)
+
+    # 1. Interleaved timeSync message arrives
+    clock.record_time_sync(broker_time_epoch_ms=1795000001000, recv_mono_ns=150_000_000)
+    # Ensure STAGE_2_NETWORK_RECV was NOT recorded by timeSync
+    assert "STAGE_2_NETWORK_RECV" not in obs.stages
+
+    # 2. Correlated candle response frame arrives
+    t_recv_mono = 200_000_000
+    t_parse_mono = 201_500_000
+    recorder.record_correlated_frame(
+        request_id=req_id,
+        frame_name="candles",
+        recv_mono_ns=t_recv_mono,
+        parsed_mono_ns=t_parse_mono,
+        payload_bytes=1024,
+    )
+
+    assert "STAGE_2_NETWORK_RECV" in obs.stages
+    assert "STAGE_3_PARSE_VALIDATE" in obs.stages
+    assert obs.stages["STAGE_2_NETWORK_RECV"].mono_ns == t_recv_mono
+    assert obs.stages["STAGE_3_PARSE_VALIDATE"].mono_ns == t_parse_mono
+    assert obs.stages["STAGE_2_NETWORK_RECV"].details["request_id"] == req_id
+
+
+def test_no_fabricated_offsets_in_correlated_timing() -> None:
+    """Verify that no fabricated nanosecond offsets (+1_000_000) exist in correlated timing."""
+    clock = ClockDiscipline(anchor_utc_ns=0)
+    recorder = TimingRecorder("no_fab_test", clock=clock, enable_clock_stability_check=False)
+    obs = recorder.start_candle_observation(1795000000)
+
+    t_recv = 500_000_000
+    t_parse = 500_450_000  # Genuine 450 microseconds decode time
+    recorder.record_correlated_frame(
+        request_id="candles-1",
+        frame_name="candles",
+        recv_mono_ns=t_recv,
+        parsed_mono_ns=t_parse,
+    )
+
+    # Must match genuine measurements with 0 synthetic bias
+    assert obs.stages["STAGE_2_NETWORK_RECV"].mono_ns == t_recv
+    assert obs.stages["STAGE_3_PARSE_VALIDATE"].mono_ns == t_parse
+    assert (
+        obs.stages["STAGE_3_PARSE_VALIDATE"].mono_ns - obs.stages["STAGE_2_NETWORK_RECV"].mono_ns
+    ) == 450_000
+
+
+def test_eligibility_distinguishes_recv_validation_and_full_gate() -> None:
+    """Verify that arrival within 15s is not conflated with full Phase 30 gate compliance."""
+    f = 1795000000
+    clock = ClockDiscipline(anchor_utc_ns=0)
+    recorder = TimingRecorder("elig_test", clock=clock, enable_clock_stability_check=False)
+
+    obs = recorder.start_candle_observation(f)
+    t_recv_ns = int((f + 4.5) * 1e9)  # +4.5s (within 15s)
+    t_val_ns = t_recv_ns + int(10 * 1e6)  # +10ms
+
+    recorder.record_stage("STAGE_1_REQUEST_INIT", mono_ns=t_recv_ns - int(20 * 1e6))
+    recorder.record_stage("STAGE_2_NETWORK_RECV", mono_ns=t_recv_ns)
+    recorder.record_stage("STAGE_3_PARSE_VALIDATE", mono_ns=t_recv_ns + int(5 * 1e6))
+    recorder.record_stage(
+        "STAGE_4_CANDLE_VALIDATE", mono_ns=t_val_ns, details={"is_complete": True}
+    )
+    recorder.record_stage("STAGE_5_COMPLETED_RECOG", mono_ns=t_val_ns + int(2 * 1e6))
+
+    # Prediction stages (features, inference, commit) are NOT executed (timing-only)
+    obs.compute_latencies_and_gate(clock)
+
+    assert obs.candle_received_within_15s is True
+    assert obs.candle_validated_within_15s is True
+    assert obs.prediction_stages_measured is False
+    # CRITICAL: phase30_gate_satisfied MUST BE FALSE because decision & commit were not measured
+    assert obs.phase30_gate_satisfied is False
+    assert obs.gate_verdict == "ACQUISITION_15S_COMPLIANT"
+
+
+def test_stage_chronology_and_negative_interval_rejection() -> None:
+    """Verify that non-chronological stages and negative intervals fail closed."""
+    f = 1795000000
+    clock = ClockDiscipline(anchor_utc_ns=0)
+    recorder = TimingRecorder("chrono_test", clock=clock, enable_clock_stability_check=False)
+
+    obs = recorder.start_candle_observation(f)
+    t_base = int((f + 2.0) * 1e9)
+
+    recorder.record_stage("STAGE_1_REQUEST_INIT", mono_ns=t_base)
+    # Stage 2 received AFTER Stage 3 parsed (inverted timestamps / time travel)
+    recorder.record_stage("STAGE_2_NETWORK_RECV", mono_ns=t_base + 50_000_000)
+    recorder.record_stage("STAGE_3_PARSE_VALIDATE", mono_ns=t_base + 20_000_000)
+
+    obs.compute_latencies_and_gate(clock)
+
+    assert obs.phase30_gate_satisfied is False
+    assert obs.gate_verdict == "FAIL_TIMESTAMP_ORDERING"
+    assert "NON_CHRONOLOGICAL_STAGE_TIMESTAMPS" in (obs.rejection_reason or "")
+
+
+def test_evidence_file_overwrite_prevention(tmp_path: Path) -> None:
+    """Verify create-only evidence preservation rejects silent overwriting."""
+    clock = ClockDiscipline(anchor_utc_ns=0)
+    recorder = TimingRecorder("immut_session", clock=clock, enable_clock_stability_check=False)
+    recorder.start_candle_observation(1795000000)
+    recorder.finalize_current_observation()
+
+    reg = TimingEvidenceRegistry.create(
+        session_id="immut_session",
+        operational_mode="OFFLINE_SIMULATION",
+        project_root=Path(__file__).resolve().parents[2],
+        clock=clock,
+        observations=recorder.observations,
+    )
+
+    out_file = tmp_path / "immutable_evidence.json"
+    # First save succeeds
+    reg.save_to_file(out_file)
+    assert out_file.is_file()
+
+    # Second save without allow_overwrite fails closed
+    with pytest.raises(FileExistsError, match="already exists and cannot be overwritten"):
+        reg.save_to_file(out_file, allow_overwrite=False)
+
+    # Second save with explicit allow_overwrite succeeds
+    reg.save_to_file(out_file, allow_overwrite=True)
+    assert out_file.is_file()
+
+
+def test_evidence_duplicate_candle_boundary_rejection() -> None:
+    """Verify TimingEvidenceRegistry rejects observations containing duplicate candle boundaries."""
+    clock = ClockDiscipline(anchor_utc_ns=0)
+    recorder = TimingRecorder(
+        "dup_boundary_session", clock=clock, enable_clock_stability_check=False
+    )
+
+    # Two observations for the exact same candle F
+    obs1 = recorder.start_candle_observation(1795000000)
+    obs1.compute_latencies_and_gate(clock)
+    obs2 = recorder.start_candle_observation(1795000000)
+    obs2.compute_latencies_and_gate(clock)
+
+    with pytest.raises(ValueError, match="Duplicate candle boundary F=1795000000"):
+        TimingEvidenceRegistry.create(
+            session_id="dup_boundary_session",
+            operational_mode="OFFLINE_SIMULATION",
+            project_root=Path(__file__).resolve().parents[2],
+            clock=clock,
+            observations=recorder.observations,
+        )
+
+
+def test_clock_discipline_epistemic_qualifications() -> None:
+    """Verify clock discipline labels unverified NTP assumptions and broker estimates."""
+    clock = ClockDiscipline()
+    assert clock.ntp_status == "ASSUMED_UNVERIFIED_LOCAL_CLOCK"
+    assert clock.broker_time_sync_source == "BROKER_WEBSOCKET_TIMESYNC_ESTIMATE"
+    assert clock.broker_skew_status == "ESTIMATED_ROUNDTRIP_HEURISTIC"
+    assert clock.clock_source_type == "LOCAL_SYSTEM_WALLCLOCK"

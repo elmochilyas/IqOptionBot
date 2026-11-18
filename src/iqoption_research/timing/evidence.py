@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -102,10 +103,23 @@ class TimingEvidenceRegistry:
         now_iso = datetime.now(UTC).isoformat()
         fingerprints = compute_code_fingerprints(project_root)
 
+        # Enforce duplicate prevention across candle boundaries
+        seen_boundaries: set[int] = set()
+        for obs in observations:
+            if obs.feature_close_F in seen_boundaries:
+                raise ValueError(
+                    f"Duplicate candle boundary F={obs.feature_close_F} in observations list."
+                )
+            seen_boundaries.add(obs.feature_close_F)
+
         clock_info = {
             "anchor_utc_ns": clock.anchor_utc_ns,
+            "clock_source_type": clock.clock_source_type,
+            "ntp_status": clock.ntp_status,
             "ntp_uncertainty_ns": clock.ntp_uncertainty_ns,
             "ntp_uncertainty_ms": clock.ntp_uncertainty_ns / 1_000_000.0,
+            "broker_skew_status": clock.broker_skew_status,
+            "broker_time_sync_source": clock.broker_time_sync_source,
             "broker_skew_ns": clock.broker_skew_ns,
             "broker_skew_ms": clock.broker_skew_ns / 1_000_000.0,
             "broker_rtt_ns": clock.broker_rtt_ns,
@@ -116,9 +130,13 @@ class TimingEvidenceRegistry:
 
         obs_dicts = [sanitize_payload(obs.to_dict()) for obs in observations]
 
-        # Calculate summary statistics
+        # Calculate distinct summary metrics
         total = len(observations)
-        compliant = sum(1 for obs in observations if obs.phase30_gate_satisfied)
+        full_gate_compliant = sum(1 for obs in observations if obs.phase30_gate_satisfied)
+        recv_compliant = sum(1 for obs in observations if obs.candle_received_within_15s)
+        val_compliant = sum(1 for obs in observations if obs.candle_validated_within_15s)
+        pred_measured = sum(1 for obs in observations if obs.prediction_stages_measured)
+
         rejection_reasons: dict[str, int] = {}
         for obs in observations:
             if obs.rejection_reason:
@@ -151,8 +169,13 @@ class TimingEvidenceRegistry:
 
         summary = {
             "total_observations": total,
-            "phase30_gate_compliant_count": compliant,
-            "phase30_gate_compliance_pct": (compliant / total * 100.0) if total > 0 else 0.0,
+            "candle_received_within_15s_count": recv_compliant,
+            "candle_validated_within_15s_count": val_compliant,
+            "prediction_stages_measured_count": pred_measured,
+            "full_phase30_gate_compliant_count": full_gate_compliant,
+            "full_phase30_gate_compliance_pct": (
+                (full_gate_compliant / total * 100.0) if total > 0 else 0.0
+            ),
             "rejection_reasons_breakdown": rejection_reasons,
             "median_broker_delivery_offset_ms": median(offsets),
             "median_local_pipeline_total_ms": median(pipelines),
@@ -188,6 +211,17 @@ class TimingEvidenceRegistry:
         canonical_str = json.dumps(canonical_dict, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical_str.encode()).hexdigest()
 
+    def verify_integrity(self) -> tuple[bool, list[str]]:
+        """Verify internal consistency and cryptographic signatures of the evidence registry."""
+        errors: list[str] = []
+        expected_registry_hash = self.compute_hash()
+        if self.integrity_hash != expected_registry_hash:
+            errors.append(
+                f"Registry integrity hash mismatch: expected {expected_registry_hash}, "
+                f"got {self.integrity_hash}"
+            )
+        return len(errors) == 0, errors
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "session_id": self.session_id,
@@ -203,10 +237,26 @@ class TimingEvidenceRegistry:
             "integrity_hash": self.integrity_hash,
         }
 
-    def save_to_file(self, destination: Path) -> None:
-        """Atomically persist registry to JSON file."""
+    def save_to_file(self, destination: Path, *, allow_overwrite: bool = False) -> None:
+        """Atomically persist registry to JSON file with create-only protection.
+
+        By default, prevents overwriting existing evidence files to protect research records.
+        """
+        destination = Path(destination)
+        if destination.exists() and not allow_overwrite:
+            raise FileExistsError(
+                f"Evidence file already exists and cannot be overwritten: {destination}"
+            )
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temp_file = destination.with_suffix(".tmp")
-        temp_file.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        temp_file.replace(destination)
+        temp_file = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp_file.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+            if destination.exists() and not allow_overwrite:
+                raise FileExistsError(
+                    f"Evidence file already exists and cannot be overwritten: {destination}"
+                )
+            temp_file.replace(destination)
+        finally:
+            if temp_file.exists():
+                temp_file.unlink(missing_ok=True)
         logger.debug("Persisted timing evidence registry to %s", destination)

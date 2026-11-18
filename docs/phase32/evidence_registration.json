@@ -1,23 +1,27 @@
 {
-  "session_id": "meas_b268abd772d2_1795029285",
-  "session_created_at_utc": "2026-11-18T19:14:45.712818+00:00",
+  "session_id": "meas_1b56e690d4df_1795031245",
+  "session_created_at_utc": "2026-11-18T19:47:25.160935+00:00",
   "instrumentation_version": "PHASE_32_TIMING_V1",
   "operational_mode": "OFFLINE_SIMULATION",
   "symbol": "EURUSD",
   "candle_size_seconds": 60,
   "code_fingerprints": {
-    "taxonomy.py": "a968d52ed62d8cb9e9b0519b6fe25064ef60360bd3d3825e58bced0a4fb65ca4",
-    "instrumentation.py": "157ee28d813ebd085669522de5efe791342ee00cfff281d95691b831f164e88e",
+    "taxonomy.py": "1b1ba7d852ebce7d56cf53bbc83db6bc63569567e2ca6d9dd3310970b46017ba",
+    "instrumentation.py": "7eb98c7444ec78e250e2a9aa2770225f08b91509328678b56327fea63fe9c1b4",
     "pipeline_audit.py": "11ac536d6e62ce86b42f358fdaa0b17f9736fc424738bd35377a60897e0a2121",
     "replay.py": "f078919b2094c51694c0e038feddf1aebef047991ab0d0ac2ff724612476df20",
-    "evidence.py": "8023f28c55836d77a3d0f699f3408bec0cb26d5600bb769573fd4838ce2db052",
-    "supervised_session.py": "1eeef0e6426633193a2ea89ed347fa29b8a799edcdf1bb169c5efe36a3a5afd8",
+    "evidence.py": "259ed6754a184d617aae48920033ba2c60203335ffb56c33b14f23c459f759e8",
+    "supervised_session.py": "9227eeb03771f75b88bf969b5eab8a62fc3a6bb5127ccb6d70e289b56954f7f8",
     "feasibility.py": "dbce6996027de39825bbc073bb11a6b590a9b1d6f1e5567b7063d1d4ab8b257c"
   },
   "clock_discipline": {
-    "anchor_utc_ns": 1794990382206190300,
+    "anchor_utc_ns": 1794990382204557100,
+    "clock_source_type": "LOCAL_SYSTEM_WALLCLOCK",
+    "ntp_status": "ASSUMED_UNVERIFIED_LOCAL_CLOCK",
     "ntp_uncertainty_ns": 25000000,
     "ntp_uncertainty_ms": 25.0,
+    "broker_skew_status": "ESTIMATED_ROUNDTRIP_HEURISTIC",
+    "broker_time_sync_source": "BROKER_WEBSOCKET_TIMESYNC_ESTIMATE",
     "broker_skew_ns": 0,
     "broker_skew_ms": 0.0,
     "broker_rtt_ns": 0,
@@ -27,7 +31,7 @@
   },
   "observations": [
     {
-      "session_id": "meas_b268abd772d2_1795029285",
+      "session_id": "meas_1b56e690d4df_1795031245",
       "observation_index": 1,
       "symbol": "EURUSD",
       "candle_size_seconds": 60,
@@ -42,16 +46,19 @@
       },
       "clock_uncertainty_ms": 0.0,
       "clock_step_detected": false,
+      "candle_received_within_15s": false,
+      "candle_validated_within_15s": false,
+      "prediction_stages_measured": false,
       "phase30_gate_satisfied": true,
       "gate_verdict": "PASS",
       "rejection_reason": null,
       "raw_probability": null,
       "calibrated_probability": null,
-      "decision": "SKIP",
-      "integrity_hash": "c6a4f79c8d1c52a6ed14a50f2d23e6b2d623a2ddc15a6d6dfb65c6041bb76d46"
+      "decision": "NOT_MEASURED",
+      "integrity_hash": "bb01912357512dc6556c94974a7e47540920df6cbe9b924eae5a56e265626fc0"
     },
     {
-      "session_id": "meas_b268abd772d2_1795029285",
+      "session_id": "meas_1b56e690d4df_1795031245",
       "observation_index": 2,
       "symbol": "EURUSD",
       "candle_size_seconds": 60,
@@ -66,16 +73,19 @@
       },
       "clock_uncertainty_ms": 0.0,
       "clock_step_detected": false,
+      "candle_received_within_15s": false,
+      "candle_validated_within_15s": false,
+      "prediction_stages_measured": false,
       "phase30_gate_satisfied": false,
       "gate_verdict": "FAIL_GATE_OVERRUN",
       "rejection_reason": "OUTSIDE_15_SECOND_ACQUISITION_GATE",
       "raw_probability": null,
       "calibrated_probability": null,
-      "decision": "SKIP",
-      "integrity_hash": "987e6616fd4e11e51e5acc01fdead0c6e08b55519bb575f3907429e44f38a8db"
+      "decision": "NOT_MEASURED",
+      "integrity_hash": "991e5e95656b8784cd5799c7fc4caa205a65be88935bf6cc9dbca3fe0922ac47"
     },
     {
-      "session_id": "meas_b268abd772d2_1795029285",
+      "session_id": "meas_1b56e690d4df_1795031245",
       "observation_index": 3,
       "symbol": "EURUSD",
       "candle_size_seconds": 60,
@@ -88,16 +98,19 @@
       },
       "clock_uncertainty_ms": 0.0,
       "clock_step_detected": false,
+      "candle_received_within_15s": false,
+      "candle_validated_within_15s": false,
+      "prediction_stages_measured": false,
       "phase30_gate_satisfied": false,
       "gate_verdict": "FAIL_REJECTED",
       "rejection_reason": "INCOMPLETE_BAR_REJECTED",
       "raw_probability": null,
       "calibrated_probability": null,
-      "decision": "SKIP",
-      "integrity_hash": "7822a0543f3865077c9ce633a203e6aa0798ede6c5bd2c73637458f87f0fdc04"
+      "decision": "NOT_MEASURED",
+      "integrity_hash": "6f39a252f7e0600a99bddc161854bc01f25436dab79d1175ff59603737a4a6b6"
     },
     {
-      "session_id": "meas_b268abd772d2_1795029285",
+      "session_id": "meas_1b56e690d4df_1795031245",
       "observation_index": 4,
       "symbol": "EURUSD",
       "candle_size_seconds": 60,
@@ -108,16 +121,19 @@
       "latencies_ms": {},
       "clock_uncertainty_ms": 0.0,
       "clock_step_detected": false,
+      "candle_received_within_15s": false,
+      "candle_validated_within_15s": false,
+      "prediction_stages_measured": false,
       "phase30_gate_satisfied": false,
       "gate_verdict": "FAIL_REJECTED",
       "rejection_reason": "DUPLICATE_PREVENTED",
       "raw_probability": null,
       "calibrated_probability": null,
-      "decision": "SKIP",
-      "integrity_hash": "d090f1f319d848f1da6422aa790b6ad3f1a9736d140a12d1d86c5d5b6408af4d"
+      "decision": "NOT_MEASURED",
+      "integrity_hash": "34049580c68427f42d833cbb8fe7a518022f04cfcadfce072480f49a7b3e80ec"
     },
     {
-      "session_id": "meas_b268abd772d2_1795029285",
+      "session_id": "meas_1b56e690d4df_1795031245",
       "observation_index": 5,
       "symbol": "EURUSD",
       "candle_size_seconds": 60,
@@ -130,19 +146,25 @@
       },
       "clock_uncertainty_ms": 0.0,
       "clock_step_detected": false,
+      "candle_received_within_15s": false,
+      "candle_validated_within_15s": false,
+      "prediction_stages_measured": false,
       "phase30_gate_satisfied": false,
       "gate_verdict": "FAIL_CLOCK_STEP_DETECTED",
       "rejection_reason": "CLOCK_STEP_OR_ROLLBACK_DETECTED",
       "raw_probability": null,
       "calibrated_probability": null,
-      "decision": "SKIP",
-      "integrity_hash": "30b944b7e79057d9384c309c3e4ecd22e023c396b5bd57c626222a31ac882608"
+      "decision": "NOT_MEASURED",
+      "integrity_hash": "35d7b1414b21c34a17db2b8b00d494edf67e538712c942f4bc69a23809e5fe28"
     }
   ],
   "summary": {
     "total_observations": 5,
-    "phase30_gate_compliant_count": 1,
-    "phase30_gate_compliance_pct": 20.0,
+    "candle_received_within_15s_count": 0,
+    "candle_validated_within_15s_count": 0,
+    "prediction_stages_measured_count": 0,
+    "full_phase30_gate_compliant_count": 1,
+    "full_phase30_gate_compliance_pct": 20.0,
     "rejection_reasons_breakdown": {
       "OUTSIDE_15_SECOND_ACQUISITION_GATE": 1,
       "INCOMPLETE_BAR_REJECTED": 1,
@@ -153,5 +175,5 @@
     "median_local_pipeline_total_ms": 38.5,
     "median_close_to_commit_total_ms": 10888.5
   },
-  "integrity_hash": "697d1b90b1ff9465da057f3a86d6c7dc736a0f6f02058ba68f18759e29114f55"
+  "integrity_hash": "96322b852e03362e1a4081673a567b5f49184e106122bd9931894d124b1fb245"
 }

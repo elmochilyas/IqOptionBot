@@ -75,7 +75,8 @@ Set-Location -LiteralPath 'C:\Users\elmoc\Desktop\IqOptionBot'
          Waiting 12s for next boundary (F=1795029060)...
          Observing F=1795029060 (now=1795029062, offset=2s)...
          Candle F=1795029060 observed. Arrival offset: 1420.50 ms
-         Phase 30 15s gate satisfied: True (verdict: PASS)
+         Acquisition 15s gate compliant: True (verdict: ACQUISITION_15S_COMPLIANT)
+         Full Phase 30 prediction contract: NOT_MEASURED (timing measurement only)
    ```
 5. Session terminates cleanly upon reaching 5 candles or 300 seconds.
 

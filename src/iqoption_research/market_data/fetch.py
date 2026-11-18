@@ -91,6 +91,9 @@ class CandleFetchResult:
     source: str
     completion_clock_ns: int | None = None
     response_evidence: dict[str, object] | None = None
+    recv_mono_ns: int | None = None
+    parsed_mono_ns: int | None = None
+    request_completion_mono_ns: int | None = None
 
     @property
     def candle_list(self) -> list[Candle]:

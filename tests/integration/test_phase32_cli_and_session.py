@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -71,14 +72,38 @@ async def test_connector_instrumentation_hooks() -> None:
     ws_client = IQOptionWebSocketClient("test_ssid", timing_recorder=recorder)
     assert ws_client._timing_recorder is recorder
 
-    # Simulate raw frame arrival and frame decoding
-    fake_raw = json.dumps({"name": "timeSync", "msg": 1795000002100})
-    recorder.record_raw_receipt(1795000002100000000, fake_raw)
-    recorder.record_frame_decoded(1795000002101000000, {"name": "timeSync", "msg": 1795000002100})
+    # Simulate dispatching timeSync - must NOT record candle network receipt
+    ws_client._dispatch({"name": "timeSync", "msg": 1795000002100}, recv_mono_ns=100_000_000)
+    assert "STAGE_2_NETWORK_RECV" not in obs.stages
+
+    # Simulate dispatching correlated candle response
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    req_id = "candles-test-1"
+    from iqoption_research.connectors.iqoption.ws_client import _PendingRequest
+
+    ws_client._pending[req_id] = _PendingRequest(future=fut, name="sendMessage", created_at=0.0)
+
+    candle_frame = {
+        "name": "candles",
+        "request_id": req_id,
+        "msg": {"candles": [{"from": 1794999940, "to": 1795000000, "close": 1.0850}]},
+    }
+    t_recv = 150_000_000
+    t_parsed = 151_200_000
+    ws_client._dispatch(
+        candle_frame,
+        recv_mono_ns=t_recv,
+        parsed_mono_ns=t_parsed,
+        raw_payload_bytes=256,
+    )
 
     assert "STAGE_2_NETWORK_RECV" in obs.stages
     assert "STAGE_3_PARSE_VALIDATE" in obs.stages
-    assert obs.stages["STAGE_2_NETWORK_RECV"].details["payload_bytes"] == len(fake_raw)
+    assert obs.stages["STAGE_2_NETWORK_RECV"].mono_ns == t_recv
+    assert obs.stages["STAGE_3_PARSE_VALIDATE"].mono_ns == t_parsed
+    assert obs.stages["STAGE_2_NETWORK_RECV"].details["request_id"] == req_id
+    assert fut.done()
 
     # 2. Test AsyncIQOption hook configuration
     creds = Credentials(email="test@example.com", password="dummy_password")
@@ -89,3 +114,57 @@ async def test_connector_instrumentation_hooks() -> None:
     )
     assert client.timing_recorder is recorder
     client.assert_read_only()
+
+
+def test_cli_measure_rejects_non_positive_parameters() -> None:
+    """Verify CLI timing measure rejects zero or negative duration and cycle limits."""
+    runner = CliRunner(env={"TERM": "dumb", "NO_COLOR": "1"})
+
+    # Duration 0
+    res_dur0 = runner.invoke(app, ["timing", "measure", "--duration", "0"])
+    assert res_dur0.exit_code == 1
+    assert "duration must be positive" in res_dur0.output
+
+    # Duration negative
+    res_dur_neg = runner.invoke(app, ["timing", "measure", "--duration", "-10"])
+    assert res_dur_neg.exit_code == 1
+    assert "duration must be positive" in res_dur_neg.output
+
+    # Max candles 0
+    res_c0 = runner.invoke(app, ["timing", "measure", "--max-candles", "0"])
+    assert res_c0.exit_code == 1
+    assert "max-candles must be positive" in res_c0.output
+
+    # Max candles negative
+    res_c_neg = runner.invoke(app, ["timing", "measure", "--max-candles", "-3"])
+    assert res_c_neg.exit_code == 1
+    assert "max-candles must be positive" in res_c_neg.output
+
+
+def test_cli_measure_create_only_file_protection(tmp_path: Path) -> None:
+    """Verify CLI timing measure prevents accidental overwriting unless --overwrite is passed."""
+    runner = CliRunner(env={"TERM": "dumb", "NO_COLOR": "1"})
+    out_file = tmp_path / "protected_evidence.json"
+
+    # First write succeeds
+    res1 = runner.invoke(
+        app,
+        ["timing", "measure", "--simulation", "--output", str(out_file), "--json"],
+    )
+    assert res1.exit_code == 0
+    assert out_file.is_file()
+
+    # Second write without --overwrite fails closed
+    res2 = runner.invoke(
+        app,
+        ["timing", "measure", "--simulation", "--output", str(out_file), "--json"],
+    )
+    assert res2.exit_code == 1
+    assert "already exists and cannot be overwritten" in res2.output
+
+    # Second write with --overwrite succeeds
+    res3 = runner.invoke(
+        app,
+        ["timing", "measure", "--simulation", "--output", str(out_file), "--overwrite", "--json"],
+    )
+    assert res3.exit_code == 0

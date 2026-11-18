@@ -52,15 +52,24 @@ class SupervisedSessionConfig:
     live_mode: bool = False
     simulation_mode: bool = True
     operator_confirmed: bool = False
+    allow_overwrite: bool = False
     output_destination: Path = Path("data/phase32/supervised_timing_evidence.json")
     project_root: Path = Path()
 
     def validate(self) -> None:
         """Validate safety constraints before session startup."""
+        if self.max_duration_seconds <= 0:
+            raise ValueError(
+                f"max_duration_seconds ({self.max_duration_seconds}) must be positive (>= 1)"
+            )
         if self.max_duration_seconds > HARD_MAX_DURATION_SECONDS:
             raise ValueError(
                 f"max_duration_seconds ({self.max_duration_seconds}) exceeds hard limit "
                 f"of {HARD_MAX_DURATION_SECONDS}s"
+            )
+        if self.max_candle_cycles <= 0:
+            raise ValueError(
+                f"max_candle_cycles ({self.max_candle_cycles}) must be positive (>= 1)"
             )
         if self.max_candle_cycles > HARD_MAX_CANDLE_CYCLES:
             raise ValueError(
@@ -133,7 +142,10 @@ class SupervisedSessionRunner:
             clock=self.clock,
             observations=self.recorder.observations,
         )
-        registry.save_to_file(self.config.output_destination)
+        registry.save_to_file(
+            self.config.output_destination,
+            allow_overwrite=self.config.allow_overwrite,
+        )
         return registry
 
     async def _execute_live(self) -> TimingEvidenceRegistry:
@@ -193,6 +205,7 @@ class SupervisedSessionRunner:
             )
             start_mono = time.perf_counter()
             cycles_done = 0
+            observed_candle_boundaries: set[int] = set()
 
             try:
                 while cycles_done < self.config.max_candle_cycles:
@@ -207,10 +220,9 @@ class SupervisedSessionRunner:
                     F = (now_epoch // 60) * 60
                     sec_in_minute = now_epoch % 60
 
-                    # If we are in the first 15 seconds of the minute, F is the bar that just closed
-                    # Otherwise, wait for the next boundary
-                    wait_seconds = 60 - sec_in_minute
-                    if sec_in_minute > 15:
+                    # Prevent duplicate acquisition of the same candle boundary F
+                    if F in observed_candle_boundaries or sec_in_minute > 15:
+                        wait_seconds = 60 - sec_in_minute
                         print(f"      Waiting {wait_seconds}s for next boundary (F={F + 60})...")
                         await asyncio.sleep(min(wait_seconds, 5.0))
                         continue
@@ -218,6 +230,7 @@ class SupervisedSessionRunner:
                     # We are in the post-close arrival window for candle F
                     print(f"\n      Observing F={F} (now={now_epoch}, offset={sec_in_minute}s)...")
                     obs = self.recorder.start_candle_observation(F)
+                    observed_candle_boundaries.add(F)
 
                     try:
                         t_req_ns = time.perf_counter_ns()
@@ -228,11 +241,25 @@ class SupervisedSessionRunner:
                             count=22,
                             endtime=F,
                         )
-                        t_recv_ns = time.perf_counter_ns()
-                        self.recorder.record_stage("STAGE_2_NETWORK_RECV", mono_ns=t_recv_ns)
-                        self.recorder.record_stage(
-                            "STAGE_3_PARSE_VALIDATE", mono_ns=t_recv_ns + 1_000_000
-                        )
+                        # Record separate request-completion instant (method return)
+                        if result.request_completion_mono_ns is not None:
+                            self.recorder.record_request_completed(
+                                result.request_completion_mono_ns,
+                                details={"candle_count": len(result.candles)},
+                            )
+
+                        # If STAGE_2_NETWORK_RECV was not recorded via WebSocketClient,
+                        # record using genuine correlated timestamps from CandleFetchResult
+                        if (
+                            "STAGE_2_NETWORK_RECV" not in obs.stages
+                            and result.recv_mono_ns is not None
+                        ):
+                            self.recorder.record_correlated_frame(
+                                request_id=f"candles-{F}",
+                                frame_name="candles",
+                                recv_mono_ns=result.recv_mono_ns,
+                                parsed_mono_ns=result.parsed_mono_ns or result.recv_mono_ns,
+                            )
 
                         candles = result.candles
                         if not candles or candles[-1].to_ts != F:
@@ -248,26 +275,25 @@ class SupervisedSessionRunner:
                             self.recorder.record_completed_recognized(
                                 time.perf_counter_ns(), last.to_ts
                             )
-                            self.recorder.record_features_computed(
-                                time.perf_counter_ns(), feature_count=11
-                            )
-                            # Simulated decision commit
-                            self.recorder.record_inference_completed(
-                                time.perf_counter_ns(),
-                                raw_prob=0.5,
-                                cal_prob=0.5,
-                                decision="SKIP",
-                            )
-                            self.recorder.record_journal_committed(
-                                time.perf_counter_ns(), event_key=f"obs_{F}"
-                            )
+                            # Live measurement records ONLY genuine verified operations.
+                            # Features, inference, and journal commit are NOT executed.
+                            # We strictly do NOT simulate probabilities or fake commits.
+                            obs.raw_probability = None
+                            obs.calibrated_probability = None
+                            obs.decision = "NOT_MEASURED"
+                            obs.prediction_stages_measured = False
+
                             offset_ms = obs.latencies_ms.get("broker_delivery_offset_ms", 0.0)
                             print(
                                 f"      Candle F={F} observed. Arrival offset: {offset_ms:.2f} ms"
                             )
                             print(
-                                f"      Phase 30 15s gate satisfied: {obs.phase30_gate_satisfied} "
-                                f"(verdict: {obs.gate_verdict})"
+                                f"      Acquisition 15s gate compliant: "
+                                f"{obs.candle_validated_within_15s} (verdict: {obs.gate_verdict})"
+                            )
+                            print(
+                                "      Full Phase 30 prediction contract: NOT_MEASURED "
+                                "(timing measurement only)"
                             )
 
                     except ConnectionError as exc:
@@ -292,7 +318,10 @@ class SupervisedSessionRunner:
             clock=self.clock,
             observations=self.recorder.observations,
         )
-        registry.save_to_file(self.config.output_destination)
+        registry.save_to_file(
+            self.config.output_destination,
+            allow_overwrite=self.config.allow_overwrite,
+        )
         print(f"      Evidence registry saved to: {self.config.output_destination}")
         print("      Measurement session completed successfully.\n")
         return registry

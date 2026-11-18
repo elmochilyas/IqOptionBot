@@ -452,6 +452,10 @@ class AsyncIQOption:
             request_id=request_id,
             timeout=self._config.request_timeout,
         )
+        t_request_completed_ns = time.perf_counter_ns()
+        timing_meta = response.get("_correlated_timing", {}) if isinstance(response, dict) else {}
+        correlated_recv_mono_ns = timing_meta.get("recv_mono_ns")
+        correlated_parsed_mono_ns = timing_meta.get("parsed_mono_ns")
 
         evidence = summarize_candle_response(response, request_id, active_id)
         try:
@@ -508,6 +512,9 @@ class AsyncIQOption:
             source="iqoption",
             completion_clock_ns=server_time_ns,
             response_evidence=evidence,
+            recv_mono_ns=correlated_recv_mono_ns,
+            parsed_mono_ns=correlated_parsed_mono_ns,
+            request_completion_mono_ns=t_request_completed_ns,
         )
 
     @staticmethod

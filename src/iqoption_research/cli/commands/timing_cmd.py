@@ -504,10 +504,22 @@ def measure_command(
         "--output",
         help="Path to persist the immutable timing evidence registry",
     ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Allow overwriting an existing evidence file (default: create-only)",
+    ),
     project_dir: Path = typer.Option(None, "--project-dir", help="Project root directory"),
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only"),
 ) -> None:
     root = project_dir or _project_root()
+
+    if duration <= 0:
+        console.print("[bold red]Error:[/bold red] duration must be positive (>= 1).")
+        raise typer.Exit(code=1)
+    if max_candles <= 0:
+        console.print("[bold red]Error:[/bold red] max-candles must be positive (>= 1).")
+        raise typer.Exit(code=1)
 
     # Determine execution mode
     if live:
@@ -531,12 +543,17 @@ def measure_command(
         live_mode=live,
         simulation_mode=sim_mode,
         operator_confirmed=yes_i_understand if live else True,
+        allow_overwrite=overwrite,
         output_destination=output,
         project_root=root,
     )
 
     runner = SupervisedSessionRunner(config)
-    registry = asyncio.run(runner.execute())
+    try:
+        registry = asyncio.run(runner.execute())
+    except FileExistsError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
 
     if json_output:
         typer.echo(json.dumps(registry.to_dict(), indent=2))

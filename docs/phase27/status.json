@@ -1,0 +1,40 @@
+{
+  "milestone": "PHASE27_HISTORICAL_RETRIEVAL_BOUNDARY",
+  "operator_reported_phase26_evidence": {
+    "evidence_source": "USER_SUPPLIED_LIVE_RUN_SUMMARY",
+    "authenticated": true,
+    "verified_candles": 63559,
+    "symbol": "EURUSD",
+    "size_seconds": 60,
+    "oldest_utc": "2026-09-15T05:01:00+00:00",
+    "candle_requests_attempted": 1,
+    "new_candles_returned": 0,
+    "status": "EMPTY_RESPONSE_LOOKBACK_UNPROVEN",
+    "authentication_failure_reported": false,
+    "source_conflict_reported": false
+  },
+  "implementation_evidence": {
+    "live_candle_requests": 0,
+    "new_authentic_candles_acquired": 0,
+    "credentials_inspected": false,
+    "wallet_changes": 0,
+    "order_submissions": 0,
+    "pagination_changed": false,
+    "diagnostic_request_cap": 5,
+    "diagnostic_retries": 0
+  },
+  "historical_availability": "STILL_UNVERIFIED",
+  "retention_ceiling_confirmed": false,
+  "pagination_defect_confirmed": false,
+  "blocker": "OPERATOR_RUN_COMPARISON_REPORT_REQUIRED_FOR_LIVE_AVAILABILITY_CONCLUSION",
+  "fallback": "CONSERVATIVE_BOUNDED_FORWARD_ONLY_AUTHENTIC_COLLECTION",
+  "research_conclusion": "NO_DEMONSTRATED_EDGE",
+  "validation": {
+    "full_suite_passed": 1839,
+    "phase27_focused_tests_passed": 23,
+    "ruff_src_tests": "PASSED",
+    "ruff_format_src_tests": "PASSED",
+    "mypy_src": "PASSED",
+    "offline_security_checks_passed": 7
+  }
+}

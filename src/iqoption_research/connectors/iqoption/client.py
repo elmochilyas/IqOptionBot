@@ -49,7 +49,7 @@ from iqoption_research.connectors.iqoption.ws_client import (
     IQOptionWebSocketClient,
 )
 from iqoption_research.market_data.candles import normalize_candle, normalize_candles
-from iqoption_research.market_data.fetch import CandleFetchResult
+from iqoption_research.market_data.fetch import CandleFetchResult, summarize_candle_response
 from iqoption_research.market_data.symbols import (
     normalize_symbol,
     resolve_active_id,
@@ -445,23 +445,27 @@ class AsyncIQOption:
             timeout=self._config.request_timeout,
         )
 
-        # Validate request correlation and envelope-level instrument context
-        if isinstance(response, dict):
-            resp_req_id = response.get("request_id")
-            if resp_req_id is not None and str(resp_req_id) != request_id:
-                raise InvalidCandleError(
-                    f"Correlated request mismatch: expected {request_id}, got {resp_req_id}"
-                )
-            msg_payload = response.get("msg")
-            if isinstance(msg_payload, dict):
-                env_active_id = msg_payload.get("active_id")
-                if env_active_id is not None and int(env_active_id) != active_id:
+        evidence = summarize_candle_response(response, request_id, active_id)
+        try:
+            # Validate request correlation and envelope-level instrument context.
+            if isinstance(response, dict):
+                resp_req_id = response.get("request_id")
+                if resp_req_id is not None and str(resp_req_id) != request_id:
                     raise InvalidCandleError(
-                        f"Broker response envelope active_id {env_active_id} "
-                        f"conflicts with requested active_id {active_id}"
+                        f"Correlated request mismatch: expected {request_id}, got {resp_req_id}"
                     )
-
-        raw_candles = self._extract_candles(response)
+                msg_payload = response.get("msg")
+                if isinstance(msg_payload, dict):
+                    env_active_id = msg_payload.get("active_id")
+                    if env_active_id is not None and int(env_active_id) != active_id:
+                        raise InvalidCandleError(
+                            f"Broker response envelope active_id {env_active_id} "
+                            f"conflicts with requested active_id {active_id}"
+                        )
+            raw_candles = self._extract_candles(response)
+        except InvalidCandleError as exc:
+            exc.response_evidence = evidence
+            raise
         server_time_ns = ws.server_time_ns or int(time.time() * 1_000_000_000)
         candles, errors = normalize_candles(
             raw_candles,
@@ -488,6 +492,7 @@ class AsyncIQOption:
             raw_count=len(raw_candles),
             source="iqoption",
             completion_clock_ns=server_time_ns,
+            response_evidence=evidence,
         )
 
     @staticmethod

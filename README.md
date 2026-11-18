@@ -137,6 +137,10 @@ authentication, durable request budgets, immutable source evidence, and offline
 coverage validation. No additional authentic candles were acquired during implementation.
 See the [Phase 26 operator commands and evidence](docs/phase26/README.md).
 
+Phase 27 adds an operator-controlled historical-boundary diagnostic capped at five
+read-only candle calls, with known-history controls and sanitized protocol evidence.
+Older availability remains unverified; see the [Phase 27 guide](docs/phase27/README.md).
+
 ```powershell
 python -m iqoption_research.cli.main research evaluate --mode all --output-dir data/phase24
 ```

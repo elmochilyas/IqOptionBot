@@ -146,11 +146,46 @@ def test_cli_bot_journal_command(tmp_path: Path) -> None:
     assert "No prediction journal" in res_empty.output or "does not exist" in res_empty.output
 
     # 2. Test on legacy session_1794842044
-    res_legacy = runner.invoke(app, ["bot", "journal", "--session", "session_1794842044"])
-    assert res_legacy.exit_code == 0
-    assert "session_1794842044" in res_legacy.output
-    assert "Performance Diagnostics Summary" in res_legacy.output
-    assert "UNCERTAIN_ZONE" in res_legacy.output
+    target_dir = Path("data/bot_sessions")
+    target_file = target_dir / "session_1794842044_summary.json"
+    created = False
+    if not target_file.exists():
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_file.write_text(
+            json.dumps(
+                {
+                    "session_id": "session_1794842044",
+                    "mode": "observe_only",
+                    "symbol": "EURUSD",
+                    "termination_reason": "MAX_RUNTIME_REACHED: 1800.0s deadline elapsed",
+                    "snapshot": {
+                        "prediction_count": 30,
+                        "last_prediction_direction": "hold",
+                        "last_prediction_prob": 0.4620388625428477,
+                        "confidence": 0.037961137457152294,
+                        "abstention_reason": (
+                            "UNCERTAIN_ZONE: probability 0.462 within [0.45, 0.55]"
+                        ),
+                        "paper_trades_count": 0,
+                        "settled_trades_count": 0,
+                        "session_pnl": 0.0,
+                    },
+                    "trades": [],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        created = True
+    try:
+        res_legacy = runner.invoke(app, ["bot", "journal", "--session", "session_1794842044"])
+        assert res_legacy.exit_code == 0
+        assert "session_1794842044" in res_legacy.output
+        assert "Performance Diagnostics Summary" in res_legacy.output
+        assert "UNCERTAIN_ZONE" in res_legacy.output
+    finally:
+        if created and target_file.exists():
+            target_file.unlink()
 
 
 @pytest.mark.asyncio

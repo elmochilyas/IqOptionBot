@@ -127,7 +127,7 @@ def test_failure_marks_session_and_concurrency_refused(
     assert ProspectiveJournal(run).events()[-1]["status"] == "FAILED"
 
 
-@pytest.mark.parametrize("duration", [0, -1, 3601])
+@pytest.mark.parametrize("duration", [0, -1, 3601, True, 1.5])
 def test_duration_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, duration: int) -> None:
     run, storage, _, _, _ = new_run(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="duration"):
@@ -251,3 +251,54 @@ def test_clock_rollback_stops_session(tmp_path: Path, monkeypatch: pytest.Monkey
     clock[0] -= 1
     with pytest.raises(ValueError, match="Clock"):
         session.observe_session(run, storage, 60)
+
+
+@pytest.mark.parametrize("clock_fault", ["rollback", "deadline"])
+def test_slow_or_clock_invalid_commit_is_ineligible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock_fault: str
+) -> None:
+    run, storage, candles, clock, monotonic = new_run(tmp_path, monkeypatch)
+    persist(storage, candles[70:71])
+    clock[0] = candles[70].to_ts
+    original_record = session.record_prediction
+
+    def faulty_commit(run: Path, storage: Path) -> dict[str, Any]:
+        result = original_record(run, storage)
+        if clock_fault == "rollback":
+            clock[0] -= 1
+        else:
+            monotonic[0] += 10
+        return result
+
+    monkeypatch.setattr(session, "record_prediction", faulty_commit)
+    with pytest.raises(ValueError, match=r"pre-entry|deadline"):
+        session.observe_session(run, storage, 5)
+    report = observation_report(run)
+    assert report["counts"]["excluded_unconfirmed_commits"] == 1
+    assert report["session_statuses"] == {"FAILED": 1}
+
+
+def test_staleness_at_commit_stops_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run, storage, candles, clock, _ = new_run(tmp_path, monkeypatch)
+    persist(storage, candles[70:71])
+    clock[0] = candles[70].to_ts + 119
+    original_record = session.record_prediction
+
+    def slow_commit(run: Path, storage: Path) -> dict[str, Any]:
+        result = original_record(run, storage)
+        clock[0] += 2
+        return result
+
+    monkeypatch.setattr(session, "record_prediction", slow_commit)
+    with pytest.raises(ValueError, match="stale"):
+        session.observe_session(run, storage, 300)
+    assert observation_report(run)["counts"]["excluded_unconfirmed_commits"] == 1
+
+
+def test_runtime_change_requires_new_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, storage, _, _, _ = new_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(session, "runtime_versions", lambda: {"changed": True})
+    with pytest.raises(ValueError, match="registration"):
+        session.observe_session(run, storage, 1)

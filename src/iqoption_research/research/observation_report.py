@@ -8,6 +8,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from iqoption_research.research.observation_contract import (
+    confirmed_prediction_keys,
+    validate_observation_events,
+)
 from iqoption_research.research.observation_session import session_fingerprint
 from iqoption_research.research.prospective import (
     ProspectiveJournal,
@@ -23,36 +27,20 @@ from iqoption_research.research.target_alignment import target_audit
 def observation_report(run: Path) -> dict[str, Any]:
     events = ProspectiveJournal(run).events()
     assert_clock(events, now_ts())
+    validate_observation_events(events)
     compatibility = target_audit(run / "model")
     predictions = [e for e in events if e["kind"] == "PREDICTION"]
     outcomes = {e["prediction_key"]: e for e in events if e["kind"] == "OUTCOME"}
     registrations = [e for e in events if e["kind"] == "PHASE29_REGISTRATION"]
-    receipts = {e["prediction_key"]: e for e in events if e["kind"] == "PREDICTION_RECEIPT"}
-    confirmed = {
-        p["key"]
-        for p in predictions
-        if not registrations
-        or (
-            p["key"] in receipts
-            and receipts[p["key"]]["commit_before_entry_confirmed"]
-            and receipts[p["key"]]["observed_at_ts"] < p["entry_ts"]
-        )
-    }
+    confirmed = (
+        confirmed_prediction_keys(events) if registrations else {p["key"] for p in predictions}
+    )
     if registrations and registrations[0]["implementation_sha256"] != session_fingerprint():
         raise ValueError("Assessment implementation changed; register a new run")
     config = events[0]
     if compatibility["model_manifest_sha256"] != config["model_manifest_sha256"]:
         raise ValueError("Frozen model manifest differs from registration")
     implementation_matches = implementation_fingerprint() == config["implementation_fingerprint"]
-    for p in predictions:
-        if p["model_manifest_sha256"] != config["model_manifest_sha256"]:
-            raise ValueError("Mixed model definitions cannot be assessed together")
-        if p["expiry_ts"] - p["entry_ts"] != 60 or p["price_basis"] != (
-            "FUTURE_EURUSD_CANDLE_OPEN_TO_CLOSE_HYPOTHETICAL"
-        ):
-            raise ValueError("Mixed outcome definitions cannot be assessed together")
-        if p["entry_ts"] != (p["recorded_at_ts"] // 60 + 2) * 60:
-            raise ValueError("Mixed entry latency definitions cannot be assessed together")
     pairs = [
         (p, outcomes[p["key"]])
         for p in predictions
@@ -102,6 +90,7 @@ def observation_report(run: Path) -> dict[str, Any]:
     for p in sorted(predictions, key=lambda p: p["entry_ts"]):
         if (
             p["key"] in outcomes
+            and p["key"] in confirmed
             and outcomes[p["key"]]["movement"]
             and p["entry_ts"] >= previous_end
         ):

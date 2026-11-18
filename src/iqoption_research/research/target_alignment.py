@@ -29,7 +29,9 @@ def target_audit(model: Path) -> dict[str, Any]:
         "declared_lineage": metadata.get("metadata", {}),
         "source_sha256": {name: file_sha(source / path) for name, path in traces.items()},
         "training_lineage_independently_reconstructed": False,
+        "artifact_training_target_attested": False,
         "source_trace": {
+            "scope": "SOURCE_PATH_ONLY; artifact-to-training-execution mapping is unverified",
             "candidate": "phase13.train_and_save_candidate_bundle -> phase10.prepare_clean_dataset",
             "label": "int(round(close[t+h] - open[t+1], 9) > 0)",
             "entry": "open[t+1], at feature candle close, zero full-bar latency",

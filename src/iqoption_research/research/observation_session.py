@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
+import platform
 import sqlite3
+import sys
 import time
 import uuid
 from contextlib import closing
@@ -25,20 +28,46 @@ from iqoption_research.research.prospective import (
 from iqoption_research.research.target_alignment import target_audit
 
 
+def runtime_versions() -> dict[str, Any]:
+    return {
+        "python": platform.python_version(),
+        "platform": sys.platform,
+        "packages": {
+            name: importlib.metadata.version(name)
+            for name in (
+                "numpy",
+                "pandas",
+                "scipy",
+                "scikit-learn",
+                "joblib",
+                "pyarrow",
+                "pydantic",
+            )
+        },
+    }
+
+
 def session_fingerprint() -> str:
     root = Path(__file__).parents[1]
-    return digest([
-        (p.relative_to(root).as_posix(), file_sha(p)) for p in sorted(root.rglob("*.py"))
-    ])
+    return digest({
+        "sources": [
+            (p.relative_to(root).as_posix(), file_sha(p)) for p in sorted(root.rglob("*.py"))
+        ],
+        "runtime": runtime_versions(),
+    })
 
 
 def register_observation_run(run: Path, model: Path, storage: Path) -> dict[str, Any]:
-    assessment = target_audit(model)
-    initialize_run(run, model, storage, ProspectivePolicy())
+    config = initialize_run(run, model, storage, ProspectivePolicy())
+    assessment = target_audit(run / "model")
+    if assessment["model_manifest_sha256"] != config["model_manifest_sha256"]:
+        raise ValueError("Target assessment does not describe the frozen model")
     registration = {
         "kind": "PHASE29_REGISTRATION",
+        "schema_version": 2,
         "created_at_ts": now_ts(),
         "implementation_sha256": session_fingerprint(),
+        "runtime_versions": runtime_versions(),
         "storage": str(storage.resolve()),
         "compatibility": assessment,
         "poll_seconds": 60,
@@ -65,7 +94,10 @@ def checked_registration(run: Path, storage: Path) -> dict[str, Any]:
 
 def observe_session(run: Path, storage: Path, duration_seconds: int) -> dict[str, Any]:
     registration = checked_registration(run, storage)
-    if not 1 <= duration_seconds <= registration["max_session_seconds"]:
+    if (
+        type(duration_seconds) is not int
+        or not 1 <= duration_seconds <= registration["max_session_seconds"]
+    ):
         raise ValueError("Explicit session duration must be 1..3600 seconds")
     journal = ProspectiveJournal(run)
     identifier = uuid.uuid4().hex
@@ -77,6 +109,7 @@ def observe_session(run: Path, storage: Path, duration_seconds: int) -> dict[str
     with closing(sqlite3.connect(run / "session-lock.db", timeout=0)) as lock:
         lock.execute("BEGIN EXCLUSIVE")
         events = journal.events()
+        policy = ProspectivePolicy(**events[0]["policy"])
         ended = {
             e["session_id"] for e in events if e["kind"] in {"SESSION_END", "SESSION_RECOVERY"}
         }
@@ -119,17 +152,35 @@ def observe_session(run: Path, storage: Path, duration_seconds: int) -> dict[str
                     if not result["duplicate_prevented"]:
                         committed = now_ts()
                         p = result["prediction"]
+                        pre_entry = p["recorded_at_ts"] <= committed < p["entry_ts"]
+                        within_deadline = (
+                            started <= committed < started + duration_seconds
+                            and time.monotonic() < deadline
+                        )
+                        fresh_at_commit = p["probability_up"] is None or (
+                            committed - p["feature_max_available_ts"]
+                            <= policy.max_staleness_seconds
+                        )
                         journal.append(
                             "receipt:" + p["key"],
                             {
                                 "kind": "PREDICTION_RECEIPT",
+                                "session_id": identifier,
                                 "prediction_key": p["key"],
                                 "observed_at_ts": committed,
-                                "commit_before_entry_confirmed": committed < p["entry_ts"],
+                                "commit_before_entry_confirmed": pre_entry,
+                                "within_session_deadline": within_deadline,
+                                "fresh_at_commit": fresh_at_commit,
                             },
                         )
-                        if committed >= p["entry_ts"]:
+                        if not pre_entry:
                             raise ValueError("Durable pre-entry commit could not be confirmed")
+                        if not within_deadline:
+                            raise ValueError(
+                                "Prediction completed after the bounded session deadline"
+                            )
+                        if not fresh_at_commit:
+                            raise ValueError("Prediction became stale before durable commit")
                     recorded += int(not result["duplicate_prevented"])
                 remaining = min(deadline - time.monotonic(), started + duration_seconds - now_ts())
                 if remaining > 0:

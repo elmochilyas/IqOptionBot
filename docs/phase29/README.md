@@ -1,5 +1,12 @@
 # Phase 29 — target alignment and bounded prospective observation
 
+**PR #38 review follow-up:** see [REVIEW.md](REVIEW.md) and the new `review/`
+evidence directory for the reviewed implementation and current validation. Initial
+delivery JSON files below are retained as historical evidence. The reviewed code
+uses registration schema 2, runtime dependency fingerprints and stricter outcome/
+commit validation. **Initialize a new run after updating this code**; do not copy,
+edit or resume an old frozen registration under the new implementation.
+
 Research conclusion: **NO_DEMONSTRATED_EDGE**. This phase grants no trading
 authority. No REAL/Demo order, wallet selection, authenticated connection,
 credential access, source-data acquisition, model fitting or holdout evaluation
@@ -211,8 +218,10 @@ pinned runtime audit passed. The broader installed-environment audit scanned 84
 entries, skipped this local project because it is not on PyPI, and reported 14
 advisory entries (seven distinct advisory IDs) across **pip 25.0.1** and
 **pytest 8.4.2**. See [installed_dependency_findings.json](installed_dependency_findings.json).
-These existing tooling findings are unresolved; no dependency or environment was
-upgraded in this phase. The pytest advisory describes UNIX temporary directories;
+At initial delivery these tooling findings were unresolved; that original audit
+is preserved. The PR review upgrades the development toolchain and records the
+new clean audit separately in `review/validation.json`. Runtime pins/model files
+are unchanged. The pytest advisory describes UNIX temporary directories;
 the audit finding is retained even though this verification ran on Windows.
 The dependency result is not a clean bill of health for the entire environment.
 

@@ -1,0 +1,325 @@
+{
+  "assessment_kind": "SEPARATE_READ_ONLY_OVERLAY",
+  "blockers": [
+    "Model target delay, feature-relative horizon and tie policy mismatch",
+    "Artifact lineage does not attest an exact compatible target",
+    "Repeated acquisition session unverified; watcher makes zero broker requests",
+    "Fresh authentic data requires separate explicit operator collection",
+    "Insufficient independent days/regimes; no effective sample size established",
+    "Blitz price identity/strike, payout, expiry, settlement and tie rules unverified",
+    "Original code fingerprint differs; this overlay is a separate assessment"
+  ],
+  "broker_orders": 0,
+  "counts": {
+    "decisions": {
+      "CALL": 0,
+      "PUT": 0,
+      "SKIP": 2
+    },
+    "decisive": 0,
+    "excluded_unconfirmed_commits": 0,
+    "fresh": 1,
+    "other_freshness_invalid": 0,
+    "pending": 0,
+    "resolved": 1,
+    "skill_eligible": 0,
+    "stale": 1,
+    "target_unverified": 2,
+    "tied": 1,
+    "total_recorded": 2,
+    "unscoreable": 1
+  },
+  "forecasting_skill": {
+    "accuracy": null,
+    "brier": null,
+    "log_loss": null,
+    "proof_allowed": false,
+    "reason": "TARGET_UNVERIFIED"
+  },
+  "frozen_policy": {
+    "assumed_payout": 0.85,
+    "cost_per_unit": 0.002,
+    "max_staleness_seconds": 120,
+    "min_days": 20,
+    "min_decisive": 500,
+    "threshold": 0.6
+  },
+  "hypothetical_economics": [
+    {
+      "assumed_net_win_payout": 0.7,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0.0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    },
+    {
+      "assumed_net_win_payout": 0.7,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0.0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    },
+    {
+      "assumed_net_win_payout": 0.85,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0.0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    },
+    {
+      "assumed_net_win_payout": 0.85,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0.0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    },
+    {
+      "assumed_net_win_payout": 0.95,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0.0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    },
+    {
+      "assumed_net_win_payout": 0.95,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0.0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    }
+  ],
+  "journal_sha256": "4c76280b7151e971c961c18b1fb38028e536d24fa373b8b99f4d4ca51b93cecb",
+  "observation_assessments": [
+    {
+      "pre_entry_commit_receipt": "NOT_REQUIRED_BY_ORIGINAL_PROTOCOL",
+      "prediction_key": "prediction:1794974280",
+      "skill_eligible": false,
+      "target_status": "TARGET_UNVERIFIED"
+    },
+    {
+      "pre_entry_commit_receipt": "NOT_REQUIRED_BY_ORIGINAL_PROTOCOL",
+      "prediction_key": "prediction:1794977460",
+      "skill_eligible": false,
+      "target_status": "TARGET_UNVERIFIED"
+    }
+  ],
+  "original_frozen_implementation_matches": false,
+  "phase": 29,
+  "recommendation": "TARGET_ALIGNMENT_STUDY_REQUIRED",
+  "registration": null,
+  "research_conclusion": "NO_DEMONSTRATED_EDGE",
+  "sample_sufficiency": {
+    "independent_sample_size": null,
+    "minimum_decisive": 500,
+    "minimum_decisive_per_regime": 50,
+    "minimum_regimes": 2,
+    "minimum_utc_days": 20,
+    "nonoverlapping_decisive_windows": 0,
+    "note": "Frequency and overlapping features do not establish independent n",
+    "observed_decisive": 0,
+    "qualified": false,
+    "skill_eligible_decisive": 0
+  },
+  "session_statuses": {},
+  "target_compatibility": {
+    "artifact_training_target_attested": false,
+    "declared_lineage": {
+      "created_at_utc": "2026-11-14T14:41:11.032779+00:00",
+      "dataset_candles": 62871,
+      "development_disclaimer": "EXPERIMENTAL DEVELOPMENT ARTIFACT ONLY. NOT A VALIDATED TRADING EDGE. DO NOT DEPLOY FOR REAL-MONEY TRADING OR CONSUME AS INDEPENDENT CONFIRMATION.",
+      "feature_count": 13,
+      "horizon_bars": 1,
+      "independent_confirmation_consumed": false,
+      "is_frozen": false,
+      "lifecycle_stage": "DEVELOPMENT_ONLY",
+      "model_family": "random_forest",
+      "model_provenance": "authentic_trained",
+      "protocol_version": "v2-development",
+      "source_dataset": "authentic_iqoption_eurusd_60s",
+      "stationary_features_only": true,
+      "training_rows": 37609,
+      "validation_rows": 6268
+    },
+    "development_targets": [
+      {
+        "compatibility": "INCOMPATIBLE_DELAY_AND_TIE_POLICY",
+        "family": "Phase10/13/14 directional models and baselines",
+        "horizons": "configured h; Phase14 defaults 1,3,5",
+        "models": "majority, logistic, RF and configured tabular comparisons",
+        "target": "int(round(close[t+h]-open[t+1],9)>0)"
+      },
+      {
+        "compatibility": "UNVERIFIED_ARTIFACT_SPEC_AND_DIFFERENT_PRICE_ANCHOR",
+        "family": "generic Phase4 target API",
+        "target": "close[t+h]-close[t], rounded 9dp; binary/ternary/return + deadband"
+      },
+      {
+        "compatibility": "INCOMPATIBLE_NON_DIRECTIONAL_TARGET",
+        "family": "Phase15 significant movement",
+        "limitation": "h loop reuses supplied clean geometry without rebuilding",
+        "target": "abs(clean.exit_prices-clean.entry_prices)*10000 >= threshold_pips"
+      },
+      {
+        "compatibility": "INCOMPATIBLE_PATH_DEPENDENT_TARGET",
+        "family": "Phase15 triple barrier RF",
+        "target": "tb_arr == +1; first barrier hit or timeout; other events class 0"
+      },
+      {
+        "compatibility": "UNVERIFIED_NO_MATCHING_FROZEN_BUNDLE_ATTESTATION",
+        "family": "Phase24/25 majority, logistic and RF",
+        "limitation": "feature-relative latency differs from clock entry when data lags",
+        "target": "close[t+h+latency] > open[t+1+latency]",
+        "ties": "training/calibration exclude isclose(atol=1e-9,rtol=0) prices"
+      }
+    ],
+    "forecasting_skill_proof_allowed": false,
+    "known_mismatches": [
+      "ENTRY_DELAY",
+      "FEATURE_RELATIVE_HORIZON",
+      "TIE_AND_ROUNDING_POLICY"
+    ],
+    "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+    "observer_target": {
+      "entry": "(floor(recorded_at_ts/60)+2)*60; future candle OPEN",
+      "expiry": "entry+60; same candle CLOSE",
+      "latency": "60 to 120 seconds after decision, plus variable source age",
+      "price_source": "verified authentic EURUSD minute candles; Blitz identity unverified",
+      "ties": "exact equal prices; excluded from directional accuracy and calibration"
+    },
+    "pooling_allowed": false,
+    "required_followup": "Separately register any changed model/target/latency/scoring study",
+    "schema_version": 1,
+    "source_sha256": {
+      "generic_targets": "ce316bc4cbedb4e3ccd7bff3ab91b38d7960ef813c9ae1a1599ee40a907125d3",
+      "observer": "3f0022e37bc086237088872de0b815536fc0ce3e289d98ee03bd028a2e1d7950",
+      "phase10_labels": "2b24b67e3f2871c8b2e6d95a26000fb7220f78e2f89abd351171e6d833ce7162",
+      "phase13_candidate": "51e1178144c49cdf1cfc22294c35ecf8d9d7b8693aa2704c7d51a1fb081cfa09",
+      "phase14_development": "e7171307d0f70cfc855f4b59842f47a629cb99b131f9aa7a0e823e9952523235",
+      "phase15_opportunities": "b5b9b58b547b4cd065f0a3e041ef2909a25a76e9974481a1320381fc2d065254",
+      "phase24_25_development": "9a46747ada2bb6ccadb18226a26461d0dd1c79544faa7e753dd2b655f33a9323"
+    },
+    "source_trace": {
+      "calibration": "Platt validation uses the same training labels",
+      "candidate": "phase13.train_and_save_candidate_bundle -> phase10.prepare_clean_dataset",
+      "entry": "open[t+1], at feature candle close, zero full-bar latency",
+      "expiry": "close[t+h]; h=1 holds the immediately following candle",
+      "label": "int(round(close[t+h] - open[t+1], 9) > 0)",
+      "price_source": "authentic_iqoption_eurusd_60s (declared artifact lineage)",
+      "scope": "SOURCE_PATH_ONLY; artifact-to-training-execution mapping is unverified",
+      "ties": "rounded differences <= 0 map to class 0, including ties"
+    },
+    "status": "TARGET_UNVERIFIED",
+    "training_lineage_independently_reconstructed": false
+  },
+  "target_unverified_diagnostics": {
+    "baselines": {
+      "chance_accuracy": 0.5,
+      "constant_direction": "always_call/put_accuracy when decisive>0",
+      "constant_half_brier": 0.25,
+      "constant_half_log_loss": 0.6931471805599453
+    },
+    "by_regime": {
+      "UP_LOW_VOL": {
+        "accuracy": null,
+        "brier": null,
+        "calibration_bins": [],
+        "decisive": 0,
+        "ece": null,
+        "log_loss": null,
+        "raw_brier": null,
+        "wilson_95": [
+          0.0,
+          1.0
+        ]
+      }
+    },
+    "by_utc_day": {
+      "2026-11-18": {
+        "accuracy": null,
+        "brier": null,
+        "calibration_bins": [],
+        "decisive": 0,
+        "ece": null,
+        "log_loss": null,
+        "raw_brier": null,
+        "wilson_95": [
+          0.0,
+          1.0
+        ]
+      }
+    },
+    "directional_quality": {
+      "accuracy": null,
+      "brier": null,
+      "calibration_bins": [],
+      "decisive": 0,
+      "ece": null,
+      "log_loss": null,
+      "raw_brier": null,
+      "wilson_95": [
+        0.0,
+        1.0
+      ]
+    },
+    "interpretation": "Descriptive shifted-target diagnostics; no forecasting skill proof",
+    "threshold_quality": {
+      "abstained": {
+        "accuracy": null,
+        "brier": null,
+        "calibration_bins": [],
+        "decisive": 0,
+        "ece": null,
+        "log_loss": null,
+        "raw_brier": null,
+        "wilson_95": [
+          0.0,
+          1.0
+        ]
+      },
+      "optimization_performed": false,
+      "selected": {
+        "accuracy": null,
+        "brier": null,
+        "calibration_bins": [],
+        "decisive": 0,
+        "ece": null,
+        "log_loss": null,
+        "raw_brier": null,
+        "wilson_95": [
+          0.0,
+          1.0
+        ]
+      }
+    }
+  },
+  "unfinished_session_ids": [],
+  "verified_blitz_economics": {
+    "profit": null,
+    "settlements": 0,
+    "status": "UNVERIFIED"
+  }
+}

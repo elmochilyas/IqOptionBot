@@ -1,0 +1,61 @@
+{
+  "phase": "Phase 31: Acquisition Feasibility & Market Evidence",
+  "generated_at_utc": "2026-11-18T13:39:00Z",
+  "research_conclusion": "NO_DEMONSTRATED_EDGE",
+  "validation_summary": {
+    "overall_status": "PASSED",
+    "total_tests": 1931,
+    "tests_passed": 1931,
+    "tests_failed": 0,
+    "tests_skipped": 0,
+    "warnings": 3,
+    "execution_duration_seconds": 137.32
+  },
+  "static_analysis": {
+    "ruff_check": {
+      "status": "PASSED",
+      "errors": 0,
+      "files_checked": 324
+    },
+    "ruff_format": {
+      "status": "PASSED",
+      "files_checked": 324,
+      "unformatted_files": 0
+    },
+    "mypy": {
+      "status": "PASSED",
+      "source_files": 203,
+      "issues": 0
+    }
+  },
+  "security_audit": {
+    "offline_security_checks": {
+      "status": "PASSED",
+      "checks_passed": 7,
+      "total_checks": 7,
+      "details": [
+        "tls_context: hostname + certificate verification required, minimum TLS 1.2",
+        "endpoint_allowlist: hardcoded IQ Option endpoints only; unknown URLs rejected",
+        "no_insecure_tls_patterns: no verify=False / CERT_NONE / disabled hostname verification",
+        "read_only_posture: no buy/sell/close/change_balance attributes on AsyncIQOption",
+        "dependency_pinning: all runtime dependencies pinned with ==",
+        "no_credential_settings: Settings has no credential fields; getpass required at runtime",
+        "offline_default: network I/O disabled by default"
+      ]
+    },
+    "dependency_check": {
+      "status": "PASSED",
+      "broken_requirements": 0
+    }
+  },
+  "safety_and_preservation_invariants": {
+    "sealed_holdout_preserved": true,
+    "holdout_manifest_intact": true,
+    "zero_broker_orders_sent": true,
+    "zero_real_trades": true,
+    "zero_practice_trades": true,
+    "no_new_model_training": true,
+    "no_threshold_tuning": true,
+    "frozen_contracts_unmodified": true
+  }
+}

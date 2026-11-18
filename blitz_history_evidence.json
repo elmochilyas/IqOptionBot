@@ -1,0 +1,44 @@
+{
+  "history_status": "HISTORY_POSITION_MATCHED",
+  "response_status": "HISTORY_RESPONSE_RECEIVED",
+  "position_status": "POSITION_CONFIRMED",
+  "wallet_status": "ROUTING_UNVERIFIED",
+  "settlement_status": "SETTLEMENT_UNCONFIRMED",
+  "candidates": [
+    {
+      "ticket_id": "14459353015",
+      "symbol": "EURUSD_OP",
+      "product_type": "blitz-option",
+      "direction": null,
+      "stake": 1000.0,
+      "opened_at_utc": 1794907530.0,
+      "expires_at_utc": 1794907560.0,
+      "status": "closed",
+      "result": "win",
+      "payout": null,
+      "realized_profit": null,
+      "user_balance_id": null
+    }
+  ],
+  "candidate_count": 1,
+  "incomplete_candidates": [],
+  "conflicting_ticket_count": 0,
+  "query_limit_may_truncate_history": true,
+  "account": {
+    "practice_balance_id": "1253682583",
+    "practice_amount": 10930.0,
+    "real_balance_id": "1253682582",
+    "real_amount": 0.0,
+    "real_wallet_status": "UNCHANGED_BETWEEN_SNAPSHOTS"
+  },
+  "search": {
+    "asset": "EURUSD_OP",
+    "stake": 1000.0,
+    "start_utc": "2026-11-17T09:25:00+00:00",
+    "end_utc": "2026-11-17T09:30:00+00:00",
+    "limit": 100,
+    "ticket_id": null
+  },
+  "operator_reconciliation": "UNVERIFIED: compare ticket and details with official history",
+  "direct_api_order_routing": "UNVERIFIED"
+}

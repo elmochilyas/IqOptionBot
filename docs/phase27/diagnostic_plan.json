@@ -1,0 +1,48 @@
+{
+  "mode": "OFFLINE_PLAN_NOT_LIVE_RESULTS",
+  "plan": {
+    "active_id": 1,
+    "catalog_fingerprint_sha256": "f8eb97c2458c568267b35bbe27efb15b1aa3c41a616fb318b4ff3addd761b689",
+    "interpretation": "Count bars ending at to; nominal window does not guarantee coverage",
+    "known_control_start_ts": 1794216480,
+    "maximum_candle_requests": 5,
+    "oldest_catalog_ts": 1789448460,
+    "requests": [
+      {
+        "count": 20,
+        "endtime": 1794217679,
+        "endtime_utc": "2026-11-09T09:47:59+00:00",
+        "label": "known_catalog_control"
+      },
+      {
+        "count": 20,
+        "endtime": 1789448460,
+        "endtime_utc": "2026-09-15T05:01:00+00:00",
+        "label": "oldest_exact_boundary"
+      },
+      {
+        "count": 20,
+        "endtime": 1789448459,
+        "endtime_utc": "2026-09-15T05:00:59+00:00",
+        "label": "immediately_before_oldest"
+      },
+      {
+        "count": 20,
+        "endtime": 1788843659,
+        "endtime_utc": "2026-09-08T05:00:59+00:00",
+        "label": "seven_days_earlier"
+      },
+      {
+        "count": 20,
+        "endtime": 1787029259,
+        "endtime_utc": "2026-08-18T05:00:59+00:00",
+        "label": "twenty_eight_days_earlier"
+      }
+    ],
+    "retries": 0,
+    "schema_version": 1,
+    "size_seconds": 60,
+    "symbol": "EURUSD",
+    "timestamp_unit": "UTC_EPOCH_SECONDS"
+  }
+}

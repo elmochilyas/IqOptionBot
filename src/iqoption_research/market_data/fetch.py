@@ -11,6 +11,67 @@ from iqoption_research.market_data.validation import DataQualityReport
 from iqoption_research.models.market import Candle, CandleSize
 
 
+def summarize_candle_response(
+    response: dict[str, Any], request_id: str, active_id: int
+) -> dict[str, object]:
+    """Project transport evidence to fixed labels/numeric status codes, never payload text."""
+    if not isinstance(response, dict):
+        return {"frame_type": "INVALID", "correlation": "UNVERIFIED"}
+    labels = {
+        "ok",
+        "success",
+        "error",
+        "failed",
+        "fail",
+        "denied",
+        "unauthorized",
+        "rate_limited",
+        "no_data",
+        "not_found",
+    }
+
+    def status(value: Any) -> str | int:
+        if value is None:
+            return "ABSENT"
+        if type(value) is int and -9999 <= value <= 9999:
+            return value
+        if isinstance(value, str) and value.lower() in labels:
+            return value.upper()
+        return "PRESENT_UNRECOGNIZED"
+
+    msg = response.get("msg")
+    payload = msg if isinstance(msg, dict) else {}
+    req = response.get("request_id")
+    identity = payload.get("active_id")
+    name = response.get("name")
+    return {
+        "frame_type": "CANDLES" if name == "candles" else "ERROR" if name == "error" else "OTHER",
+        "correlation": "ABSENT"
+        if req is None
+        else "MATCHED"
+        if str(req) == request_id
+        else "MISMATCH",
+        "envelope_identity": "ABSENT"
+        if identity is None
+        else "MATCHED"
+        if str(identity) == str(active_id)
+        else "MISMATCH",
+        "envelope_status": status(response.get("status")),
+        "payload_status": status(payload.get("status")),
+        "envelope_code": status(response.get("code")),
+        "payload_code": status(payload.get("code")),
+        "error_field_present": any(
+            key in container for container in (response, payload) for key in ("error", "errors")
+        ),
+        "error_signal_present": any(
+            bool(container.get(key))
+            for container in (response, payload)
+            for key in ("error", "errors")
+        ),
+        "candles_list_present": isinstance(payload.get("candles"), list),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class CandleFetchResult:
     """Validated candles plus data-quality information.
@@ -29,6 +90,7 @@ class CandleFetchResult:
     raw_count: int
     source: str
     completion_clock_ns: int | None = None
+    response_evidence: dict[str, object] | None = None
 
     @property
     def candle_list(self) -> list[Candle]:

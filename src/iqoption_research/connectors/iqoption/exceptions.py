@@ -46,6 +46,8 @@ class UnsupportedInstrumentError(IQOptionError):
 class InvalidCandleError(IQOptionError):
     """Raw candle payload failed structural or consistency validation."""
 
+    response_evidence: dict[str, object] | None = None
+
 
 class ReconnectExhaustedError(ConnectionError):
     """Bounded reconnection attempts were exhausted."""

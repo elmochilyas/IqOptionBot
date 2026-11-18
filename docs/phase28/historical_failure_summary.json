@@ -1,0 +1,114 @@
+{
+  "models": {
+    "logistic_regression": {
+      "accepted_trades": 5,
+      "classification": "INSUFFICIENT_AUTHENTIC_DATA",
+      "folds": [
+        {
+          "accuracy": 0.49944461274361307,
+          "brier_improvement_over_majority": -3.330237079168796e-05,
+          "brier_score": 0.25003365657383536,
+          "calibration_error": 0.007812619928223435,
+          "fold": 0,
+          "log_loss": 0.6932115039306472,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.0002872187649593107
+        },
+        {
+          "accuracy": 0.5020530796194291,
+          "brier_improvement_over_majority": -0.00015892914555418192,
+          "brier_score": 0.2501488127209042,
+          "calibration_error": 0.005924790849922322,
+          "fold": 1,
+          "log_loss": 0.6934438177722798,
+          "selected_threshold": 0.65,
+          "trade_coverage": 9.573958831977022e-05
+        },
+        {
+          "accuracy": 0.49557254980881466,
+          "brier_improvement_over_majority": -0.00016978620911745068,
+          "brier_score": 0.25017582418923806,
+          "calibration_error": 0.01133488690221429,
+          "fold": 2,
+          "log_loss": 0.6934965954899309,
+          "selected_threshold": 0.65,
+          "trade_coverage": 9.572125969177755e-05
+        }
+      ]
+    },
+    "majority_class": {
+      "accepted_trades": 0,
+      "classification": "INSUFFICIENT_AUTHENTIC_DATA",
+      "folds": [
+        {
+          "accuracy": 0.4996465717459356,
+          "brier_improvement_over_majority": 0.0,
+          "brier_score": 0.2500003542030437,
+          "calibration_error": 0.0006921810272339513,
+          "fold": 0,
+          "log_loss": 0.6931478889661586,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.0
+        },
+        {
+          "accuracy": 0.5054581872809214,
+          "brier_improvement_over_majority": 0.0,
+          "brier_score": 0.24998988357535004,
+          "calibration_error": 0.004435694279779134,
+          "fold": 1,
+          "log_loss": 0.6931269476838985,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.0
+        },
+        {
+          "accuracy": 0.49416381565707385,
+          "brier_improvement_over_majority": 0.0,
+          "brier_score": 0.2500060379801206,
+          "calibration_error": 0.006332379316277337,
+          "fold": 2,
+          "log_loss": 0.6931592565242315,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.0
+        }
+      ]
+    },
+    "random_forest": {
+      "accepted_trades": 521,
+      "classification": "NO_DEMONSTRATED_EDGE",
+      "folds": [
+        {
+          "accuracy": 0.5006563667575482,
+          "brier_improvement_over_majority": -9.432353414412509e-05,
+          "brier_score": 0.2500946777371878,
+          "calibration_error": 0.0047003827857357355,
+          "fold": 0,
+          "log_loss": 0.693336610218976,
+          "selected_threshold": 0.55,
+          "trade_coverage": 0.0004786979415988511
+        },
+        {
+          "accuracy": 0.4945418127190786,
+          "brier_improvement_over_majority": -0.03603780323534597,
+          "brier_score": 0.286027686810696,
+          "calibration_error": 0.18988806846415596,
+          "fold": 1,
+          "log_loss": 0.7704974839579206,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.04959310674964098
+        },
+        {
+          "accuracy": 0.49416381565707385,
+          "brier_improvement_over_majority": -0.14220221923148235,
+          "brier_score": 0.39220825721160296,
+          "calibration_error": 0.37715025949248965,
+          "fold": 2,
+          "log_loss": 1.1052291033179593,
+          "selected_threshold": 0.65,
+          "trade_coverage": 0.008806355891643533
+        }
+      ]
+    }
+  },
+  "source": "docs/phase25/results.json",
+  "status": "PREVIOUS_DEVELOPMENT_RESULTS_NOT_NEW_EVALUATION"
+}

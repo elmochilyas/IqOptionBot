@@ -1,0 +1,64 @@
+{
+  "EURUSD": {
+    "market_data_active_id": 1,
+    "source": "broker candle quotes"
+  },
+  "EURUSD_OP": {
+    "connector_history_reference_active_id": 1861,
+    "current_payout": "UNVERIFIED",
+    "equivalent_to_EURUSD": "NOT_ESTABLISHED",
+    "financial_settlement": "UNCONFIRMED",
+    "history_label_observed": true,
+    "native_quote_feed": "UNVERIFIED",
+    "reference_id_not_native_market_data_mapping": true,
+    "refund_and_tie_rule": "UNVERIFIED",
+    "strike_formula": "UNVERIFIED"
+  },
+  "broker_requests_made": 0,
+  "classification": "PRODUCT_EVIDENCE_REQUIRED",
+  "local_history_observations": [
+    {
+      "direction_present": false,
+      "duration_seconds": 30.0,
+      "payout_present": false,
+      "product_type": "blitz-option",
+      "realized_profit_present": false,
+      "reported_closed": true,
+      "reported_win": true,
+      "symbol": "EURUSD_OP",
+      "wallet_link_present": false
+    }
+  ],
+  "phase": 28,
+  "privacy": "Account amounts, wallet/ticket IDs, credentials and raw payloads omitted",
+  "public_documentation": [
+    {
+      "scope": "Advertised general Blitz context, standard durations from 30 seconds and VIP from 5; not current account terms",
+      "url": "https://blog.iqoption.com/en/iq-option-introduces-blitz-options-up-to-95-profit-from-5-seconds/"
+    },
+    {
+      "scope": "General server quotes/midpoint display and Digital-at-strike return context; does not verify OP strike or Blitz ties",
+      "url": "https://static.cdnroute.io/files//storage/public/db/8c/qd2if3ts707ksqfg.pdf"
+    },
+    {
+      "scope": "General option execution; Turbo/Digital named, no Blitz-specific pricing/refund schema established",
+      "url": "https://static.cdnroute.io/files//storage/public/d1/t4/576hdlj890j5dhpg.pdf"
+    }
+  ],
+  "sources": [
+    {
+      "candidate_count": 0,
+      "file": "recovered_history.json",
+      "history_may_be_truncated": true,
+      "incomplete_count": 1,
+      "sha256": "e8a32164953c18c49ea4f9098765f7118a2cf4533b2fd14b16fecc32727f8712"
+    },
+    {
+      "candidate_count": 1,
+      "file": "blitz_history_evidence.json",
+      "history_may_be_truncated": true,
+      "incomplete_count": 0,
+      "sha256": "dd56ccf6961e168110626dc423f2ede12475cea3692f0cfd39dbf43af87074a0"
+    }
+  ]
+}

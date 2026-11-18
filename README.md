@@ -141,6 +141,10 @@ Phase 27 adds an operator-controlled historical-boundary diagnostic capped at fi
 read-only candle calls, with known-history controls and sanitized protocol evidence.
 Older availability remains unverified; see the [Phase 27 guide](docs/phase27/README.md).
 
+Phase 28 audits the completed 66,109-candle forward dataset and adds frozen-model,
+prospective paper observations with delayed outcome scoring and separate Blitz
+product evidence. See the [Phase 28 report and local procedure](docs/phase28/README.md).
+
 ```powershell
 python -m iqoption_research.cli.main research evaluate --mode all --output-dir data/phase24
 ```

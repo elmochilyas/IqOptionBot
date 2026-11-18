@@ -1,0 +1,173 @@
+{
+  "blitz_settlements_scored": 0,
+  "broker_orders": 0,
+  "chronological_days": {},
+  "decisions": {
+    "SKIP": 1
+  },
+  "directional_quality": {
+    "accuracy": null,
+    "brier": null,
+    "calibration_bins": [],
+    "decisive": 0,
+    "ece": null,
+    "log_loss": null,
+    "raw_brier": null,
+    "wilson_95": [
+      0.0,
+      1.0
+    ]
+  },
+  "frozen_policy": {
+    "assumed_payout": 0.85,
+    "cost_per_unit": 0.002,
+    "max_staleness_seconds": 120,
+    "min_days": 20,
+    "min_decisive": 500,
+    "threshold": 0.6
+  },
+  "hypothetical_economics": [
+    {
+      "assumed_net_win_payout": 0.7,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "moving_block_95": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    },
+    {
+      "assumed_net_win_payout": 0.7,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "moving_block_95": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    },
+    {
+      "assumed_net_win_payout": 0.85,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "moving_block_95": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    },
+    {
+      "assumed_net_win_payout": 0.85,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "moving_block_95": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    },
+    {
+      "assumed_net_win_payout": 0.95,
+      "assumed_tie_rule": "refund",
+      "hypothetical_net_units": 0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "moving_block_95": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    },
+    {
+      "assumed_net_win_payout": 0.95,
+      "assumed_tie_rule": "loss",
+      "hypothetical_net_units": 0,
+      "losses": 0,
+      "mean_per_selected": null,
+      "moving_block_95": null,
+      "selected": 0,
+      "ties": 0,
+      "verified_broker_profit": false,
+      "wins": 0
+    }
+  ],
+  "limits": [
+    "No execution authority",
+    "EURUSD candle assumptions are not Blitz settlements",
+    "Forecast probabilities and calibration are experimental",
+    "No historical or holdout replay",
+    "Nonstationary/dependent data can invalidate simple confidence intervals",
+    "Follow-up requires separate registration; nothing retrains automatically"
+  ],
+  "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+  "pending": 0,
+  "phase": 28,
+  "predictions": 1,
+  "product_classification": "PRODUCT_EVIDENCE_REQUIRED",
+  "recommendation": "MORE_AUTHENTIC_DATA_REQUIRED",
+  "regime_stability": {},
+  "registered_at_ts": 1794976592,
+  "research_conclusion": "NO_DEMONSTRATED_EDGE",
+  "resolved": 0,
+  "skip_reasons": {
+    "STALE_SOURCE_DATA": 1
+  },
+  "sufficiency": {
+    "days": 0,
+    "decisive": 0,
+    "minimum_days": 20,
+    "minimum_decisive": 500,
+    "per_regime_minimum_for_interpretation": 50,
+    "qualified": false,
+    "small_sample_promotion_allowed": false
+  },
+  "threshold_quality": {
+    "abstained": {
+      "accuracy": null,
+      "brier": null,
+      "calibration_bins": [],
+      "decisive": 0,
+      "ece": null,
+      "log_loss": null,
+      "raw_brier": null,
+      "wilson_95": [
+        0.0,
+        1.0
+      ]
+    },
+    "optimization_performed": false,
+    "selected": {
+      "accuracy": null,
+      "brier": null,
+      "calibration_bins": [],
+      "decisive": 0,
+      "ece": null,
+      "log_loss": null,
+      "raw_brier": null,
+      "wilson_95": [
+        0.0,
+        1.0
+      ]
+    }
+  },
+  "timeline": [
+    {
+      "decision": "SKIP",
+      "entry_ts": 1794976680,
+      "expiry_ts": 1794976740,
+      "outcome": null,
+      "prediction_key": "prediction:1794974280",
+      "recorded_at_ts": 1794976597
+    }
+  ],
+  "unscoreable_skips": 1
+}

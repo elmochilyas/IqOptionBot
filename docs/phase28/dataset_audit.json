@@ -1,0 +1,704 @@
+{
+  "audit_only": true,
+  "coverage": {
+    "active_id": 1,
+    "blitz_product_data": "UNVERIFIED_NO_EQUIVALENCE_ASSUMED",
+    "calendar_days": 63.95625,
+    "classification": "AUTHENTIC_BROKER_CANDLES_DERIVED_VALIDATION_REPORT",
+    "conflicting_candles": 0,
+    "excluded_rows_by_source": {
+      "incomplete_authentic": 2
+    },
+    "fill_policy": "NO_FILL_NO_INTERPOLATION",
+    "fingerprint_sha256": "67f5e2ed6ea0e8ee182d4ed32bfa6872c5f8c9e87eba8171437749a0f9b68719",
+    "fingerprint_spec": "sorted_unique_stable_market_fields_JSON_lines_v1",
+    "gap_classifications": {
+      "scheduled_weekend_closure": 9
+    },
+    "gap_count": 9,
+    "gap_samples": [
+      {
+        "classification": "scheduled_weekend_closure",
+        "from_ts": 1789765200,
+        "to_ts": 1789938060
+      },
+      {
+        "classification": "scheduled_weekend_closure",
+        "from_ts": 1790370000,
+        "to_ts": 1790542860
+      },
+      {
+        "classification": "scheduled_weekend_closure",
+        "from_ts": 1790974800,
+        "to_ts": 1791147660
+      },
+      {
+        "classification": "scheduled_weekend_closure",
+        "from_ts": 1791579600,
+        "to_ts": 1791752460
+      },
+      {
+        "classification": "scheduled_weekend_closure",
+        "from_ts": 1792184400,
+        "to_ts": 1792357260
+      },
+      {
+        "classification": "scheduled_weekend_closure",
+        "from_ts": 1792789200,
+        "to_ts": 1792962060
+      },
+      {
+        "classification": "scheduled_weekend_closure",
+        "from_ts": 1793394000,
+        "to_ts": 1793570460
+      },
+      {
+        "classification": "scheduled_weekend_closure",
+        "from_ts": 1794002400,
+        "to_ts": 1794175260
+      },
+      {
+        "classification": "scheduled_weekend_closure",
+        "from_ts": 1794607200,
+        "to_ts": 1794780060
+      }
+    ],
+    "gap_samples_truncated": false,
+    "identical_duplicates": 1207,
+    "max_missing_interval_seconds": 176460,
+    "missing_minutes_including_closures": 25989,
+    "newest_ts": 1794974280,
+    "newest_utc": "2026-11-18T03:58:00+00:00",
+    "oldest_ts": 1789448460,
+    "oldest_utc": "2026-09-15T05:01:00+00:00",
+    "price_discontinuities_over_one_percent": 0,
+    "quality_status": "REVIEW_GAPS",
+    "schema_version": 1,
+    "session_basis": "standard_forex_NY_DST_heuristic_not_broker_verified",
+    "source_order_violations": 0,
+    "sources": [
+      {
+        "dataset_id": "ds_eurusd_60s_1789448460_1789475820_32f1a5d47541",
+        "sha256": "15804064db047f42e1432bf3df97c4bf0c0e44fb691f6132479ae2a82b7872de"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789475820_1789505760_72f1c3f3b659",
+        "sha256": "695e31aa975c850479a3f11f475def059cd23dcb5ea87fd5f4c5cdcd3e22ea86"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789505760_1789535700_d367c458e246",
+        "sha256": "fb04ee3dcfb6a64a31897f3bd34fff7330ce02fd916c4bd0b6d6a889f11a42e6"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789535700_1789565640_a7d2a5af3a18",
+        "sha256": "71f840c2abe46e054ad7d99ae1fc8571f0cbb83f315e3b21c3b0cfac077b0a34"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789565640_1789595580_a65d504e90dc",
+        "sha256": "f888591a3bc5808073a83d5355c3090e501123992eb2f8dbbee629527b006bd8"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789595580_1789625520_2f5086923c15",
+        "sha256": "608ec7b9821bbacfbf60823a56b8d3d6e63ac6e639bcbc45f30767cd666c81ef"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789625520_1789655460_625f049bf475",
+        "sha256": "1eb9018623f09d64075a9a79fcd1d90c00a7c2527a5ececb50aa2e1310024cda"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789655460_1789685400_34bc70b996a5",
+        "sha256": "350f73c0314b5867f9771c87e4f8cffba99b1d824382278225be6168503b57f6"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789685400_1789715340_49b130e5b2f2",
+        "sha256": "e1f37d8d87e5c39069130ec9533c14c77adb0e0e373a1729b7770abd7871f427"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789715340_1789745280_56528f28dec7",
+        "sha256": "27343b7a9abb7ffdbd4e99cba93e253b0f9b02783d89472f6634e3aaad89645d"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789745280_1789948080_e62a5f81fed5",
+        "sha256": "8ce8483c5eeabfd1bac35d1690f27d51416fdd8aee14ef8879ccc1986a9faeef"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789948080_1789978020_fe02499e2a93",
+        "sha256": "65c7e3168bc105dbf97bd663a5ca8937dd30302f24779fc12c7562dffff34317"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1789978020_1790007960_fd6cec0fe34a",
+        "sha256": "d20eabcd729e7d2f50a36cafac7715c9f7a683dbefdce5fa43144494bf28a194"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790007960_1790037900_1bcc82e7cfee",
+        "sha256": "3e169a2a40cfb9b8f9b0eed11b517a6406e80f7164fafab49cce632ecef54fcf"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790037900_1790067840_81771820a535",
+        "sha256": "051929d86983160bc92d9057ddf1782d48b3667d5dd365c79e68740e53542833"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790067840_1790097780_26f6f8a5a063",
+        "sha256": "8b44824f70e84b960293a2d012851724ff3fb6b3f9179f58210fd9a457e0dfb6"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790097780_1790127720_8579c60f1244",
+        "sha256": "afdc1d57585d81165feae20b779c800affd1f7fbf4a84631b3d75aac9e9285a2"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790127720_1790157660_03b4203b7492",
+        "sha256": "7d1655efc811ff552f5d4d77499318a6fdbcc2dd061c4c97e17c748392cfd05a"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790157660_1790187600_d7538787c7a5",
+        "sha256": "ee7631373993d5bcec58cdb449f15556ee50f96f569c11578a31abeb307a9e5e"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790187600_1790217540_ff6654fdfda1",
+        "sha256": "8188f72c572b481b42fe2a64002bd9b48fffe3ce3b3f01d3810aceac5c8da1a6"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790217540_1790247480_f4112d099688",
+        "sha256": "1fb9588acd89cdf63e89bef39c0d72687fa5c7bad4c2a369c86b08f77e32946d"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790247480_1790277420_628590b8ffe0",
+        "sha256": "73b507c7ce872c3451e732410ede30017584dce399543cccf9d74e601e03f535"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790277420_1790307360_f980635ee17a",
+        "sha256": "5619d45439c0c897d3ca9985d4f4df4483deda11b128bafb29267f5dbbf057b9"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790307360_1790337300_b8bdc23a1a46",
+        "sha256": "efe1618c8c44e98e1c3383272ec1259bd31b29112cb2907e5482006501d0455f"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790337300_1790367240_c0a51951f7df",
+        "sha256": "672a9c8b824e66f82a08cb604ba4d4b5225c8cb1ff5affad9e4e4418aa70267a"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790367240_1790570040_42a868f7160f",
+        "sha256": "e3add9c76fd6cac890902136a49882c78c18fa909b98a197b87ed98f1eafaa0b"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790570040_1790599980_9404844e6fa0",
+        "sha256": "ac7ea6b8482f9f682852362ca185567346abfac9bd646d7981a209a1eabfe263"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790599980_1790629920_c8cd19f3a789",
+        "sha256": "163ec84685623c0f1101f8349abda60395c05bc586a969367763be0adf41808a"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790629920_1790659860_36c1ea6a6957",
+        "sha256": "7e79b15e7f50dd81a568b8f8a5cbc974d19c5424c4930e821b953e6f746f3cf8"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790659860_1790689800_5b882bace9e5",
+        "sha256": "f01d1dbc53c1a2b268fef512db5e0b2692546b46a50c8be791270cefec376c81"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790689800_1790719740_6a51c87814a7",
+        "sha256": "8bed77e5177166953cc3d6f7a311341ab56891b3d686f7ad4dba86161b97f074"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790719740_1790749680_63b458a8be9b",
+        "sha256": "4759b69a4ae15484c3de2ad76f2c30a7400b9fbdd821d95c57a364de727b0993"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790749680_1790779620_bbf69d90b72d",
+        "sha256": "db829f26fd6f23d4495ccb54f6ecb28f014694d8a382c2521b69beb7a919c3d7"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790779620_1790809560_373780035e27",
+        "sha256": "48ddced8a0f1159307e6707c14b86f92bd257f62a0c78e1ec2d45530ee1c3af6"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790809560_1790839500_4615cf329d9a",
+        "sha256": "6042e84af4daf25dc160db11811ceec812f3d59a944578090d8497aee8cf9401"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790839500_1790869440_b4a3f339a803",
+        "sha256": "a80c9c4af1a0154c129d9734f0e60b93863656d9d14ca865d05c8caf83107610"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790869440_1790899380_7878a827f91d",
+        "sha256": "cd51b3a70de878833ec93422da39ecf107f2b65d8cfe010b5bd46fa52c35d409"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790899380_1790929320_32858bbdb93c",
+        "sha256": "28e5c4fa067d9944640ef4cec607bfec6005f397b4478b072582b361b4640606"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790929320_1790959260_a96aad9b792c",
+        "sha256": "9c6204084d28e4890a5906ad474124348ce34d7764134ef0d401ab20d172775f"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1790959260_1791162060_9604b828fb49",
+        "sha256": "f78681c96a953a32f2b8ebd6b974db2da965d17bcff5f9101d96b20e437e7c54"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791162060_1791192000_b1cb96481cca",
+        "sha256": "7603e140057d2f94d624367e9689f2d4a09cc757c13dcd63e3442f3d5866be8e"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791192000_1791221940_7de380e51a0c",
+        "sha256": "a1eabe7b2fe307dcc79780445edbb3e1439e0fdf101701e6d5ce7a6693d956fb"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791221940_1791251880_77c64ece2b9b",
+        "sha256": "cebbc931514129c51c67b1e57f52b11824a3712431d9d524e7ec0bbd073bf5f1"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791251880_1791281820_768028c1d282",
+        "sha256": "00284ac8c6ef6183aea6aa95341399a5f9ade2fdd9344dda2fddb33919bbcbb3"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791281820_1791311760_91de030c75b4",
+        "sha256": "21420da44920643b9e8a45c3e40850c645e1455e983b1a959e5c5397e5669d71"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791311760_1791341700_b0fae98a13e7",
+        "sha256": "ea648591ae05a26d308e42ee9ea2f969ce1ec6c171a2de857b9872c532b8c2e6"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791341700_1791371640_69c19e354ab0",
+        "sha256": "7a9a852d578c2dc872efb7bc40d9ac3c80c28b8f21e9969922d21c079e2fea4c"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791371640_1791401580_b40f20893e51",
+        "sha256": "590f7e920551093a97ec273f92318e552bb662b8ebb6d8ca291bfeb15ab67ab6"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791401580_1791431520_4705ae439995",
+        "sha256": "2ad8d2fb342a63a417f70770703634bea8d41cad576dc7fca72f83fc69cb02a3"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791431520_1791461460_a5e5eddf4876",
+        "sha256": "1a5141d84150e6967db6cb7428fb0e5437b307c892445077350a048afa817b55"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791461460_1791491400_f1ac6e8fa584",
+        "sha256": "c0017fde89330c02e76afae975828f159e21e6ffca72408b0ffa699a4ed8b99c"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791491400_1791521340_2d71b6f60d25",
+        "sha256": "eb66c360ba10b70699ca7ae38b697b4ae0eb91bece4a15a621f91ef9d0f834fb"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791521340_1791551280_8bd0573233bd",
+        "sha256": "7e85f6930836fbb10b73c51fa5d657235b396c0f4261d400b97a333ecf391aeb"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791551280_1791754080_72896ab525e5",
+        "sha256": "28c29d397d0a19df019e5d9c79c0da94ae9597c93380c0b14a5a80e4b70a271e"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791754080_1791784020_7498885882ec",
+        "sha256": "ae807a16b58c88d099e28331d215ae7570d18175d7be2f89cb241676330691e4"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791784020_1791813960_3290a9d7c9f5",
+        "sha256": "0076e5ee58ce351af583f5d6cfb80a0593ac241eb30214912367be13f968483c"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791813960_1791843900_097793aaac55",
+        "sha256": "9fb981e84741f2b8d6a69a772a23c7763cff59f1d515954ddb0e3cf1a9adecd3"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791843900_1791873840_a182cd8d8563",
+        "sha256": "268935658d8fc79cb8a464c8740a8a816f0ddb3e4e2772283ab1a9117d3e0d1c"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791873840_1791903780_493642f975a5",
+        "sha256": "620e9d2b36977dfbc8a4d7e830224f38fda00f8621a925fddf9ed42fac016fb6"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791903780_1791933720_cb04d0010991",
+        "sha256": "ec6a5d5044a60c42f0a2fd75521c57a4348c9443dcc02d80175c8c2454a46fe4"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791933720_1791963660_b74857a8cab7",
+        "sha256": "b07d29fb46251343f5ef869eae2e3973a3cc9269cf89498b334e7bd5dbe244af"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791963660_1791993600_c373627e4e63",
+        "sha256": "9981526045eb2053a737573209faaa3cf348e0c939f6994fb891b5af861c7feb"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1791993600_1792023540_7d17934f2991",
+        "sha256": "e49460e728bcd8183eddf3d104f5c1190fef15cf5fbdac4090b855db999fe3fb"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792023540_1792053480_b7c58cb3222f",
+        "sha256": "a1f8ababdc188701d75731e0a53ba057a6b88c8550043bf6839acaacb2b8881a"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792053480_1792083420_81ae3a4f92cd",
+        "sha256": "cc346736bd43d7b44641d7b9058cb6775fce5a0f2974982cc4eff73814c7de22"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792083420_1792113360_4edb2f1f1a2a",
+        "sha256": "ac9c062140cb290276ad459d5d5fc511b548d6c91e00e0c0b441f5bf4d02d316"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792113360_1792143300_475f4c7cc720",
+        "sha256": "5102cb5345e8221918ff71c4c04053adfbfb9645ec3a95ad52b8a23598b72cd3"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792143300_1792173240_b7f1015390e4",
+        "sha256": "778c6b0322e9b91f672f479b7ab2295a1c4a4ef1f3348b4abc80418665fc1dc6"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792173240_1792376040_92c6f9091409",
+        "sha256": "6209e68e205a1954f144452560bb6ca1bb10b6fd27099204ee0a4459ad648b2a"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792376040_1792405980_de27455e72d5",
+        "sha256": "7b208b8112ba5f0d589b969c0b0d8a0893452f508db0e30db07dd37d87cd00e2"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792405980_1792435920_3ffe93659d3c",
+        "sha256": "86519dc25a22db59502b43a955305b98084e5fbea6ec2d1f1baeaf890e44ab8f"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792435920_1792465860_c97d00522330",
+        "sha256": "b91e2bc7273b9750c8365679cdf993c2f1b2fcb6f303d98e512f20bef4d49e46"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792465860_1792495800_e5c2c50c4ac5",
+        "sha256": "32ca2e897a398523a54418d14bd6bef87abe0e1000461b67559590efdd032bdf"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792495800_1792525740_974ca96b704c",
+        "sha256": "0a22b3e388176f073c40ca9e0d99435dfef1d30eedfbcec4d6424a8b9d57e01d"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792525740_1792555680_20ea612a15cc",
+        "sha256": "0b104a0a891630402ca7134d3f9c6e9dcdc0f5c68b62700009befcf67235c781"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792555680_1792585620_81804bce3011",
+        "sha256": "5a09659abe0295876770e0a00ec1f76608077dd39f78b86605872ec820496993"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792585620_1792615560_77aca941880b",
+        "sha256": "7ea71aec69ae606f90201b13951300927063fd0049fe54ef8dfe58bcd78749e9"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792615560_1792645500_904e887d058f",
+        "sha256": "af48d8dbf5510b572a080cedf22db302dc440d133a6b78aa19aa25e8f7df9b63"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792645500_1792675440_4780d23ced8c",
+        "sha256": "87e5cf7f671b821c0d99ebe0a830dc6efeeb02c8763b2b1bf148aa885c4d5ab4"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792675440_1792705380_2486e3592bcb",
+        "sha256": "b456a4c452b88530a49d0bbe897cc26853e039f761e839d274c36797b1af98a6"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792705380_1792735320_33720e192c41",
+        "sha256": "dd7a525c553ece57805a0a6370228c3265f3911a51aefeac2aa3d21a04cf5ad7"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792735320_1792765260_247e8ed5bfed",
+        "sha256": "6b479540f478e68e9ac9acd872c593c092aefcc1b769f89e284f6ecad30f8af4"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792765260_1792968060_156c9bd2848e",
+        "sha256": "54cedb467aeb04b2ee6de4baf396a3970a157f5be678489062f6f7c51b1ecc1c"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792968060_1792998000_fa7bdb306875",
+        "sha256": "25c1add078ba1a7820649f468bb57c0b07254bdba05198df12b79e55bf6658e6"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1792998000_1793027940_cda1ad861571",
+        "sha256": "fd79ce677725cbbbc931fb5a7fee71767775d0cb0b2435a432a9a86f50b69074"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793027940_1793057880_7f3a4eb86df9",
+        "sha256": "bd467b22e311fdbe57d759590e5575e515b576381856d64054a1afba24bd13d1"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793057880_1793060220_c2c20a78bd0c",
+        "sha256": "6b122dcd63823136a32abb9d963644ed2f74cca63b3343f7a42169fee0f43f1f"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793060220_1793090160_2ae14f8f4438",
+        "sha256": "90396b78c6acb3249b4069bf07cd4b4d0a9c1defef398816471c957834e362f4"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793090160_1793120100_a4061b719a7c",
+        "sha256": "8051ee9d2a4d946edea235727d65b5186c09b74ab2ccfb2aeb93b25928946e3a"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793120100_1793150040_6360fea23acf",
+        "sha256": "32c5f197839a3bad79f913f9aebb02a12013de097395c9a830c878c6a775d4ef"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793150040_1793179980_7df85ae2627b",
+        "sha256": "1ab18c6bbf86e3ecc4eae91c4825387fdc56898a41f4a5a7b2f2d3ecf4891eec"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793179980_1793209920_3ddcbeecc0e2",
+        "sha256": "904235a22fc8af4660732fb7a326ff2019b4e39f156d29965292f353535673ad"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793209920_1793239860_d7d807f7f050",
+        "sha256": "8ccbb2ebcab0678d801a439f23375a157b188739ba5ac7ce3b525a0ba5bf4f08"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793239860_1793269800_14d9fa9b4e87",
+        "sha256": "dfc35ab77857eb65dd9edac2927bfbc1efe481ec7071a51785470a56845f69d9"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793269800_1793299740_b0df93797cd1",
+        "sha256": "3f2c7a27ec5236a5a39af471d6cd7bba7ddb5d57f83ce4322cbfa56adb03f26a"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793299740_1793329680_d588b92540d5",
+        "sha256": "1be35f69e2cf6d4089f6dd83591a890a5aa7094154b1ab13b8bfd2c02f300fba"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793329680_1793359620_d28652a5e377",
+        "sha256": "f089189a2cb827c4323c2e3743d6a84bede4e6134d081e012664d2141578547d"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793359620_1793389560_33b4e1f95d7d",
+        "sha256": "25465d20c0d58462c4bda344a6bd656fde0ed2e687440de9edf3f000ac5e9441"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793389560_1793595960_bb0f88badaf8",
+        "sha256": "2572525af54c0617206e22ed86c2cdebb8cffacbb401d8576365c548e067612a"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793595960_1793625900_effb758c757b",
+        "sha256": "d05b32d17c0d3eca338302fadf2335eaf88208d8f559476a23066104611bafa9"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793625900_1793655840_1a8c0f949051",
+        "sha256": "9bbe66ccbedbc36e4e2a7eae55c56c9f9be9c63cf85991bf6a5a5f4caaf142db"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793655840_1793685780_17eff68a7fd2",
+        "sha256": "652fbd6dbb3e39c2ba90e6152a17e75611ea8386e686ab41626133b90a0dd616"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793685780_1793715720_084b171b6d8f",
+        "sha256": "6610967da2752b9c566369e59a2019f058096d49e8cc7b71045531c8ba8ba2dd"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793715720_1793745660_bfc968c35dde",
+        "sha256": "e1a131bd239dbab73088418f3d87510dd0fda82ef2e46e58f0c76f21018f5eaa"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793745660_1793775600_12a2dc05d4a4",
+        "sha256": "8469a2a20430480c516a01f40d2bc66f297dce41985365b50b9232b880768db1"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793775600_1793805540_c30244c935fc",
+        "sha256": "2a7612734d8cd51049835409e6b9e53e9ce73e8305f70a8925f91548f65197b9"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793805540_1793835480_6ff0fb4a0f72",
+        "sha256": "e4f33b8b4d36d66d691ff809908f2060a3329b202478089b766f7e7f77a9e5b9"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793835480_1793865420_38e003f195bf",
+        "sha256": "1e501eaca765aa5439829557456d1f9f2f8f053069b92f56f974f16e01541070"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793865420_1793895360_25cf7475bbbe",
+        "sha256": "6348620907bfb921607eab99e606da08e968f633878958441fd8553039120c7a"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793895360_1793925300_57b8c4278f16",
+        "sha256": "f80b9f411c066cfce83d4366a5f3e8d30438e1eb47160741d7b63d3254d121e8"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793925300_1793955240_ef5b2b12b716",
+        "sha256": "d7fc3ed98448904c5ab7ea6c70dba5bbc29e1cb97632242e66f3a12cdaa72f37"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793955240_1793985180_48f14cbd4ba9",
+        "sha256": "a9089188fd562c375cfeabd66cc00bf92b18a8ae7ce192c8fc98e796de434590"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1793985180_1794187980_c19a8f4d9c7b",
+        "sha256": "3b2432b2605b1e1c442e1434a384c449b32f28972e7f412d3598590bbd97143d"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794187980_1794217920_b9307b503c2d",
+        "sha256": "645486be072b14bd7e636f7ac6db989185bb93150e3e2ffb52db19019ac3c2d2"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794217920_1794247860_d9de3eadbc1e",
+        "sha256": "5da2061eb087361af6e090d144b953c00eea31c49dc627e83b456d29de504157"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794247860_1794277800_7dc6c97207d6",
+        "sha256": "50f994dba7eb12cfc377917b76a820e8bee374517581af5165048fc542707d0e"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794277800_1794307740_676001693733",
+        "sha256": "fe1c1130dff0d202b82a95ff30eb53314389f6cd5f539e88863bc4e70bea123d"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794307200_1794307740_e8b486d3c13f",
+        "sha256": "dd2bd691d36fb47b37e8f4579c13c1e469f130994b9b2ca3657fc42b46bbf422"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794307740_1794337680_4c8978be9b81",
+        "sha256": "94f965e0e4d083b5f0c7eeb3499ba759abd6b5de70be4045bfce3fb49688076a"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794337680_1794367620_2623548716fb",
+        "sha256": "5a35d387f3a1fbdda7331fc31d2ed9a6f636684ffed66cf0740f716af0736e80"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794367620_1794397560_09beac617f95",
+        "sha256": "e4dc1b3d508b9ce3c72cc80f22cb52288e4df9791ba6592efb36c4580420ec3e"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794397560_1794427500_1247e662a2bd",
+        "sha256": "f1837ba05db7e5a941c0bb6dc5931c4f003ec926c4b56972b9396716e900ccc2"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794427500_1794457440_bf40141741f3",
+        "sha256": "1c4a8309c4b7cfe92533880dd33a2e28f70ef6ec5f5ea864de771e138f958c06"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794457440_1794487380_cb042400643c",
+        "sha256": "7b6ad56ccd8fc849e1615ea81e4e85f4533fd9771660ac2492244cc5789358c9"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794487380_1794517320_b74d3799711a",
+        "sha256": "504c8112e3ef34b43ede7feccbc62a72bc02923b2bb0dce72c9e6f04d9c838d5"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794499800_1794559740_7cc5fb9ce791",
+        "sha256": "9b8e5dfef1ebea7db3ace214d1dc27c08e614fc4aea07534f505f9fa0eb4681c"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794517320_1794547260_15de697ff82b",
+        "sha256": "ad7ed0ff4728ce5514abbec62b68bbc652d1bcd7cb9d826bac4c440caca19222"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794547200_1794547260_1b99ae3a103c",
+        "sha256": "1743436ee74f7487a1a7713a1bcc69efe6175dfed888f0749ee9449311834ec0"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794547260_1794577200_d778fdf1f69a",
+        "sha256": "45dc75b957340029da993a7940bd903db6fbefa9c01d7ec4d0506a31cfb52ccc"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794553440_1794559440_6c2f183ada5b",
+        "sha256": "8a174581a811be63d5caed2d861ce1b5dbbcadd42cf4f24b8a9509b12f17efc1"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794577200_1794607200_8b2e624c91a4",
+        "sha256": "bc2882f29e57d67e79d66f6a1babf81bdbfac610ce2202abe5f1ac1c142b14d4"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794601200_1794607200_1340af2a728f",
+        "sha256": "bc80fd1d37f42b50eda5209aeaaec0757c1c26caf0aa1ba4184441f6e4e4c1a9"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794780060_1794791400_cb16ab663131",
+        "sha256": "ee7eebbe11fb519265184bde70193879d55f426970b32920e75391378313f889"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794791400_1794821340_ea9961b9d7a1",
+        "sha256": "1b7446ca81d8ff06e80d5095ca4dd58dffe1f71aa3a5ad98d0992fa087e5bd13"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794821340_1794824400_46b08febba44",
+        "sha256": "1925882474757ad61e0a4ebc8a6524ad09291f1c6cf0204a8bee27114b8788d8"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794824400_1794854400_0b512eda67c4",
+        "sha256": "afa39d45fdbb4da4eb321be83d1e2630459f76f267c14aa444a8ba6432345741"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794854400_1794884400_e15a35c65844",
+        "sha256": "e0d934a24f998d761b19427d96e9c57e8e805a96f2a0ac6f7fbb6d6b6195ffe1"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794884400_1794914400_b30e1f851022",
+        "sha256": "271ef4feedf52d27f8bbd435ba61d0df11c793ee9764e67259801e4e22d4508e"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794914400_1794944400_c235a716c146",
+        "sha256": "79d74f54fa0e741df9b2c6e7b8c28c7062e22259d19708b9b23cf30fe46d3a97"
+      },
+      {
+        "dataset_id": "ds_eurusd_60s_1794944400_1794974340_2f17ffbd8b86",
+        "sha256": "496c8a3fd07bb343dcea73600fccf473a1a4e54ce7b6a71d3759333fcacb085f"
+      }
+    ],
+    "symbol": "EURUSD",
+    "timeframe_seconds": 60,
+    "timezone": "UTC_epoch_seconds",
+    "unique_candles": 66109
+  },
+  "forward_checkpoints": [
+    {
+      "baseline_catalog_fingerprint_verified": true,
+      "baseline_market_fingerprint": "8248829e63fff36cc046e35d4937293d1e57fbae8af852d58afe0e7ee44f7276",
+      "checkpoint": "forward_checkpoint_eurusd-forward-1m.json",
+      "checkpoint_fingerprint_spec": "source_ids_and_checksums_not_market_hash",
+      "committed_sources_verified": 2,
+      "cycle": 1,
+      "duplicates_skipped": 311,
+      "max_requests": 20,
+      "new_unique_reported": 688,
+      "requests_made": 4,
+      "sha256": "82b527a52e268fe79dea975912270ea61b9cc52c531aa841d8354b2c752d3929",
+      "state": "completed",
+      "unresolved_gaps_reported": 0,
+      "verified_new_unique_in_cycle_window": 688
+    },
+    {
+      "baseline_catalog_fingerprint_verified": true,
+      "baseline_market_fingerprint": "f8eb97c2458c568267b35bbe27efb15b1aa3c41a616fb318b4ff3addd761b689",
+      "checkpoint": "forward_checkpoint_phase27-forward-20261118.json",
+      "checkpoint_fingerprint_spec": "source_ids_and_checksums_not_market_hash",
+      "committed_sources_verified": 6,
+      "cycle": 1,
+      "duplicates_skipped": 449,
+      "max_requests": 7,
+      "new_unique_reported": 2550,
+      "requests_made": 6,
+      "sha256": "92c792f8d5dd25b6a37a0ff392b32c2b4e9449ccd1abb7b3e3d0700e7a1f470a",
+      "state": "completed",
+      "unresolved_gaps_reported": 0,
+      "verified_new_unique_in_cycle_window": 2550
+    }
+  ],
+  "new_candles_collected_by_phase28": 0,
+  "original_holdout": {
+    "candles": 688,
+    "consumed_by_phase28": false,
+    "fingerprint_sha256": "22b1e069cec4117080f617fd3f3e8ed34eca46492f15df0d93823ca77a9a4402",
+    "original_last_open_ts": 1794821280,
+    "original_start_ts": 1794607200,
+    "reservation_sha256": "36baa802e16e38e864bb4b7273e60c8295c7f4e39669128ab03e3404ffa1e45a",
+    "status": "RESERVED"
+  },
+  "phase": 28,
+  "protected_file_checksums": {
+    "data/phase11/confirmation_state.json": "36baa802e16e38e864bb4b7273e60c8295c7f4e39669128ab03e3404ffa1e45a",
+    "data/phase25/registry.json": "4e0ed2ae79e4a8150d7df41d43cccb1c5993b1bb1019017dcdfb88d859b3102b",
+    "docs/phase24/results.json": "fa80736fcb26749cb89bdc33dbc483d6584eb6f28053a24af2d077c857296aa3",
+    "docs/phase25/registry.json": "4e0ed2ae79e4a8150d7df41d43cccb1c5993b1bb1019017dcdfb88d859b3102b",
+    "docs/phase25/results.json": "37c5d0473564763470a01062530cf8dc53c6a71ec33c0653e753e4b13e81b20b"
+  },
+  "source_archives": [
+    {
+      "path": "phase26_sources/phase26-pilot/000001_fc5028ee2a75d08a01b27491722d2bebe342fed7685bacd1e3311ee9660d650d.json",
+      "sha256": "fc5028ee2a75d08a01b27491722d2bebe342fed7685bacd1e3311ee9660d650d"
+    }
+  ]
+}

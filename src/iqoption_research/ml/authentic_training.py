@@ -12,6 +12,7 @@ Implements Sections 7 & 8 requirements:
 
 from __future__ import annotations
 
+import itertools
 import logging
 import math
 from dataclasses import dataclass
@@ -165,7 +166,14 @@ class AuthenticModelTrainer:
         )
         feature_dataset = pipeline.transform(candles)
         feature_names = tuple(feature_dataset.feature_names)
-        rows = feature_dataset.rows
+        if any(b.from_ts <= a.from_ts for a, b in itertools.pairwise(candles)):
+            raise ValueError("Training candles must be strictly chronological")
+        rows = tuple(
+            row
+            for row in feature_dataset.rows
+            if row.index + 1 < len(candles)
+            and candles[row.index + 1].from_ts == candles[row.index].to_ts
+        )
 
         # 2. Extract features X and forward directional targets y (next candle close > open)
         X_all = np.array(
@@ -173,7 +181,7 @@ class AuthenticModelTrainer:
             dtype=np.float64,
         )
         y_all = np.array(
-            [1 if candles[r.index].close > candles[r.index].open else 0 for r in rows],
+            [1 if candles[r.index + 1].close > candles[r.index + 1].open else 0 for r in rows],
             dtype=np.int64,
         )
 
@@ -188,11 +196,12 @@ class AuthenticModelTrainer:
             )
 
         # 3. Chronological splits (strictly causal, forward-only)
-        X_train = X_all[:n_train]
-        y_train = y_all[:n_train]
+        # Drop the boundary label: its future outcome may overlap validation.
+        X_train = X_all[: n_train - 1]
+        y_train = y_all[: n_train - 1]
 
-        X_val = X_all[n_train : n_train + n_val]
-        y_val = y_all[n_train : n_train + n_val]
+        X_val = X_all[n_train : n_train + n_val - 1]
+        y_val = y_all[n_train : n_train + n_val - 1]
 
         X_test = X_all[n_train + n_val :]
         y_test = y_all[n_train + n_val :]
@@ -216,6 +225,7 @@ class AuthenticModelTrainer:
         bundles: dict[str, ModelBundle] = {}
         metrics_dict: dict[str, EdgeEvaluationMetrics] = {}
         trained_models: list[BaseMLModel] = []
+        validation_scores: dict[str, float] = {}
 
         now_str = datetime.now(UTC).isoformat()
 
@@ -232,6 +242,7 @@ class AuthenticModelTrainer:
             val_probs = model.predict_proba(X_val_scaled)
             calibrator = ProbabilityCalibrator(method="sigmoid")
             calibrator.fit(val_probs, y_val)
+            validation_scores[name] = float(brier_score_loss(y_val, val_probs[:, 1]))
 
             bundle = ModelBundle(
                 model=model,
@@ -241,6 +252,9 @@ class AuthenticModelTrainer:
                     "created_at_utc": now_str,
                     "symbol": self.config.symbol,
                     "provenance": provenance_label,
+                    "target_alignment": "NEXT_CANDLE_OPEN_TO_CLOSE",
+                    "boundary_purge_bars": 1,
+                    "model_selection": "VALIDATION_BRIER",
                     "candle_size_seconds": self.config.candle_size_seconds,
                     "include_volume": self.config.include_volume,
                     "include_quotes": self.config.include_quotes,
@@ -268,6 +282,9 @@ class AuthenticModelTrainer:
             ens_val_probs = ensemble.predict_proba(X_val_scaled)
             ens_calibrator = ProbabilityCalibrator(method="sigmoid")
             ens_calibrator.fit(ens_val_probs, y_val)
+            validation_scores["CalibratedWeightedEnsemble"] = float(
+                brier_score_loss(y_val, ens_val_probs[:, 1])
+            )
 
             ens_bundle = ModelBundle(
                 model=ensemble,
@@ -277,6 +294,9 @@ class AuthenticModelTrainer:
                     "created_at_utc": now_str,
                     "symbol": self.config.symbol,
                     "provenance": provenance_label,
+                    "target_alignment": "NEXT_CANDLE_OPEN_TO_CLOSE",
+                    "boundary_purge_bars": 1,
+                    "model_selection": "VALIDATION_BRIER",
                     "include_volume": self.config.include_volume,
                     "include_quotes": self.config.include_quotes,
                     "feature_names": list(feature_names),
@@ -290,8 +310,8 @@ class AuthenticModelTrainer:
                 name="CalibratedWeightedEnsemble",
             )
 
-        # 8. Identify best model by payoff expectancy
-        best_name = max(metrics_dict.keys(), key=lambda k: metrics_dict[k].payoff_expectancy_pct)
+        # Model selection is development-only; never rank candidates on test outcomes.
+        best_name = min(validation_scores, key=lambda k: validation_scores[k])
         overall_edge = any(m.has_statistical_edge for m in metrics_dict.values())
 
         # Generate summary report string

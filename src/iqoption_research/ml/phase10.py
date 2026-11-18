@@ -393,11 +393,12 @@ def prepare_clean_dataset(
     *,
     candle_size_seconds: int,
     horizon_bars: int = 1,
+    include_volume: bool = True,
 ) -> CleanResearchDataset:
     """Create causal rows without allowing features or labels to cross gaps."""
     segments = _contiguous_segments(candles, candle_size_seconds)
     feature_pipeline = CausalFeaturePipeline(
-        include_volume=True,
+        include_volume=include_volume,
         include_quotes=False,
         drop_warmup=False,
     )

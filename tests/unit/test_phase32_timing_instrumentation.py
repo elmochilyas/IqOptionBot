@@ -14,11 +14,13 @@ from iqoption_research.timing.evidence import (
 from iqoption_research.timing.instrumentation import (
     ClockDiscipline,
     TimingRecorder,
+    compute_observation_dict_hash,
 )
 from iqoption_research.timing.pipeline_audit import audit_full_collection_pipeline
 from iqoption_research.timing.replay import OfflineTimingReplayHarness
 from iqoption_research.timing.supervised_session import (
     SupervisedSessionConfig,
+    SupervisedSessionRunner,
 )
 
 
@@ -392,3 +394,138 @@ def test_clock_discipline_epistemic_qualifications() -> None:
     assert clock.broker_time_sync_source == "BROKER_WEBSOCKET_TIMESYNC_ESTIMATE"
     assert clock.broker_skew_status == "ESTIMATED_ROUNDTRIP_HEURISTIC"
     assert clock.clock_source_type == "LOCAL_SYSTEM_WALLCLOCK"
+
+
+def test_duplicate_stage_measurement_preserves_genuine_timestamps() -> None:
+    """Verify earlier genuine timestamps for STAGE_4, STAGE_2, STAGE_3 are never overwritten."""
+    clock = ClockDiscipline(anchor_utc_ns=0)
+    recorder = TimingRecorder("dup_stage_test", clock=clock, enable_clock_stability_check=False)
+    obs = recorder.start_candle_observation(1795000000)
+
+    # 1. Genuine network receive timestamp
+    t_recv_genuine = 100_000_000
+    recorder.record_stage("STAGE_2_NETWORK_RECV", mono_ns=t_recv_genuine)
+    # Subsequent attempt to record network receive should be ignored
+    t_recv_later = 200_000_000
+    recorder.record_raw_receipt(t_recv_later, b"extra_frame")
+    assert obs.stages["STAGE_2_NETWORK_RECV"].mono_ns == t_recv_genuine
+
+    # 2. Genuine parsing timestamp
+    t_parse_genuine = 105_000_000
+    recorder.record_stage("STAGE_3_PARSE_VALIDATE", mono_ns=t_parse_genuine)
+    # Subsequent attempt to record parsing should be ignored
+    recorder.record_frame_decoded(205_000_000, {"name": "candles"})
+    assert obs.stages["STAGE_3_PARSE_VALIDATE"].mono_ns == t_parse_genuine
+
+    # 3. Genuine candle validation timestamp (captured in client.py)
+    t_val_genuine = 110_000_000
+    recorder.record_candle_validated(t_val_genuine, candle_count=22, is_complete=True)
+    # Higher-level session call to record_stage must NOT overwrite it
+    t_val_later = 210_000_000
+    recorder.record_stage("STAGE_4_CANDLE_VALIDATE", mono_ns=t_val_later)
+    assert obs.stages["STAGE_4_CANDLE_VALIDATE"].mono_ns == t_val_genuine
+
+    # 4. Explicit allow_overwrite=True allows overwrite when intentionally requested
+    recorder.record_stage("STAGE_4_CANDLE_VALIDATE", mono_ns=t_val_later, allow_overwrite=True)
+    assert obs.stages["STAGE_4_CANDLE_VALIDATE"].mono_ns == t_val_later
+
+
+def test_evidence_integrity_detects_tampered_observation_contents() -> None:
+    """Verify verify_integrity() detects tampered observation fields and registry hash mismatch."""
+    clock = ClockDiscipline(anchor_utc_ns=0)
+    recorder = TimingRecorder("tamper_test", clock=clock, enable_clock_stability_check=False)
+    obs = recorder.start_candle_observation(1795000000)
+    recorder.record_stage("STAGE_2_NETWORK_RECV", mono_ns=1795000002_000_000_000)
+    recorder.record_candle_validated(1795000002_010_000_000, candle_count=1)
+    obs.compute_latencies_and_gate(clock)
+
+    reg = TimingEvidenceRegistry.create(
+        session_id="tamper_test",
+        operational_mode="OFFLINE_SIMULATION",
+        project_root=Path(__file__).resolve().parents[2],
+        clock=clock,
+        observations=recorder.observations,
+    )
+
+    # Initial registry is valid
+    is_valid, errors = reg.verify_integrity()
+    assert is_valid is True
+    assert len(errors) == 0
+
+    # Tamper 1: Modify gate verdict without updating observation hash
+    reg.observations[0]["gate_verdict"] = "TAMPERED_VERDICT"
+    is_valid, errors = reg.verify_integrity()
+    assert is_valid is False
+    assert any("integrity hash mismatch" in e for e in errors)
+
+    # Tamper 2: Modify latencies
+    reg.observations[0]["gate_verdict"] = "ACQUISITION_15S_COMPLIANT"  # restore verdict
+    reg.observations[0]["latencies_ms"]["broker_delivery_offset_ms"] = 99999.0
+    is_valid, errors = reg.verify_integrity()
+    assert is_valid is False
+    assert any("integrity hash mismatch" in e for e in errors)
+
+    # Tamper 3: Update observation integrity_hash to match tampered observation
+    tampered_obs_hash = compute_observation_dict_hash(reg.observations[0])
+    reg.observations[0]["integrity_hash"] = tampered_obs_hash
+    # Now observation hash matches observation, BUT registry hash fails!
+    is_valid, errors = reg.verify_integrity()
+    assert is_valid is False
+    assert any("Registry integrity hash mismatch" in e for e in errors)
+
+
+def test_race_safe_create_only_persistence_fails_closed_on_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify save_to_file fails closed against TOCTOU collision races."""
+    clock = ClockDiscipline(anchor_utc_ns=0)
+    recorder = TimingRecorder("race_test", clock=clock, enable_clock_stability_check=False)
+    recorder.start_candle_observation(1795000000)
+    recorder.finalize_current_observation()
+
+    reg = TimingEvidenceRegistry.create(
+        session_id="race_test",
+        operational_mode="OFFLINE_SIMULATION",
+        project_root=Path(__file__).resolve().parents[2],
+        clock=clock,
+        observations=recorder.observations,
+    )
+
+    out_file = tmp_path / "colliding_evidence.json"
+    out_file.write_text('{"original": "do_not_overwrite"}', encoding="utf-8")
+
+    # Standard collision detection
+    with pytest.raises(FileExistsError, match="already exists and cannot be overwritten"):
+        reg.save_to_file(out_file, allow_overwrite=False)
+    assert out_file.read_text(encoding="utf-8") == '{"original": "do_not_overwrite"}'
+
+    # Simulate TOCTOU race: Path.exists returns False at initial check,
+    # but file exists on link/write
+    orig_exists = Path.exists
+
+    def mock_exists(self: Path) -> bool:
+        if self.resolve() == out_file.resolve():
+            return False  # Lie to simulate TOCTOU gap
+        return orig_exists(self)
+
+    monkeypatch.setattr(Path, "exists", mock_exists)
+
+    # Atomic os.link or exclusive open must still reject the collision race-safely
+    with pytest.raises(FileExistsError, match="already exists and cannot be overwritten"):
+        reg.save_to_file(out_file, allow_overwrite=False)
+
+    # Verify original file content was completely untouched
+    assert out_file.read_text(encoding="utf-8") == '{"original": "do_not_overwrite"}'
+
+
+def test_live_session_generates_unique_output_path() -> None:
+    """Verify live sessions generate unique filenames to avoid overwriting research observations."""
+    cfg = SupervisedSessionConfig(
+        live_mode=True,
+        operator_confirmed=True,
+        output_destination=Path("data/phase32/supervised_timing_evidence.json"),
+    )
+    runner = SupervisedSessionRunner(cfg)
+    assert runner.output_destination != Path("data/phase32/supervised_timing_evidence.json")
+    assert runner.session_id in str(runner.output_destination)
+    assert runner.output_destination.name.startswith("supervised_timing_evidence_meas_")

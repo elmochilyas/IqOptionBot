@@ -137,6 +137,51 @@ class StageTimingRecord:
         }
 
 
+def compute_observation_dict_hash(obs: dict[str, Any]) -> str:
+    """Compute canonical SHA-256 fingerprint over scientifically relevant observation fields."""
+    stages_data: dict[str, dict[str, int]] = {}
+    raw_stages = obs.get("stages", {})
+    if isinstance(raw_stages, dict):
+        for k, v in sorted(raw_stages.items()):
+            if isinstance(v, dict):
+                stages_data[k] = {
+                    "mono_ns": int(v.get("mono_ns", 0)),
+                    "disciplined_utc_ns": int(v.get("disciplined_utc_ns", 0)),
+                }
+
+    raw_latencies = obs.get("latencies_ms", {})
+    latencies_data: dict[str, float] = {}
+    if isinstance(raw_latencies, dict):
+        for k, v in sorted(raw_latencies.items()):
+            if isinstance(v, (int, float)):
+                latencies_data[k] = round(float(v), 4)
+
+    clock_unc = obs.get("clock_uncertainty_ms", 0.0)
+    data = {
+        "session_id": str(obs.get("session_id", "")),
+        "observation_index": int(obs.get("observation_index", 0)),
+        "symbol": str(obs.get("symbol", "")),
+        "candle_size_seconds": int(obs.get("candle_size_seconds", 60)),
+        "feature_close_F": int(obs.get("feature_close_F", 0)),
+        "feature_close_F_ns": int(obs.get("feature_close_F_ns", 0)),
+        "candle_received_within_15s": bool(obs.get("candle_received_within_15s")),
+        "candle_validated_within_15s": bool(obs.get("candle_validated_within_15s")),
+        "prediction_stages_measured": bool(obs.get("prediction_stages_measured")),
+        "phase30_gate_satisfied": bool(obs.get("phase30_gate_satisfied")),
+        "gate_verdict": str(obs.get("gate_verdict", "")),
+        "rejection_reason": obs.get("rejection_reason"),
+        "raw_probability": obs.get("raw_probability"),
+        "calibrated_probability": obs.get("calibrated_probability"),
+        "decision": str(obs.get("decision", "NOT_MEASURED")),
+        "clock_uncertainty_ms": round(float(clock_unc), 4) if clock_unc is not None else 0.0,
+        "clock_step_detected": bool(obs.get("clock_step_detected")),
+        "latencies_ms": latencies_data,
+        "stages": stages_data,
+    }
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 @dataclass(slots=True)
 class CandleTimingObservation:
     """Complete timing and latency record for an observed completed candle."""
@@ -343,35 +388,7 @@ class CandleTimingObservation:
 
     def compute_hash(self) -> str:
         """Compute SHA-256 fingerprint over all scientifically relevant fields."""
-        data = {
-            "session_id": self.session_id,
-            "observation_index": self.observation_index,
-            "symbol": self.symbol,
-            "candle_size_seconds": self.candle_size_seconds,
-            "feature_close_F": self.feature_close_F,
-            "feature_close_F_ns": self.feature_close_F_ns,
-            "candle_received_within_15s": self.candle_received_within_15s,
-            "candle_validated_within_15s": self.candle_validated_within_15s,
-            "prediction_stages_measured": self.prediction_stages_measured,
-            "phase30_gate_satisfied": self.phase30_gate_satisfied,
-            "gate_verdict": self.gate_verdict,
-            "rejection_reason": self.rejection_reason,
-            "raw_probability": self.raw_probability,
-            "calibrated_probability": self.calibrated_probability,
-            "decision": self.decision,
-            "clock_uncertainty_ms": round(self.clock_uncertainty_ms, 4),
-            "clock_step_detected": self.clock_step_detected,
-            "latencies_ms": {k: round(v, 4) for k, v in sorted(self.latencies_ms.items())},
-            "stages": {
-                k: {
-                    "mono_ns": v.mono_ns,
-                    "disciplined_utc_ns": v.disciplined_utc_ns,
-                }
-                for k, v in sorted(self.stages.items())
-            },
-        }
-        canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode()).hexdigest()
+        return compute_observation_dict_hash(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -445,8 +462,25 @@ class TimingRecorder:
         *,
         mono_ns: int | None = None,
         details: dict[str, Any] | None = None,
+        allow_overwrite: bool = False,
     ) -> StageTimingRecord:
-        """Record an instrumented stage timing measurement."""
+        """Record an instrumented stage timing measurement.
+
+        If the stage was already recorded for the current observation and allow_overwrite is False,
+        preserves the earlier genuine measurement.
+        """
+        if (
+            self._current_obs is not None
+            and stage_name in self._current_obs.stages
+            and not allow_overwrite
+        ):
+            logger.debug(
+                "Stage %s already recorded for observation %s; retaining original measurement",
+                stage_name,
+                self._current_obs.observation_index,
+            )
+            return self._current_obs.stages[stage_name]
+
         m_ns = mono_ns if mono_ns is not None else time.perf_counter_ns()
         w_ns = time.time_ns()
         u_ns = self.clock.mono_to_utc_ns(m_ns)
@@ -477,11 +511,14 @@ class TimingRecorder:
         request_id: str,
         name: str,
         mono_ns: int | None = None,
+        *,
+        allow_overwrite: bool = False,
     ) -> StageTimingRecord:
         return self.record_stage(
             "STAGE_1_REQUEST_INIT",
             mono_ns=mono_ns,
             details={"request_id": request_id, "frame_name": name},
+            allow_overwrite=allow_overwrite,
         )
 
     def record_correlated_frame(
@@ -491,17 +528,21 @@ class TimingRecorder:
         recv_mono_ns: int,
         parsed_mono_ns: int,
         payload_bytes: int = 0,
+        *,
+        allow_overwrite: bool = False,
     ) -> tuple[StageTimingRecord, StageTimingRecord]:
         """Record genuine correlated frame arrival and decode timestamps without offsets."""
         r_rec = self.record_stage(
             "STAGE_2_NETWORK_RECV",
             mono_ns=recv_mono_ns,
             details={"request_id": request_id, "payload_bytes": payload_bytes},
+            allow_overwrite=allow_overwrite,
         )
         r_parse = self.record_stage(
             "STAGE_3_PARSE_VALIDATE",
             mono_ns=parsed_mono_ns,
             details={"request_id": request_id, "frame_name": frame_name},
+            allow_overwrite=allow_overwrite,
         )
         return r_rec, r_parse
 
@@ -511,6 +552,7 @@ class TimingRecorder:
         raw_payload: str | bytes,
         *,
         request_id: str | None = None,
+        allow_overwrite: bool = False,
     ) -> StageTimingRecord:
         length = len(raw_payload) if raw_payload is not None else 0
         details: dict[str, Any] = {"payload_bytes": length}
@@ -520,6 +562,7 @@ class TimingRecorder:
             "STAGE_2_NETWORK_RECV",
             mono_ns=mono_ns,
             details=details,
+            allow_overwrite=allow_overwrite,
         )
 
     def record_frame_decoded(
@@ -528,6 +571,7 @@ class TimingRecorder:
         message: dict[str, Any],
         *,
         request_id: str | None = None,
+        allow_overwrite: bool = False,
     ) -> StageTimingRecord:
         name = message.get("name", "unknown") if isinstance(message, dict) else "unknown"
         details: dict[str, Any] = {"frame_name": name}
@@ -537,18 +581,22 @@ class TimingRecorder:
             "STAGE_3_PARSE_VALIDATE",
             mono_ns=mono_ns,
             details=details,
+            allow_overwrite=allow_overwrite,
         )
 
     def record_request_completed(
         self,
         mono_ns: int,
         details: dict[str, Any] | None = None,
+        *,
+        allow_overwrite: bool = False,
     ) -> StageTimingRecord:
         """Record the instant the high-level request method returned."""
         return self.record_stage(
             "STAGE_REQUEST_COMPLETED",
             mono_ns=mono_ns,
             details=details or {},
+            allow_overwrite=allow_overwrite,
         )
 
     def record_candle_validated(
@@ -556,44 +604,56 @@ class TimingRecorder:
         mono_ns: int,
         candle_count: int,
         is_complete: bool = True,
+        *,
+        allow_overwrite: bool = False,
     ) -> StageTimingRecord:
         return self.record_stage(
             "STAGE_4_CANDLE_VALIDATE",
             mono_ns=mono_ns,
             details={"candle_count": candle_count, "is_complete": is_complete},
+            allow_overwrite=allow_overwrite,
         )
 
     def record_completed_recognized(
         self,
         mono_ns: int,
         to_ts: int,
+        *,
+        allow_overwrite: bool = False,
     ) -> StageTimingRecord:
         return self.record_stage(
             "STAGE_5_COMPLETED_RECOG",
             mono_ns=mono_ns,
             details={"completed_to_ts": to_ts},
+            allow_overwrite=allow_overwrite,
         )
 
     def record_storage_persisted(
         self,
         mono_ns: int,
         records_saved: int,
+        *,
+        allow_overwrite: bool = False,
     ) -> StageTimingRecord:
         return self.record_stage(
             "STAGE_6_STORAGE_PERSIST",
             mono_ns=mono_ns,
             details={"records_saved": records_saved},
+            allow_overwrite=allow_overwrite,
         )
 
     def record_features_computed(
         self,
         mono_ns: int,
         feature_count: int = 11,
+        *,
+        allow_overwrite: bool = False,
     ) -> StageTimingRecord:
         return self.record_stage(
             "STAGE_7_FEATURE_AVAIL",
             mono_ns=mono_ns,
             details={"feature_count": feature_count},
+            allow_overwrite=allow_overwrite,
         )
 
     def record_inference_completed(
@@ -602,8 +662,12 @@ class TimingRecorder:
         raw_prob: float,
         cal_prob: float,
         decision: str,
+        *,
+        allow_overwrite: bool = False,
     ) -> StageTimingRecord:
-        if self._current_obs is not None:
+        if self._current_obs is not None and (
+            "STAGE_8_INFERENCE" not in self._current_obs.stages or allow_overwrite
+        ):
             self._current_obs.raw_probability = raw_prob
             self._current_obs.calibrated_probability = cal_prob
             self._current_obs.decision = decision
@@ -612,17 +676,21 @@ class TimingRecorder:
             "STAGE_8_INFERENCE",
             mono_ns=mono_ns,
             details={"raw_prob": raw_prob, "cal_prob": cal_prob, "decision": decision},
+            allow_overwrite=allow_overwrite,
         )
 
     def record_journal_committed(
         self,
         mono_ns: int,
         event_key: str,
+        *,
+        allow_overwrite: bool = False,
     ) -> StageTimingRecord:
         rec = self.record_stage(
             "STAGE_9_JOURNAL_COMMIT",
             mono_ns=mono_ns,
             details={"event_key": event_key},
+            allow_overwrite=allow_overwrite,
         )
         if self._current_obs is not None:
             self._current_obs.compute_latencies_and_gate(self.clock)

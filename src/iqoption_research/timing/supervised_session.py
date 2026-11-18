@@ -97,6 +97,18 @@ class SupervisedSessionRunner:
             symbol=config.symbol,
             candle_size_seconds=config.candle_size_seconds,
         )
+        # Guarantee unique output filename for live sessions to prevent overwriting observations
+        if config.live_mode:
+            dest = config.output_destination
+            if dest.is_dir() or dest.name == "supervised_timing_evidence.json":
+                parent = dest if dest.is_dir() else dest.parent
+                self.output_destination = (
+                    parent / f"supervised_timing_evidence_{self.session_id}.json"
+                )
+            else:
+                self.output_destination = dest
+        else:
+            self.output_destination = config.output_destination
 
     async def execute(self) -> TimingEvidenceRegistry:
         """Execute the measurement session either in offline simulation or live supervised mode."""
@@ -143,7 +155,7 @@ class SupervisedSessionRunner:
             observations=self.recorder.observations,
         )
         registry.save_to_file(
-            self.config.output_destination,
+            self.output_destination,
             allow_overwrite=self.config.allow_overwrite,
         )
         return registry
@@ -264,17 +276,20 @@ class SupervisedSessionRunner:
                         candles = result.candles
                         if not candles or candles[-1].to_ts != F:
                             obs.rejection_reason = "CANDLE_NOT_YET_AVAILABLE_AT_F"
+                            obs.compute_latencies_and_gate(self.clock)
                             print("      Candle not yet available at broker. Fail closed.")
                         else:
                             last = candles[-1]
-                            self.recorder.record_stage(
-                                "STAGE_4_CANDLE_VALIDATE",
-                                mono_ns=time.perf_counter_ns(),
-                                details={"is_complete": last.is_complete},
-                            )
-                            self.recorder.record_completed_recognized(
-                                time.perf_counter_ns(), last.to_ts
-                            )
+                            if "STAGE_4_CANDLE_VALIDATE" not in obs.stages:
+                                self.recorder.record_candle_validated(
+                                    time.perf_counter_ns(),
+                                    len(candles),
+                                    is_complete=bool(last.is_complete),
+                                )
+                            if "STAGE_5_COMPLETED_RECOG" not in obs.stages:
+                                self.recorder.record_completed_recognized(
+                                    time.perf_counter_ns(), last.to_ts
+                                )
                             # Live measurement records ONLY genuine verified operations.
                             # Features, inference, and journal commit are NOT executed.
                             # We strictly do NOT simulate probabilities or fake commits.
@@ -283,26 +298,60 @@ class SupervisedSessionRunner:
                             obs.decision = "NOT_MEASURED"
                             obs.prediction_stages_measured = False
 
-                            offset_ms = obs.latencies_ms.get("broker_delivery_offset_ms", 0.0)
+                            # Finalize and compute observation metrics BEFORE displaying them
+                            obs.compute_latencies_and_gate(self.clock)
+
+                            # Format console output distinguishing receipt, validation,
+                            # and prediction contract stages.
+                            if "broker_delivery_offset_ms" in obs.latencies_ms:
+                                recv_offset = obs.latencies_ms["broker_delivery_offset_ms"]
+                                recv_str = f"{recv_offset:.2f} ms from candle close"
+                                recv_comp_str = (
+                                    "YES (within 15s)"
+                                    if obs.candle_received_within_15s
+                                    else "NO (>15s)"
+                                )
+                            else:
+                                recv_str = "NOT_MEASURED"
+                                recv_comp_str = "NOT_MEASURED"
+
+                            t_val = obs.stages.get("STAGE_4_CANDLE_VALIDATE")
+                            if t_val is not None:
+                                val_offset_ms = (
+                                    t_val.disciplined_utc_ns - obs.feature_close_F_ns
+                                ) / 1_000_000.0
+                                val_str = f"{val_offset_ms:.2f} ms from candle close"
+                                val_comp_str = (
+                                    "YES (within 15s)"
+                                    if obs.candle_validated_within_15s
+                                    else "NO (>15s)"
+                                )
+                            else:
+                                val_str = "NOT_MEASURED"
+                                val_comp_str = "NOT_MEASURED"
+
+                            print(f"      Candle F={F} observed:")
                             print(
-                                f"      Candle F={F} observed. Arrival offset: {offset_ms:.2f} ms"
+                                f"        - Client frame receipt:     "
+                                f"{recv_str} [compliant: {recv_comp_str}]"
                             )
                             print(
-                                f"      Acquisition 15s gate compliant: "
-                                f"{obs.candle_validated_within_15s} (verdict: {obs.gate_verdict})"
+                                f"        - Candle validation:        "
+                                f"{val_str} [compliant: {val_comp_str}]"
                             )
                             print(
-                                "      Full Phase 30 prediction contract: NOT_MEASURED "
-                                "(timing measurement only)"
+                                "        - Full prediction contract: "
+                                "NOT_MEASURED (timing measurement only)"
                             )
+                            print(f"        - Observation verdict:      {obs.gate_verdict}")
 
                     except ConnectionError as exc:
                         print(f"      Broker connection closed: {exc}. Fail closed immediately.")
                         obs.rejection_reason = "CONNECTION_INTERRUPTED_FAIL_CLOSED"
+                        obs.compute_latencies_and_gate(self.clock)
                         break
 
                     cycles_done += 1
-                    obs.compute_latencies_and_gate(self.clock)
                     # Sleep to prevent rapid polling
                     await asyncio.sleep(5.0)
 
@@ -319,9 +368,9 @@ class SupervisedSessionRunner:
             observations=self.recorder.observations,
         )
         registry.save_to_file(
-            self.config.output_destination,
+            self.output_destination,
             allow_overwrite=self.config.allow_overwrite,
         )
-        print(f"      Evidence registry saved to: {self.config.output_destination}")
+        print(f"      Evidence registry saved to: {self.output_destination}")
         print("      Measurement session completed successfully.\n")
         return registry

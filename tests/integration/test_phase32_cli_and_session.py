@@ -4,16 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
 
 from iqoption_research.cli.main import app
-from iqoption_research.connectors.iqoption.client import AsyncIQOption
+from iqoption_research.connectors.iqoption.client import AsyncIQOption, CandleFetchResult
 from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
 from iqoption_research.security.credentials import Credentials
 from iqoption_research.timing.instrumentation import ClockDiscipline, TimingRecorder
+from iqoption_research.timing.supervised_session import (
+    SupervisedSessionConfig,
+    SupervisedSessionRunner,
+)
 
 
 def test_cli_pipeline_audit_command() -> None:
@@ -168,3 +176,99 @@ def test_cli_measure_create_only_file_protection(tmp_path: Path) -> None:
         ["timing", "measure", "--simulation", "--output", str(out_file), "--overwrite", "--json"],
     )
     assert res3.exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_live_session_console_reporting_distinguishes_stages(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify console output distinguishes receipt, validation, and unmeasured prediction stages."""
+    dest = tmp_path / "supervised_timing_evidence.json"
+    cfg = SupervisedSessionConfig(
+        symbol="EURUSD",
+        max_duration_seconds=300,
+        max_candle_cycles=1,
+        live_mode=True,
+        simulation_mode=False,
+        operator_confirmed=True,
+        output_destination=dest,
+    )
+    runner = SupervisedSessionRunner(cfg)
+
+    # Mock client and practice verification
+    mock_client = AsyncMock()
+    mock_client.assert_read_only = MagicMock()
+    mock_status = MagicMock()
+    mock_practice_verif = MagicMock(is_verified=True, message="OK")
+    mock_status.practice_verification.return_value = mock_practice_verif
+    mock_status.active_balance = MagicMock(is_practice=True)
+    mock_client.get_account_status.return_value = mock_status
+
+    now_wall = int(time.time())
+    F = (now_wall // 60) * 60
+    mock_candle = MagicMock(to_ts=F, is_complete=True)
+
+    async def mock_get_candles(*args: Any, **kwargs: Any) -> CandleFetchResult:
+        now_mono = time.perf_counter_ns()
+        # Simulate ws_client correlated frame receipt
+        runner.recorder.record_correlated_frame(
+            request_id=f"candles-{F}",
+            frame_name="candles",
+            recv_mono_ns=now_mono,
+            parsed_mono_ns=now_mono,
+        )
+        # Simulate client.py recording validation
+        runner.recorder.record_candle_validated(now_mono, candle_count=22, is_complete=True)
+        return CandleFetchResult(
+            symbol="EURUSD",
+            size=60,
+            candles=(mock_candle,),
+            errors=(),
+            quality=MagicMock(),
+            fetched_at=datetime.now(UTC),
+            raw_count=1,
+            source="iqoption",
+            recv_mono_ns=now_mono,
+            parsed_mono_ns=now_mono + 500_000,
+            request_completion_mono_ns=now_mono + 1_500_000,
+        )
+
+    mock_client.get_candles.side_effect = mock_get_candles
+
+    mock_iq = MagicMock()
+    mock_iq.__aenter__.return_value = mock_client
+    mock_iq.__aexit__.return_value = None
+
+    fixed_now = datetime.fromtimestamp(F + 2, tz=UTC)
+
+    with (
+        patch("iqoption_research.timing.supervised_session.AsyncIQOption", return_value=mock_iq),
+        patch("asyncio.to_thread", side_effect=["test@example.com", "password"]),
+        patch("iqoption_research.timing.supervised_session.datetime") as mock_dt,
+        patch("asyncio.sleep", return_value=None),
+    ):
+        mock_dt.now.return_value = fixed_now
+        mock_dt.fromtimestamp = datetime.fromtimestamp
+        mock_dt.UTC = UTC
+        reg = await runner.execute()
+
+    captured = capsys.readouterr().out
+
+    # 1. Verify stages are clearly distinguished in console output
+    assert "- Client frame receipt:" in captured
+    assert "- Candle validation:" in captured
+    assert "- Full prediction contract: NOT_MEASURED (timing measurement only)" in captured
+    assert "- Observation verdict:" in captured
+
+    # 2. Verify genuine validation timestamp from client.py was preserved (not overwritten)
+    obs = reg.observations[0]
+    assert "STAGE_4_CANDLE_VALIDATE" in obs["stages"]
+    assert (
+        obs["stages"]["STAGE_4_CANDLE_VALIDATE"]["mono_ns"]
+        < obs["stages"]["STAGE_5_COMPLETED_RECOG"]["mono_ns"]
+    )
+
+    # 3. Verify unique filename generated for live session
+    assert runner.output_destination != dest
+    assert runner.output_destination.name.startswith("supervised_timing_evidence_meas_")
+    assert runner.output_destination.is_file()

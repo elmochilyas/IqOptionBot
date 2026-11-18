@@ -564,7 +564,7 @@ def measure_command(
             f"[bold cyan]Timing Measurement Evidence Registry Preserved[/bold cyan]\n"
             f"Session ID: [yellow]{registry.session_id}[/yellow]\n"
             f"Mode: [bold]{registry.operational_mode}[/bold]\n"
-            f"Destination: [dim]{output}[/dim]\n"
+            f"Destination: [dim]{runner.output_destination}[/dim]\n"
             f"Integrity Hash: [green]{registry.integrity_hash}[/green]",
             title="Measurement Summary",
             border_style="cyan",

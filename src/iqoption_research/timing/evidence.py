@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -19,6 +20,7 @@ from typing import Any
 from iqoption_research.timing.instrumentation import (
     CandleTimingObservation,
     ClockDiscipline,
+    compute_observation_dict_hash,
 )
 
 logger = logging.getLogger(__name__)
@@ -214,6 +216,19 @@ class TimingEvidenceRegistry:
     def verify_integrity(self) -> tuple[bool, list[str]]:
         """Verify internal consistency and cryptographic signatures of the evidence registry."""
         errors: list[str] = []
+
+        # 1. Independently recompute each observation's integrity hash from serialized content
+        for idx, obs in enumerate(self.observations):
+            expected_obs_hash = compute_observation_dict_hash(obs)
+            actual_obs_hash = obs.get("integrity_hash", "")
+            if actual_obs_hash != expected_obs_hash:
+                obs_f = obs.get("feature_close_F", f"idx_{idx}")
+                errors.append(
+                    f"Observation {idx} (F={obs_f}) integrity hash mismatch: "
+                    f"expected {expected_obs_hash}, got {actual_obs_hash}"
+                )
+
+        # 2. Independently validate registry hash
         expected_registry_hash = self.compute_hash()
         if self.integrity_hash != expected_registry_hash:
             errors.append(
@@ -238,25 +253,54 @@ class TimingEvidenceRegistry:
         }
 
     def save_to_file(self, destination: Path, *, allow_overwrite: bool = False) -> None:
-        """Atomically persist registry to JSON file with create-only protection.
+        """Atomically persist registry to JSON file with race-safe create-only protection.
 
         By default, prevents overwriting existing evidence files to protect research records.
         """
-        destination = Path(destination)
+        destination = Path(destination).resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
         if destination.exists() and not allow_overwrite:
             raise FileExistsError(
                 f"Evidence file already exists and cannot be overwritten: {destination}"
             )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temp_file = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temp_file.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-            if destination.exists() and not allow_overwrite:
-                raise FileExistsError(
-                    f"Evidence file already exists and cannot be overwritten: {destination}"
-                )
-            temp_file.replace(destination)
-        finally:
-            if temp_file.exists():
-                temp_file.unlink(missing_ok=True)
+
+        serialized_json = json.dumps(self.to_dict(), indent=2)
+
+        if allow_overwrite:
+            temp_file = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                temp_file.write_text(serialized_json, encoding="utf-8")
+                temp_file.replace(destination)
+            finally:
+                if temp_file.exists():
+                    temp_file.unlink(missing_ok=True)
+        else:
+            # Race-safe create-only persistence:
+            # Write complete content to a sibling temporary file, then create destination
+            # using os.link (which fails atomically with FileExistsError if destination exists
+            # on both POSIX and Windows).
+            temp_file = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                temp_file.write_text(serialized_json, encoding="utf-8")
+                try:
+                    os.link(temp_file, destination)
+                except (AttributeError, OSError) as exc:
+                    if isinstance(exc, FileExistsError):
+                        raise FileExistsError(
+                            f"Evidence file already exists and cannot be overwritten: {destination}"
+                        ) from exc
+                    # Fallback for filesystems without hard-link support:
+                    # Exclusive create ('x' mode) maps to O_CREAT | O_EXCL
+                    try:
+                        with destination.open("x", encoding="utf-8") as f:
+                            f.write(serialized_json)
+                    except FileExistsError as fee:
+                        raise FileExistsError(
+                            f"Evidence file already exists and cannot be overwritten: {destination}"
+                        ) from fee
+            finally:
+                if temp_file.exists():
+                    temp_file.unlink(missing_ok=True)
+
         logger.debug("Persisted timing evidence registry to %s", destination)

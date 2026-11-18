@@ -118,6 +118,7 @@ class AsyncIQOption:
         wss_url: str = DEFAULT_WSS_URL,
         diagnostics: bool | None = None,
         connect_factory: ConnectFactory | None = None,
+        timing_recorder: Any | None = None,
     ) -> None:
         self.assert_read_only()
 
@@ -127,6 +128,7 @@ class AsyncIQOption:
         self._login_url = login_url
         self._wss_url = wss_url
         self._connect_factory = connect_factory
+        self._timing_recorder = timing_recorder
 
         is_diag = (
             diagnostics
@@ -170,6 +172,11 @@ class AsyncIQOption:
     def diagnostics(self) -> ProtocolDiagnostics:
         """Safe metadata-only protocol diagnostics recorder."""
         return self._diagnostics
+
+    @property
+    def timing_recorder(self) -> Any | None:
+        """Instrumented timing recorder, if configured."""
+        return self._timing_recorder
 
     @property
     def state(self) -> ConnectionState:
@@ -275,6 +282,7 @@ class AsyncIQOption:
             connect_factory=self._connect_factory,
             monitor=self.monitor,
             diagnostics=self._diagnostics,
+            timing_recorder=self._timing_recorder,
         )
         self._ws = ws
 
@@ -482,6 +490,13 @@ class AsyncIQOption:
             expected_instrument=canonical,
             is_historical=True,
         )
+        if self._timing_recorder is not None:
+            t_validated = time.perf_counter_ns()
+            self._timing_recorder.record_candle_validated(
+                t_validated,
+                len(candles),
+                is_complete=bool(candles and candles[-1].is_complete),
+            )
         return CandleFetchResult(
             symbol=canonical,
             size=resolved_size,

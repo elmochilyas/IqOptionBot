@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -12,8 +13,16 @@ from rich.table import Table
 
 from iqoption_research.timing.blitz_audit import audit_blitz_market_evidence
 from iqoption_research.timing.feasibility import run_feasibility_assessment
+from iqoption_research.timing.pipeline_audit import audit_full_collection_pipeline
 from iqoption_research.timing.protocol import get_supervised_protocol_spec
 from iqoption_research.timing.reconstruction import reconstruct_all_timing_evidence
+from iqoption_research.timing.replay import OfflineTimingReplayHarness
+from iqoption_research.timing.supervised_session import (
+    HARD_MAX_CANDLE_CYCLES,
+    HARD_MAX_DURATION_SECONDS,
+    SupervisedSessionConfig,
+    SupervisedSessionRunner,
+)
 
 app = typer.Typer(
     help="Offline timing diagnostics, timestamp reconstruction, and acquisition feasibility audits."
@@ -324,3 +333,254 @@ def protocol_command(
         )
     )
     console.print(json.dumps(spec, indent=2))
+
+
+@app.command(
+    "pipeline-audit",
+    help="Audit all pipeline stages from broker response to durable journal commit.",
+)
+def pipeline_audit_command(
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only"),
+) -> None:
+    audit_data = audit_full_collection_pipeline()
+
+    if json_output:
+        typer.echo(json.dumps(audit_data, indent=2))
+        return
+
+    console.print(
+        Panel(
+            "[bold cyan]Full Data Pipeline Timing & Timestamp Audit[/bold cyan]\n"
+            "Decomposition of lifecycle stages from broker emission to SQLite journal commitment.",
+            title="Pipeline Audit",
+            border_style="cyan",
+        )
+    )
+
+    table = Table(title="Pipeline Stages Decomposition", border_style="blue")
+    table.add_column("Stage ID", style="bold yellow")
+    table.add_column("Stage Name", style="bold")
+    table.add_column("Code Location", style="dim")
+    table.add_column("Typical Latency", justify="right")
+    table.add_column("Existing Timestamps", style="green")
+    table.add_column("Missing / Uninstrumented", style="red")
+
+    for s in audit_data["stages"]:
+        existing = ", ".join(t["name"] for t in s["existing_timestamps"]) or "(none)"
+        missing = ", ".join(t["name"] for t in s["missing_timestamps"]) or "(none)"
+        table.add_row(
+            s["stage_id"],
+            s["stage_name"],
+            s["code_location"],
+            f"{s['typical_latency_ms']:.1f} ms",
+            existing,
+            missing,
+        )
+    console.print(table)
+
+    summary_table = Table(title="Epistemic Classification Breakdown", border_style="magenta")
+    summary_table.add_column("Classification", style="bold")
+    summary_table.add_column("Count", justify="right")
+    for k, v in audit_data["epistemic_breakdown"].items():
+        summary_table.add_row(k.replace("_", " ").title(), str(v))
+    console.print(summary_table)
+
+
+@app.command(
+    "replay",
+    help="Run deterministic offline timing replay simulations across 10 failure scenarios.",
+)
+def replay_command(
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only"),
+) -> None:
+    harness = OfflineTimingReplayHarness()
+    results = harness.run_all_scenarios()
+
+    if json_output:
+        typer.echo(json.dumps([r.to_dict() for r in results], indent=2))
+        return
+
+    console.print(
+        Panel(
+            "[bold cyan]Offline Timing Simulation & Replay Harness[/bold cyan]\n"
+            "Evaluating fail-closed invariants across 10 edge, delay, and corruption scenarios.",
+            title="Timing Replay",
+            border_style="cyan",
+        )
+    )
+
+    table = Table(title="Scenario Verification Matrix", border_style="green")
+    table.add_column("Scenario", style="bold yellow")
+    table.add_column("Expected", justify="center")
+    table.add_column("Actual Verdict", justify="center")
+    table.add_column("Gate Satisfied?", justify="center")
+    table.add_column("Delivery Offset", justify="right")
+    table.add_column("Pipeline Latency", justify="right")
+    table.add_column("Safety Passed?", justify="center")
+
+    all_passed = True
+    for r in results:
+        gate_str = "[green]YES[/green]" if r.phase30_gate_satisfied else "[red]NO[/red]"
+        safety_str = (
+            "[bold green]PASS[/bold green]"
+            if r.passed_safety_invariants
+            else "[bold red]FAIL[/bold red]"
+        )
+        if not r.passed_safety_invariants:
+            all_passed = False
+
+        off_str = (
+            f"{r.broker_delivery_offset_ms:.1f} ms"
+            if r.broker_delivery_offset_ms is not None
+            else "-"
+        )
+        pipe_str = (
+            f"{r.local_pipeline_total_ms:.1f} ms" if r.local_pipeline_total_ms is not None else "-"
+        )
+
+        table.add_row(
+            r.scenario_name,
+            r.expected_verdict,
+            r.actual_verdict,
+            gate_str,
+            off_str,
+            pipe_str,
+            safety_str,
+        )
+    console.print(table)
+
+    if all_passed:
+        console.print(
+            Panel(
+                "[bold green]All 10 replay scenarios passed safety invariants.[/bold green]\n"
+                "System verified to fail closed on late candles, incomplete bars, duplicate "
+                "frames, clock jumps, and causality violations.",
+                title="Simulation Status",
+                border_style="green",
+            )
+        )
+    else:
+        console.print(
+            Panel(
+                "[bold red]One or more simulation scenarios failed invariants.[/bold red]",
+                title="Simulation Failure",
+                border_style="red",
+            )
+        )
+
+
+@app.command(
+    "measure",
+    help="Bounded operator-supervised measurement command (max 300s, max 5 cycles).",
+)
+def measure_command(
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help="Enable live operator-supervised mode (interactive prompt; zero orders)",
+    ),
+    yes_i_understand: bool = typer.Option(
+        False,
+        "--yes-i-understand",
+        help="Explicit confirmation that operator is present and understands measurement bounds",
+    ),
+    simulation: bool = typer.Option(
+        False,
+        "--simulation",
+        help="Run bounded measurement in safe offline simulation mode",
+    ),
+    duration: int = typer.Option(
+        300,
+        "--duration",
+        help=f"Maximum duration in seconds (hard ceiling {HARD_MAX_DURATION_SECONDS}s)",
+    ),
+    max_candles: int = typer.Option(
+        5,
+        "--max-candles",
+        help=f"Maximum candle cycles to observe (hard ceiling {HARD_MAX_CANDLE_CYCLES})",
+    ),
+    output: Path = typer.Option(
+        Path("data/phase32/supervised_timing_evidence.json"),
+        "--output",
+        help="Path to persist the immutable timing evidence registry",
+    ),
+    project_dir: Path = typer.Option(None, "--project-dir", help="Project root directory"),
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only"),
+) -> None:
+    root = project_dir or _project_root()
+
+    # Determine execution mode
+    if live:
+        if not yes_i_understand:
+            console.print(
+                "[bold red]Error:[/bold red] Live measurement requires explicit operator "
+                "confirmation flag: [yellow]--yes-i-understand[/yellow]."
+            )
+            raise typer.Exit(code=1)
+        sim_mode = False
+    else:
+        # Default to safe offline simulation mode
+        sim_mode = True
+        _ = simulation
+
+    config = SupervisedSessionConfig(
+        symbol="EURUSD",
+        candle_size_seconds=60,
+        max_duration_seconds=min(duration, HARD_MAX_DURATION_SECONDS),
+        max_candle_cycles=min(max_candles, HARD_MAX_CANDLE_CYCLES),
+        live_mode=live,
+        simulation_mode=sim_mode,
+        operator_confirmed=yes_i_understand if live else True,
+        output_destination=output,
+        project_root=root,
+    )
+
+    runner = SupervisedSessionRunner(config)
+    registry = asyncio.run(runner.execute())
+
+    if json_output:
+        typer.echo(json.dumps(registry.to_dict(), indent=2))
+        return
+
+    console.print(
+        Panel(
+            f"[bold cyan]Timing Measurement Evidence Registry Preserved[/bold cyan]\n"
+            f"Session ID: [yellow]{registry.session_id}[/yellow]\n"
+            f"Mode: [bold]{registry.operational_mode}[/bold]\n"
+            f"Destination: [dim]{output}[/dim]\n"
+            f"Integrity Hash: [green]{registry.integrity_hash}[/green]",
+            title="Measurement Summary",
+            border_style="cyan",
+        )
+    )
+
+    table = Table(title="Observed Candle Cycles", border_style="blue")
+    table.add_column("Cycle", justify="center")
+    table.add_column("Nominal Close (F)", justify="center")
+    table.add_column("Gate Verdict", justify="center")
+    table.add_column("15s Gate?", justify="center")
+    table.add_column("Delivery Offset", justify="right")
+    table.add_column("Pipeline Latency", justify="right")
+    table.add_column("Total Latency", justify="right")
+
+    for obs in registry.observations:
+        g_str = (
+            "[green]PASS[/green]" if obs["phase30_gate_satisfied"] else "[bold red]FAIL[/bold red]"
+        )
+        lats = obs.get("latencies_ms", {})
+        table.add_row(
+            str(obs["observation_index"]),
+            str(obs["feature_close_F"]),
+            obs["gate_verdict"],
+            g_str,
+            f"{lats.get('broker_delivery_offset_ms', 0):.1f} ms"
+            if "broker_delivery_offset_ms" in lats
+            else "-",
+            f"{lats.get('local_pipeline_total_ms', 0):.1f} ms"
+            if "local_pipeline_total_ms" in lats
+            else "-",
+            f"{lats.get('close_to_commit_total_ms', 0):.1f} ms"
+            if "close_to_commit_total_ms" in lats
+            else "-",
+        )
+    console.print(table)

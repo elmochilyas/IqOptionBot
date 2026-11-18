@@ -1,0 +1,136 @@
+{
+  "phase": 32,
+  "title": "Real-Time Data Timing Feasibility Assessment & Horizon Scaling Analysis",
+  "generated_at_utc": "2026-11-18T19:15:00Z",
+  "research_posture": {
+    "conclusion": "NO_DEMONSTRATED_EDGE",
+    "model_development_status": "PAUSED",
+    "holdout_protection": "SEALED_688_CANDLE_HOLDOUT_INTACT",
+    "broker_orders": 0,
+    "credentials_stored": false
+  },
+  "frozen_contract_evaluation": {
+    "contract_id": "EURUSD_DELAYED_CONDITIONAL_DIRECTION_V1",
+    "frozen_gate": "F <= data_observed <= decision <= durable_commit <= F+15 seconds",
+    "gate_relaxation_allowed": false,
+    "empirical_compliance_cold_batch": "0.0% (0 / 6 historical checkpoints met requirement; offsets 26.8s - 44.0s)",
+    "current_verified_workflow_status": "DEFINITIVE_NO_GO"
+  },
+  "architectural_latency_models": [
+    {
+      "architecture": "COLD_CLI_BATCH_COLLECTION",
+      "codebase_status": "VERIFIED_IMPLEMENTATION",
+      "safety_compliance": "READ_ONLY_COMPLIANT",
+      "stages_ms": {
+        "process_startup": 2700.0,
+        "tls_auth_login": 5000.0,
+        "websocket_sync": 3000.0,
+        "broker_delivery_assumed": 1500.0,
+        "wire_transit": 120.0,
+        "parsing_validation": 250.0,
+        "parquet_disk_persistence": 2000.0,
+        "causal_feature_computation": 25.0,
+        "model_inference": 12.0,
+        "sqlite_journal_commit": 8.0
+      },
+      "total_typical_ms": 14615.0,
+      "total_worst_case_ms": 23170.0,
+      "compliance_probability": 0.0,
+      "verdict": "DEFINITIVE_NO_GO"
+    },
+    {
+      "architecture": "WARM_BACKGROUND_POLLING_DAEMON",
+      "codebase_status": "UNIMPLEMENTED_HYPOTHETICAL_MODEL",
+      "safety_compliance": "REQUIRES_SCOPE_EXPANSION",
+      "stages_ms": {
+        "process_startup": 0.0,
+        "tls_auth_login": 0.0,
+        "websocket_sync": 0.0,
+        "broker_delivery_assumed": 1500.0,
+        "wire_transit": 120.0,
+        "parsing_validation": 40.0,
+        "in_memory_feature_cache": 250.0,
+        "causal_feature_computation": 20.0,
+        "model_inference": 12.0,
+        "sqlite_journal_commit": 8.0
+      },
+      "total_typical_ms": 1950.0,
+      "total_worst_case_ms": 4200.0,
+      "compliance_probability": "UNVERIFIED_MODEL_DEPENDS_ON_BROKER_EMISSION_DELAY",
+      "verdict": "HYPOTHETICAL_FEASIBILITY_UNPROVEN"
+    },
+    {
+      "architecture": "STREAMING_WEBSOCKET_CANDLE_GENERATED",
+      "codebase_status": "UNIMPLEMENTED_HYPOTHETICAL_MODEL",
+      "safety_compliance": "REQUIRES_SCOPE_EXPANSION",
+      "stages_ms": {
+        "process_startup": 0.0,
+        "tls_auth_login": 0.0,
+        "websocket_sync": 0.0,
+        "broker_delivery_assumed": 1500.0,
+        "wire_transit": 120.0,
+        "parsing_validation": 15.0,
+        "rolling_feature_buffer": 50.0,
+        "causal_feature_computation": 15.0,
+        "model_inference": 12.0,
+        "sqlite_journal_commit": 8.0
+      },
+      "total_typical_ms": 1720.0,
+      "total_worst_case_ms": 2790.0,
+      "compliance_probability": "UNVERIFIED_MODEL_DEPENDS_ON_BROKER_EMISSION_DELAY",
+      "verdict": "HYPOTHETICAL_FEASIBILITY_UNPROVEN"
+    }
+  ],
+  "alternative_horizon_scaling_evaluations": [
+    {
+      "timeframe_label": "1m (Current Phase 30)",
+      "timeframe_seconds": 60,
+      "cold_latency_fraction": 0.25,
+      "warm_latency_fraction": 0.0325,
+      "available_pre_entry_seconds": 120,
+      "cold_pre_entry_margin_seconds": -15.0,
+      "statistical_signal_quality": "EXTREME_MARTINGALE_NOISE",
+      "feasibility_verdict": "DEFINITIVE_NO_GO_COLD_BATCH",
+      "scientific_qualification": "Latency consumes 25% of candle duration. Model predictions 100% SKIP."
+    },
+    {
+      "timeframe_label": "5m (Conceptual Alternative)",
+      "timeframe_seconds": 300,
+      "cold_latency_fraction": 0.05,
+      "warm_latency_fraction": 0.0065,
+      "available_pre_entry_seconds": 300,
+      "cold_pre_entry_margin_seconds": 285.0,
+      "statistical_signal_quality": "UNVERIFIED_LONGER_HORIZON_HYPOTHESIS",
+      "feasibility_verdict": "FEASIBLE_ALTERNATIVE_CONTRACT",
+      "scientific_qualification": "Operational flexibility is high (+285s margin), but predictive edge is completely unproven (NO_DEMONSTRATED_EDGE)."
+    },
+    {
+      "timeframe_label": "15m (Conceptual Alternative)",
+      "timeframe_seconds": 900,
+      "cold_latency_fraction": 0.0167,
+      "warm_latency_fraction": 0.0022,
+      "available_pre_entry_seconds": 900,
+      "cold_pre_entry_margin_seconds": 885.0,
+      "statistical_signal_quality": "UNVERIFIED_LONGER_HORIZON_HYPOTHESIS",
+      "feasibility_verdict": "FEASIBLE_ALTERNATIVE_CONTRACT",
+      "scientific_qualification": "Operational flexibility is high (+885s margin), but predictive edge is completely unproven (NO_DEMONSTRATED_EDGE)."
+    },
+    {
+      "timeframe_label": "1h (Conceptual Alternative)",
+      "timeframe_seconds": 3600,
+      "cold_latency_fraction": 0.0042,
+      "warm_latency_fraction": 0.0005,
+      "available_pre_entry_seconds": 3600,
+      "cold_pre_entry_margin_seconds": 3585.0,
+      "statistical_signal_quality": "UNVERIFIED_LONGER_HORIZON_HYPOTHESIS",
+      "feasibility_verdict": "FEASIBLE_ALTERNATIVE_CONTRACT",
+      "scientific_qualification": "Macro factors dominate; latency negligible; predictive edge unproven."
+    }
+  ],
+  "verdict_summary": {
+    "phase30_1m_cold_workflow": "NO-GO (100% Failure Rate under verified cold CLI)",
+    "timing_instrumentation_system": "GO (Production-ready microsecond instrumentation & offline replay)",
+    "operator_supervised_measurement": "GO (Bounded foreground command safely implemented behind authorization gate)",
+    "prospective_live_trading": "STRICTLY_FORBIDDEN (NO_DEMONSTRATED_EDGE, zero broker execution permitted)"
+  }
+}

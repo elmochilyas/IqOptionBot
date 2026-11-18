@@ -1,0 +1,157 @@
+{
+  "session_id": "meas_b268abd772d2_1795029285",
+  "session_created_at_utc": "2026-11-18T19:14:45.712818+00:00",
+  "instrumentation_version": "PHASE_32_TIMING_V1",
+  "operational_mode": "OFFLINE_SIMULATION",
+  "symbol": "EURUSD",
+  "candle_size_seconds": 60,
+  "code_fingerprints": {
+    "taxonomy.py": "a968d52ed62d8cb9e9b0519b6fe25064ef60360bd3d3825e58bced0a4fb65ca4",
+    "instrumentation.py": "157ee28d813ebd085669522de5efe791342ee00cfff281d95691b831f164e88e",
+    "pipeline_audit.py": "11ac536d6e62ce86b42f358fdaa0b17f9736fc424738bd35377a60897e0a2121",
+    "replay.py": "f078919b2094c51694c0e038feddf1aebef047991ab0d0ac2ff724612476df20",
+    "evidence.py": "8023f28c55836d77a3d0f699f3408bec0cb26d5600bb769573fd4838ce2db052",
+    "supervised_session.py": "1eeef0e6426633193a2ea89ed347fa29b8a799edcdf1bb169c5efe36a3a5afd8",
+    "feasibility.py": "dbce6996027de39825bbc073bb11a6b590a9b1d6f1e5567b7063d1d4ab8b257c"
+  },
+  "clock_discipline": {
+    "anchor_utc_ns": 1794990382206190300,
+    "ntp_uncertainty_ns": 25000000,
+    "ntp_uncertainty_ms": 25.0,
+    "broker_skew_ns": 0,
+    "broker_skew_ms": 0.0,
+    "broker_rtt_ns": 0,
+    "broker_rtt_ms": 0.0,
+    "total_uncertainty_ms": 25.0,
+    "clock_steps_detected_count": 0
+  },
+  "observations": [
+    {
+      "session_id": "meas_b268abd772d2_1795029285",
+      "observation_index": 1,
+      "symbol": "EURUSD",
+      "candle_size_seconds": 60,
+      "feature_close_F": 1795000060,
+      "feature_close_F_ns": 1795000060000000000,
+      "feature_close_F_iso": "2026-11-18T11:07:40+00:00",
+      "stages": {},
+      "latencies_ms": {
+        "broker_delivery_offset_ms": 3200.0,
+        "local_pipeline_total_ms": 42.0,
+        "close_to_commit_total_ms": 3242.0
+      },
+      "clock_uncertainty_ms": 0.0,
+      "clock_step_detected": false,
+      "phase30_gate_satisfied": true,
+      "gate_verdict": "PASS",
+      "rejection_reason": null,
+      "raw_probability": null,
+      "calibrated_probability": null,
+      "decision": "SKIP",
+      "integrity_hash": "c6a4f79c8d1c52a6ed14a50f2d23e6b2d623a2ddc15a6d6dfb65c6041bb76d46"
+    },
+    {
+      "session_id": "meas_b268abd772d2_1795029285",
+      "observation_index": 2,
+      "symbol": "EURUSD",
+      "candle_size_seconds": 60,
+      "feature_close_F": 1795000120,
+      "feature_close_F_ns": 1795000120000000000,
+      "feature_close_F_iso": "2026-11-18T11:08:40+00:00",
+      "stages": {},
+      "latencies_ms": {
+        "broker_delivery_offset_ms": 18500.0,
+        "local_pipeline_total_ms": 35.0,
+        "close_to_commit_total_ms": 18535.0
+      },
+      "clock_uncertainty_ms": 0.0,
+      "clock_step_detected": false,
+      "phase30_gate_satisfied": false,
+      "gate_verdict": "FAIL_GATE_OVERRUN",
+      "rejection_reason": "OUTSIDE_15_SECOND_ACQUISITION_GATE",
+      "raw_probability": null,
+      "calibrated_probability": null,
+      "decision": "SKIP",
+      "integrity_hash": "987e6616fd4e11e51e5acc01fdead0c6e08b55519bb575f3907429e44f38a8db"
+    },
+    {
+      "session_id": "meas_b268abd772d2_1795029285",
+      "observation_index": 3,
+      "symbol": "EURUSD",
+      "candle_size_seconds": 60,
+      "feature_close_F": 1795000180,
+      "feature_close_F_ns": 1795000180000000000,
+      "feature_close_F_iso": "2026-11-18T11:09:40+00:00",
+      "stages": {},
+      "latencies_ms": {
+        "broker_delivery_offset_ms": 2000.0
+      },
+      "clock_uncertainty_ms": 0.0,
+      "clock_step_detected": false,
+      "phase30_gate_satisfied": false,
+      "gate_verdict": "FAIL_REJECTED",
+      "rejection_reason": "INCOMPLETE_BAR_REJECTED",
+      "raw_probability": null,
+      "calibrated_probability": null,
+      "decision": "SKIP",
+      "integrity_hash": "7822a0543f3865077c9ce633a203e6aa0798ede6c5bd2c73637458f87f0fdc04"
+    },
+    {
+      "session_id": "meas_b268abd772d2_1795029285",
+      "observation_index": 4,
+      "symbol": "EURUSD",
+      "candle_size_seconds": 60,
+      "feature_close_F": 1795000240,
+      "feature_close_F_ns": 1795000240000000000,
+      "feature_close_F_iso": "2026-11-18T11:10:40+00:00",
+      "stages": {},
+      "latencies_ms": {},
+      "clock_uncertainty_ms": 0.0,
+      "clock_step_detected": false,
+      "phase30_gate_satisfied": false,
+      "gate_verdict": "FAIL_REJECTED",
+      "rejection_reason": "DUPLICATE_PREVENTED",
+      "raw_probability": null,
+      "calibrated_probability": null,
+      "decision": "SKIP",
+      "integrity_hash": "d090f1f319d848f1da6422aa790b6ad3f1a9736d140a12d1d86c5d5b6408af4d"
+    },
+    {
+      "session_id": "meas_b268abd772d2_1795029285",
+      "observation_index": 5,
+      "symbol": "EURUSD",
+      "candle_size_seconds": 60,
+      "feature_close_F": 1795000300,
+      "feature_close_F_ns": 1795000300000000000,
+      "feature_close_F_iso": "2026-11-18T11:11:40+00:00",
+      "stages": {},
+      "latencies_ms": {
+        "broker_delivery_offset_ms": 2000.0
+      },
+      "clock_uncertainty_ms": 0.0,
+      "clock_step_detected": false,
+      "phase30_gate_satisfied": false,
+      "gate_verdict": "FAIL_CLOCK_STEP_DETECTED",
+      "rejection_reason": "CLOCK_STEP_OR_ROLLBACK_DETECTED",
+      "raw_probability": null,
+      "calibrated_probability": null,
+      "decision": "SKIP",
+      "integrity_hash": "30b944b7e79057d9384c309c3e4ecd22e023c396b5bd57c626222a31ac882608"
+    }
+  ],
+  "summary": {
+    "total_observations": 5,
+    "phase30_gate_compliant_count": 1,
+    "phase30_gate_compliance_pct": 20.0,
+    "rejection_reasons_breakdown": {
+      "OUTSIDE_15_SECOND_ACQUISITION_GATE": 1,
+      "INCOMPLETE_BAR_REJECTED": 1,
+      "DUPLICATE_PREVENTED": 1,
+      "CLOCK_STEP_OR_ROLLBACK_DETECTED": 1
+    },
+    "median_broker_delivery_offset_ms": 2600.0,
+    "median_local_pipeline_total_ms": 38.5,
+    "median_close_to_commit_total_ms": 10888.5
+  },
+  "integrity_hash": "697d1b90b1ff9465da057f3a86d6c7dc736a0f6f02058ba68f18759e29114f55"
+}

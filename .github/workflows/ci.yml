@@ -27,6 +27,8 @@ jobs:
       OPENAI_API_KEY: ""
       CI: "true"
       PYTHONUNBUFFERED: "1"
+      TERM: "dumb"
+      NO_COLOR: "1"
 
     steps:
       - name: Checkout repository

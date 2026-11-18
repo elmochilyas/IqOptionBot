@@ -108,8 +108,33 @@ def build_legacy_workspace(root: Path, project: Path) -> Path:
     source = project / "data/phase13/candidate_models/candidate_h1_rf"
     shutil.copytree(source, root / "data/phase13/candidate_models/candidate_h1_rf")
     reservation = root / "data/phase11/confirmation_state.json"
-    reservation.parent.mkdir(parents=True)
-    shutil.copyfile(project / "data/phase11/confirmation_state.json", reservation)
+    reservation.parent.mkdir(parents=True, exist_ok=True)
+    source_reservation = project / "data/phase11/confirmation_state.json"
+    if source_reservation.exists():
+        shutil.copyfile(source_reservation, reservation)
+    else:
+        reservation.write_text(
+            json.dumps(
+                {
+                    "confirmation_dataset_fingerprint": None,
+                    "confirmation_days": 14,
+                    "confirmation_end_ts": None,
+                    "confirmation_start_ts": None,
+                    "evaluated_at_utc": None,
+                    "evaluation_started_at_utc": None,
+                    "evaluation_status": "RESERVED",
+                    "full_dataset_fingerprint_at_evaluation": None,
+                    "prior_evaluated_dataset_fingerprint": (
+                        "70d8b1e906d5b76f97b93346ad4399e23abe1630dca66e14b1a1828a617e6632"
+                    ),
+                    "prior_evaluation_cutoff_ts": 1794607200,
+                    "prior_evaluation_cutoff_utc": "2026-11-13T22:00:00+00:00",
+                    "schema_version": 1,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     (root / "SYNTHETIC_TEST_FIXTURE_ONLY.json").write_text(
         json.dumps({
             "synthetic": True,

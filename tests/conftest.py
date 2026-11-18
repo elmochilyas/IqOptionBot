@@ -1,9 +1,13 @@
 """Pytest configuration, shared fixtures, and offline mocks."""
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
+
+# Normalize terminal output for CLI testing to prevent ANSI styling artifacts
+os.environ.setdefault("TERM", "dumb")
 
 import pytest
 

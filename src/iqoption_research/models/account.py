@@ -24,6 +24,9 @@ class PracticeStatus(Enum):
     """
 
     VERIFIED_ACTIVE_PRACTICE = "verified_active_practice"
+    VERIFIED_ACTIVE_REAL = "verified_active_real"
+    CONFLICTING_ACCOUNT_INDICATORS = "conflicting_account_indicators"
+    MISSING_ACCOUNT_DATA = "missing_account_data"
     ACTIVE_REAL = "active_real"
     ACTIVE_UNKNOWN = "active_unknown"
     NO_PRACTICE_BALANCE = "no_practice_balance"
@@ -175,17 +178,12 @@ class Balance:
         currency = str(data.get("currency") or "USD").strip()
         is_active = active_balance_id is not None and str(active_balance_id).strip() == balance_id
 
-        raw_is_active: bool | None = None
-        if "is_active" in data:
-            raw_is_active = bool(data["is_active"])
-        elif "active" in data:
-            raw_is_active = bool(data["active"])
+        def flag(primary: str, alias: str) -> bool | None:
+            value = data.get(primary, data.get(alias))
+            return value if isinstance(value, bool) else None
 
-        is_default: bool | None = None
-        if "is_default" in data:
-            is_default = bool(data["is_default"])
-        elif "default" in data:
-            is_default = bool(data["default"])
+        raw_is_active = flag("is_active", "active")
+        is_default = flag("is_default", "default")
 
         return cls(
             id=balance_id,
@@ -259,13 +257,78 @@ class Profile:
         )
 
 
+class WalletSource(Enum):
+    PROFILE = "profile"
+    LIST_ACTIVE = "get-balances.active"
+    LIST_DEFAULT = "get-balances.default"
+    PUSH_ACTIVE = "balances.active"
+    PUSH_DEFAULT = "balances.default"
+    CHANGE = "balance-changed"
+    # Only the offline connector owns and knows its effective session wallet.
+    SIMULATED_SESSION = "simulated_session"
+
+
+@dataclass(frozen=True, slots=True)
+class WalletIndicator:
+    source: WalletSource
+    balance_id: str = field(repr=False)
+
+
+def wallet_decision(
+    balances: tuple[Balance, ...], indicators: tuple[WalletIndicator, ...], *, complete: bool
+) -> PracticeVerification:
+    """Compare observations from one connection. No live source proves session scope."""
+    ids = {item.balance_id for item in indicators}
+    ledger = {balance.id: balance.type for balance in balances}
+    session = next((i for i in indicators if i.source is WalletSource.SIMULATED_SESSION), None)
+    if not complete or not balances:
+        status = PracticeStatus.MISSING_ACCOUNT_DATA
+    elif len(ids) > 1 or len(ledger) != len(balances):
+        status = PracticeStatus.CONFLICTING_ACCOUNT_INDICATORS
+    elif session and ledger.get(session.balance_id) == AccountType.PRACTICE:
+        status = PracticeStatus.VERIFIED_ACTIVE_PRACTICE
+    elif session and ledger.get(session.balance_id) == AccountType.REAL:
+        status = PracticeStatus.VERIFIED_ACTIVE_REAL
+    else:
+        status = PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
+
+    return PracticeVerification(
+        status=status,
+        message={
+            PracticeStatus.MISSING_ACCOUNT_DATA: "Account inventory or profile is missing.",
+            PracticeStatus.CONFLICTING_ACCOUNT_INDICATORS: (
+                "Wallet indicators disagree or inventory has duplicate IDs."
+            ),
+            PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED: (
+                "Wallet selection UNVERIFIED. No supported live message proves session scope."
+            ),
+            PracticeStatus.VERIFIED_ACTIVE_PRACTICE: "Session selection verified as PRACTICE.",
+            PracticeStatus.VERIFIED_ACTIVE_REAL: "Session selection verified as REAL.",
+        }[status],
+        active_balance_id=session.balance_id if session else None,
+        practice_balance_ids=tuple(b.id for b in balances if b.is_practice),
+        decision_path=(status.name,),
+    )
+
+
+def profile_wallet_indicators(raw: dict[str, Any]) -> tuple[WalletIndicator, ...]:
+    current = raw.get("current_balance")
+    values = [raw.get(k) for k in ("balance_id", "balanceId", "active_balance_id")]
+    if isinstance(current, dict):
+        values.append(current.get("id"))
+    return tuple(
+        WalletIndicator(WalletSource.PROFILE, str(value).strip())
+        for value in values
+        if type(value) in (str, int) and str(value).strip()
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AccountStatus:
     """Complete account status including profile and all balances.
 
-    The `active_balance` is the one matching the server's current
-    `balance_id`. This can change if the user switches modes in
-    another session. We report it but do not rely on it.
+    The legacy active_balance field matches the observed wallet ID. Its
+    session scope is unknown. Only practice_verification authorizes research.
     """
 
     profile: Profile
@@ -273,6 +336,7 @@ class AccountStatus:
     active_balance: Balance | None
     practice_balance: Balance | None
     real_balance: Balance | None
+    indicators: tuple[WalletIndicator, ...] = ()
 
     @classmethod
     def from_raw(
@@ -315,8 +379,7 @@ class AccountStatus:
                 real_balance = balance
 
         if not balances:
-            # Fallback: if server profile provided an authoritative active balance
-            # with both identifier and balance type, represent that balance safely
+            # A typed profile wallet supplies inventory only.
             prof_bal_id = (
                 profile_data.get("balance_id")
                 or profile_data.get("balanceId")
@@ -336,7 +399,7 @@ class AccountStatus:
                             "amount": profile_data.get("balance", 0.0),
                             "currency": profile_data.get("currency", "USD"),
                         },
-                        active_balance_id=active_balance_id or str(prof_bal_id),
+                        active_balance_id=active_balance_id,
                     )
                     balances.append(single_bal)
                     if single_bal.is_active:
@@ -354,6 +417,7 @@ class AccountStatus:
             active_balance=active_balance,
             practice_balance=practice_balance,
             real_balance=real_balance,
+            indicators=profile_wallet_indicators(profile_data),
         )
 
     @property
@@ -366,113 +430,10 @@ class AccountStatus:
 
     @property
     def practice_verified(self) -> bool:
-        """True only if active balance IS confirmed as PRACTICE (type 4)."""
-        return (
-            self.active_balance is not None
-            and self.active_balance.is_practice
-            and self.active_balance.type == AccountType.PRACTICE
-        )
+        return self.practice_verification().is_verified
 
-    def practice_verification(
-        self,
-        *,
-        has_authoritative_indicator: bool = True,
-    ) -> PracticeVerification:
-        """Classify practice status without ever assuming or switching.
-
-        If ``has_authoritative_indicator`` is False, the broker has not provided an
-        authoritative session-specific active account indicator (e.g., the session merely
-        defaulted to the user's primary registration wallet), so we return
-        PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED and fail closed.
-        """
-        practice_ids = tuple(
-            b.id for b in self.balances if b.is_practice and b.type == AccountType.PRACTICE
-        )
-        if not self.balances:
-            return PracticeVerification(
-                status=PracticeStatus.NO_BALANCES,
-                message="No balances were returned by the server.",
-                decision_path=("Evaluated balances: empty payload returned from server.",),
-            )
-        if not practice_ids:
-            return PracticeVerification(
-                status=PracticeStatus.NO_PRACTICE_BALANCE,
-                message="Account has no PRACTICE balance.",
-                active_balance_id=(self.active_balance.id if self.active_balance else None),
-                decision_path=(
-                    f"Evaluated {len(self.balances)} balance(s); zero PRACTICE balances found.",
-                ),
-            )
-        if not has_authoritative_indicator:
-            active_id = self.active_balance.id if self.active_balance else None
-            return PracticeVerification(
-                status=PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED,
-                message=(
-                    "A PRACTICE balance exists, but the broker did not provide an authoritative "
-                    "session-specific active account indicator. The session defaulted to the "
-                    "server's primary wallet. Account selection is UNVERIFIED; live execution "
-                    "is blocked."
-                ),
-                active_balance_id=active_id,
-                practice_balance_ids=practice_ids,
-                decision_path=(
-                    f"Discovered {len(practice_ids)} PRACTICE balance(s).",
-                    f"Observed server default balance '{active_id}'.",
-                    "Broker lacks an authoritative session-specific active balance indicator.",
-                    "Classified as ACCOUNT_SELECTION_UNVERIFIED (fail closed).",
-                ),
-            )
-        if self.practice_verified:
-            active = self.active_balance
-            if active is None:  # defensive; practice_verified implies not None
-                raise RuntimeError("practice_verified without an active balance")
-            return PracticeVerification(
-                status=PracticeStatus.VERIFIED_ACTIVE_PRACTICE,
-                message=(
-                    "Server-reported active balance is PRACTICE. Read-only research may proceed."
-                ),
-                active_balance_id=active.id,
-                practice_balance_ids=practice_ids,
-                decision_path=(
-                    f"Discovered PRACTICE balance '{active.id}'.",
-                    "Authoritative active balance confirmed as PRACTICE (type 4).",
-                    "Classified as VERIFIED_ACTIVE_PRACTICE.",
-                ),
-            )
-        if self.active_balance is not None and self.active_balance.is_real:
-            return PracticeVerification(
-                status=PracticeStatus.ACTIVE_REAL,
-                message=(
-                    "A PRACTICE balance exists, but the server-reported active "
-                    "account is REAL. Halting research operations; real trading account "
-                    "is active."
-                ),
-                active_balance_id=self.active_balance.id,
-                practice_balance_ids=practice_ids,
-                decision_path=(
-                    f"Discovered {len(practice_ids)} PRACTICE balance(s).",
-                    (
-                        f"Authoritative active balance confirmed as REAL "
-                        f"(id='{self.active_balance.id}', type=1)."
-                    ),
-                    "Classified as ACTIVE_REAL (fail closed).",
-                ),
-            )
-        return PracticeVerification(
-            status=PracticeStatus.ACTIVE_UNKNOWN,
-            message=(
-                "A PRACTICE balance exists, but the active trading account "
-                "could not be established as PRACTICE. Treat as UNVERIFIED; "
-                "the active account may be REAL."
-            ),
-            active_balance_id=(self.active_balance.id if self.active_balance else None),
-            practice_balance_ids=practice_ids,
-            decision_path=(
-                f"Discovered {len(practice_ids)} PRACTICE balance(s).",
-                "Active trading balance ID unresolved or unverified.",
-                "Classified as ACTIVE_UNKNOWN (fail closed).",
-            ),
-        )
+    def practice_verification(self) -> PracticeVerification:
+        return wallet_decision(self.balances, self.indicators, complete=True)
 
     def __repr__(self) -> str:
         active = self.active_balance

@@ -99,7 +99,7 @@ def test_account_status_practice_verification_unverified() -> None:
         active_balance_id="200",
     )
 
-    ver = status.practice_verification(has_authoritative_indicator=False)
+    ver = status.practice_verification()
     assert ver.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
     assert ver.is_verified is False
     assert len(ver.decision_path) > 0

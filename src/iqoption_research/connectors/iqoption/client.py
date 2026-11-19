@@ -373,9 +373,8 @@ class AsyncIQOption:
     async def get_account_status(self) -> AccountStatus:
         """Fetch profile and balances and build an explicit account status.
 
-        The server-reported active balance is used ONLY if the transport
-        actually observed one. Otherwise no balance is marked active and
-        practice status is reported as unverified.
+        Keep observed wallet matches separate from the provenance used to
+        classify selection. The legacy active_balance field has no authority.
         """
         ws = self._require_ready()
         profile = await ws.wait_for_profile(timeout=self._config.request_timeout)
@@ -399,6 +398,7 @@ class AsyncIQOption:
             active_balance=active_balance,
             practice_balance=practice_balance,
             real_balance=real_balance,
+            indicators=ws.wallet_indicators,
         )
 
     async def get_practice_verification(self) -> PracticeVerification:

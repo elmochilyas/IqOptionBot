@@ -223,18 +223,16 @@ class SupervisedSessionRunner:
         ) as client:
             client.assert_read_only()
             print("\n[1/4] Verifying broker account and wallet authority...")
-            status = await client.get_account_status()
-            practice_verif = status.practice_verification()
-            if not practice_verif.is_verified:
-                raise RuntimeError(
-                    f"Session aborted: Account is not PRACTICE verified ({practice_verif.message})"
-                )
 
-            if status.active_balance and not status.active_balance.is_practice:
-                raise RuntimeError(
-                    "Session aborted: Active wallet is not PRACTICE. Automated switching forbidden."
-                )
+            async def require_practice() -> None:
+                status = await client.get_account_status()
+                verification = status.practice_verification()
+                if not verification.is_verified:
+                    raise RuntimeError(
+                        f"Session aborted: {verification.status.name}. {verification.message}"
+                    )
 
+            await require_practice()
             print("      PRACTICE wallet verified successfully.")
             print("[2/4] Initializing clock discipline anchor and stability checks...")
             self.clock.check_clock_stability()
@@ -274,6 +272,7 @@ class SupervisedSessionRunner:
 
                     # We are in the post-close arrival window for candle F
                     print(f"\n      Observing F={F} (now={now_epoch}, offset={sec_in_minute}s)...")
+                    await require_practice()
                     obs = self.recorder.start_candle_observation(F)
                     obs.provenance = "OPERATOR_SUPERVISED_LIVE"
                     obs.is_synthetic = False

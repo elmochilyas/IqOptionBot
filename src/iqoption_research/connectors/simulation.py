@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from iqoption_research.market_data.candles import normalize_candles
@@ -20,6 +21,8 @@ from iqoption_research.market_data.validation import assess_data_quality
 from iqoption_research.models.account import (
     AccountStatus,
     AccountType,
+    WalletIndicator,
+    WalletSource,
 )
 from iqoption_research.models.connection import ConnectionState
 from iqoption_research.models.market import Candle, CandleSize
@@ -74,7 +77,10 @@ class SimulatedReadOnlyConnector:
                 "currency": "USD",
             }
         ]
-        return AccountStatus.from_raw(profile_data, balances_data, active_balance_id=balance_id)
+        status = AccountStatus.from_raw(profile_data, balances_data, active_balance_id=balance_id)
+        return replace(
+            status, indicators=(WalletIndicator(WalletSource.SIMULATED_SESSION, balance_id),)
+        )
 
     def _build_raw_candles(self, size: int, count: int, endtime: int) -> list[dict[str, object]]:
         rng = random.Random(self._seed)

@@ -103,7 +103,7 @@ def test_describe_account_contains_no_private_identifiers() -> None:
     assert isinstance(pv_desc, dict)
     assert "active_balance_id" not in pv_desc
     assert "practice_balance_ids" not in pv_desc
-    assert pv_desc["status"] == PracticeStatus.ACTIVE_REAL.value
+    assert pv_desc["status"] == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED.value
     assert pv_desc["is_verified"] is False
 
 
@@ -134,7 +134,7 @@ def test_practice_status_distinguishes_active_real_from_active_unknown() -> None
     # Active REAL
     status_real = AccountStatus.from_raw(profile_data, balances_data, active_balance_id="r1")
     ver_real = status_real.practice_verification()
-    assert ver_real.status == PracticeStatus.ACTIVE_REAL
+    assert ver_real.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
     assert ver_real.is_verified is False
 
     # Active UNKNOWN (unmatched ID)
@@ -142,7 +142,7 @@ def test_practice_status_distinguishes_active_real_from_active_unknown() -> None
         profile_data, balances_data, active_balance_id="missing_id"
     )
     ver_unknown = status_unknown.practice_verification()
-    assert ver_unknown.status == PracticeStatus.ACTIVE_UNKNOWN
+    assert ver_unknown.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
     assert ver_unknown.is_verified is False
 
 
@@ -237,6 +237,6 @@ async def test_probe_halts_when_active_account_is_real() -> None:
     mock_client.get_candles.assert_not_called()
 
     assert summary["practice_verified"] is False
-    assert summary["practice_status"] == PracticeStatus.ACTIVE_REAL.value
+    assert summary["practice_status"] == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED.value
     assert "candles" not in summary
     assert "PROBE HALTED" in str(summary.get("warning"))

@@ -99,6 +99,8 @@ class _PendingRequest:
     future: asyncio.Future[dict[str, Any]]
     name: str
     created_at: float
+    recv_mono_ns: int | None = None
+    parsed_mono_ns: int | None = None
 
 
 class IQOptionWebSocketClient:
@@ -113,6 +115,7 @@ class IQOptionWebSocketClient:
         connect_factory: ConnectFactory | None = None,
         monitor: ConnectionMonitor | None = None,
         diagnostics: ProtocolDiagnostics | None = None,
+        timing_recorder: Any | None = None,
     ) -> None:
         validate_wss_endpoint(wss_url)
         if not ssid:
@@ -123,6 +126,7 @@ class IQOptionWebSocketClient:
         self._connect_factory = connect_factory
         self._monitor = monitor
         self._diagnostics = diagnostics or ProtocolDiagnostics(enabled=self._config.diagnostics)
+        self._timing_recorder = timing_recorder
 
         self._ws: ClientConnection | None = None
         self._receive_task: asyncio.Task[None] | None = None
@@ -528,6 +532,8 @@ class IQOptionWebSocketClient:
             future=future, name=name, created_at=time.monotonic()
         )
         try:
+            if self._timing_recorder is not None:
+                self._timing_recorder.record_request_sent(request_id, name, time.perf_counter_ns())
             await self._send_raw({"name": name, "msg": msg, "request_id": request_id})
             return await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError as exc:
@@ -585,6 +591,7 @@ class IQOptionWebSocketClient:
             return
         try:
             async for raw in ws:
+                t_raw_recv = time.perf_counter_ns()
                 try:
                     message = decode_frame(raw)
                 except ValueError:
@@ -593,13 +600,19 @@ class IQOptionWebSocketClient:
                     if self._monitor is not None:
                         self._monitor.record_error("malformed_frame")
                     continue
+                t_frame_parsed = time.perf_counter_ns()
                 self.messages_rx += 1
                 if self._monitor is not None:
                     self._monitor.record_message_received()
                 self.last_message_at = time.monotonic()
                 logger.debug("WS <- %s", message.get("name"))
                 try:
-                    self._dispatch(message)
+                    self._dispatch(
+                        message,
+                        recv_mono_ns=t_raw_recv,
+                        parsed_mono_ns=t_frame_parsed,
+                        raw_payload_bytes=len(raw) if raw is not None else 0,
+                    )
                 except Exception as exc:  # noqa: BLE001 - one bad frame must not kill loop
                     self.errors += 1
                     err_name = str(message.get("name") if isinstance(message, dict) else "unknown")
@@ -615,7 +628,14 @@ class IQOptionWebSocketClient:
             logger.warning("Receive loop terminated: %s", type(exc).__name__)
             await self._handle_disconnect(DisconnectReason.PROTOCOL_ERROR)
 
-    def _dispatch(self, message: dict[str, Any]) -> None:
+    def _dispatch(
+        self,
+        message: dict[str, Any],
+        *,
+        recv_mono_ns: int | None = None,
+        parsed_mono_ns: int | None = None,
+        raw_payload_bytes: int = 0,
+    ) -> None:
         name = message.get("name")
         req_id = message.get("request_id") or ""
         msg = message.get("msg")
@@ -668,6 +688,16 @@ class IQOptionWebSocketClient:
             self._diagnostics.record_incoming(name, msg, handled=True)
             self._server_time_ns = _to_epoch_ns(message.get("msg"))
             self._server_time_synced_at = time.monotonic()
+            if self._timing_recorder is not None:
+                server_msg = message.get("msg")
+                if isinstance(server_msg, (int, float)):
+                    t_sync_recv = (
+                        recv_mono_ns if recv_mono_ns is not None else time.perf_counter_ns()
+                    )
+                    self._timing_recorder.clock.record_time_sync(
+                        broker_time_epoch_ms=server_msg,
+                        recv_mono_ns=t_sync_recv,
+                    )
             return
 
         # Correlated response for explicit get-profile request (exact outstanding ID only)
@@ -698,6 +728,22 @@ class IQOptionWebSocketClient:
             handled = True
             self._diagnostics.record_incoming(name or "correlated", msg, handled=True)
             pending = self._pending[req_id]
+            if recv_mono_ns is not None and parsed_mono_ns is not None:
+                pending.recv_mono_ns = recv_mono_ns
+                pending.parsed_mono_ns = parsed_mono_ns
+                if self._timing_recorder is not None:
+                    self._timing_recorder.record_correlated_frame(
+                        request_id=str(req_id),
+                        frame_name=str(name or "correlated"),
+                        recv_mono_ns=recv_mono_ns,
+                        parsed_mono_ns=parsed_mono_ns,
+                        payload_bytes=raw_payload_bytes,
+                    )
+                if isinstance(message, dict):
+                    message["_correlated_timing"] = {
+                        "recv_mono_ns": recv_mono_ns,
+                        "parsed_mono_ns": parsed_mono_ns,
+                    }
             if not pending.future.done():
                 pending.future.set_result(message)
             return

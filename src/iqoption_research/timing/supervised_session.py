@@ -81,6 +81,11 @@ class SupervisedSessionConfig:
                 "Live authenticated measurement requires explicit operator confirmation "
                 "flag (--yes-i-understand)."
             )
+        if self.live_mode and self.allow_overwrite:
+            raise ValueError(
+                "Live authenticated measurement cannot allow overwriting previous evidence "
+                "(--overwrite forbidden)."
+            )
 
 
 class SupervisedSessionRunner:
@@ -91,16 +96,20 @@ class SupervisedSessionRunner:
         self.config = config
         self.session_id = f"meas_{uuid.uuid4().hex[:12]}_{int(time.time())}"
         self.clock = ClockDiscipline()
+        prov = "OPERATOR_SUPERVISED_LIVE" if config.live_mode else "OFFLINE_SIMULATION"
+        synth = not config.live_mode
         self.recorder = TimingRecorder(
             self.session_id,
             clock=self.clock,
             symbol=config.symbol,
             candle_size_seconds=config.candle_size_seconds,
+            provenance=prov,
+            is_synthetic=synth,
         )
         # Guarantee unique output filename for live sessions to prevent overwriting observations
         if config.live_mode:
             dest = config.output_destination
-            if dest.is_dir() or dest.name == "supervised_timing_evidence.json":
+            if dest.is_dir() or "supervised_timing_evidence" in dest.name or dest.exists():
                 parent = dest if dest.is_dir() else dest.parent
                 self.output_destination = (
                     parent / f"supervised_timing_evidence_{self.session_id}.json"
@@ -135,10 +144,28 @@ class SupervisedSessionRunner:
         for idx, sc_fn in enumerate(scenarios, start=1):
             f_candle = f_base + (idx * 60)
             obs = self.recorder.start_candle_observation(f_candle)
+            obs.provenance = "OFFLINE_SIMULATION"
+            obs.is_synthetic = True
+            obs.measurement_status = "MEASURED"
             res = sc_fn()
             obs.phase30_gate_satisfied = res.phase30_gate_satisfied
             obs.gate_verdict = res.actual_verdict
             obs.rejection_reason = res.rejection_reason
+            if res.phase30_gate_satisfied:
+                obs.prediction_stages_measured = True
+                obs.decision = "SKIP"
+                obs.candle_received_within_15s = True
+                obs.candle_validated_within_15s = True
+            else:
+                obs.prediction_stages_measured = False
+                obs.decision = "NOT_MEASURED"
+                obs.candle_received_within_15s = (
+                    res.broker_delivery_offset_ms is not None
+                    and 0.0 <= res.broker_delivery_offset_ms <= 15000.0
+                )
+                obs.candle_validated_within_15s = (
+                    obs.candle_received_within_15s and res.actual_verdict != "FAIL_INCOMPLETE_BAR"
+                )
             if res.broker_delivery_offset_ms is not None:
                 obs.latencies_ms["broker_delivery_offset_ms"] = res.broker_delivery_offset_ms
             if res.local_pipeline_total_ms is not None:
@@ -241,7 +268,12 @@ class SupervisedSessionRunner:
 
                     # We are in the post-close arrival window for candle F
                     print(f"\n      Observing F={F} (now={now_epoch}, offset={sec_in_minute}s)...")
-                    obs = self.recorder.start_candle_observation(F)
+                    obs = self.recorder.start_candle_observation(
+                        F, expected_request_id=f"candles-{F}"
+                    )
+                    obs.provenance = "OPERATOR_SUPERVISED_LIVE"
+                    obs.is_synthetic = False
+                    obs.measurement_status = "ACQUISITION_ONLY"
                     observed_candle_boundaries.add(F)
 
                     try:
@@ -369,7 +401,7 @@ class SupervisedSessionRunner:
         )
         registry.save_to_file(
             self.output_destination,
-            allow_overwrite=self.config.allow_overwrite,
+            allow_overwrite=False,
         )
         print(f"      Evidence registry saved to: {self.output_destination}")
         print("      Measurement session completed successfully.\n")

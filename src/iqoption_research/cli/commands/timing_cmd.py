@@ -12,6 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from iqoption_research.timing.blitz_audit import audit_blitz_market_evidence
+from iqoption_research.timing.evidence import TimingEvidenceRegistry
 from iqoption_research.timing.feasibility import run_feasibility_assessment
 from iqoption_research.timing.pipeline_audit import audit_full_collection_pipeline
 from iqoption_research.timing.protocol import get_supervised_protocol_spec
@@ -529,6 +530,12 @@ def measure_command(
                 "confirmation flag: [yellow]--yes-i-understand[/yellow]."
             )
             raise typer.Exit(code=1)
+        if overwrite:
+            console.print(
+                "[bold red]Error:[/bold red] Overwriting evidence (--overwrite) is strictly "
+                "forbidden in live authenticated measurement mode to protect broker evidence."
+            )
+            raise typer.Exit(code=1)
         sim_mode = False
     else:
         # Default to safe offline simulation mode
@@ -601,3 +608,80 @@ def measure_command(
             else "-",
         )
     console.print(table)
+
+
+@app.command(
+    "verify-evidence",
+    help="Verify internal consistency and SHA-256 integrity hashes of an evidence registry file.",
+)
+def verify_evidence_command(
+    path: Path = typer.Option(
+        ...,
+        "--path",
+        "-p",
+        help="Path to the evidence registry JSON file to verify",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only"),
+) -> None:
+    path = path.resolve()
+    if not path.is_file():
+        console.print(f"[bold red]Error:[/bold red] Evidence file not found: {path}")
+        raise typer.Exit(code=1)
+
+    try:
+        content = json.loads(path.read_text(encoding="utf-8"))
+        registry = TimingEvidenceRegistry.from_dict(content)
+        is_valid, errors = registry.verify_integrity()
+    except (json.JSONDecodeError, ValueError, OSError, KeyError, TypeError) as exc:
+        is_valid = False
+        errors = [f"Failed to load or parse evidence file: {exc}"]
+        registry = None
+
+    if json_output:
+        res = {
+            "path": str(path),
+            "is_valid": is_valid,
+            "errors": errors,
+            "session_id": registry.session_id if registry else None,
+            "operational_mode": registry.operational_mode if registry else None,
+            "integrity_hash": registry.integrity_hash if registry else None,
+        }
+        typer.echo(json.dumps(res, indent=2))
+        if not is_valid:
+            raise typer.Exit(code=1)
+        return
+
+    if is_valid and registry is not None:
+        recv_cnt = registry.summary.get("candle_received_within_15s_count", 0)
+        val_cnt = registry.summary.get("candle_validated_within_15s_count", 0)
+        gate_cnt = registry.summary.get("full_phase30_gate_compliant_count", 0)
+        console.print(
+            Panel(
+                f"[bold green]Evidence Registry Verification PASSED[/bold green]\n\n"
+                f"Session ID:         [yellow]{registry.session_id}[/yellow]\n"
+                f"Created UTC:        {registry.session_created_at_utc}\n"
+                f"Operational Mode:   [bold]{registry.operational_mode}[/bold]\n"
+                f"Observations:       {len(registry.observations)}\n"
+                f"Receipt <= 15s:     {recv_cnt}\n"
+                f"Validated <= 15s:   {val_cnt}\n"
+                f"Full Phase 30 Gate: {gate_cnt}\n"
+                f"Integrity Hash:     [green]{registry.integrity_hash}[/green]\n\n"
+                "[dim]Epistemic Notice: Unkeyed SHA-256 integrity hash provides tamper-evidence "
+                "against accidental mutation, not cryptographic non-repudiation.[/dim]",
+                title="Evidence Verification Result",
+                border_style="green",
+            )
+        )
+    else:
+        console.print(
+            Panel(
+                f"[bold red]Evidence Registry Verification FAILED[/bold red]\n\n"
+                f"Path: {path}\n"
+                f"Detected {len(errors)} error(s):",
+                title="Evidence Verification Failure",
+                border_style="red",
+            )
+        )
+        for err in errors:
+            console.print(f"  [red]•[/red] {err}")
+        raise typer.Exit(code=1)

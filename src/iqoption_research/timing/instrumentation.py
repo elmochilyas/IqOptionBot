@@ -138,21 +138,58 @@ class StageTimingRecord:
 
 
 def compute_observation_dict_hash(obs: dict[str, Any]) -> str:
-    """Compute canonical SHA-256 fingerprint over scientifically relevant observation fields."""
-    stages_data: dict[str, dict[str, int]] = {}
+    """Compute canonical SHA-256 fingerprint over all scientifically relevant observation fields.
+
+    Covers:
+    - Candle identity: symbol, candle_size_seconds, feature_close_F, feature_close_F_ns,
+      feature_close_F_iso
+    - Session tracking & provenance: session_id, observation_index, provenance,
+      is_synthetic, measurement_status
+    - Stage checkpoints & ordering: stage names, monotonic ns, disciplined UTC ns,
+      disciplined UTC ISO, wall-clock ns, stage details, and chronological sequence
+    - Latency intervals: all computed delta intervals rounded to 4 decimals
+    - Clock uncertainty: clock uncertainty budget, clock step flag
+    - Decisions and verdicts: candle_received_within_15s, candle_validated_within_15s,
+      prediction_stages_measured, phase30_gate_satisfied, gate_verdict, rejection_reason,
+      raw_probability, calibrated_probability, decision
+
+    Epistemic Note:
+    This digest provides tamper-evidence against accidental mutation and offline corruption.
+    It is an unkeyed SHA-256 integrity hash, NOT a cryptographic signature, and does not provide
+    cryptographic non-repudiation against an adversary capable of rewriting both the data and hash.
+    """
     raw_stages = obs.get("stages", {})
+    stages_data: dict[str, dict[str, Any]] = {}
+    stage_sequence: list[str] = []
+
     if isinstance(raw_stages, dict):
-        for k, v in sorted(raw_stages.items()):
+        for k in sorted(raw_stages.keys()):
+            v = raw_stages[k]
             if isinstance(v, dict):
+                raw_details = v.get("details", {})
+                clean_details: dict[str, Any] = {}
+                if isinstance(raw_details, dict):
+                    clean_details = dict(sorted((str(dk), dv) for dk, dv in raw_details.items()))
                 stages_data[k] = {
+                    "stage_name": str(v.get("stage_name", k)),
                     "mono_ns": int(v.get("mono_ns", 0)),
                     "disciplined_utc_ns": int(v.get("disciplined_utc_ns", 0)),
+                    "disciplined_utc_iso": str(v.get("disciplined_utc_iso", "")),
+                    "wall_clock_ns": int(v.get("wall_clock_ns", 0)),
+                    "details": clean_details,
                 }
+
+        # Chronological stage order by monotonic timestamp
+        stage_sequence = sorted(
+            stages_data.keys(),
+            key=lambda name: (stages_data[name]["mono_ns"], name),
+        )
 
     raw_latencies = obs.get("latencies_ms", {})
     latencies_data: dict[str, float] = {}
     if isinstance(raw_latencies, dict):
-        for k, v in sorted(raw_latencies.items()):
+        for k in sorted(raw_latencies.keys()):
+            v = raw_latencies[k]
             if isinstance(v, (int, float)):
                 latencies_data[k] = round(float(v), 4)
 
@@ -164,6 +201,10 @@ def compute_observation_dict_hash(obs: dict[str, Any]) -> str:
         "candle_size_seconds": int(obs.get("candle_size_seconds", 60)),
         "feature_close_F": int(obs.get("feature_close_F", 0)),
         "feature_close_F_ns": int(obs.get("feature_close_F_ns", 0)),
+        "feature_close_F_iso": str(obs.get("feature_close_F_iso", "")),
+        "provenance": str(obs.get("provenance", "OFFLINE_SIMULATION")),
+        "is_synthetic": bool(obs.get("is_synthetic", True)),
+        "measurement_status": str(obs.get("measurement_status", "NOT_MEASURED")),
         "candle_received_within_15s": bool(obs.get("candle_received_within_15s")),
         "candle_validated_within_15s": bool(obs.get("candle_validated_within_15s")),
         "prediction_stages_measured": bool(obs.get("prediction_stages_measured")),
@@ -177,6 +218,7 @@ def compute_observation_dict_hash(obs: dict[str, Any]) -> str:
         "clock_step_detected": bool(obs.get("clock_step_detected")),
         "latencies_ms": latencies_data,
         "stages": stages_data,
+        "stage_sequence": stage_sequence,
     }
     canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
@@ -207,6 +249,9 @@ class CandleTimingObservation:
     calibrated_probability: float | None = None
     decision: str = "NOT_MEASURED"
     integrity_hash: str = ""
+    provenance: str = "OFFLINE_SIMULATION"
+    is_synthetic: bool = True
+    measurement_status: str = "NOT_MEASURED"
 
     def compute_latencies_and_gate(self, clock: ClockDiscipline) -> None:
         """Calculate stage intervals, broker offsets, and evaluate the Phase 30 gate."""
@@ -412,6 +457,9 @@ class CandleTimingObservation:
             "raw_probability": self.raw_probability,
             "calibrated_probability": self.calibrated_probability,
             "decision": self.decision,
+            "provenance": self.provenance,
+            "is_synthetic": self.is_synthetic,
+            "measurement_status": self.measurement_status,
             "integrity_hash": self.integrity_hash,
         }
 
@@ -426,18 +474,32 @@ class TimingRecorder:
         clock: ClockDiscipline | None = None,
         symbol: str = "EURUSD",
         candle_size_seconds: int = 60,
+        provenance: str = "OFFLINE_SIMULATION",
+        is_synthetic: bool = True,
         enable_clock_stability_check: bool = True,
     ) -> None:
         self.session_id = session_id
         self.clock = clock or ClockDiscipline()
         self.symbol = symbol
         self.candle_size_seconds = candle_size_seconds
+        self.provenance = provenance
+        self.is_synthetic = is_synthetic
         self.enable_clock_stability_check = enable_clock_stability_check
         self.observations: list[CandleTimingObservation] = []
         self._current_obs: CandleTimingObservation | None = None
+        self._expected_request_id: str | None = None
         self._obs_counter = 0
 
-    def start_candle_observation(self, feature_close_F: int) -> CandleTimingObservation:
+    def set_expected_request_id(self, request_id: str | None) -> None:
+        """Associate an expected broker request ID with the currently active observation."""
+        self._expected_request_id = request_id
+
+    def start_candle_observation(
+        self,
+        feature_close_F: int,
+        *,
+        expected_request_id: str | None = None,
+    ) -> CandleTimingObservation:
         """Begin a new observation lifecycle for completed candle at boundary F."""
         self._obs_counter += 1
         f_ns = feature_close_F * 1_000_000_000
@@ -451,8 +513,12 @@ class TimingRecorder:
             feature_close_F=feature_close_F,
             feature_close_F_ns=f_ns,
             feature_close_F_iso=f_iso,
+            provenance=self.provenance,
+            is_synthetic=self.is_synthetic,
+            measurement_status="MEASURED",
         )
         self._current_obs = obs
+        self._expected_request_id = expected_request_id
         self.observations.append(obs)
         return obs
 
@@ -530,8 +596,20 @@ class TimingRecorder:
         payload_bytes: int = 0,
         *,
         allow_overwrite: bool = False,
-    ) -> tuple[StageTimingRecord, StageTimingRecord]:
-        """Record genuine correlated frame arrival and decode timestamps without offsets."""
+    ) -> tuple[StageTimingRecord, StageTimingRecord] | None:
+        """Record genuine correlated frame arrival and decode timestamps without offsets.
+
+        If expected_request_id is configured for the active observation and does not match,
+        the incoming frame is rejected to prevent contamination.
+        """
+        if self._expected_request_id is not None and request_id != self._expected_request_id:
+            logger.warning(
+                "Ignored non-matching correlated frame: expected %s, got %s",
+                self._expected_request_id,
+                request_id,
+            )
+            return None
+
         r_rec = self.record_stage(
             "STAGE_2_NETWORK_RECV",
             mono_ns=recv_mono_ns,

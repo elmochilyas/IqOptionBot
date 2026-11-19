@@ -533,7 +533,15 @@ class IQOptionWebSocketClient:
         )
         try:
             if self._timing_recorder is not None:
-                self._timing_recorder.record_request_sent(request_id, name, time.perf_counter_ns())
+                is_candle_req = (
+                    str(request_id).startswith("candles-")
+                    or name in ("get-candles", "candles")
+                    or (isinstance(msg, dict) and msg.get("name") in ("get-candles", "candles"))
+                )
+                if is_candle_req:
+                    self._timing_recorder.record_request_sent(
+                        request_id, name, time.perf_counter_ns()
+                    )
             await self._send_raw({"name": name, "msg": msg, "request_id": request_id})
             return await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError as exc:
@@ -732,13 +740,19 @@ class IQOptionWebSocketClient:
                 pending.recv_mono_ns = recv_mono_ns
                 pending.parsed_mono_ns = parsed_mono_ns
                 if self._timing_recorder is not None:
-                    self._timing_recorder.record_correlated_frame(
-                        request_id=str(req_id),
-                        frame_name=str(name or "correlated"),
-                        recv_mono_ns=recv_mono_ns,
-                        parsed_mono_ns=parsed_mono_ns,
-                        payload_bytes=raw_payload_bytes,
+                    is_candle_resp = (
+                        str(req_id).startswith("candles-")
+                        or name in ("candles", "candle-generated")
+                        or getattr(pending, "name", "") in ("get-candles", "candles")
                     )
+                    if is_candle_resp:
+                        self._timing_recorder.record_correlated_frame(
+                            request_id=str(req_id),
+                            frame_name=str(name or "correlated"),
+                            recv_mono_ns=recv_mono_ns,
+                            parsed_mono_ns=parsed_mono_ns,
+                            payload_bytes=raw_payload_bytes,
+                        )
                 if isinstance(message, dict):
                     message["_correlated_timing"] = {
                         "recv_mono_ns": recv_mono_ns,

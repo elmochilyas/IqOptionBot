@@ -769,6 +769,12 @@ def evaluate_predictions_command(
         "-s",
         help="Path to historical authentic catalog storage.",
     ),
+    catalog: Path | None = typer.Option(
+        None,
+        "--catalog",
+        "-c",
+        help="Optional path to SQLite dataset catalog (catalog.db).",
+    ),
     session_id: str | None = typer.Option(
         None,
         "--session-id",
@@ -789,12 +795,22 @@ def evaluate_predictions_command(
     )
 
     paths = evidence or [Path("data/phase34/operator_supervised_live")]
+    storage_dir = (
+        storage
+        if (isinstance(storage, Path) and storage.is_dir())
+        else (Path("data/datasets") if Path("data/datasets").is_dir() else None)
+    )
+    cat_path = catalog if isinstance(catalog, Path) else None
+    j_path = journal if isinstance(journal, Path) else None
+    sess_id = session_id if isinstance(session_id, str) else None
+
     try:
         report = evaluate_prospective_shadow_offline(
             paths,
-            journal_path=journal,
-            storage_dir=storage if storage.is_dir() else None,
-            session_filter=session_id,
+            journal_path=j_path,
+            storage_dir=storage_dir,
+            catalog_path=cat_path,
+            session_filter=sess_id,
         )
     except ProspectiveEvaluationError as exc:
         if json_output:

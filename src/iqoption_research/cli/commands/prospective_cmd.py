@@ -100,6 +100,12 @@ def evaluate_predictions_cmd(
         "-s",
         help="Path to historical authentic catalog storage.",
     ),
+    catalog: Path | None = typer.Option(
+        None,
+        "--catalog",
+        "-c",
+        help="Path to SQLite dataset catalog (catalog.db).",
+    ),
     session_id: str | None = typer.Option(
         None,
         "--session-id",
@@ -120,6 +126,7 @@ def evaluate_predictions_cmd(
         evidence=evidence,
         journal=journal,
         storage=storage,
+        catalog=catalog,
         session_id=session_id,
         output=output,
         json_output=json_output,

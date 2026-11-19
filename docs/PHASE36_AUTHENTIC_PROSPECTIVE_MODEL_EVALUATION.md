@@ -76,12 +76,20 @@ flowchart TD
    - The computed hash is strictly verified against the commit-stage `payload_sha256` recorded in the evidence registry.
    - Consistency is rigorously checked across session ID, boundary $F$, analytical decision, calibrated probability, and raw probability. Any discrepancy (including altered payload contents preserving the same session and boundary) raises `TamperedEvidenceError`.
    - If an explicit `--journal` path is specified by the operator and does not exist, the pipeline fails closed with `ProspectiveEvaluationError` rather than silently falling back to unverified registry-only evidence.
-4. **Authentic Provenance & Fail-Closed Outcome Verification**:
-   - The pipeline fails closed against unverified or synthetic outcome sources: any outcome candle lacking verifiable broker acquisition evidence raises `UnverifiedOutcomeProvenanceError`.
-   - Provenance is verified from trusted collection metadata (`raw.source in TRUSTED_BROKER_PROVENANCES`), normalized broker ingestion stamps (`_identity_provenance`), or verified Parquet storage files, **never** defaulting unknown sources to `AUTHENTIC_BROKER_FEED`.
-   - Synthetic fixtures are rejected in authentic evaluation mode via `SyntheticDataRejectedError`, remaining available exclusively for labeled offline unit tests (`allow_synthetic=True`).
-   - Zero matched outcomes are explicitly reported as `all_outcomes_authentic: "NO_OUTCOMES_TO_VERIFY"`, avoiding misleading affirmative authenticity claims when no outcomes exist to verify.
-   - The sealed evaluation report embeds `paired_outcome_details` (including boundary, price points, direction, binary label, source file, and verified availability timestamp) and `source_file_fingerprints`.
+4. **Provenance Trust Boundary & Anti-Manufacturing Invariant**:
+   - **No Manufactured Provenance**: No function that loads, transforms, or labels data may manufacture evidence that the source was broker-authentic or that an outcome was available at a specific time. Source identity, file integrity, broker acquisition evidence, and observation availability are separate facts.
+   - **Three-State Provenance Resolver**:
+     - `SYNTHETIC`: explicitly identified test data fixtures.
+     - `UNVERIFIED`: source origin or collection lineage cannot be established.
+     - `LOCAL_BROKER_COLLECTION_VERIFIED`: provenance is supported by validated local collection records (`catalog.db`, matching sidecar metadata, consistent symbol/timeframe, and verified SHA-256 checksums).
+   - **Local Verification Disclaimer**: Local collection verification does NOT constitute independent cryptographic broker authentication or third-party non-repudiation.
+   - **No Self-Declared Provenance**: A Parquet filename, directory path, self-declared `raw.source`, unverified sidecar `.meta.json`, or newly computed file SHA-256 cannot establish broker provenance independently.
+   - **Zero Raw Mutation**: The loader never mutates `candle.raw` to inject `source = "broker_authentic_collection"`. Provenance is preserved externally in `StorageLoadResult.candle_provenances`.
+   - **Availability Timestamp Contract**: `OutcomeRecord.available_utc_ns` records the actual verified receive/validation timestamp from collection metadata. It is never synthesized from `to_ts`, `at_ts`, filename timestamps, or evaluation time. If missing, it remains `None`.
+   - **Causal Walk-Forward Prior**: Outcomes with missing availability timestamps or availability timestamps after prediction decision time are strictly excluded from the walk-forward prior.
+   - **Fail-Closed Authentic Evaluation**: In authentic evaluation mode (`allow_synthetic=False`), any outcome candle lacking verified broker acquisition evidence raises `UnverifiedOutcomeProvenanceError`. Synthetic fixtures raise `SyntheticDataRejectedError` and are permitted only in explicit offline test mode (`allow_synthetic=True`).
+   - Zero matched outcomes are explicitly reported as `all_outcomes_authentic: "NO_OUTCOMES_TO_VERIFY"`.
+   - The sealed evaluation report embeds `paired_outcome_details` (including boundary, price points, direction, binary label, source file/dataset ID, and verified availability timestamp) and `source_file_fingerprints` keyed by unambiguous relative paths.
 5. **Cross-File Duplicate Outcome Conflict Detection**:
    - In `load_candles_from_storage()`, silent timestamp-only deduplication is eliminated.
    - Candles across separate Parquet storage files are compared against their full canonical identity: $\text{to\_ts}$, $\text{open}$, $\text{close}$, $\text{high}$, $\text{low}$, $\text{volume}$, and $\text{is\_complete}$.

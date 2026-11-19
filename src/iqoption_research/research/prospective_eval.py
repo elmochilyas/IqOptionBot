@@ -9,7 +9,6 @@ and produces tamper-evident evaluation evidence.
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import json
 import math
@@ -21,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 import numpy as np
 
+from iqoption_research.market_data.catalog import CatalogEntry, DatasetCatalog
 from iqoption_research.market_data.parquet_storage import read_candles_parquet
 from iqoption_research.ml.calibration.metrics import (
     brier_score,
@@ -49,12 +49,24 @@ SMALL_SAMPLE_THRESHOLD: Final[int] = 30
 UNVERIFIED_HEURISTIC_PRIOR_UP: Final[float] = 0.4985
 FROZEN_TRAINING_PRIOR_UP: Final[float] = UNVERIFIED_HEURISTIC_PRIOR_UP
 
+PROVENANCE_SYNTHETIC: Final[str] = "SYNTHETIC"
+PROVENANCE_UNVERIFIED: Final[str] = "UNVERIFIED"
+PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED: Final[str] = "LOCAL_BROKER_COLLECTION_VERIFIED"
+
 TRUSTED_BROKER_PROVENANCES: Final[frozenset[str]] = frozenset({
+    PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED,
     "broker_authentic_collection",
+    "BROKER_AUTHENTIC_COLLECTION",
     "AUTHENTIC_BROKER_FEED",
     "iqoption_live",
     "operator_supervised",
 })
+
+LOCAL_VERIFICATION_DISCLAIMER: Final[str] = (
+    "LOCAL_COLLECTION_VERIFIED_ONLY: Verified against local collection records, dataset catalog "
+    "and content integrity checksums. Does not constitute independent cryptographic broker "
+    "authentication."
+)
 
 CONTRACT_PROFITABILITY_DISCLAIMER: Final[str] = (
     "SPOT_DIRECTIONAL_ACCURACY_IS_NOT_REALIZED_CONTRACT_PROFITABILITY: "
@@ -172,10 +184,37 @@ class OutcomeRecord:
     binary_label: int  # 1 for close > open, 0 otherwise
     is_neutral: bool  # close == open
     is_complete: bool = True
-    source_provenance: str = "UNVERIFIED_SOURCE"
+    source_provenance: str = PROVENANCE_UNVERIFIED
     candle_sha256: str = ""
     source_file: str | None = None
     available_utc_ns: int | None = None
+
+
+class StorageLoadResult(tuple[list[Candle], dict[str, str]]):
+    """Result of loading candles from storage with provenance tracking.
+
+    Unpacks as a 2-tuple (candles, source_file_fingerprints) for backward compatibility,
+    while also exposing candle_provenances and candle_sources.
+    """
+
+    candles: list[Candle]
+    source_file_fingerprints: dict[str, str]
+    candle_provenances: dict[tuple[int, str], str]
+    candle_sources: dict[tuple[int, str], str]
+
+    def __new__(
+        cls,
+        candles: list[Candle],
+        fingerprints: dict[str, str],
+        candle_provenances: dict[tuple[int, str], str] | None = None,
+        candle_sources: dict[tuple[int, str], str] | None = None,
+    ) -> StorageLoadResult:
+        inst = super().__new__(cls, (candles, fingerprints))
+        inst.candles = candles
+        inst.source_file_fingerprints = fingerprints
+        inst.candle_provenances = candle_provenances or {}
+        inst.candle_sources = candle_sources or {}
+        return inst
 
 
 @dataclass(frozen=True, slots=True)
@@ -725,54 +764,256 @@ def deduplicate_predictions(predictions: list[PredictionRecord]) -> list[Predict
     return list(seen.values())
 
 
+def extract_verified_availability_ns(candle: Candle) -> int | None:
+    """Extract genuine recorded receive/validation timestamp from collection workflow.
+
+    Rules:
+    - Preserve a verified receive/validation timestamp where recorded in raw metadata.
+    - Require it to be finite, plausible, correctly normalized and no earlier than candle close.
+    - If a genuine availability timestamp is absent, returns None.
+    - NEVER substitutes to_ts, at_ts, filename timestamps, or evaluation time as availability.
+    """
+    raw_meta = getattr(candle, "raw", None)
+    if not isinstance(raw_meta, dict):
+        return None
+
+    # First check explicit nanosecond keys
+    raw_ns = (
+        raw_meta.get("available_utc_ns")
+        or raw_meta.get("validated_utc_ns")
+        or raw_meta.get("received_utc_ns")
+    )
+    val_ns: int | None = None
+    if raw_ns is not None:
+        try:
+            num = float(raw_ns)
+            if math.isfinite(num) and num > 0:
+                val_ns = int(num)
+        except (ValueError, TypeError):
+            pass
+
+    if val_ns is None:
+        raw_str = (
+            raw_meta.get("available_at_utc")
+            or raw_meta.get("validated_at_utc")
+            or raw_meta.get("received_at_utc")
+        )
+        if isinstance(raw_str, str):
+            try:
+                dt = datetime.fromisoformat(raw_str.replace("Z", "+00:00"))
+                val_ns = int(dt.timestamp() * 1_000_000_000)
+            except (ValueError, TypeError):
+                pass
+        elif isinstance(raw_str, (int, float)) and math.isfinite(raw_str) and raw_str > 0:
+            val_ns = int(raw_str * 1_000_000_000)
+
+    if val_ns is None:
+        return None
+
+    close_ns = candle.to_ts * 1_000_000_000
+    if val_ns < close_ns:
+        return None
+
+    return val_ns
+
+
+def verify_parquet_file_provenance(
+    parquet_path: Path,
+    *,
+    storage_root: Path | None = None,
+    catalog: DatasetCatalog | None = None,
+    symbol: str = "EURUSD",
+    candle_size_seconds: int = 60,
+) -> tuple[str, str | None]:
+    """Resolve verifiable broker provenance for a Parquet candle file.
+
+    Evaluates the file against local acquisition records and content integrity:
+    1. An existing collection or ingestion record identifying broker source.
+    2. Explicit is_synthetic=False and consistent symbol, timeframe, dataset identity.
+    3. File and sidecar checksums verified against previously recorded trusted catalog receipt.
+    4. No provenance conflicts between catalog, sidecar, candle and collection record.
+
+    Returns:
+        tuple[provenance_status, source_identifier]
+        where provenance_status is one of:
+          - PROVENANCE_SYNTHETIC
+          - PROVENANCE_UNVERIFIED
+          - PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED
+    """
+    sidecar_path = parquet_path.with_suffix(".meta.json")
+    sidecar_data: dict[str, Any] | None = None
+    is_sidecar_synthetic = False
+    sidecar_source: str | None = None
+
+    if sidecar_path.is_file():
+        try:
+            with sidecar_path.open(encoding="utf-8") as sc_f:
+                sidecar_data = json.load(sc_f)
+                if isinstance(sidecar_data, dict):
+                    is_sidecar_synthetic = bool(
+                        sidecar_data.get("is_synthetic") or sidecar_data.get("synthetic")
+                    )
+                    sidecar_source = sidecar_data.get("source")
+        except (OSError, ValueError):
+            sidecar_data = None
+
+    # Reject conflicting provenance declared directly in sidecar metadata
+    if is_sidecar_synthetic and sidecar_source in TRUSTED_BROKER_PROVENANCES:
+        raise ProspectiveEvaluationError(
+            f"Conflicting provenance in sidecar metadata '{sidecar_path.name}': "
+            f"declares synthetic but claims broker source '{sidecar_source}'"
+        )
+
+    computed_file_sha = compute_file_sha256(parquet_path)
+
+    rel_path_str: str
+    if storage_root is not None:
+        try:
+            rel_path_str = str(
+                parquet_path.resolve().relative_to(storage_root.resolve()).as_posix()
+            )
+        except ValueError:
+            rel_path_str = parquet_path.name
+    else:
+        rel_path_str = parquet_path.name
+
+    if catalog is None:
+        if is_sidecar_synthetic:
+            return PROVENANCE_SYNTHETIC, rel_path_str
+        return PROVENANCE_UNVERIFIED, rel_path_str
+
+    entry: CatalogEntry | None = None
+    norm_forward = rel_path_str.replace("\\", "/")
+    norm_backward = rel_path_str.replace("/", "\\")
+
+    candidate_entries = catalog.find_datasets(
+        symbol=symbol,
+        candle_size_seconds=candle_size_seconds,
+    )
+    for ce in candidate_entries:
+        if (
+            ce.file_path in (norm_forward, norm_backward)
+            or ce.file_path.endswith(f"/{parquet_path.name}")
+            or ce.file_path.endswith(f"\\{parquet_path.name}")
+            or ce.sha256_checksum == computed_file_sha
+        ):
+            entry = ce
+            break
+
+    if entry is None:
+        entry = catalog.get_by_checksum(computed_file_sha)
+
+    if entry is None:
+        if is_sidecar_synthetic:
+            return PROVENANCE_SYNTHETIC, rel_path_str
+        return PROVENANCE_UNVERIFIED, rel_path_str
+
+    # 3. Checksums verification against catalog receipt
+    if entry.sha256_checksum != computed_file_sha:
+        raise ProspectiveEvaluationError(
+            f"Catalog checksum mismatch for dataset {entry.dataset_id}: "
+            f"expected {entry.sha256_checksum}, got {computed_file_sha}"
+        )
+
+    # Locate sidecar metadata
+    sc_file: Path | None = None
+    if sidecar_path.is_file():
+        sc_file = sidecar_path
+    elif storage_root is not None and (storage_root / entry.metadata_path).is_file():
+        sc_file = storage_root / entry.metadata_path
+
+    if sc_file is None:
+        return PROVENANCE_UNVERIFIED, entry.dataset_id
+
+    computed_sidecar_sha = compute_file_sha256(sc_file)
+    if computed_sidecar_sha != entry.metadata_sha256:
+        raise ProspectiveEvaluationError(
+            f"Sidecar metadata checksum mismatch for dataset {entry.dataset_id}: "
+            f"expected {entry.metadata_sha256}, got {computed_sidecar_sha}"
+        )
+
+    # 4. Check for provenance conflicts between catalog, sidecar, and source
+    if is_sidecar_synthetic and (
+        not entry.is_synthetic or entry.source in TRUSTED_BROKER_PROVENANCES
+    ):
+        raise ProspectiveEvaluationError(
+            f"Conflicting provenance: metadata declares synthetic but catalog record "
+            f"'{entry.dataset_id}' claims broker authentic ('{entry.source}')"
+        )
+
+    if entry.is_synthetic:
+        if entry.source in TRUSTED_BROKER_PROVENANCES:
+            raise ProspectiveEvaluationError(
+                f"Conflicting provenance: catalog record '{entry.dataset_id}' declares synthetic "
+                f"but source claims broker ('{entry.source}')"
+            )
+        return PROVENANCE_SYNTHETIC, entry.dataset_id
+
+    # 1 & 2. Ingestion record identifying broker source, explicit is_synthetic=False,
+    # and consistent symbol/timeframe
+    if entry.source not in TRUSTED_BROKER_PROVENANCES:
+        return PROVENANCE_UNVERIFIED, entry.dataset_id
+
+    if entry.symbol.strip().upper() != symbol.strip().upper():
+        return PROVENANCE_UNVERIFIED, entry.dataset_id
+
+    if entry.candle_size_seconds != candle_size_seconds:
+        return PROVENANCE_UNVERIFIED, entry.dataset_id
+
+    return PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED, entry.dataset_id
+
+
 def resolve_candle_provenance(
     c: Candle, explicit_provenance: str | None = None
 ) -> tuple[str, bool]:
-    """Resolve candle provenance and verify authentic broker acquisition evidence.
-
-    Fails closed: if the candle lacks verifiable broker acquisition evidence,
-    returns ("UNVERIFIED_SOURCE", False). Never defaults unknown sources to
-    AUTHENTIC_BROKER_FEED.
+    """Resolve candle provenance without manufactured claims or default promotion.
 
     Returns:
-        (provenance_label, is_authentic)
+        (provenance_status, is_locally_verified)
+        where provenance_status is one of:
+          - PROVENANCE_SYNTHETIC
+          - PROVENANCE_UNVERIFIED
+          - PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED
     """
     raw_meta = getattr(c, "raw", {}) or {}
 
     # Check synthetic markers first
     is_synthetic = (
-        explicit_provenance == "SYNTHETIC_FIXTURE"
+        explicit_provenance in (PROVENANCE_SYNTHETIC, "SYNTHETIC_FIXTURE", "synthetic")
+        or getattr(c, "is_synthetic", False) is True
         or getattr(c, "provenance", None) in ("synthetic", "SYNTHETIC_FIXTURE")
-        or getattr(c, "source", None) in ("synthetic", "SYNTHETIC_FIXTURE")
+        or getattr(c, "source", None) in ("synthetic", "SYNTHETIC_FIXTURE", PROVENANCE_SYNTHETIC)
         or raw_meta.get("synthetic") is True
-        or raw_meta.get("source") in ("synthetic", "SYNTHETIC_FIXTURE")
-        or raw_meta.get("source_provenance") == "SYNTHETIC_FIXTURE"
+        or raw_meta.get("is_synthetic") is True
+        or raw_meta.get("source") in ("synthetic", "SYNTHETIC_FIXTURE", PROVENANCE_SYNTHETIC)
+        or raw_meta.get("source_provenance")
+        in (
+            "synthetic",
+            "SYNTHETIC_FIXTURE",
+            PROVENANCE_SYNTHETIC,
+        )
     )
     if is_synthetic:
-        return "SYNTHETIC_FIXTURE", False
+        broker_claim = (
+            raw_meta.get("source") in TRUSTED_BROKER_PROVENANCES
+            or getattr(c, "source", None) in TRUSTED_BROKER_PROVENANCES
+            or raw_meta.get("source_provenance") in TRUSTED_BROKER_PROVENANCES
+        )
+        if broker_claim:
+            raise ProspectiveEvaluationError(
+                f"Conflicting provenance for candle {c.from_ts}: declares synthetic "
+                "but source claims broker authentic"
+            )
+        return PROVENANCE_SYNTHETIC, False
 
-    # Explicit trusted provenance passed by caller
+    # Explicit trusted provenance passed by caller (e.g. In unit tests)
     if explicit_provenance is not None:
-        if explicit_provenance in TRUSTED_BROKER_PROVENANCES:
-            return explicit_provenance, True
-        return explicit_provenance, False
+        if explicit_provenance == PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED:
+            return PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED, True
+        return PROVENANCE_UNVERIFIED, False
 
-    # Trusted collection metadata in raw payload
-    broker_source = raw_meta.get("source") or raw_meta.get("source_provenance")
-    if broker_source in TRUSTED_BROKER_PROVENANCES:
-        return str(broker_source), True
-
-    # Broker JSON normalization stamp in raw metadata
-    identity_prov = raw_meta.get("_identity_provenance")
-    if identity_prov in {"explicit_broker_metadata", "verified_correlated_request"}:
-        return "AUTHENTIC_BROKER_FEED", True
-
-    # Parquet storage source file provenance
-    if raw_meta.get("source_file"):
-        return "AUTHENTIC_BROKER_FEED", True
-
-    # Fail closed: unverified source
-    return "UNVERIFIED_SOURCE", False
+    # Without external validated catalog records, candle provenance is UNVERIFIED
+    return PROVENANCE_UNVERIFIED, False
 
 
 def pair_predictions_with_candles(
@@ -780,6 +1021,8 @@ def pair_predictions_with_candles(
     candles: list[Candle],
     *,
     source_provenance: str | None = None,
+    candle_provenances: dict[tuple[int, str], str] | None = None,
+    candle_sources: dict[tuple[int, str], str] | None = None,
     allow_synthetic: bool = False,
     reject_synthetic: bool = True,
     reject_unverified: bool = True,
@@ -879,10 +1122,17 @@ def pair_predictions_with_candles(
             continue
 
         # Check provenance and fail closed in authentic evaluation mode
-        source_prov, is_auth = resolve_candle_provenance(target_candle, source_provenance)
+        key = (target_candle.from_ts, target_candle.symbol)
+        if candle_provenances and key in candle_provenances:
+            source_prov = candle_provenances[key]
+            is_auth = source_prov == PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED
+        elif source_provenance is not None:
+            source_prov, is_auth = resolve_candle_provenance(target_candle, source_provenance)
+        else:
+            source_prov, is_auth = resolve_candle_provenance(target_candle)
 
         if not allow_synthetic:
-            if source_prov == "SYNTHETIC_FIXTURE":
+            if source_prov == PROVENANCE_SYNTHETIC:
                 if reject_synthetic:
                     raise SyntheticDataRejectedError(
                         f"Synthetic fixture outcome rejected for boundary {f} "
@@ -894,15 +1144,10 @@ def pair_predictions_with_candles(
                     f"(provenance='{source_prov}')"
                 )
 
-        raw_meta = getattr(target_candle, "raw", {}) or {}
-        available_ns = (
-            raw_meta.get("available_utc_ns")
-            or raw_meta.get("validated_utc_ns")
-            or (target_candle.at_ts if getattr(target_candle, "at_ts", 0) > 10**14 else None)
-            or (target_candle.to_ts * 1_000_000_000)
-        )
-        available_ns = max(available_ns, target_candle.to_ts * 1_000_000_000)
-        source_file = getattr(target_candle, "source_file", None) or raw_meta.get("source_file")
+        available_ns = extract_verified_availability_ns(target_candle)
+        source_file = None
+        if candle_sources and key in candle_sources:
+            source_file = candle_sources[key]
 
         c_hash = compute_candle_sha256(target_candle)
 
@@ -1237,22 +1482,17 @@ def compute_prospective_metrics(
         p_wf_list: list[float] = []
         for i in range(prob_count):
             pred_i = valid_pairs[i][0].prediction
-            t_dec_i = (
-                pred_i.decision_time_utc_ns
-                if pred_i.decision_time_utc_ns is not None
-                else pred_i.boundary_F * 1_000_000_000
-            )
+            t_dec_i = pred_i.decision_time_utc_ns
 
             avail_labels: list[int] = []
             for j in range(prob_count):
                 if valid_pairs[j][0].prediction.boundary_F < pred_i.boundary_F:
                     out_j = valid_pairs[j][1]
-                    t_avail_j = (
-                        out_j.available_utc_ns
-                        if out_j.available_utc_ns is not None
-                        else out_j.to_ts * 1_000_000_000
-                    )
-                    if t_avail_j <= t_dec_i:
+                    if (
+                        out_j.available_utc_ns is not None
+                        and t_dec_i is not None
+                        and out_j.available_utc_ns <= t_dec_i
+                    ):
                         avail_labels.append(out_j.binary_label)
 
             m = len(avail_labels)
@@ -1348,6 +1588,7 @@ def compute_prospective_metrics(
     # Contract distinction
     contract_dist = {
         "disclaimer": CONTRACT_PROFITABILITY_DISCLAIMER,
+        "local_verification_disclaimer": LOCAL_VERIFICATION_DISCLAIMER,
         "spot_candle_direction_evaluated": True,
         "binary_option_contract_payoff_verified": False,
         "assumed_payout_rate": DEFAULT_ASSUMED_PAYOUT,
@@ -1389,11 +1630,28 @@ def load_candles_from_storage(
     symbol: str = "EURUSD",
     candle_size_seconds: int = 60,
     target_boundaries: set[int] | None = None,
-) -> tuple[list[Candle], dict[str, str]]:
-    """Load authentic candles from a Parquet storage directory with duplicate conflict checks."""
+    catalog_path: Path | None = None,
+) -> StorageLoadResult:
+    """Load authentic candles from Parquet storage with provenance verification."""
     storage_dir = storage_dir.resolve()
-    candles_by_boundary: dict[int, tuple[Candle, str]] = {}
+    candles_by_boundary: dict[int, tuple[Candle, str, str, str]] = {}
     source_file_fingerprints: dict[str, str] = {}
+    candle_provenances: dict[tuple[int, str], str] = {}
+    candle_sources: dict[tuple[int, str], str] = {}
+
+    catalog_file: Path | None = catalog_path
+    if catalog_file is None:
+        candidate = storage_dir / "catalog.db"
+        if candidate.is_file():
+            catalog_file = candidate
+        else:
+            candidate_parent = storage_dir.parent / "catalog.db"
+            if candidate_parent.is_file():
+                catalog_file = candidate_parent
+
+    cat: DatasetCatalog | None = None
+    if catalog_file is not None and catalog_file.is_file():
+        cat = DatasetCatalog(catalog_file)
 
     parquet_files = sorted(storage_dir.rglob("*.parquet"))
     for pf in parquet_files:
@@ -1410,7 +1668,20 @@ def load_candles_from_storage(
                 pass
 
         pf_sha = compute_file_sha256(pf)
-        source_file_fingerprints[pf.name] = pf_sha
+        try:
+            rel_path_str = str(pf.resolve().relative_to(storage_dir.resolve()).as_posix())
+        except ValueError:
+            rel_path_str = pf.name
+
+        prov_status, dataset_id = verify_parquet_file_provenance(
+            pf,
+            storage_root=storage_dir,
+            catalog=cat,
+            symbol=symbol,
+            candle_size_seconds=candle_size_seconds,
+        )
+        source_id = dataset_id or rel_path_str
+        source_file_fingerprints[source_id] = pf_sha
 
         try:
             batch = read_candles_parquet(pf)
@@ -1425,7 +1696,7 @@ def load_candles_from_storage(
 
             f = c.from_ts
             if f in candles_by_boundary:
-                prior_c, prior_file = candles_by_boundary[f]
+                prior_c, prior_file, _, _ = candles_by_boundary[f]
                 # Canonical candle identity comparison
                 is_exact = (
                     c.to_ts == prior_c.to_ts
@@ -1448,19 +1719,20 @@ def load_candles_from_storage(
                 # Exact duplicate: accept after full canonical check, keep prior
                 continue
 
-            tagged_raw = dict(getattr(c, "raw", {}) or {})
-            tagged_raw["source_file"] = pf.name
-            tagged_raw["source_file_sha256"] = pf_sha
-            if "source" not in tagged_raw:
-                tagged_raw["source"] = "broker_authentic_collection"
-
-            tagged_candle = dataclasses.replace(c, raw=tagged_raw)
-            candles_by_boundary[f] = (tagged_candle, pf.name)
+            # Invariant: preserve verified provenance separately, never modify candle.raw
+            candles_by_boundary[f] = (c, rel_path_str, prov_status, source_id)
+            candle_provenances[c.from_ts, c.symbol] = prov_status
+            candle_sources[c.from_ts, c.symbol] = source_id
 
     unique_candles = [
-        c for c, _ in sorted(candles_by_boundary.values(), key=lambda x: x[0].from_ts)
+        c for c, _, _, _ in sorted(candles_by_boundary.values(), key=lambda x: x[0].from_ts)
     ]
-    return unique_candles, source_file_fingerprints
+    return StorageLoadResult(
+        unique_candles,
+        source_file_fingerprints,
+        candle_provenances,
+        candle_sources,
+    )
 
 
 def evaluate_prospective_shadow_offline(
@@ -1468,6 +1740,7 @@ def evaluate_prospective_shadow_offline(
     *,
     journal_path: Path | None = None,
     storage_dir: Path | None = None,
+    catalog_path: Path | None = None,
     candles: list[Candle] | None = None,
     session_filter: str | None = None,
     reject_synthetic: bool = True,
@@ -1541,21 +1814,31 @@ def evaluate_prospective_shadow_offline(
     # Candles resolution
     available_candles: list[Candle] = []
     source_file_fingerprints: dict[str, str] = {}
+    candle_provenances: dict[tuple[int, str], str] = {}
+    candle_sources: dict[tuple[int, str], str] = {}
+
     if candles is not None:
         available_candles = list(candles)
     elif storage_dir is not None and storage_dir.is_dir():
         target_bounds = {p.boundary_F for p in deduped}
-        available_candles, source_file_fingerprints = load_candles_from_storage(
+        storage_res = load_candles_from_storage(
             storage_dir,
             symbol=cohort.symbol,
             candle_size_seconds=cohort.candle_size_seconds,
             target_boundaries=target_bounds,
+            catalog_path=catalog_path,
         )
+        available_candles = storage_res.candles
+        source_file_fingerprints = storage_res.source_file_fingerprints
+        candle_provenances = storage_res.candle_provenances
+        candle_sources = storage_res.candle_sources
 
     # Pair predictions causally
     pairs, _ = pair_predictions_with_candles(
         deduped,
         available_candles,
+        candle_provenances=candle_provenances,
+        candle_sources=candle_sources,
         allow_synthetic=allow_synthetic,
         reject_synthetic=reject_synthetic,
     )

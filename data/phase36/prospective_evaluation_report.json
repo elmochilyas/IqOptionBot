@@ -1,5 +1,5 @@
 {
-  "evaluated_at_utc": "2026-11-19T18:50:57.952272+00:00",
+  "evaluated_at_utc": "2026-11-19T19:49:45.501901+00:00",
   "cohort": {
     "sessions": [
       "shadow_1758c4a42993483fa41c48e3cb4ab386"
@@ -57,6 +57,7 @@
   },
   "contract_distinction": {
     "disclaimer": "SPOT_DIRECTIONAL_ACCURACY_IS_NOT_REALIZED_CONTRACT_PROFITABILITY: Spot candle direction measures price movement between consecutive spot bars only. Binary contracts require payout hurdle (>54.05% at 0.85 payout to break even). Zero broker orders were sent. Actual tradable payout, broker execution, latency, and fills are unverified.",
+    "local_verification_disclaimer": "LOCAL_COLLECTION_VERIFIED_ONLY: Verified against local collection records, dataset catalog and content integrity checksums. Does not constitute independent cryptographic broker authentication.",
     "spot_candle_direction_evaluated": true,
     "binary_option_contract_payoff_verified": false,
     "assumed_payout_rate": 0.85,
@@ -69,5 +70,5 @@
   "paired_outcome_details": [],
   "source_file_fingerprints": {},
   "tamper_evidence_disclaimer": "UNKEYED_SHA256_TAMPER_EVIDENCE_LIMITATION: The evidence_sha256 digest is an unkeyed SHA-256 hash providing accidental corruption and tamper detection in the local environment. It does not provide asymmetric cryptographic non-repudiation or independent third-party authentication against deliberate adversarial forgery.",
-  "evidence_sha256": "272813923478401fe15d3beeb2f3f14890705b93ccc242ffb8955570dcbf0884"
+  "evidence_sha256": "b95d979319b022433b2ecf53681a65721754501a9ac4d532ece22f152a4e4de2"
 }

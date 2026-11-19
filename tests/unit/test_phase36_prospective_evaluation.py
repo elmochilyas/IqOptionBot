@@ -33,10 +33,15 @@ import pytest
 from typer.testing import CliRunner
 
 from iqoption_research.cli.main import app
+from iqoption_research.market_data.catalog import CatalogEntry, DatasetCatalog
 from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.research.prospective_eval import (
     EXPLORATORY_SAMPLE_DISCLAIMER,
     FROZEN_TRAINING_PRIOR_UP,
+    LOCAL_VERIFICATION_DISCLAIMER,
+    PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED,
+    PROVENANCE_SYNTHETIC,
+    PROVENANCE_UNVERIFIED,
     UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER,
     UNVERIFIED_HEURISTIC_PRIOR_UP,
     CausalAlignmentError,
@@ -58,12 +63,15 @@ from iqoption_research.research.prospective_eval import (
     evaluate_prospective_shadow_offline,
     extract_predictions_from_registry,
     extract_predictions_with_audit,
+    extract_verified_availability_ns,
     load_candles_from_storage,
     pair_predictions_with_candles,
+    resolve_candle_provenance,
     validate_cohort_compatibility,
     verify_evaluation_report_integrity,
+    verify_parquet_file_provenance,
 )
-from iqoption_research.timing.evidence import TimingEvidenceRegistry
+from iqoption_research.timing.evidence import TimingEvidenceRegistry, compute_file_sha256
 from iqoption_research.timing.instrumentation import compute_observation_dict_hash
 
 runner = CliRunner()
@@ -78,12 +86,13 @@ def _make_candle(
     volume: float = 10.0,
     symbol: str = "EURUSD",
     is_complete: bool = True,
-    source: str = "broker_authentic_collection",
+    source: str = "SYNTHETIC",
     raw_extra: dict[str, Any] | None = None,
 ) -> Candle:
     hp = max(open_p, close_p) if high_p is None else high_p
     lp = min(open_p, close_p) if low_p is None else low_p
-    raw: dict[str, Any] = {"source": source}
+    is_synth = source in ("SYNTHETIC", "SYNTHETIC_FIXTURE", "synthetic")
+    raw: dict[str, Any] = {"source": source, "synthetic": is_synth}
     if raw_extra:
         raw.update(raw_extra)
     return Candle(
@@ -383,7 +392,7 @@ def test_causal_alignment_valid_pairing() -> None:
     )
     outcome_candle = _make_candle(from_ts=f, open_p=1.15000, close_p=1.15050)
 
-    paired, missing = pair_predictions_with_candles([pred], [outcome_candle])
+    paired, missing = pair_predictions_with_candles([pred], [outcome_candle], allow_synthetic=True)
 
     assert len(paired) == 1
     assert len(missing) == 0
@@ -457,7 +466,7 @@ def test_missing_future_candles_handling() -> None:
         _make_candle(from_ts=f3, open_p=1.1505, close_p=1.1500),
     ]
 
-    paired, missing = pair_predictions_with_candles(preds, candles)
+    paired, missing = pair_predictions_with_candles(preds, candles, allow_synthetic=True)
 
     assert len(paired) == 3
     assert missing == [f2]
@@ -478,11 +487,13 @@ def test_conflicting_outcome_duplicates_rejected() -> None:
     with pytest.raises(
         DuplicateOutcomeConflictError, match=r"Conflicting duplicate candle outcomes"
     ):
-        pair_predictions_with_candles([pred], [candle_a, candle_b_conflict])
+        pair_predictions_with_candles([pred], [candle_a, candle_b_conflict], allow_synthetic=True)
 
     # Identical duplicates deduplicate cleanly
     candle_identical = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1505)
-    paired, _ = pair_predictions_with_candles([pred], [candle_a, candle_identical])
+    paired, _ = pair_predictions_with_candles(
+        [pred], [candle_a, candle_identical], allow_synthetic=True
+    )
     assert len(paired) == 1
     assert paired[0].status == "ALIGNED"
 
@@ -510,7 +521,7 @@ def test_synthetic_outcome_labeling_and_rejection() -> None:
         reject_synthetic=False,
     )
     assert paired[0].outcome is not None
-    assert paired[0].outcome.source_provenance == "SYNTHETIC_FIXTURE"
+    assert paired[0].outcome.source_provenance == "SYNTHETIC"
 
     cohort = CohortIdentity(sessions=["s1"])
     report = compute_prospective_metrics(paired, cohort)
@@ -524,11 +535,13 @@ def test_incomplete_outcome_candle_rejected() -> None:
     incomplete_candle = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1505, is_complete=False)
 
     with pytest.raises(IncompleteOutcomeError, match="incomplete"):
-        pair_predictions_with_candles([pred], [incomplete_candle], reject_incomplete=True)
+        pair_predictions_with_candles(
+            [pred], [incomplete_candle], reject_incomplete=True, allow_synthetic=True
+        )
 
     # When reject_incomplete=False, status is INCOMPLETE_OUTCOME
     paired, missing = pair_predictions_with_candles(
-        [pred], [incomplete_candle], reject_incomplete=False
+        [pred], [incomplete_candle], reject_incomplete=False, allow_synthetic=True
     )
     assert paired[0].status == "INCOMPLETE_OUTCOME"
     assert missing == [f]
@@ -540,7 +553,7 @@ def test_neutral_candle_spot_vs_binary_target() -> None:
     pred_up = PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.55)
     neutral_candle = _make_candle(from_ts=f, open_p=1.15000, close_p=1.15000)  # tie
 
-    paired, _ = pair_predictions_with_candles([pred_up], [neutral_candle])
+    paired, _ = pair_predictions_with_candles([pred_up], [neutral_candle], allow_synthetic=True)
 
     sample = paired[0]
     assert sample.outcome is not None
@@ -579,7 +592,7 @@ def test_probabilistic_evaluation_preserves_skipped_decisions() -> None:
     ]
 
     cohort = CohortIdentity(sessions=["s1"])
-    paired, _ = pair_predictions_with_candles(preds, candles)
+    paired, _ = pair_predictions_with_candles(preds, candles, allow_synthetic=True)
     report = compute_prospective_metrics(paired, cohort)
 
     assert report.total_predictions == 2
@@ -669,7 +682,7 @@ def test_benchmarks_and_skill_score_calculation() -> None:
     ]
 
     cohort = CohortIdentity(sessions=["s1"])
-    paired, _ = pair_predictions_with_candles(preds, candles)
+    paired, _ = pair_predictions_with_candles(preds, candles, allow_synthetic=True)
     report = compute_prospective_metrics(paired, cohort)
 
     bench_map = {b.name: b for b in report.benchmarks}
@@ -732,10 +745,10 @@ def test_benchmark_causality_changing_future_labels_does_not_alter_past_predicti
     ]
 
     cohort = CohortIdentity(sessions=["s1"])
-    paired_a, _ = pair_predictions_with_candles(preds, candles_a)
+    paired_a, _ = pair_predictions_with_candles(preds, candles_a, allow_synthetic=True)
     report_a = compute_prospective_metrics(paired_a, cohort)
 
-    paired_b, _ = pair_predictions_with_candles(preds, candles_b)
+    paired_b, _ = pair_predictions_with_candles(preds, candles_b, allow_synthetic=True)
     report_b = compute_prospective_metrics(paired_b, cohort)
 
     bench_a = {b.name: b for b in report_a.benchmarks}
@@ -779,7 +792,7 @@ def test_statistical_uncertainty_and_small_sample_interpretation() -> None:
         for i in range(5)
     ]
     cohort = CohortIdentity(sessions=["s1"])
-    paired, _ = pair_predictions_with_candles(preds, candles)
+    paired, _ = pair_predictions_with_candles(preds, candles, allow_synthetic=True)
     report = compute_prospective_metrics(paired, cohort)
 
     assert report.uncertainty.sample_size == 5
@@ -817,7 +830,7 @@ def test_evaluation_report_sealing_and_tamper_detection() -> None:
     preds = [PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.48)]
     candles = [_make_candle(from_ts=f, open_p=1.15, close_p=1.14)]
     cohort = CohortIdentity(sessions=["s1"])
-    paired, _ = pair_predictions_with_candles(preds, candles)
+    paired, _ = pair_predictions_with_candles(preds, candles, allow_synthetic=True)
     report = compute_prospective_metrics(paired, cohort)
 
     assert report.evidence_sha256 != ""
@@ -1206,3 +1219,387 @@ def test_verified_training_prior_claim_removed_from_heuristic_baseline() -> None
     assert heuristic_bench.prior_type == "UNVERIFIED_HEURISTIC_PRIOR"
     assert "Verified training prior claim removed" in heuristic_bench.description
     assert np.isclose(UNVERIFIED_HEURISTIC_PRIOR_UP, 0.4985)
+
+
+def test_arbitrary_parquet_with_no_acquisition_record_unverified_and_rejected(
+    tmp_path: Path,
+) -> None:
+    """Arbitrary valid Parquet with no acquisition record is UNVERIFIED; authentic scoring rejected.
+
+    Reproduction of pre-fix defect:
+    Previously, load_candles_from_storage injected raw['source'] = 'broker_authentic_collection'
+    into any loaded candle, and resolve_candle_provenance accepted that manufactured claim,
+    causing arbitrary untrusted Parquet files without catalog receipts to be treated as authentic.
+
+    Under the corrected contract:
+    - No provenance is manufactured during loading.
+    - An arbitrary Parquet without an acquisition record resolves to UNVERIFIED.
+    - Authentic prospective evaluation rejects unverified data and fails closed.
+    """
+    f = 1795100000
+    c = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1505, source="arbitrary")
+    pf = tmp_path / "arbitrary_valid.parquet"
+    _write_simple_parquet(pf, [c])
+
+    # 1. Resolver checks: no acquisition record in catalog -> UNVERIFIED
+    prov_status, _ = verify_parquet_file_provenance(pf, storage_root=tmp_path, catalog=None)
+    assert prov_status == PROVENANCE_UNVERIFIED
+
+    # 2. Loader preserves unverified status without manufactured source claims
+    res = load_candles_from_storage(tmp_path, symbol="EURUSD")
+    assert len(res.candles) == 1
+    assert res.candle_provenances[f, "EURUSD"] == PROVENANCE_UNVERIFIED
+    assert res.candles[0].raw.get("source") != "broker_authentic_collection"
+
+    # 3. Authentic prospective evaluation fails closed
+    pred = PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.48)
+    with pytest.raises(
+        UnverifiedOutcomeProvenanceError, match=r"lacks verifiable broker acquisition evidence"
+    ):
+        pair_predictions_with_candles(
+            [pred],
+            res.candles,
+            candle_provenances=res.candle_provenances,
+            candle_sources=res.candle_sources,
+            allow_synthetic=False,
+        )
+
+
+def test_parquet_filename_indicating_broker_data_without_provenance_is_unverified(
+    tmp_path: Path,
+) -> None:
+    """Parquet filename/path indicating broker data but lacking provenance is UNVERIFIED."""
+    broker_dir = tmp_path / "broker_authentic_collection" / "eurusd" / "60s"
+    broker_dir.mkdir(parents=True)
+    pf = broker_dir / "candles_1795100000_1795100060_abcdef123456.parquet"
+
+    c = _make_candle(from_ts=1795100000, open_p=1.1500, close_p=1.1505)
+    _write_simple_parquet(pf, [c])
+
+    # Filename and directory alone cannot establish broker provenance independently
+    prov_status, _ = verify_parquet_file_provenance(pf, storage_root=tmp_path, catalog=None)
+    assert prov_status == PROVENANCE_UNVERIFIED
+
+
+def test_forged_raw_source_broker_authentic_is_not_sufficient(tmp_path: Path) -> None:
+    """Forged raw.source='broker_authentic_collection' is not sufficient for verification."""
+    f = 1795100000
+    forged_candle = _make_candle(
+        from_ts=f,
+        open_p=1.1500,
+        close_p=1.1505,
+        source="broker_authentic_collection",
+        raw_extra={"source": "broker_authentic_collection", "synthetic": False},
+    )
+    prov_status, is_auth = resolve_candle_provenance(forged_candle)
+    assert prov_status == PROVENANCE_UNVERIFIED
+    assert is_auth is False
+
+    pred = PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.48)
+    with pytest.raises(
+        UnverifiedOutcomeProvenanceError, match=r"lacks verifiable broker acquisition evidence"
+    ):
+        pair_predictions_with_candles([pred], [forged_candle], allow_synthetic=False)
+
+
+def test_source_file_exists_without_catalog_receipt_is_unverified(tmp_path: Path) -> None:
+    """Source file exists on disk, but absence of trusted catalog receipt yields UNVERIFIED."""
+    pf = tmp_path / "untracked_historical.parquet"
+    c = _make_candle(from_ts=1795100000, open_p=1.1500, close_p=1.1505)
+    _write_simple_parquet(pf, [c])
+
+    cat_db = tmp_path / "catalog.db"
+    cat = DatasetCatalog(cat_db)
+
+    prov_status, _ = verify_parquet_file_provenance(pf, storage_root=tmp_path, catalog=cat)
+    assert prov_status == PROVENANCE_UNVERIFIED
+
+
+def test_catalog_checksum_mismatch_rejected(tmp_path: Path) -> None:
+    """Catalog checksum mismatch between file on disk and catalog receipt must be rejected."""
+    f = 1795100000
+    c = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1505)
+    pf = tmp_path / "batch.parquet"
+    _write_simple_parquet(pf, [c])
+
+    sc = tmp_path / "batch.meta.json"
+    sc_data = {
+        "dataset_id": "ds_test_001",
+        "symbol": "EURUSD",
+        "timeframe": {"candle_size_seconds": 60},
+        "source": "broker_authentic_collection",
+        "is_synthetic": False,
+    }
+    sc.write_text(json.dumps(sc_data), encoding="utf-8")
+    sc_sha = compute_file_sha256(sc)
+
+    cat_db = tmp_path / "catalog.db"
+    cat = DatasetCatalog(cat_db)
+    forged_entry = CatalogEntry(
+        dataset_id="ds_test_001",
+        schema_version="2.0",
+        source="broker_authentic_collection",
+        is_synthetic=False,
+        symbol="EURUSD",
+        active_id=1,
+        is_otc=False,
+        candle_size_seconds=60,
+        from_ts=f,
+        to_ts=f + 60,
+        from_utc="2026-11-20T00:00:00+00:00",
+        to_utc="2026-11-20T00:01:00+00:00",
+        candle_count=1,
+        created_at_utc="2026-11-20T00:01:00+00:00",
+        imported_at_utc="2026-11-20T00:01:00+00:00",
+        quality_summary={},
+        structural_integrity_passed=True,
+        coverage_completeness_ratio=1.0,
+        research_sufficiency_status="sufficient",
+        research_sufficiency_policy="standard",
+        file_path="batch.parquet",
+        sha256_checksum="0000000000000000000000000000000000000000000000000000000000000000",
+        metadata_path="batch.meta.json",
+        metadata_sha256=sc_sha,
+        provenance_version="3.1.0",
+        mapping_provenance="test",
+        disclaimer="test",
+    )
+    cat.register_dataset(forged_entry)
+
+    with pytest.raises(ProspectiveEvaluationError, match=r"Catalog checksum mismatch"):
+        verify_parquet_file_provenance(pf, storage_root=tmp_path, catalog=cat)
+
+
+def test_metadata_declares_synthetic_but_source_claims_broker_rejected(tmp_path: Path) -> None:
+    """Metadata declaring synthetic while source claims broker rejects conflict."""
+    pf = tmp_path / "conflicted.parquet"
+    c = _make_candle(from_ts=1795100000, open_p=1.1500, close_p=1.1505)
+    _write_simple_parquet(pf, [c])
+
+    sc = tmp_path / "conflicted.meta.json"
+    sc.write_text(
+        json.dumps({
+            "is_synthetic": True,
+            "source": "broker_authentic_collection",
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProspectiveEvaluationError, match=r"Conflicting provenance"):
+        verify_parquet_file_provenance(pf, storage_root=tmp_path, catalog=None)
+
+    conflicted_candle = _make_candle(
+        from_ts=1795100000,
+        open_p=1.1500,
+        close_p=1.1505,
+        source="broker_authentic_collection",
+        raw_extra={"synthetic": True, "source": "broker_authentic_collection"},
+    )
+    with pytest.raises(ProspectiveEvaluationError, match=r"Conflicting provenance"):
+        resolve_candle_provenance(conflicted_candle)
+
+
+def test_valid_local_collection_records_and_matching_hashes_verified(tmp_path: Path) -> None:
+    """Valid local collection records and matching hashes succeed as verified."""
+    f = 1795100000
+    c = _make_candle(
+        from_ts=f,
+        open_p=1.1500,
+        close_p=1.1505,
+        source="broker_authentic_collection",
+        raw_extra={"validated_utc_ns": (f + 65) * 1_000_000_000},
+    )
+    pf = tmp_path / "valid_batch.parquet"
+    _write_simple_parquet(pf, [c])
+    pf_sha = compute_file_sha256(pf)
+
+    sc = tmp_path / "valid_batch.meta.json"
+    sc_data = {
+        "dataset_id": "ds_valid_001",
+        "symbol": "EURUSD",
+        "timeframe": {"candle_size_seconds": 60},
+        "source": "broker_authentic_collection",
+        "is_synthetic": False,
+    }
+    sc.write_text(json.dumps(sc_data), encoding="utf-8")
+    sc_sha = compute_file_sha256(sc)
+
+    cat_db = tmp_path / "catalog.db"
+    cat = DatasetCatalog(cat_db)
+    entry = CatalogEntry(
+        dataset_id="ds_valid_001",
+        schema_version="2.0",
+        source="broker_authentic_collection",
+        is_synthetic=False,
+        symbol="EURUSD",
+        active_id=1,
+        is_otc=False,
+        candle_size_seconds=60,
+        from_ts=f,
+        to_ts=f + 60,
+        from_utc="2026-11-20T00:00:00+00:00",
+        to_utc="2026-11-20T00:01:00+00:00",
+        candle_count=1,
+        created_at_utc="2026-11-20T00:01:00+00:00",
+        imported_at_utc="2026-11-20T00:01:00+00:00",
+        quality_summary={},
+        structural_integrity_passed=True,
+        coverage_completeness_ratio=1.0,
+        research_sufficiency_status="sufficient",
+        research_sufficiency_policy="standard",
+        file_path="valid_batch.parquet",
+        sha256_checksum=pf_sha,
+        metadata_path="valid_batch.meta.json",
+        metadata_sha256=sc_sha,
+        provenance_version="3.1.0",
+        mapping_provenance="test",
+        disclaimer="test",
+    )
+    cat.register_dataset(entry)
+
+    prov_status, src_id = verify_parquet_file_provenance(pf, storage_root=tmp_path, catalog=cat)
+    assert prov_status == PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED
+    assert src_id == "ds_valid_001"
+
+    pred = PredictionRecord(
+        session_id="s1",
+        boundary_F=f,
+        calibrated_probability=0.48,
+        decision_time_utc_ns=f * 1_000_000_000 + 100_000_000,
+    )
+    storage_res = load_candles_from_storage(tmp_path, symbol="EURUSD")
+    paired, _ = pair_predictions_with_candles(
+        [pred],
+        storage_res.candles,
+        candle_provenances=storage_res.candle_provenances,
+        candle_sources=storage_res.candle_sources,
+        allow_synthetic=False,
+    )
+    assert len(paired) == 1
+    assert paired[0].outcome is not None
+    assert paired[0].outcome.source_provenance == PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED
+    # Standard Parquet storage does not embed availability timestamps, so available_utc_ns is None
+    assert paired[0].outcome.available_utc_ns is None
+
+
+def test_outcome_lacks_recorded_availability_time_results_in_none() -> None:
+    """Outcome lacking recorded receive/validation timestamp yields available_utc_ns=None."""
+    f = 1795100000
+    c = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1505, raw_extra={})
+    avail = extract_verified_availability_ns(c)
+    assert avail is None
+
+    pred = PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.48)
+    paired, _ = pair_predictions_with_candles([pred], [c], allow_synthetic=True)
+    assert paired[0].outcome is not None
+    assert paired[0].outcome.available_utc_ns is None
+
+
+def test_candle_closes_at_f60_validation_at_f65_preserves_availability_f65() -> None:
+    """Candle closing at F+60 with validation at F+65 preserves F+65, not F+60."""
+    f = 1795100000
+    expected_avail_ns = (f + 65) * 1_000_000_000
+    c = _make_candle(
+        from_ts=f,
+        open_p=1.1500,
+        close_p=1.1505,
+        raw_extra={"validated_utc_ns": expected_avail_ns},
+    )
+    avail = extract_verified_availability_ns(c)
+    assert avail == expected_avail_ns
+    assert avail != (f + 60) * 1_000_000_000
+
+
+def test_previous_outcome_delayed_availability_excluded_from_walk_forward() -> None:
+    """Outcome finalized after decision timestamp must be excluded from walk-forward prior."""
+    f1, f2 = 1795100000, 1795100060
+    c1 = _make_candle(
+        from_ts=f1,
+        open_p=1.1500,
+        close_p=1.1510,
+        raw_extra={"validated_utc_ns": (f2 + 10) * 1_000_000_000},
+    )
+    c2 = _make_candle(
+        from_ts=f2,
+        open_p=1.1510,
+        close_p=1.1500,
+        raw_extra={"validated_utc_ns": (f2 + 70) * 1_000_000_000},
+    )
+    preds = [
+        PredictionRecord(
+            session_id="s1",
+            boundary_F=f1,
+            calibrated_probability=0.48,
+            decision_time_utc_ns=f1 * 1_000_000_000 + 100_000_000,
+        ),
+        PredictionRecord(
+            session_id="s1",
+            boundary_F=f2,
+            calibrated_probability=0.48,
+            decision_time_utc_ns=(f2 + 1) * 1_000_000_000,
+        ),
+    ]
+    paired, _ = pair_predictions_with_candles(preds, [c1, c2], allow_synthetic=True)
+    report = compute_prospective_metrics(paired, CohortIdentity(sessions=["s1"]))
+
+    wf_bench = next(b for b in report.benchmarks if b.name == "walk_forward_expanding_prior")
+    assert np.isclose(wf_bench.brier_score, 0.25, atol=1e-4)
+
+
+def test_previous_outcome_missing_availability_excluded_from_walk_forward() -> None:
+    """Past outcome with missing availability timestamp must be excluded from walk-forward prior."""
+    f1, f2 = 1795100000, 1795100060
+    c1 = _make_candle(from_ts=f1, open_p=1.1500, close_p=1.1510, raw_extra={})
+    c2 = _make_candle(
+        from_ts=f2,
+        open_p=1.1510,
+        close_p=1.1500,
+        raw_extra={"validated_utc_ns": (f2 + 65) * 1_000_000_000},
+    )
+    preds = [
+        PredictionRecord(
+            session_id="s1",
+            boundary_F=f1,
+            calibrated_probability=0.48,
+            decision_time_utc_ns=f1 * 1_000_000_000 + 100_000_000,
+        ),
+        PredictionRecord(
+            session_id="s1",
+            boundary_F=f2,
+            calibrated_probability=0.48,
+            decision_time_utc_ns=(f2 + 5) * 1_000_000_000,
+        ),
+    ]
+    paired, _ = pair_predictions_with_candles(preds, [c1, c2], allow_synthetic=True)
+    report = compute_prospective_metrics(paired, CohortIdentity(sessions=["s1"]))
+
+    wf_bench = next(b for b in report.benchmarks if b.name == "walk_forward_expanding_prior")
+    assert np.isclose(wf_bench.brier_score, 0.25, atol=1e-4)
+
+
+def test_no_outcomes_matched_reported_as_no_outcomes_to_verify_adversarial(tmp_path: Path) -> None:
+    """When zero outcomes match, report must explicitly state NO_OUTCOMES_TO_VERIFY."""
+    shadow_path, db_path = _create_phase35_fixture(tmp_path)
+    report = evaluate_prospective_shadow_offline([shadow_path], journal_path=db_path)
+
+    assert report.total_predictions == 5
+    assert report.aligned_pairs_count == 0
+    assert report.all_outcomes_authentic == "NO_OUTCOMES_TO_VERIFY"
+    assert report.to_dict()["all_outcomes_authentic"] == "NO_OUTCOMES_TO_VERIFY"
+
+
+def test_deliberately_synthetic_fixture_permitted_only_in_explicit_offline_mode() -> None:
+    """Synthetic fixture rejected in authentic mode; permitted only with allow_synthetic=True."""
+    f = 1795100000
+    pred = PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.48)
+    synth_c = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1505, source="SYNTHETIC")
+
+    with pytest.raises(SyntheticDataRejectedError, match=r"Synthetic fixture outcome rejected"):
+        pair_predictions_with_candles([pred], [synth_c], allow_synthetic=False)
+
+    paired, _ = pair_predictions_with_candles([pred], [synth_c], allow_synthetic=True)
+    assert len(paired) == 1
+    assert paired[0].status == "ALIGNED"
+    assert paired[0].outcome is not None
+    assert paired[0].outcome.source_provenance == PROVENANCE_SYNTHETIC
+    assert "LOCAL_COLLECTION_VERIFIED_ONLY" in LOCAL_VERIFICATION_DISCLAIMER

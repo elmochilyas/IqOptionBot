@@ -230,6 +230,11 @@ class AsyncIQOption:
         return bool(getattr(self._ws, "is_server_time_fresh", True))
 
     @property
+    def request_timeout(self) -> float:
+        """Configured request timeout in seconds."""
+        return self._config.request_timeout
+
+    @property
     def ws(self) -> IQOptionWebSocketClient | None:
         """Low-level transport (read-only). Intended for diagnostics."""
         return self._ws

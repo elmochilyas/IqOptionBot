@@ -127,11 +127,19 @@ def is_temporary_readiness_condition(
 
 
 class ShadowTrial:
-    def __init__(self, config: SupervisedSessionConfig, root: Path, model_path: Path) -> None:
+    def __init__(
+        self,
+        config: SupervisedSessionConfig,
+        root: Path,
+        model_path: Path,
+        *,
+        pipeline_reserve_seconds: float = 1.0,
+    ) -> None:
         config.validate()
         if config.symbol != "EURUSD" or config.candle_size_seconds != 60:
             raise ValueError("Shadow trial requires EURUSD 60-second candles")
         self.config = config
+        self.pipeline_reserve_seconds = float(pipeline_reserve_seconds)
         self.mode = "OPERATOR_SUPERVISED_LIVE" if config.live_mode else "OFFLINE_SIMULATION"
         self.session = f"shadow_{uuid.uuid4().hex}"
         self.root = root / self.mode.lower()
@@ -175,12 +183,20 @@ class ShadowTrial:
             "disposition": "NO_DEMONSTRATED_EDGE",
         }
 
+    def candle_deadline_mono(self, boundary: int) -> float:
+        """Calculate monotonic timestamp corresponding to feature_close_F + 15 seconds."""
+        boundary_ns = boundary * 1_000_000_000
+        candle_deadline_ns = boundary_ns + 15_000_000_000
+        return (candle_deadline_ns - self.recorder.clock.anchor_utc_ns) / 1_000_000_000.0
+
     def decide(
         self,
         result: CandleFetchResult,
         obs: CandleTimingObservation,
         deadline: float,
         tradable_payout: float | None = None,
+        *,
+        session_deadline: float | None = None,
     ) -> None:
         fresh = (
             result.server_time_fresh
@@ -278,7 +294,11 @@ class ShadowTrial:
             },
         )
         if time.perf_counter() >= deadline:
-            obs.rejection_reason = "SESSION_DEADLINE"
+            obs.rejection_reason = (
+                "SESSION_DEADLINE"
+                if session_deadline is not None and time.perf_counter() >= session_deadline
+                else "OUTSIDE_15_SECOND_ACQUISITION_GATE"
+            )
             return
         key = f"shadow:EURUSD:60:{obs.feature_close_F}"
         payload = {
@@ -309,7 +329,11 @@ class ShadowTrial:
             "STAGE_9_JOURNAL_COMMIT", details={"event_key": key, "payload_sha256": payload_hash}
         )
         if time.perf_counter() > deadline:
-            obs.rejection_reason = "SESSION_DEADLINE"
+            obs.rejection_reason = (
+                "SESSION_DEADLINE"
+                if session_deadline is not None and time.perf_counter() >= session_deadline
+                else "OUTSIDE_15_SECOND_ACQUISITION_GATE"
+            )
 
     async def cycle(
         self,
@@ -324,11 +348,54 @@ class ShadowTrial:
         obs = self.recorder.start_candle_observation(boundary)
         obs.measurement_status = "SHADOW_DECISION"
         attempts = 0
+        candle_deadline = self.candle_deadline_mono(boundary)
         try:
             while True:
+                now_mono = time.perf_counter()
+                if now_mono >= deadline:
+                    obs.rejection_reason = "SESSION_DEADLINE"
+                    if attempts == 0:
+                        attempts = 1
+                        self.recorder.record_acquisition_attempt(
+                            attempt_number=attempts,
+                            request_id=f"deadline-expired-{obs.observation_index}-{attempts}",
+                            broker_clock_fresh=False,
+                            candle_count=0,
+                            is_complete=False,
+                            rejection_classification="TIMEOUT_EXCEEDED_DEADLINE",
+                            retry_attempted=False,
+                        )
+                    break
+
                 attempts += 1
-                async with asyncio.timeout(max(0, deadline - time.perf_counter())):
-                    result = await client.get_candles("EURUSD", 60, 22, endtime=boundary)
+                candle_time_left = candle_deadline - self.pipeline_reserve_seconds - now_mono
+                session_time_left = deadline - now_mono
+                req_timeout = getattr(client, "request_timeout", 10.0)
+                if candle_time_left > 0:
+                    attempt_timeout = min(session_time_left, candle_time_left, req_timeout)
+                else:
+                    attempt_timeout = min(session_time_left, req_timeout)
+
+                try:
+                    async with asyncio.timeout(max(0.001, attempt_timeout)):
+                        result = await client.get_candles("EURUSD", 60, 22, endtime=boundary)
+                except TimeoutError:
+                    reason = (
+                        "SESSION_DEADLINE"
+                        if time.perf_counter() >= deadline
+                        else "OUTSIDE_15_SECOND_ACQUISITION_GATE"
+                    )
+                    obs.rejection_reason = reason
+                    self.recorder.record_acquisition_attempt(
+                        attempt_number=attempts,
+                        request_id=obs.request_id or f"timeout-{obs.observation_index}-{attempts}",
+                        broker_clock_fresh=False,
+                        candle_count=0,
+                        is_complete=False,
+                        rejection_classification="TIMEOUT_EXCEEDED_DEADLINE",
+                        retry_attempted=False,
+                    )
+                    break
 
                 fresh = (
                     client.is_server_time_fresh
@@ -355,18 +422,45 @@ class ShadowTrial:
                                 details=updated_details,
                                 allow_overwrite=True,
                             )
-                    self.decide(result, obs, deadline, tradable_payout=tradable_payout)
+                    self.recorder.record_acquisition_attempt(
+                        attempt_number=attempts,
+                        request_id=result.request_id or obs.request_id,
+                        broker_clock_fresh=fresh,
+                        candle_count=len(result.candles) if result.candles else 0,
+                        is_complete=True,
+                        rejection_classification=None,
+                        retry_attempted=False,
+                    )
+                    self.decide(
+                        result,
+                        obs,
+                        deadline,
+                        tradable_payout=tradable_payout,
+                    )
                     break
 
-                now_mono = time.perf_counter_ns()
-                now_utc = self.recorder.clock.mono_to_utc_ns(now_mono)
+                now_mono = time.perf_counter()
+                now_utc = self.recorder.clock.mono_to_utc_ns(time.perf_counter_ns())
                 elapsed_s = (now_utc - obs.feature_close_F_ns) / 1_000_000_000.0
 
+                deadline_margin = retry_delay_seconds + self.pipeline_reserve_seconds
                 can_retry = (
                     attempts <= max_readiness_retries
                     and is_temporary_readiness_condition(diag, result, boundary)
-                    and elapsed_s < 12.0
-                    and (deadline - time.perf_counter()) > (retry_delay_seconds + 1.0)
+                    and elapsed_s < (15.0 - deadline_margin)
+                    and (candle_deadline - self.pipeline_reserve_seconds - now_mono)
+                    > retry_delay_seconds
+                    and (deadline - now_mono) > deadline_margin
+                )
+
+                self.recorder.record_acquisition_attempt(
+                    attempt_number=attempts,
+                    request_id=result.request_id or obs.request_id,
+                    broker_clock_fresh=fresh,
+                    candle_count=len(result.candles) if result.candles else 0,
+                    is_complete=bool(result.candles and result.candles[-1].to_ts == boundary),
+                    rejection_classification=diag,
+                    retry_attempted=can_retry,
                 )
 
                 if can_retry:
@@ -389,9 +483,29 @@ class ShadowTrial:
                 break
         except (IQOptionError, TimeoutError, sqlite3.Error, ValueError, OSError) as exc:
             obs.rejection_reason = type(exc).__name__
+            if len(obs.acquisition_attempts) < attempts:
+                self.recorder.record_acquisition_attempt(
+                    attempt_number=attempts,
+                    request_id=obs.request_id or f"error-{obs.observation_index}-{attempts}",
+                    broker_clock_fresh=False,
+                    candle_count=0,
+                    is_complete=False,
+                    rejection_classification=type(exc).__name__,
+                    retry_attempted=False,
+                )
             return False
         except asyncio.CancelledError:
             obs.rejection_reason = "OPERATOR_CANCELLED"
+            if len(obs.acquisition_attempts) < attempts:
+                self.recorder.record_acquisition_attempt(
+                    attempt_number=attempts,
+                    request_id=obs.request_id or f"cancelled-{obs.observation_index}-{attempts}",
+                    broker_clock_fresh=False,
+                    candle_count=0,
+                    is_complete=False,
+                    rejection_classification="OPERATOR_CANCELLED",
+                    retry_attempted=False,
+                )
             raise
         finally:
             self.recorder.finalize_current_observation(obs.rejection_reason)

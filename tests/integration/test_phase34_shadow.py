@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import sqlite3
@@ -750,3 +751,375 @@ async def test_retry_deadline_expiration_never_compliant(tmp_path: Path, clock: 
     assert obs["gate_verdict"] == "FAIL_GATE_OVERRUN"
     assert obs["rejection_reason"] == "OUTSIDE_15_SECOND_ACQUISITION_GATE"
     assert obs["prediction_stages_measured"] is True
+
+
+async def test_successful_retry_preserves_attempt_history(tmp_path: Path, clock: list[int]) -> None:
+    """Successful retry preserves attempt 1 (rejected) and attempt 2 (passed) in audit trail."""
+    trial = ShadowTrial(
+        SupervisedSessionConfig(max_candle_cycles=1),
+        tmp_path,
+        MODEL_PATH,
+    )
+    lagged_bars = [
+        {
+            "from": (F - 60) - 60 * (22 - i),
+            "to": (F - 60) - 60 * (21 - i),
+            "open": 1.08,
+            "close": 1.0801 + i * 0.00001,
+            "min": 1.07,
+            "max": 1.09,
+            "volume": i + 1,
+        }
+        for i in range(22)
+    ]
+    current_bars = [
+        {
+            "from": F - 60 * (22 - i),
+            "to": F - 60 * (21 - i),
+            "open": 1.08,
+            "close": 1.0801 + i * 0.00001,
+            "min": 1.07,
+            "max": 1.09,
+            "volume": i + 1,
+        }
+        for i in range(22)
+    ]
+    socket = MultiAttemptCandleSocket([lagged_bars, current_bars])
+    client = AsyncIQOption(
+        ssid="synthetic",
+        config=ConnectionConfig(timing_market_data_only=True, max_reconnect_attempts=0),
+        offline=False,
+        timing_recorder=trial.recorder,
+    )
+    with (
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=socket)),
+        patch("iqoption_research.connectors.iqoption.client.async_logout", new=AsyncMock()),
+    ):
+        async with client:
+            ok = await trial.cycle(client, F, time.perf_counter() + 10, retry_delay_seconds=0.01)
+            assert ok is True
+
+    reg = trial.save()
+    is_valid, errors = reg.verify_integrity()
+    assert is_valid is True, f"Integrity verification failed: {errors}"
+    obs = reg.observations[0]
+    assert obs["phase30_gate_satisfied"] is True
+    assert obs["gate_verdict"] == "PASS"
+
+    attempts = obs.get("acquisition_attempts", [])
+    assert len(attempts) == 2
+
+    # Attempt 1 forensic assertions
+    att1 = attempts[0]
+    assert att1["attempt_number"] == 1
+    assert att1["request_id"] == "candles-1"
+    assert att1["retry_attempted"] is True
+    assert att1["rejection_classification"] == "REQUESTED_BOUNDARY_MISMATCH"
+    assert att1["is_complete"] is False
+    assert att1["candle_count"] == 22
+    assert att1["request_mono_ns"] is not None
+    assert att1["receipt_mono_ns"] is not None
+    assert att1["validation_mono_ns"] is not None
+    assert att1["request_mono_ns"] <= att1["receipt_mono_ns"] <= att1["validation_mono_ns"]
+
+    # Attempt 2 forensic assertions
+    att2 = attempts[1]
+    assert att2["attempt_number"] == 2
+    assert att2["request_id"] == "candles-2"
+    assert att2["retry_attempted"] is False
+    assert att2["rejection_classification"] is None
+    assert att2["is_complete"] is True
+    assert att2["candle_count"] == 22
+    assert att2["request_mono_ns"] >= att1["validation_mono_ns"]
+
+    # Denominator check: single final observation for candle boundary F
+    assert len(reg.observations) == 1
+    assert obs["request_id"] == "candles-2"
+
+
+async def test_unsuccessful_retry_exhaustion_preserves_attempt_history(
+    tmp_path: Path, clock: list[int]
+) -> None:
+    """Exhausting retry attempts preserves all attempt records and marks final rejection."""
+    trial = ShadowTrial(
+        SupervisedSessionConfig(max_candle_cycles=1),
+        tmp_path,
+        MODEL_PATH,
+    )
+    lagged_bars = [
+        {
+            "from": (F - 60) - 60 * (22 - i),
+            "to": (F - 60) - 60 * (21 - i),
+            "open": 1.08,
+            "close": 1.0801 + i * 0.00001,
+            "min": 1.07,
+            "max": 1.09,
+            "volume": i + 1,
+        }
+        for i in range(22)
+    ]
+    # Always return lagged bars across 3 attempts
+    socket = MultiAttemptCandleSocket([lagged_bars, lagged_bars, lagged_bars])
+    client = AsyncIQOption(
+        ssid="synthetic",
+        config=ConnectionConfig(timing_market_data_only=True, max_reconnect_attempts=0),
+        offline=False,
+        timing_recorder=trial.recorder,
+    )
+    with (
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=socket)),
+        patch("iqoption_research.connectors.iqoption.client.async_logout", new=AsyncMock()),
+    ):
+        async with client:
+            ok = await trial.cycle(
+                client,
+                F,
+                time.perf_counter() + 10,
+                max_readiness_retries=2,
+                retry_delay_seconds=0.01,
+            )
+            assert ok is True  # No clock step
+
+    reg = trial.save()
+    is_valid, errors = reg.verify_integrity()
+    assert is_valid is True, f"Integrity verification failed: {errors}"
+    obs = reg.observations[0]
+    assert obs["phase30_gate_satisfied"] is False
+    assert obs["gate_verdict"] == "FAIL_REJECTED"
+    assert obs["rejection_reason"] == "REQUESTED_BOUNDARY_MISMATCH"
+
+    attempts = obs.get("acquisition_attempts", [])
+    assert len(attempts) == 3
+    for i in range(2):
+        assert attempts[i]["attempt_number"] == i + 1
+        assert attempts[i]["retry_attempted"] is True
+        assert attempts[i]["rejection_classification"] == "REQUESTED_BOUNDARY_MISMATCH"
+
+    assert attempts[2]["attempt_number"] == 3
+    assert attempts[2]["retry_attempted"] is False
+    assert attempts[2]["rejection_classification"] == "REQUESTED_BOUNDARY_MISMATCH"
+    assert obs["request_id"] == attempts[2]["request_id"]
+
+
+async def test_candle_deadline_timeout_prevents_retry(tmp_path: Path, clock: list[int]) -> None:
+    """When time before F + 15s is insufficient, retry is prohibited and timeout recorded."""
+    trial = ShadowTrial(
+        SupervisedSessionConfig(max_candle_cycles=1),
+        tmp_path,
+        MODEL_PATH,
+        pipeline_reserve_seconds=1.0,
+    )
+    socket = CandleSocket("normal")
+    client = AsyncIQOption(
+        ssid="synthetic",
+        config=ConnectionConfig(
+            timing_market_data_only=True, max_reconnect_attempts=0, request_timeout=0.05
+        ),
+        offline=False,
+        timing_recorder=trial.recorder,
+    )
+
+    async def hanging_get_candles(*args: Any, **kwargs: Any) -> CandleFetchResult:
+        await asyncio.sleep(1.0)
+        raise TimeoutError("Simulated socket timeout")
+
+    with (
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=socket)),
+        patch("iqoption_research.connectors.iqoption.client.async_logout", new=AsyncMock()),
+        patch.object(client, "get_candles", side_effect=hanging_get_candles),
+    ):
+        async with client:
+            ok = await trial.cycle(client, F, time.perf_counter() + 0.05, retry_delay_seconds=0.01)
+            assert ok is True
+
+    reg = trial.save()
+    is_valid, errors = reg.verify_integrity()
+    assert is_valid is True, f"Integrity verification failed: {errors}"
+    obs = reg.observations[0]
+    assert obs["phase30_gate_satisfied"] is False
+    assert obs["rejection_reason"] in ("SESSION_DEADLINE", "OUTSIDE_15_SECOND_ACQUISITION_GATE")
+    attempts = obs.get("acquisition_attempts", [])
+    assert len(attempts) == 1
+    assert attempts[0]["rejection_classification"] == "TIMEOUT_EXCEEDED_DEADLINE"
+    assert attempts[0]["retry_attempted"] is False
+
+
+async def test_operator_cancellation_preserves_interrupted_attempt(
+    tmp_path: Path, clock: list[int]
+) -> None:
+    """Operator cancellation during in-flight retry preserves interrupted attempt in audit trail."""
+    trial = ShadowTrial(
+        SupervisedSessionConfig(max_candle_cycles=1),
+        tmp_path,
+        MODEL_PATH,
+    )
+    lagged_bars = [
+        {
+            "from": (F - 60) - 60 * (22 - i),
+            "to": (F - 60) - 60 * (21 - i),
+            "open": 1.08,
+            "close": 1.0801 + i * 0.00001,
+            "min": 1.07,
+            "max": 1.09,
+            "volume": i + 1,
+        }
+        for i in range(22)
+    ]
+    socket = MultiAttemptCandleSocket([lagged_bars, lagged_bars])
+    client = AsyncIQOption(
+        ssid="synthetic",
+        config=ConnectionConfig(timing_market_data_only=True, max_reconnect_attempts=0),
+        offline=False,
+        timing_recorder=trial.recorder,
+    )
+
+    call_count = [0]
+    orig_get_candles = client.get_candles
+
+    async def cancel_on_retry(*args: Any, **kwargs: Any) -> CandleFetchResult:
+        call_count[0] += 1
+        if call_count[0] == 2:
+            raise asyncio.CancelledError()
+        return await orig_get_candles(*args, **kwargs)
+
+    with (
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=socket)),
+        patch("iqoption_research.connectors.iqoption.client.async_logout", new=AsyncMock()),
+        patch.object(client, "get_candles", side_effect=cancel_on_retry),
+    ):
+        async with client:
+            with pytest.raises(asyncio.CancelledError):
+                await trial.cycle(client, F, time.perf_counter() + 10, retry_delay_seconds=0.01)
+
+    reg = trial.save()
+    is_valid, errors = reg.verify_integrity()
+    assert is_valid is True, f"Integrity verification failed: {errors}"
+    obs = reg.observations[0]
+    assert obs["rejection_reason"] == "OPERATOR_CANCELLED"
+
+    attempts = obs.get("acquisition_attempts", [])
+    assert len(attempts) == 2
+    assert attempts[0]["attempt_number"] == 1
+    assert attempts[0]["retry_attempted"] is True
+    assert attempts[0]["rejection_classification"] == "REQUESTED_BOUNDARY_MISMATCH"
+
+    assert attempts[1]["attempt_number"] == 2
+    assert attempts[1]["retry_attempted"] is False
+    assert attempts[1]["rejection_classification"] == "OPERATOR_CANCELLED"
+
+
+async def test_attempt_history_integrity_verification_and_tampering(
+    tmp_path: Path, clock: list[int]
+) -> None:
+    """Integrity verification catches attempt ordering, duplicate ID, and timestamp tampering."""
+    from iqoption_research.timing.evidence import TimingEvidenceRegistry
+
+    trial = ShadowTrial(
+        SupervisedSessionConfig(max_candle_cycles=1),
+        tmp_path,
+        MODEL_PATH,
+    )
+    lagged_bars = [
+        {
+            "from": (F - 60) - 60 * (22 - i),
+            "to": (F - 60) - 60 * (21 - i),
+            "open": 1.08,
+            "close": 1.0801 + i * 0.00001,
+            "min": 1.07,
+            "max": 1.09,
+            "volume": i + 1,
+        }
+        for i in range(22)
+    ]
+    current_bars = [
+        {
+            "from": F - 60 * (22 - i),
+            "to": F - 60 * (21 - i),
+            "open": 1.08,
+            "close": 1.0801 + i * 0.00001,
+            "min": 1.07,
+            "max": 1.09,
+            "volume": i + 1,
+        }
+        for i in range(22)
+    ]
+    socket = MultiAttemptCandleSocket([lagged_bars, current_bars])
+    client = AsyncIQOption(
+        ssid="synthetic",
+        config=ConnectionConfig(timing_market_data_only=True, max_reconnect_attempts=0),
+        offline=False,
+        timing_recorder=trial.recorder,
+    )
+    with (
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=socket)),
+        patch("iqoption_research.connectors.iqoption.client.async_logout", new=AsyncMock()),
+    ):
+        async with client:
+            ok = await trial.cycle(client, F, time.perf_counter() + 10, retry_delay_seconds=0.01)
+            assert ok is True
+
+    reg = trial.save()
+    assert reg.verify_integrity() == (True, [])
+
+    # Tamper 1: non-sequential attempt number
+    d1 = json.loads(json.dumps(reg.to_dict()))
+    d1["observations"][0]["acquisition_attempts"][1]["attempt_number"] = 5
+    reg_t1 = TimingEvidenceRegistry.from_dict(d1)
+    is_valid, errors = reg_t1.verify_integrity()
+    assert is_valid is False
+    assert any("attempt 1 number mismatch" in e for e in errors)
+
+    # Tamper 2: duplicate request ID across attempts
+    d2 = json.loads(json.dumps(reg.to_dict()))
+    d2["observations"][0]["acquisition_attempts"][1]["request_id"] = d2["observations"][0][
+        "acquisition_attempts"
+    ][0]["request_id"]
+    reg_t2 = TimingEvidenceRegistry.from_dict(d2)
+    is_valid, errors = reg_t2.verify_integrity()
+    assert is_valid is False
+    assert any("duplicate request_id" in e for e in errors)
+
+    # Tamper 3: final attempt marked with retry_attempted=True
+    d3 = json.loads(json.dumps(reg.to_dict()))
+    d3["observations"][0]["acquisition_attempts"][1]["retry_attempted"] = True
+    reg_t3 = TimingEvidenceRegistry.from_dict(d3)
+    is_valid, errors = reg_t3.verify_integrity()
+    assert is_valid is False
+    assert any("final attempt 2 cannot have retry_attempted=True" in e for e in errors)
+
+    # Tamper 4: inverted monotonic timestamps (request > receipt)
+    d4 = json.loads(json.dumps(reg.to_dict()))
+    att0 = d4["observations"][0]["acquisition_attempts"][0]
+    att0["request_mono_ns"] = att0["receipt_mono_ns"] + 1000000
+    reg_t4 = TimingEvidenceRegistry.from_dict(d4)
+    is_valid, errors = reg_t4.verify_integrity()
+    assert is_valid is False
+    assert any("timestamp order violation: request" in e for e in errors)
+
+    # Tamper 5: cross-attempt monotonic inversion (attempt 2 started before attempt 1 finished)
+    d5 = json.loads(json.dumps(reg.to_dict()))
+    d5["observations"][0]["acquisition_attempts"][1]["request_mono_ns"] = (
+        d5["observations"][0]["acquisition_attempts"][0]["validation_mono_ns"] - 1000
+    )
+    reg_t5 = TimingEvidenceRegistry.from_dict(d5)
+    is_valid, errors = reg_t5.verify_integrity()
+    assert is_valid is False
+    assert any("started before previous attempt finished" in e for e in errors)
+
+    # Backward compatibility: verify historical Phase 33 & Phase 34 baseline evidence files
+    p33_path = Path("data/phase33/supervised_timing_evidence_meas_705e2ab066f0_1795077245.json")
+    if p33_path.exists():
+        p33_reg = TimingEvidenceRegistry.load_from_file(p33_path)
+        p33_valid, p33_errs = p33_reg.verify_integrity()
+        assert p33_valid is True, f"Phase 33 baseline failed integrity: {p33_errs}"
+        assert p33_reg.integrity_hash == p33_reg.compute_hash()
+
+    p34_path = (
+        Path("data/phase34/operator_supervised_live")
+        / "shadow_d0f7098c87644fcfabe1f8b12dfbaf84.json"
+    )
+    if p34_path.exists():
+        p34_reg = TimingEvidenceRegistry.load_from_file(p34_path)
+        p34_valid, p34_errs = p34_reg.verify_integrity()
+        assert p34_valid is True, f"Phase 34 baseline failed integrity: {p34_errs}"
+        assert p34_reg.integrity_hash == p34_reg.compute_hash()

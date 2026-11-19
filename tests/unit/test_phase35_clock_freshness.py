@@ -298,23 +298,129 @@ def test_timing_recorder_acquisition_attempt_audit_record() -> None:
     assert obs.acquisition_attempts[0] == attempt
 
 
-def test_offline_reliability_failure_modes_separation() -> None:
+def test_offline_reliability_failure_modes_separation(tmp_path: Path) -> None:
     """Offline reliability evaluator cleanly separates clock, network, and data failures."""
-    from pathlib import Path
+    # 1. Self-contained fixture verifying separation of each distinct failure mode
+    clock = ClockDiscipline(anchor_utc_ns=1795000000_000_000_000)
+    recorder = TimingRecorder(
+        "fail_mode_session",
+        clock=clock,
+        provenance="OPERATOR_SUPERVISED_LIVE",
+        is_synthetic=False,
+        enable_clock_stability_check=False,
+    )
 
-    report = evaluate([Path("data/phase34/operator_supervised_live")])
+    # Boundary 1: Clock freshness failure (receipt ok, but broker clock stale / unverified)
+    f1 = 1795000060
+    obs1 = recorder.start_candle_observation(f1, expected_request_id="req-1")
+    mono1 = f1 * 10**9 - clock.anchor_utc_ns + 100 * 10**6
+    recorder.record_stage("STAGE_1_REQUEST_INIT", mono_ns=mono1, details={"request_id": "req-1"})
+    recorder.record_stage(
+        "STAGE_2_NETWORK_RECV", mono_ns=mono1 + 10**6, details={"request_id": "req-1"}
+    )
+    recorder.record_stage(
+        "STAGE_3_PARSE_VALIDATE", mono_ns=mono1 + 2 * 10**6, details={"request_id": "req-1"}
+    )
+    recorder.record_stage(
+        "STAGE_4_CANDLE_VALIDATE", mono_ns=mono1 + 3 * 10**6, details={"is_complete": True}
+    )
+    recorder.record_stage(
+        "STAGE_5_COMPLETED_RECOG", mono_ns=mono1 + 4 * 10**6, details={"completed_to_ts": f1}
+    )
+    obs1.candle_received_within_15s = True
+    obs1.candle_validated_within_15s = False
+    recorder.record_acquisition_attempt(
+        attempt_number=1,
+        request_id="req-1",
+        broker_clock_fresh=False,
+        broker_clock_sync_status="STALE_SYNCHRONIZATION",
+        broker_clock_age_seconds=130.0,
+        candle_count=1,
+        is_complete=True,
+    )
+    recorder.finalize_current_observation("BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED")
 
-    assert report["unique_live_boundaries"] == 9
-    assert "failure_modes" in report
-    fm = report["failure_modes"]
-    assert fm["network_receipt_failures"] == 0
+    # Boundary 2: Candle completeness failure (receipt ok, clock fresh, but incomplete candle)
+    f2 = 1795000120
+    obs2 = recorder.start_candle_observation(f2, expected_request_id="req-2")
+    mono2 = f2 * 10**9 - clock.anchor_utc_ns + 100 * 10**6
+    recorder.record_stage("STAGE_1_REQUEST_INIT", mono_ns=mono2, details={"request_id": "req-2"})
+    recorder.record_stage(
+        "STAGE_2_NETWORK_RECV", mono_ns=mono2 + 10**6, details={"request_id": "req-2"}
+    )
+    recorder.record_stage(
+        "STAGE_3_PARSE_VALIDATE", mono_ns=mono2 + 2 * 10**6, details={"request_id": "req-2"}
+    )
+    recorder.record_stage(
+        "STAGE_4_CANDLE_VALIDATE", mono_ns=mono2 + 3 * 10**6, details={"is_complete": False}
+    )
+    obs2.candle_received_within_15s = True
+    obs2.candle_validated_within_15s = False
+    recorder.record_acquisition_attempt(
+        attempt_number=1,
+        request_id="req-2",
+        broker_clock_fresh=True,
+        broker_clock_sync_status="SYNCHRONIZED_AND_FRESH",
+        broker_clock_age_seconds=5.0,
+        candle_count=1,
+        is_complete=False,
+    )
+    recorder.finalize_current_observation("INVALID_OR_INCOMPLETE_WINDOW")
+
+    # Boundary 3: Network receipt failure (no receipt within 15s deadline / timeout)
+    f3 = 1795000180
+    obs3 = recorder.start_candle_observation(f3, expected_request_id="req-3")
+    mono3 = f3 * 10**9 - clock.anchor_utc_ns + 100 * 10**6
+    recorder.record_stage("STAGE_1_REQUEST_INIT", mono_ns=mono3, details={"request_id": "req-3"})
+    obs3.candle_received_within_15s = False
+    recorder.record_acquisition_attempt(
+        attempt_number=1,
+        request_id="req-3",
+        broker_clock_fresh=True,
+        broker_clock_sync_status="SYNCHRONIZED_AND_FRESH",
+        broker_clock_age_seconds=10.0,
+        candle_count=0,
+        is_complete=False,
+    )
+    recorder.finalize_current_observation("NETWORK_TIMEOUT")
+
+    reg = TimingEvidenceRegistry.create(
+        "fail_mode_session",
+        "OPERATOR_SUPERVISED_LIVE",
+        tmp_path,
+        clock,
+        recorder.observations,
+    )
+    reg.save_to_file(tmp_path / "reg.json")
+
+    fixture_report = evaluate([tmp_path])
+    assert fixture_report["unique_live_boundaries"] == 3
+    assert "failure_modes" in fixture_report
+    fm = fixture_report["failure_modes"]
+    assert fm["network_receipt_failures"] == 1
     assert fm["candle_completeness_failures"] == 1
     assert fm["broker_clock_freshness_failures"] == 1
     assert fm["end_to_end_decision_failures"] == 0
     assert fm["rejection_reasons_breakdown"] == {
         "BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED": 1,
         "INVALID_OR_INCOMPLETE_WINDOW": 1,
+        "NETWORK_TIMEOUT": 1,
     }
+
+    # 2. Historical live shadow evidence verification (when repository evidence is present)
+    live_dir = Path("data/phase34/operator_supervised_live")
+    if live_dir.is_dir() and list(live_dir.glob("*.json")):
+        live_report = evaluate([live_dir])
+        assert live_report["unique_live_boundaries"] == 9
+        lfm = live_report["failure_modes"]
+        assert lfm["network_receipt_failures"] == 0
+        assert lfm["candle_completeness_failures"] == 1
+        assert lfm["broker_clock_freshness_failures"] == 1
+        assert lfm["end_to_end_decision_failures"] == 0
+        assert lfm["rejection_reasons_breakdown"] == {
+            "BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED": 1,
+            "INVALID_OR_INCOMPLETE_WINDOW": 1,
+        }
 
 
 @pytest.mark.asyncio

@@ -90,6 +90,18 @@ class AccountType(IntEnum):
         return self.name.lower()
 
 
+def wallet_identifier(value: object) -> str:
+    """Compare decimal aliases consistently, preserving opaque nonnumeric IDs."""
+    if value is None:
+        return ""
+    if type(value) not in (int, str):
+        raise ValueError("Invalid wallet identifier type")
+    identifier = str(value).strip()
+    if identifier.isascii() and identifier.isdecimal():
+        return identifier.lstrip("0")
+    return identifier
+
+
 @dataclass(frozen=True, slots=True)
 class Balance:
     """Account balance with explicit type identification.
@@ -155,19 +167,17 @@ class Balance:
             raise ValueError("Invalid or unknown account type") from exc
 
         raw_id = data.get("id") if data.get("id") is not None else data.get("balance_id")
-        if type(raw_id) not in (str, int):
-            raise ValueError("Invalid wallet identifier type")
+        balance_id = wallet_identifier(raw_id)
         if (
             data.get("id") is not None
             and data.get("balance_id") is not None
-            and str(data["balance_id"]).strip() != str(raw_id).strip()
+            and wallet_identifier(data["balance_id"]) != balance_id
         ):
             raise ValueError("Conflicting wallet identifiers")
         if data.get("balance_type") is not None and str(data["balance_type"]).strip() != str(
             parsed_type
         ):
             raise ValueError("Conflicting wallet types")
-        balance_id = str(raw_id or "").strip()
         if not balance_id:
             raise ValueError("Balance payload missing or empty 'id' field")
 
@@ -188,7 +198,7 @@ class Balance:
             raise ValueError("Invalid balance amount: non-finite value")
 
         currency = str(data.get("currency") or "USD").strip()
-        is_active = active_balance_id is not None and str(active_balance_id).strip() == balance_id
+        is_active = active_balance_id is not None and wallet_identifier(active_balance_id) == balance_id
 
         def flag(primary: str, alias: str) -> bool | None:
             value = data.get(primary, data.get(alias))
@@ -310,7 +320,7 @@ def wallet_type_conflict(
             kind = row.get("type", row.get("balance_type"))
             if identifier is not None and kind is not None:
                 claims.append((str(identifier).strip(), str(kind).strip()))
-    return any(key in ledger and ledger[key] != kind for key, kind in claims)
+    return any(ledger.get(wallet_identifier(key), kind) != kind for key, kind in claims)
 
 
 class WalletSource(Enum):
@@ -391,7 +401,7 @@ def profile_wallet_indicators(raw: dict[str, Any]) -> tuple[WalletIndicator, ...
     if isinstance(current, dict):
         values.append(current.get("id"))
     return tuple(
-        WalletIndicator(WalletSource.PROFILE, str(value).strip())
+        WalletIndicator(WalletSource.PROFILE, wallet_identifier(value))
         for value in values
         if type(value) in (str, int) and str(value).strip()
     )

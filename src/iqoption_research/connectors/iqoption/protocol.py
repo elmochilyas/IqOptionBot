@@ -480,3 +480,73 @@ def validate_timing_frame(frame: dict[str, Any], *, authenticated: bool) -> None
             ):
                 return
     raise TradingNotAllowedError("Frame outside the authenticated market-data measurement scope")
+
+
+def explicit_response_rejection(message: dict[str, Any]) -> bool:
+    name = message.get("name")
+    status = message.get("status")
+    msg = message.get("msg")
+    if name == "error" or status is False or msg is False:
+        return True
+    if isinstance(status, str):
+        return status.lower() in {"error", "failed", "rejected"}
+    if isinstance(status, (int, float)) and status >= 4000:
+        return True
+    return name == "result" and isinstance(msg, dict) and msg.get("success") is False
+
+
+def balance_envelope(message: dict[str, Any]) -> tuple[list[Any] | None, str]:
+    """Recognize the account envelopes used by the existing read-only clients."""
+    arrays = []
+    body = message.get("msg")
+    if isinstance(body, list):
+        arrays.append((body, "MSG_LIST"))
+    elif isinstance(body, dict):
+        for key, label in (
+            ("balances", "MSG_BALANCES_LIST"),
+            ("result", "MSG_RESULT_LIST"),
+            ("msg", "MSG_MSG_LIST"),
+        ):
+            if isinstance(body.get(key), list):
+                arrays.append((body[key], label))
+        result = body.get("result")
+        if isinstance(result, dict) and isinstance(result.get("balances"), list):
+            arrays.append((result["balances"], "MSG_RESULT_BALANCES_LIST"))
+    body = message.get("body")
+    if isinstance(body, list):
+        arrays.append((body, "BODY_LIST"))
+    elif isinstance(body, dict) and isinstance(body.get("balances"), list):
+        arrays.append((body["balances"], "BODY_BALANCES_LIST"))
+    if len(arrays) > 1:
+        return None, "AMBIGUOUS"
+    return arrays[0] if arrays else (None, "UNRECOGNIZED")
+
+
+def balance_response_status(message: dict[str, Any]) -> str:
+    status = message.get("status")
+    name = message.get("name")
+    msg = message.get("msg")
+    envelopes = (
+        message,
+        msg,
+        msg.get("result") if isinstance(msg, dict) else None,
+        message.get("body"),
+    )
+    if explicit_response_rejection(message) or any(
+        isinstance(body, dict) and body.get("success") is False for body in envelopes
+    ):
+        return "REJECTED"
+    if status is None:
+        return "ABSENT"
+    # The authenticated IQ Option get-balances v1.0 reply uses integer 0
+    # on its balances/list envelope. Snapshot and request ID checks still apply.
+    if (
+        type(status) is int
+        and status == 0
+        and name == "balances"
+        and isinstance(message.get("msg"), list)
+    ):
+        return "SUCCESS"
+    if type(status) in (int, float) and status == 2000:
+        return "SUCCESS"
+    return "UNRECOGNIZED"

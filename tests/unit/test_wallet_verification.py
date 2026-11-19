@@ -247,3 +247,21 @@ def test_interactive_context_commands_share_one_connection() -> None:
     constructor.assert_called_once()
     client.close.assert_awaited_once()
     assert ws.messages_tx == 0
+
+
+@pytest.mark.parametrize(
+    ("status", "valid"), [(0, True), (False, False), ("0", False), (4000, False)]
+)
+def test_wire_balance_status_controls_selection(status: object, valid: bool) -> None:
+    ws = socket()
+    ws._dispatch({
+        "name": "balances",
+        "request_id": "inventory",
+        "status": status,
+        "msg": [{"type": 4, "id": 101, "balance_id": "0101"}],
+    })
+    if valid:
+        assert ws.select_wallet_context(AccountType.PRACTICE).balance_id == "101"
+    else:
+        with pytest.raises(ValueError):
+            ws.select_wallet_context(AccountType.PRACTICE)

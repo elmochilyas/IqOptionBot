@@ -37,6 +37,8 @@ from iqoption_research.connectors.iqoption.protocol import (
     MSG_HEARTBEAT,
     MSG_PROFILE,
     MSG_SUBSCRIBE,
+    balance_envelope,
+    balance_response_status,
     build_authenticate_frame,
     build_candle_subscription_frame,
     build_get_balances_request_frame,
@@ -59,6 +61,7 @@ from iqoption_research.models.account import (
     balance_wallet_indicators,
     profile_wallet_indicators,
     wallet_decision,
+    wallet_identifier,
     wallet_type_conflict,
 )
 from iqoption_research.models.connection import (
@@ -916,7 +919,7 @@ class IQOptionWebSocketClient:
                 current = msg_payload.get("current_balance")
                 if isinstance(current, dict) and type(current.get("id")) in (str, int):
                     self._change_indicator = WalletIndicator(
-                        WalletSource.CHANGE, str(current["id"]).strip()
+                        WalletSource.CHANGE, wallet_identifier(current["id"])
                     )
                     if current.get("type") is not None:
                         self._changed_wallet_type = (
@@ -989,14 +992,14 @@ class IQOptionWebSocketClient:
             or raw_profile.get("balanceId")
             or raw_profile.get("active_balance_id")
         )
-        if isinstance(balance_id, (int, str)) and str(balance_id).strip():
-            self._active_balance_id = str(balance_id).strip()
+        if type(balance_id) in (int, str) and str(balance_id).strip():
+            self._active_balance_id = wallet_identifier(balance_id) or None
         else:
             self._active_balance_id = None
 
         current = raw_profile.get("current_balance")
         if isinstance(current, dict) and type(current.get("id")) in (str, int):
-            self._active_balance_id = str(current["id"]).strip()
+            self._active_balance_id = wallet_identifier(current["id"]) or None
 
         profile_balance_id = self._active_balance_id
         if self._change_indicator:
@@ -1064,7 +1067,14 @@ class IQOptionWebSocketClient:
         previous = self._selection
         self._selection = None
         self._inventory_valid = False
-        raw_balances = self._extract_balances_payload(message)
+        raw_balances, _ = balance_envelope(message)
+        if message.get("name") == "reject" or balance_response_status(message) not in (
+            "ABSENT",
+            "SUCCESS",
+        ):
+            raw_balances = None
+        self._balances = []
+        self._listed_balances = None
         if raw_balances is None or not isinstance(raw_balances, list):
             self.errors += 1
             if self._monitor is not None:
@@ -1075,14 +1085,11 @@ class IQOptionWebSocketClient:
             logger.warning("Rejected malformed balances response")
             return
 
-        self._balances = []
         self._apply_balances(raw_balances)
         self._listed_balances = tuple(self._balances)
         self._list_correlated = correlated
         self._inventory_valid = (
             self.is_authenticated
-            and message.get("name") not in ("error", "reject")
-            and message.get("status") in (None, 2000)
             and len(self._balances) == len(raw_balances)
             and bool(self._balances)
             and len({b.id for b in self._balances}) == len(self._balances)
@@ -1092,28 +1099,6 @@ class IQOptionWebSocketClient:
             if matches == [previous.balance_id]:
                 self._selection = previous
         self._diagnostics.record_balances_status(len(self._balances) > 0)
-
-    def _extract_balances_payload(self, message: dict[str, Any]) -> list[dict[str, Any]] | None:
-        raw = message.get("msg")
-        if isinstance(raw, list):
-            return raw
-        if isinstance(raw, dict):
-            if isinstance(raw.get("balances"), list):
-                return raw["balances"]
-            if isinstance(raw.get("msg"), list):
-                return raw["msg"]
-            if isinstance(raw.get("result"), dict) and isinstance(
-                raw["result"].get("balances"), list
-            ):
-                return raw["result"]["balances"]
-            if isinstance(raw.get("result"), list):
-                return raw["result"]
-        body = message.get("body")
-        if isinstance(body, list):
-            return body
-        if isinstance(body, dict) and isinstance(body.get("balances"), list):
-            return body["balances"]
-        return None
 
     def _apply_balances(self, raw_balances: list[dict[str, Any]]) -> None:
         if not isinstance(raw_balances, list):

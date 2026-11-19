@@ -451,46 +451,169 @@ class TimingEvidenceRegistry:
                 ):
                     errors.append(f"Observation {idx} has an incomplete or invalid shadow contract")
 
-            # 7. Request ID correlation across pipeline stages and uniqueness across session
-            obs_req_id = obs.get("request_id")
-            if obs_req_id:
-                req_str = str(obs_req_id)
-                if req_str in seen_request_ids:
-                    errors.append(
-                        f"Observation {idx} (F={obs_f}) duplicate request_id: '{req_str}' "
-                        "was already observed in an earlier observation."
-                    )
-                seen_request_ids.add(req_str)
-
-                for s_key in (
-                    "STAGE_1_REQUEST_INIT",
-                    "STAGE_2_NETWORK_RECV",
-                    "STAGE_3_PARSE_VALIDATE",
-                ):
-                    stg = stages.get(s_key) if isinstance(stages, dict) else None
-                    if isinstance(stg, dict):
-                        stg_details = stg.get("details", {})
-                        if isinstance(stg_details, dict):
-                            stg_req_id = stg_details.get("request_id")
-                            if stg_req_id and str(stg_req_id) != req_str:
-                                errors.append(
-                                    f"Observation {idx} (F={obs_f}) request_id mismatch "
-                                    f"in {s_key}: observation has '{req_str}', "
-                                    f"stage details has '{stg_req_id}'."
-                                )
-                stg_val = (
-                    stages.get("STAGE_4_CANDLE_VALIDATE") if isinstance(stages, dict) else None
-                )
-                if isinstance(stg_val, dict):
-                    val_details = stg_val.get("details", {})
-                    if isinstance(val_details, dict) and "request_id" in val_details:
-                        val_req_id = val_details.get("request_id")
-                        if str(val_req_id) != req_str:
+            # 7. Request ID correlation, attempt history, and uniqueness across session
+            raw_attempts = obs.get("acquisition_attempts")
+            if (
+                raw_attempts is not None
+                and isinstance(raw_attempts, list)
+                and len(raw_attempts) > 0
+            ):
+                prev_att_mono: int | None = None
+                for a_idx, att in enumerate(raw_attempts):
+                    if not isinstance(att, dict):
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) acquisition attempt {a_idx} "
+                            "is not a dict."
+                        )
+                        continue
+                    att_num = att.get("attempt_number")
+                    if att_num != a_idx + 1:
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) attempt {a_idx} number mismatch: "
+                            f"expected {a_idx + 1}, got {att_num}."
+                        )
+                    att_req_id = att.get("request_id")
+                    if not att_req_id:
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) attempt {att_num} missing request_id."
+                        )
+                    else:
+                        req_str = str(att_req_id)
+                        if req_str in seen_request_ids:
                             errors.append(
-                                f"Observation {idx} (F={obs_f}) request_id mismatch in "
-                                f"STAGE_4_CANDLE_VALIDATE: observation has '{req_str}', "
-                                f"stage details has '{val_req_id}'."
+                                f"Observation {idx} (F={obs_f}) attempt {att_num} duplicate "
+                                f"request_id: '{req_str}' was already observed in session."
                             )
+                        seen_request_ids.add(req_str)
+
+                    is_last_attempt = a_idx == len(raw_attempts) - 1
+                    retry_flag = bool(att.get("retry_attempted"))
+                    if is_last_attempt and retry_flag:
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) final attempt {att_num} "
+                            "cannot have retry_attempted=True."
+                        )
+                    elif not is_last_attempt and not retry_flag:
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) non-final attempt {att_num} "
+                            "must have retry_attempted=True."
+                        )
+
+                    req_mono = att.get("request_mono_ns")
+                    recv_mono = att.get("receipt_mono_ns")
+                    val_mono = att.get("validation_mono_ns")
+                    if req_mono is not None and recv_mono is not None and req_mono > recv_mono:
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) attempt {att_num} timestamp order "
+                            f"violation: request ({req_mono}) > receipt ({recv_mono})."
+                        )
+                    if recv_mono is not None and val_mono is not None and recv_mono > val_mono:
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) attempt {att_num} timestamp order "
+                            f"violation: receipt ({recv_mono}) > validation ({val_mono})."
+                        )
+                    if (
+                        prev_att_mono is not None
+                        and req_mono is not None
+                        and req_mono < prev_att_mono
+                    ):
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) attempt {att_num} started before "
+                            f"previous attempt finished ({req_mono} < {prev_att_mono})."
+                        )
+                    prev_att_mono = val_mono or recv_mono or req_mono
+
+                final_att = raw_attempts[-1]
+                if isinstance(final_att, dict):
+                    final_req_id = final_att.get("request_id")
+                    obs_req_id = obs.get("request_id")
+                    if obs_req_id and final_req_id and str(obs_req_id) != str(final_req_id):
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) request_id '{obs_req_id}' "
+                            f"does not match final attempt request_id '{final_req_id}'."
+                        )
+                    if (
+                        obs.get("phase30_gate_satisfied")
+                        and final_att.get("rejection_classification") is not None
+                    ):
+                        rej_class = final_att.get("rejection_classification")
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) is phase30_gate_satisfied=True "
+                            f"but final attempt has rejection_classification='{rej_class}'."
+                        )
+
+                obs_req_id = obs.get("request_id")
+                if obs_req_id:
+                    req_str = str(obs_req_id)
+                    for s_key in (
+                        "STAGE_1_REQUEST_INIT",
+                        "STAGE_2_NETWORK_RECV",
+                        "STAGE_3_PARSE_VALIDATE",
+                    ):
+                        stg = stages.get(s_key) if isinstance(stages, dict) else None
+                        if isinstance(stg, dict):
+                            stg_details = stg.get("details", {})
+                            if isinstance(stg_details, dict):
+                                stg_req_id = stg_details.get("request_id")
+                                if stg_req_id and str(stg_req_id) != req_str:
+                                    errors.append(
+                                        f"Observation {idx} (F={obs_f}) request_id mismatch "
+                                        f"in {s_key}: observation has '{req_str}', "
+                                        f"stage details has '{stg_req_id}'."
+                                    )
+                    stg_val = (
+                        stages.get("STAGE_4_CANDLE_VALIDATE") if isinstance(stages, dict) else None
+                    )
+                    if isinstance(stg_val, dict):
+                        val_details = stg_val.get("details", {})
+                        if isinstance(val_details, dict) and "request_id" in val_details:
+                            val_req_id = val_details.get("request_id")
+                            if str(val_req_id) != req_str:
+                                errors.append(
+                                    f"Observation {idx} (F={obs_f}) request_id mismatch in "
+                                    f"STAGE_4_CANDLE_VALIDATE: observation has '{req_str}', "
+                                    f"stage details has '{val_req_id}'."
+                                )
+            else:
+                obs_req_id = obs.get("request_id")
+                if obs_req_id:
+                    req_str = str(obs_req_id)
+                    if req_str in seen_request_ids:
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) duplicate request_id: '{req_str}' "
+                            "was already observed in an earlier observation."
+                        )
+                    seen_request_ids.add(req_str)
+
+                    for s_key in (
+                        "STAGE_1_REQUEST_INIT",
+                        "STAGE_2_NETWORK_RECV",
+                        "STAGE_3_PARSE_VALIDATE",
+                    ):
+                        stg = stages.get(s_key) if isinstance(stages, dict) else None
+                        if isinstance(stg, dict):
+                            stg_details = stg.get("details", {})
+                            if isinstance(stg_details, dict):
+                                stg_req_id = stg_details.get("request_id")
+                                if stg_req_id and str(stg_req_id) != req_str:
+                                    errors.append(
+                                        f"Observation {idx} (F={obs_f}) request_id mismatch "
+                                        f"in {s_key}: observation has '{req_str}', "
+                                        f"stage details has '{stg_req_id}'."
+                                    )
+                    stg_val = (
+                        stages.get("STAGE_4_CANDLE_VALIDATE") if isinstance(stages, dict) else None
+                    )
+                    if isinstance(stg_val, dict):
+                        val_details = stg_val.get("details", {})
+                        if isinstance(val_details, dict) and "request_id" in val_details:
+                            val_req_id = val_details.get("request_id")
+                            if str(val_req_id) != req_str:
+                                errors.append(
+                                    f"Observation {idx} (F={obs_f}) request_id mismatch in "
+                                    f"STAGE_4_CANDLE_VALIDATE: observation has '{req_str}', "
+                                    f"stage details has '{val_req_id}'."
+                                )
 
             # 8. Independent observation hash recomputation from serialized dict
             expected_obs_hash = compute_observation_dict_hash(obs)

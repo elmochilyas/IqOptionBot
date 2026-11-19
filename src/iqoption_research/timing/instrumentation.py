@@ -221,6 +221,28 @@ def compute_observation_dict_hash(obs: dict[str, Any]) -> str:
         "stages": stages_data,
         "stage_sequence": stage_sequence,
     }
+    raw_attempts = obs.get("acquisition_attempts")
+    if raw_attempts is not None and isinstance(raw_attempts, list) and len(raw_attempts) > 0:
+        clean_attempts: list[dict[str, Any]] = []
+        for att in raw_attempts:
+            if isinstance(att, dict):
+                clean_attempts.append({
+                    "attempt_number": int(att.get("attempt_number", 0)),
+                    "request_id": str(att.get("request_id") or ""),
+                    "request_mono_ns": att.get("request_mono_ns"),
+                    "request_utc_iso": att.get("request_utc_iso"),
+                    "receipt_mono_ns": att.get("receipt_mono_ns"),
+                    "receipt_utc_iso": att.get("receipt_utc_iso"),
+                    "validation_mono_ns": att.get("validation_mono_ns"),
+                    "validation_utc_iso": att.get("validation_utc_iso"),
+                    "broker_clock_fresh": bool(att.get("broker_clock_fresh")),
+                    "candle_count": int(att.get("candle_count", 0)),
+                    "is_complete": bool(att.get("is_complete")),
+                    "rejection_classification": att.get("rejection_classification"),
+                    "retry_attempted": bool(att.get("retry_attempted")),
+                })
+        data["acquisition_attempts"] = clean_attempts
+
     canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -254,6 +276,7 @@ class CandleTimingObservation:
     is_synthetic: bool = True
     measurement_status: str = "NOT_MEASURED"
     request_id: str | None = None
+    acquisition_attempts: list[dict[str, Any]] = field(default_factory=list)
 
     def compute_latencies_and_gate(self, clock: ClockDiscipline) -> None:
         """Calculate stage intervals, broker offsets, and evaluate the Phase 30 gate."""
@@ -463,7 +486,7 @@ class CandleTimingObservation:
         return compute_observation_dict_hash(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        res: dict[str, Any] = {
             "session_id": self.session_id,
             "observation_index": self.observation_index,
             "symbol": self.symbol,
@@ -490,6 +513,9 @@ class CandleTimingObservation:
             "request_id": self.request_id,
             "integrity_hash": self.integrity_hash,
         }
+        if self.acquisition_attempts:
+            res["acquisition_attempts"] = [dict(att) for att in self.acquisition_attempts]
+        return res
 
 
 class TimingRecorder:
@@ -554,6 +580,93 @@ class TimingRecorder:
         )
         self.observations.append(obs)
         return obs
+
+    def reset_observation_pipeline_for_retry(self) -> None:
+        """Clear pipeline stages and request tracking on current observation for bounded retry.
+
+        Preserves all historical acquisition_attempts in the current observation for forensics.
+        """
+        if self._current_obs is not None:
+            self._current_obs.stages.clear()
+            self._current_obs.latencies_ms.clear()
+            self._current_obs.request_id = None
+            self._current_obs.rejection_reason = None
+            self._current_obs.candle_received_within_15s = False
+            self._current_obs.candle_validated_within_15s = False
+            self._current_obs.prediction_stages_measured = False
+            self._current_obs.phase30_gate_satisfied = False
+            self._current_obs.gate_verdict = "PENDING"
+            self._current_obs.decision = "NOT_MEASURED"
+            self._current_obs.raw_probability = None
+            self._current_obs.calibrated_probability = None
+        self._expected_request_id = None
+
+    def record_acquisition_attempt(
+        self,
+        *,
+        attempt_number: int,
+        request_id: str | None = None,
+        broker_clock_fresh: bool = True,
+        candle_count: int | None = None,
+        is_complete: bool | None = None,
+        rejection_classification: str | None = None,
+        retry_attempted: bool = False,
+    ) -> dict[str, Any] | None:
+        """Preserve an immutable, sanitized acquisition attempt record for forensic analysis."""
+        if self._current_obs is None:
+            return None
+
+        stg1 = self._current_obs.stages.get("STAGE_1_REQUEST_INIT")
+        stg2 = self._current_obs.stages.get("STAGE_2_NETWORK_RECV")
+        stg4 = self._current_obs.stages.get("STAGE_4_CANDLE_VALIDATE")
+
+        req_mono = stg1.mono_ns if stg1 is not None else None
+        req_iso = stg1.disciplined_utc_iso if stg1 is not None else None
+        req_id = (
+            request_id
+            or (stg1.details.get("request_id") if stg1 is not None else None)
+            or self._expected_request_id
+            or self._current_obs.request_id
+            or ""
+        )
+
+        recv_mono = stg2.mono_ns if stg2 is not None else None
+        recv_iso = stg2.disciplined_utc_iso if stg2 is not None else None
+
+        val_mono = stg4.mono_ns if stg4 is not None else None
+        val_iso = stg4.disciplined_utc_iso if stg4 is not None else None
+
+        if candle_count is not None:
+            c_count = int(candle_count)
+        elif stg4 is not None:
+            c_count = int(stg4.details.get("candle_count", 0))
+        else:
+            c_count = 0
+
+        if is_complete is not None:
+            c_complete = bool(is_complete)
+        elif stg4 is not None:
+            c_complete = bool(stg4.details.get("is_complete", False))
+        else:
+            c_complete = False
+
+        attempt_record: dict[str, Any] = {
+            "attempt_number": int(attempt_number),
+            "request_id": str(req_id),
+            "request_mono_ns": req_mono,
+            "request_utc_iso": req_iso,
+            "receipt_mono_ns": recv_mono,
+            "receipt_utc_iso": recv_iso,
+            "validation_mono_ns": val_mono,
+            "validation_utc_iso": val_iso,
+            "broker_clock_fresh": bool(broker_clock_fresh),
+            "candle_count": c_count,
+            "is_complete": c_complete,
+            "rejection_classification": rejection_classification,
+            "retry_attempted": bool(retry_attempted),
+        }
+        self._current_obs.acquisition_attempts.append(attempt_record)
+        return attempt_record
 
     def record_stage(
         self,

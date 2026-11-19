@@ -274,3 +274,52 @@ Before transitioning from shadow observation to IQ Option PRACTICE (demo) orders
 4. **Research Edge Replication**:
    - No demonstrated edge exists on authentic IQ Option EURUSD 1-minute data (`NO_DEMONSTRATED_EDGE`).
    - Strategy models must be re-evaluated on updated out-of-sample data before risking real capital.
+
+---
+
+## 12. First-Candle Rejection Analysis & Bounded Readiness Retries
+
+### Root Cause Investigation of Session `shadow_d0f7098c87644fcfabe1f8b12dfbaf84`
+In the successful Phase 34 live shadow trial session `shadow_d0f7098c87644fcfabe1f8b12dfbaf84`:
+- **Cycle 1** ($F = 1795083000$, 10:10:00 UTC):
+  - Request initiated at 10:10:02.889 UTC; receipt at 10:10:03.001 UTC ($3001.5\text{ ms}$ delivery offset).
+  - STAGE_4 recorded `is_complete = False`.
+  - Coarse rejection reason: `INVALID_OR_INCOMPLETE_WINDOW`.
+  - Full pipeline aborted at $T = 3.001\text{s}$ with zero retries despite 12 seconds remaining.
+- **Cycle 2** ($F = 1795083060$, 10:11:00 UTC):
+  - Initiated at 10:10:59.998 UTC; receipt at 10:11:00.095 UTC ($95.9\text{ ms}$ delivery offset).
+  - STAGE_4 recorded `is_complete = True`.
+  - Completed causal features, model inference, policy evaluation (analytical SKIP due to `BELOW_FROZEN_THRESHOLD`), and committed to SQLite journal in $207.2\text{ ms}$.
+  - Phase 30 gate: **PASS**.
+- **Integrity**: Evidence integrity verification passed.
+
+**Detailed Root Cause**:
+The operator started the live session at 10:10:02.886 UTC. The runner observed that $now - F = 2.886\text{s} \le 15\text{s}$ and immediately targeted candle $F = 1795083000$.
+In `normalize_candle`, completeness requires:
+$$to\_ts \times 10^9 \le server\_time\_ns$$
+At session startup, right after connection handshake, either broker `timeSync` had not yet advanced the internal clock estimate past the boundary second, or the broker's candle index had not yet committed the completed candle bar. Consequently, `is_complete` evaluated to `False`. The previous implementation had no retry mechanism for temporary data readiness and immediately marked the observation rejected.
+
+### Precise, Sanitized Rejection Diagnostics
+The monolithic `INVALID_OR_INCOMPLETE_WINDOW` has been replaced with 7 sanitized, mutually exclusive diagnostic categories:
+1. `BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED`: Broker `timeSync` frame absent or older than 120 seconds in live mode.
+2. `NO_VALID_CANDLES`: Response payload contains zero candles.
+3. `NORMALIZATION_ERROR`: Structural OHLC corruption, negative prices, or raw candle count mismatch.
+4. `REQUESTED_BOUNDARY_MISMATCH`: The newest candle's `to_ts` does not match the requested boundary $F$.
+5. `MISSING_GAPPED_OR_DUPLICATE_CANDLES`: Internal window discontinuity, duplicate timestamps, incorrect bar size ($\ne 60\text{s}$), or insufficient bars ($< 22$).
+6. `DATA_QUALITY_REJECTION`: Data quality assessor reports non-research-grade data, symbol mismatch, or simulated source in live mode.
+7. `LAST_CANDLE_NOT_YET_COMPLETE`: Candle at boundary $F$ has `is_complete = False`.
+
+### Tightly Bounded Readiness Retry Mechanism
+For temporary data readiness conditions (`LAST_CANDLE_NOT_YET_COMPLETE` and `REQUESTED_BOUNDARY_MISMATCH` where $to\_ts = F - 60$), the runner executes a tightly bounded retry:
+- **Maximum Retries**: At most 3 retries (4 attempts total).
+- **Backoff Delay**: Fixed 500 ms pause between attempts (`asyncio.sleep(0.5)`).
+- **Time Bounds**: Only retries if $elapsed < 12.0\text{s}$ from candle close $F$, and remaining session deadline $> (delay + 1.0\text{s})$.
+- **Fatal Rejection**: Structural defects (`NORMALIZATION_ERROR`, `DATA_QUALITY_REJECTION`, `MISSING_GAPPED_OR_DUPLICATE_CANDLES`, `BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED`) fail immediately with zero retries.
+
+### Scientific & Operational Invariants
+- **Never substitute a different candle**: Every retry targets the exact same nominal boundary $F$.
+- **Never backdate timestamps**: Each attempt records genuine monotonic and disciplined UTC timestamps with its own correlated `request_id`.
+- **Pipeline Reset Cleanliness**: `recorder.reset_observation_pipeline_for_retry()` clears prior attempt stages so the observation reflects the genuine successful request, while attempt count is audited in `STAGE_4_CANDLE_VALIDATE.details["attempts"]`.
+- **Never silently repair data**: Data gaps or anomalies are never smoothed or interpolated.
+- **Never classify late responses as compliant**: Completions exceeding $F + 15\text{s}$ are strictly marked `phase30_gate_satisfied = False` and `gate_verdict = "FAIL_GATE_OVERRUN"`.
+- **Zero Orders Maintained**: No trading or order operations authorized or executed. Outbound allowlist strictly enforced.

@@ -117,6 +117,7 @@ class ProspectiveJournal:
 
     def append(self, key: str, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         with closing(sqlite3.connect(self.path)) as connection, connection:
+            connection.execute("PRAGMA synchronous=FULL")
             connection.execute("BEGIN IMMEDIATE")
             events = self._read(connection)
             existing = next((e for e in events if e["key"] == key), None)
@@ -198,22 +199,35 @@ def initialize_run(
     shutil.copytree(model_path, run / "model")
     if verify_manifest(run / "model").digest() != manifest.digest():
         raise ValueError("Frozen model copy changed")
+    initialize_event_journal(run, config)
+    return config
+
+
+def initialize_event_journal(run: Path, config: dict[str, Any]) -> None:
     with closing(sqlite3.connect(run / "observations.db")) as connection, connection:
+        connection.execute("PRAGMA synchronous=FULL")
         connection.executescript("""
-        CREATE TABLE events(seq INTEGER PRIMARY KEY, event_key TEXT NOT NULL UNIQUE,
+        BEGIN IMMEDIATE;
+        CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY, event_key TEXT NOT NULL UNIQUE,
           payload TEXT NOT NULL, previous_hash TEXT NOT NULL, event_hash TEXT NOT NULL);
-        CREATE TRIGGER immutable_updates BEFORE UPDATE ON events BEGIN
+        CREATE TRIGGER IF NOT EXISTS immutable_updates BEFORE UPDATE ON events BEGIN
           SELECT RAISE(ABORT, 'immutable prospective event'); END;
-        CREATE TRIGGER immutable_deletes BEFORE DELETE ON events BEGIN
+        CREATE TRIGGER IF NOT EXISTS immutable_deletes BEFORE DELETE ON events BEGIN
           SELECT RAISE(ABORT, 'immutable prospective event'); END;
         """)
+        existing = connection.execute(
+            "SELECT payload FROM events WHERE event_key='config'"
+        ).fetchone()
+        if existing:
+            if existing[0] != canonical(config):
+                raise ValueError("Journal configuration differs")
+            return
         text = canonical(config)
         previous = "0" * 64
         connection.execute(
             "INSERT INTO events(event_key,payload,previous_hash,event_hash) VALUES(?,?,?,?)",
             ("config", text, previous, digest(["config", text, previous])),
         )
-    return config
 
 
 def candle_from_signature(text: str) -> Candle:

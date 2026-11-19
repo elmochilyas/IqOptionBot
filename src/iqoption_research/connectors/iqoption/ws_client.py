@@ -701,12 +701,12 @@ class IQOptionWebSocketClient:
     async def _send_raw(self, payload: dict[str, Any]) -> None:
         if self._ws is None:
             raise ConnectionError("Not connected")
-        if self._config.timing_market_data_only:
-            validate_timing_frame(payload, authenticated=self.is_authenticated)
-        else:
-            validate_outgoing_frame(payload)
-        data = encode_frame(payload)
         async with self._send_lock:
+            if self._config.timing_market_data_only:
+                validate_timing_frame(payload, authenticated=self.is_authenticated)
+            else:
+                validate_outgoing_frame(payload)
+            data = encode_frame(payload)
             try:
                 await self._ws.send(data)
             except WebSocketException as exc:

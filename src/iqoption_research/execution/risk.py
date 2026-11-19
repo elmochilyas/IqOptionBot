@@ -13,12 +13,12 @@ Guarantees:
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
 
 from iqoption_research.execution.models import OrderSide, PaperOrder, PaperPortfolio, ProductType
+from iqoption_research.research.market_risk import market_risk_rejection
 
 
 class CircuitBreakerState(StrEnum):
@@ -344,40 +344,19 @@ class OperationalRiskManager:
                     circuit_state=self._circuit_state,
                 )
 
-        # 5. Payout data validation
-        if proposal.payout_rate is None or math.isnan(proposal.payout_rate):
+        market_rejection = market_risk_rejection(
+            proposal.payout_rate,
+            proposal.confidence_probability,
+            minimum_payout=self.config.min_payout_rate,
+            minimum_confidence=self.config.min_confidence_prob,
+        )
+        if market_rejection is not None:
+            code, message = market_rejection
             return RiskDecision(
                 permitted=False,
                 approved_stake=0.0,
-                reason=RiskRejectionReason.MISSING_PAYOUT_DATA,
-                message="Proposal rejected: missing or NaN payout rate.",
-                circuit_state=self._circuit_state,
-            )
-
-        if proposal.payout_rate < self.config.min_payout_rate:
-            msg = (
-                f"Proposal rejected: payout rate {proposal.payout_rate:.2f} < "
-                f"minimum {self.config.min_payout_rate:.2f}."
-            )
-            return RiskDecision(
-                permitted=False,
-                approved_stake=0.0,
-                reason=RiskRejectionReason.LOW_PAYOUT_RATE,
-                message=msg,
-                circuit_state=self._circuit_state,
-            )
-
-        # 6. Confidence probability check
-        if proposal.confidence_probability < self.config.min_confidence_prob:
-            msg = (
-                f"Proposal rejected: model confidence {proposal.confidence_probability:.3f} < "
-                f"minimum {self.config.min_confidence_prob:.3f}."
-            )
-            return RiskDecision(
-                permitted=False,
-                approved_stake=0.0,
-                reason=RiskRejectionReason.LOW_CONFIDENCE,
-                message=msg,
+                reason=RiskRejectionReason(code),
+                message=message,
                 circuit_state=self._circuit_state,
             )
 

@@ -6,7 +6,7 @@ from iqoption_research.models.account import (
 )
 
 
-def test_verified_active_practice():
+def test_practice_id_has_unverified_scope():
     status = AccountStatus.from_raw(
         profile_data={"user_id": 123, "email": "test@example.com"},
         balances_data=[
@@ -16,9 +16,9 @@ def test_verified_active_practice():
         active_balance_id="b_prac",
     )
     verification = status.practice_verification()
-    assert verification.status == PracticeStatus.VERIFIED_ACTIVE_PRACTICE
-    assert verification.is_verified is True
-    assert status.practice_verified is True
+    assert verification.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
+    assert verification.is_verified is False
+    assert status.practice_verified is False
 
 
 def test_practice_present_active_real():
@@ -32,10 +32,10 @@ def test_practice_present_active_real():
         active_balance_id="b_real",
     )
     verification = status.practice_verification()
-    assert verification.status == PracticeStatus.ACTIVE_REAL
+    assert verification.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
     assert verification.is_verified is False
     assert status.practice_verified is False
-    assert "REAL" in verification.message
+    assert "UNVERIFIED" in verification.message
 
 
 def test_practice_present_active_unknown():
@@ -48,7 +48,7 @@ def test_practice_present_active_unknown():
         active_balance_id=None,
     )
     verification = status.practice_verification()
-    assert verification.status == PracticeStatus.ACTIVE_UNKNOWN
+    assert verification.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
     assert verification.is_verified is False
     assert status.practice_verified is False
 
@@ -62,7 +62,7 @@ def test_no_practice_balance():
         active_balance_id="b_real",
     )
     verification = status.practice_verification()
-    assert verification.status == PracticeStatus.NO_PRACTICE_BALANCE
+    assert verification.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
     assert verification.is_verified is False
 
 
@@ -73,5 +73,5 @@ def test_no_balances():
         active_balance_id=None,
     )
     verification = status.practice_verification()
-    assert verification.status == PracticeStatus.NO_BALANCES
+    assert verification.status == PracticeStatus.MISSING_ACCOUNT_DATA
     assert verification.is_verified is False

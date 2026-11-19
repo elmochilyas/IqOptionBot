@@ -2,7 +2,7 @@
 
 **Status:** SPECIFICATION & OPERATOR GUIDE — AWAITING INDEPENDENT AUTHORIZATION  
 **Research Standing:** NO_DEMONSTRATED_EDGE  
-**Operational Mode:** STRICTLY READ-ONLY PRACTICE BROKER MEASUREMENT (ZERO ORDERS)  
+**Operational Mode:** WALLET-INDEPENDENT READ-ONLY CANDLE MEASUREMENT (ZERO ORDERS)
 
 ---
 
@@ -16,7 +16,7 @@ This protocol governs a small, independently authorized foreground measurement t
 - **Maximum Candle Cycles:** Exactly 2 distinct completed candles (`--max-candles 2`).
 - **Maximum Observation Loop Duration:** Exactly 180 seconds (3 minutes) ceiling (`--duration 180`).
 - **Zero Orders:** No real, demo, practice, or synthetic trading orders are permitted or implemented.
-- **PRACTICE Wallet Only:** Authenticates exclusively against a Practice wallet (`is_practice=True`). Automated wallet switching is prohibited; non-practice active accounts trigger immediate session abort.
+- Phase 33 authorizes authenticated instrument reads. It records wallet evidence at acquisition start. Wallet-specific operations are disabled. See [wallet contexts and protocol evidence](wallet_context_and_market_data.md).
 - **Credential Hygiene:** Interactive foreground prompt only (`getpass`). Credentials are never saved to disk, `.env`, shell history, or version control.
 - **No Unattended Execution:** Requires active operator presence throughout the session.
 - **Fail-Closed Teardown:** Zero reconnect loops; any transport error or timeout immediately disconnects and shuts down.
@@ -28,11 +28,9 @@ This protocol governs a small, independently authorized foreground measurement t
 The 180-second ceiling (`--duration 180`) strictly covers the **observation loop** (Step [3/4]). It does not claim to bound interactive typing time during credential entry. The exact phase bounds are:
 
 1. **Interactive Credential Entry:** Operator-paced in the foreground; no network I/O occurs until credentials are submitted.
-2. **WebSocket & Authentication Handshake:** Enforces a hard transport ceiling via `ConnectionConfig.auth_timeout` (10.0 seconds).
-3. **Wallet Verification & Account Diagnostics:** Enforces a hard request ceiling via `ConnectionConfig.request_timeout` (15.0 seconds).
-4. **Clock Discipline Anchor:** Local high-resolution calculation; non-blocking.
-5. **Observation Window Loop:** Monotonic timer starts at loop entry (`start_mono = time.perf_counter()`) and enforces the hard 180-second ceiling (`elapsed >= 180`).
-6. **Total Maximum Authenticated Window:** $\le 10\,\text{s} + 15\,\text{s} + 180\,\text{s} \approx 205\,\text{s}$ ($\sim 3.4$ minutes). Any transport fault immediately drops the connection without retrying.
+2. HTTPS login, WebSocket connection and authentication have separate timeouts. The configured connection and authentication timeouts are 15 seconds each.
+3. Account discovery waits up to 10 seconds each for profile and balances. A missing or ambiguous selection is recorded in the evidence summary.
+4. The 180-second observation budget includes pending candle requests and sleeps between observations. Operator interruption closes the connection. Logout and local evidence finalization run outside the observation budget.
 
 ---
 
@@ -105,8 +103,8 @@ When authorized, execute the measurement command in an interactive terminal sess
 
 1. When prompted by the CLI:
    ```text
-   Enter IQ Option Practice credentials (interactive prompt only):
-   Broker Account Email: operator@example.com
+   Enter IQ Option credentials (interactive prompt only):
+   Broker Account Email: [hidden]
    Broker Account Password: [hidden]
    ```
 2. Type the account email and press Enter.
@@ -120,8 +118,7 @@ When authorized, execute the measurement command in an interactive terminal sess
 The measurement executes in the foreground, displaying stage checkpoints in real time:
 
 ```text
-[1/4] Verifying broker account and wallet authority...
-      PRACTICE wallet verified successfully.
+[1/4] Read-only candle acquisition. Wallet evidence: ACCOUNT_SELECTION_UNVERIFIED
 [2/4] Initializing clock discipline anchor and stability checks...
       Anchor UTC epoch ns: 1795000000000000000
       NTP uncertainty budget: +/-25.00 ms

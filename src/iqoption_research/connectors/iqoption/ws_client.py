@@ -17,7 +17,7 @@ import logging
 import random
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import websockets
@@ -37,6 +37,8 @@ from iqoption_research.connectors.iqoption.protocol import (
     MSG_HEARTBEAT,
     MSG_PROFILE,
     MSG_SUBSCRIBE,
+    balance_envelope,
+    balance_response_status,
     build_authenticate_frame,
     build_candle_subscription_frame,
     build_get_balances_request_frame,
@@ -46,8 +48,22 @@ from iqoption_research.connectors.iqoption.protocol import (
     encode_frame,
     parse_authenticated,
     validate_outgoing_frame,
+    validate_timing_frame,
 )
-from iqoption_research.models.account import AccountType, Balance, Profile
+from iqoption_research.models.account import (
+    AccountType,
+    Balance,
+    PracticeStatus,
+    Profile,
+    WalletContext,
+    WalletIndicator,
+    WalletSource,
+    balance_wallet_indicators,
+    profile_wallet_indicators,
+    wallet_decision,
+    wallet_identifier,
+    wallet_type_conflict,
+)
 from iqoption_research.models.connection import (
     ConnectionConfig,
     ConnectionState,
@@ -138,6 +154,13 @@ class IQOptionWebSocketClient:
 
         self._profile: Profile | None = None
         self._balances: list[Balance] = []
+        self._listed_balances: tuple[Balance, ...] | None = None
+        self._change_indicator: WalletIndicator | None = None
+        self._changed_wallet_type: tuple[str, str] | None = None
+        self._selection: WalletContext | None = None
+        self._inventory_valid = False
+        self._list_response_event = asyncio.Event()
+        self._list_correlated = False
         self._active_balance_id: str | None = None
 
         self._request_counter = itertools.count(1)
@@ -232,8 +255,91 @@ class IQOptionWebSocketClient:
     @property
     def is_practice_verified(self) -> bool:
         """True only if active balance is confirmed as PRACTICE (type 4)."""
-        active = self.active_balance
-        return active is not None and active.is_practice and active.type == AccountType.PRACTICE
+        return (
+            self.is_ready and self.wallet_classification is PracticeStatus.VERIFIED_ACTIVE_PRACTICE
+        )
+
+    @property
+    def wallet_indicators(self) -> tuple[WalletIndicator, ...]:
+        indicators = list(profile_wallet_indicators(self._profile.raw)) if self._profile else []
+        indicators.extend(
+            balance_wallet_indicators(self._listed_balances or (), correlated=self._list_correlated)
+        )
+        if self._change_indicator:
+            indicators.append(self._change_indicator)
+        return tuple(indicators)
+
+    @property
+    def changed_wallet_type(self) -> tuple[str, str] | None:
+        return self._changed_wallet_type
+
+    def _type_conflict(self) -> bool:
+        return wallet_type_conflict(
+            tuple(self._balances),
+            self._profile.raw if self._profile else {},
+            self._changed_wallet_type,
+        )
+
+    @property
+    def wallet_classification(self) -> PracticeStatus:
+        return wallet_decision(
+            tuple(self._balances),
+            self.wallet_indicators,
+            complete=self.is_authenticated and bool(self._profile and self._profile.raw),
+            conflicting_types=self._type_conflict(),
+        ).status
+
+    @property
+    def wallet_context(self) -> WalletContext | None:
+        return self._selection
+
+    def select_wallet_context(self, requested: AccountType) -> WalletContext:
+        """Resolve the current inventory locally. Selection has no outbound side effects."""
+        self._selection = None
+        if not self.is_authenticated or not self._inventory_valid:
+            raise ValueError("A fresh, complete balance inventory is required.")
+        if self._type_conflict():
+            raise ValueError("Broker sources disagree on wallet type.")
+        context = WalletContext.resolve(requested, self._listed_balances or ())
+        self._selection = context
+        return context
+
+    async def wallet_diagnostic(self) -> dict[str, object]:
+        # Profile-embedded inventory can make the connection READY before the
+        # independent reply arrives. Observe that reply for a bounded interval.
+        if self.is_authenticated:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._list_response_event.wait(), self._config.request_timeout
+                )
+        return self.wallet_report()
+
+    def wallet_report(self) -> dict[str, object]:
+        balances = tuple(self._balances)
+        indicators = self.wallet_indicators
+        sources = {i.source for i in indicators}
+        families = {s.value.partition(".")[0] for s in sources}
+        distinct = {i.balance_id for i in indicators}
+        return {
+            "account_types": sorted({b.type.name for b in balances}),
+            "practice_balance_exists": any(b.is_practice for b in balances),
+            "independent_balances_received": self._listed_balances is not None,
+            "indicator_sources": sorted(s.value for s in sources),
+            "source_scopes": {
+                s.value: "default"
+                if s in (WalletSource.LIST_DEFAULT, WalletSource.PUSH_DEFAULT)
+                else "session_scope_unproven"
+                for s in sources
+            },
+            "independent_indicators_agree": len(distinct) == 1 if len(families) > 1 else None,
+            "classification": self.wallet_classification.name,
+            "selected_local_context": self._selection.wallet_type.name if self._selection else None,
+            "selection_scope": "connection_local_inspection",
+            "broker_acknowledged_selection": False,
+            "broker_verified_effective_wallet": False,
+            "wallet_specific_operation_authorization": "DISABLED",
+            "inventory_valid_for_selection": self._inventory_valid and not self._type_conflict(),
+        }
 
     @property
     def reconnect_attempts(self) -> int:
@@ -334,6 +440,13 @@ class IQOptionWebSocketClient:
         self._authenticated_ok = False
         self._profile_event.clear()
         self._balances_event.clear()
+        self._listed_balances = None
+        self._change_indicator = None
+        self._changed_wallet_type = None
+        self._selection = None
+        self._inventory_valid = False
+        self._list_response_event.clear()
+        self._list_correlated = False
         self._profile = None
         self._balances = []
         self._active_balance_id = None
@@ -490,6 +603,13 @@ class IQOptionWebSocketClient:
                 await self._ws.close()
             self._ws = None
 
+        self._listed_balances = None
+        self._change_indicator = None
+        self._changed_wallet_type = None
+        self._selection = None
+        self._inventory_valid = False
+        self._list_response_event.clear()
+        self._list_correlated = False
         self._profile = None
         self._balances = []
         self._active_balance_id = None
@@ -581,7 +701,10 @@ class IQOptionWebSocketClient:
     async def _send_raw(self, payload: dict[str, Any]) -> None:
         if self._ws is None:
             raise ConnectionError("Not connected")
-        validate_outgoing_frame(payload)
+        if self._config.timing_market_data_only:
+            validate_timing_frame(payload, authenticated=self.is_authenticated)
+        else:
+            validate_outgoing_frame(payload)
         data = encode_frame(payload)
         async with self._send_lock:
             try:
@@ -666,6 +789,13 @@ class IQOptionWebSocketClient:
                 self._state = ConnectionState.FAILED
                 self._fail_reason = DisconnectReason.AUTH_FAILED
                 self._transition_monitor(ConnectionState.FAILED, reason="auth_failed")
+                self._listed_balances = None
+                self._change_indicator = None
+                self._changed_wallet_type = None
+                self._selection = None
+                self._inventory_valid = False
+                self._list_response_event.clear()
+                self._list_correlated = False
                 self._profile = None
                 self._balances = []
                 self._active_balance_id = None
@@ -729,7 +859,8 @@ class IQOptionWebSocketClient:
             handled = True
             self._outstanding_balances_request_id = None
             self._diagnostics.record_incoming(name or "get-balances", msg, handled=True)
-            self._handle_balances_message(message)
+            self._handle_balances_message(message, correlated=True)
+            self._list_response_event.set()
             return
 
         if req_id and req_id in self._pending:
@@ -762,6 +893,18 @@ class IQOptionWebSocketClient:
                 pending.future.set_result(message)
             return
 
+        if req_id and name in (
+            MSG_PROFILE,
+            "get-profile",
+            "user-profile",
+            MSG_BALANCES,
+            "get-balances",
+            "balance",
+            "balance-changed",
+        ):
+            # A response for a different request cannot update this snapshot.
+            return
+
         if name in (MSG_PROFILE, "profile", "get-profile", "user-profile"):
             handled = True
             self._diagnostics.record_incoming(name, msg, handled=True)
@@ -774,8 +917,18 @@ class IQOptionWebSocketClient:
             msg_payload = message.get("msg")
             if isinstance(msg_payload, dict):
                 current = msg_payload.get("current_balance")
-                if isinstance(current, dict) and current.get("id") is not None:
-                    self._active_balance_id = str(current["id"]).strip()
+                if isinstance(current, dict) and type(current.get("id")) in (str, int):
+                    self._change_indicator = WalletIndicator(
+                        WalletSource.CHANGE, wallet_identifier(current["id"])
+                    )
+                    if current.get("type") is not None:
+                        self._changed_wallet_type = (
+                            self._change_indicator.balance_id,
+                            str(current["type"]).strip(),
+                        )
+                        if self._type_conflict():
+                            self._selection = None
+                    self._active_balance_id = self._change_indicator.balance_id
                     self._mark_active_balance()
             return
 
@@ -839,28 +992,35 @@ class IQOptionWebSocketClient:
             or raw_profile.get("balanceId")
             or raw_profile.get("active_balance_id")
         )
-        if isinstance(balance_id, (int, str)) and str(balance_id).strip():
-            self._active_balance_id = str(balance_id).strip()
+        if type(balance_id) in (int, str) and str(balance_id).strip():
+            self._active_balance_id = wallet_identifier(balance_id) or None
         else:
             self._active_balance_id = None
 
         current = raw_profile.get("current_balance")
-        if isinstance(current, dict) and current.get("id") is not None:
-            self._active_balance_id = str(current["id"]).strip()
+        if isinstance(current, dict) and type(current.get("id")) in (str, int):
+            self._active_balance_id = wallet_identifier(current["id"]) or None
 
+        profile_balance_id = self._active_balance_id
+        if self._change_indicator:
+            self._active_balance_id = self._change_indicator.balance_id
         self._mark_active_balance()
         self._profile_event.set()
         self._diagnostics.record_profile_status(True)
 
         # Check for nested balances array within profile
         nested_balances = raw_profile.get("balances")
+        if self._listed_balances is not None:
+            if self._type_conflict():
+                self._selection = None
+            return
         if isinstance(nested_balances, list):
             self._apply_balances(nested_balances)
         elif isinstance(nested_balances, dict) and isinstance(
             nested_balances.get("balances"), list
         ):
             self._apply_balances(nested_balances["balances"])
-        elif not self._balances and self._active_balance_id is not None:
+        elif not self._balances and profile_balance_id is not None:
             prof_type = (
                 raw_profile.get("balance_type")
                 if raw_profile.get("balance_type") is not None
@@ -870,7 +1030,7 @@ class IQOptionWebSocketClient:
                 try:
                     single_bal = Balance.from_raw(
                         {
-                            "id": self._active_balance_id,
+                            "id": profile_balance_id,
                             "type": prof_type,
                             "amount": raw_profile.get("balance", 0.0),
                             "currency": raw_profile.get("currency", "USD"),
@@ -901,8 +1061,20 @@ class IQOptionWebSocketClient:
             return result
         return None
 
-    def _handle_balances_message(self, message: dict[str, Any]) -> None:
-        raw_balances = self._extract_balances_payload(message)
+    def _handle_balances_message(
+        self, message: dict[str, Any], *, correlated: bool = False
+    ) -> None:
+        previous = self._selection
+        self._selection = None
+        self._inventory_valid = False
+        raw_balances, _ = balance_envelope(message)
+        if message.get("name") == "reject" or balance_response_status(message) not in (
+            "ABSENT",
+            "SUCCESS",
+        ):
+            raw_balances = None
+        self._balances = []
+        self._listed_balances = None
         if raw_balances is None or not isinstance(raw_balances, list):
             self.errors += 1
             if self._monitor is not None:
@@ -914,25 +1086,19 @@ class IQOptionWebSocketClient:
             return
 
         self._apply_balances(raw_balances)
+        self._listed_balances = tuple(self._balances)
+        self._list_correlated = correlated
+        self._inventory_valid = (
+            self.is_authenticated
+            and len(self._balances) == len(raw_balances)
+            and bool(self._balances)
+            and len({b.id for b in self._balances}) == len(self._balances)
+        )
+        if previous and self._inventory_valid and not self._type_conflict():
+            matches = [b.id for b in self._balances if b.type is previous.wallet_type]
+            if matches == [previous.balance_id]:
+                self._selection = previous
         self._diagnostics.record_balances_status(len(self._balances) > 0)
-
-    def _extract_balances_payload(self, message: dict[str, Any]) -> list[dict[str, Any]] | None:
-        raw = message.get("msg")
-        if isinstance(raw, list):
-            return raw
-        if isinstance(raw, dict):
-            if isinstance(raw.get("balances"), list):
-                return raw["balances"]
-            if isinstance(raw.get("msg"), list):
-                return raw["msg"]
-            if isinstance(raw.get("result"), list):
-                return raw["result"]
-        body = message.get("body")
-        if isinstance(body, list):
-            return body
-        if isinstance(body, dict) and isinstance(body.get("balances"), list):
-            return body["balances"]
-        return None
 
     def _apply_balances(self, raw_balances: list[dict[str, Any]]) -> None:
         if not isinstance(raw_balances, list):
@@ -963,27 +1129,8 @@ class IQOptionWebSocketClient:
         self._balances_event.set()
 
     def _mark_active_balance(self) -> None:
-        if self._active_balance_id is None:
-            self._balances = [
-                Balance(
-                    id=b.id,
-                    type=b.type,
-                    amount=b.amount,
-                    currency=b.currency,
-                    is_active=False,
-                )
-                for b in self._balances
-            ]
-            return
         self._balances = [
-            Balance(
-                id=b.id,
-                type=b.type,
-                amount=b.amount,
-                currency=b.currency,
-                is_active=(b.id == self._active_balance_id),
-            )
-            for b in self._balances
+            replace(b, is_active=b.id == self._active_balance_id) for b in self._balances
         ]
 
     def reset_reconnect_attempts(self) -> None:

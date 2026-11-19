@@ -89,7 +89,7 @@ async def async_login(
                 allow_redirects=False,
             )
         except aiohttp.ClientError as exc:
-            raise ConnectionError(f"HTTPS login request failed: {exc}") from exc
+            raise ConnectionError(f"HTTPS login request failed: {type(exc).__name__}") from None
         except TimeoutError as exc:
             raise RequestTimeoutError(
                 f"Login request timed out after {config.connect_timeout}s"
@@ -115,8 +115,6 @@ async def async_login(
 
             if response.status != 200:
                 err_msg = f"Login failed: HTTP {response.status}"
-                if isinstance(payload, dict) and payload.get("message"):
-                    err_msg = str(payload["message"])
                 raise LoginError(err_msg)
 
             # Extract SSID from cookies or JSON payload
@@ -143,8 +141,6 @@ async def async_login(
                         "2FA challenge resolution. Authentication halted safely."
                     )
                 err_msg = "Login succeeded but no SSID cookie or token was returned"
-                if isinstance(payload, dict) and payload.get("message"):
-                    err_msg = str(payload["message"])
                 raise LoginError(err_msg)
 
             logger.info("HTTPS login successful, SSID obtained")

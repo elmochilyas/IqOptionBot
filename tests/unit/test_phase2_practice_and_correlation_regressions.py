@@ -187,12 +187,12 @@ def test_active_real_balance_rejects_practice_verification() -> None:
     assert status.practice_verified is False
     verification = status.practice_verification()
     assert verification.is_verified is False
-    assert verification.status == PracticeStatus.ACTIVE_REAL
-    assert "REAL" in verification.message
+    assert verification.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
+    assert "UNVERIFIED" in verification.message
 
 
-def test_active_practice_balance_confirms_practice_verification() -> None:
-    """Verifies that an account with active PRACTICE balance passes verification."""
+def test_practice_id_alone_cannot_confirm_selection() -> None:
+    """An ID matching Practice carries no evidence of session scope."""
     profile_data: dict[str, Any] = {"user_id": 100, "email": "test@example.com"}
     balances_data: list[dict[str, Any]] = [
         {"id": "real_1", "type": 1, "amount": 500.0, "currency": "USD"},
@@ -206,11 +206,11 @@ def test_active_practice_balance_confirms_practice_verification() -> None:
     assert status.active_balance.is_practice is True
     assert status.active_balance.is_real is False
 
-    assert status.practice_verified is True
+    assert status.practice_verified is False
     verification = status.practice_verification()
-    assert verification.is_verified is True
-    assert verification.status == PracticeStatus.VERIFIED_ACTIVE_PRACTICE
-    assert verification.active_balance_id == "prac_4"
+    assert verification.is_verified is False
+    assert verification.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
+    assert verification.active_balance_id is None
 
 
 def test_mismatched_active_balance_id_rejects_verification() -> None:
@@ -228,7 +228,7 @@ def test_mismatched_active_balance_id_rejects_verification() -> None:
     assert status.practice_verified is False
     verification = status.practice_verification()
     assert verification.is_verified is False
-    assert verification.status == PracticeStatus.ACTIVE_UNKNOWN
+    assert verification.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
 
 
 def test_missing_active_balance_id_rejects_verification() -> None:
@@ -243,7 +243,7 @@ def test_missing_active_balance_id_rejects_verification() -> None:
     assert status.practice_verified is False
     verification = status.practice_verification()
     assert verification.is_verified is False
-    assert verification.status == PracticeStatus.ACTIVE_UNKNOWN
+    assert verification.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
 
 
 def test_correlation_rejects_stale_or_unrelated_request_id() -> None:
@@ -341,7 +341,7 @@ def test_reconnect_clears_account_and_correlation_state() -> None:
     ws._outstanding_balances_request_id = "balances-2"
 
     assert ws.is_ready is True
-    assert ws.is_practice_verified is True
+    assert ws.is_practice_verified is False
 
     # Simulate shutdown/disconnect (as occurs at start of reconnect)
     coro = ws._shutdown_transport(DisconnectReason.NETWORK_ERROR)

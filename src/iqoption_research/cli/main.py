@@ -32,6 +32,7 @@ from iqoption_research.cli.commands.security_check_cmd import security_check_com
 from iqoption_research.cli.commands.simulate import simulate_command
 from iqoption_research.cli.commands.timing_cmd import app as timing_app
 from iqoption_research.cli.commands.validate_data import validate_command
+from iqoption_research.cli.commands.wallet_diagnostic import wallet_diagnostic_command
 from iqoption_research.security.logging import configure_logging
 
 app = typer.Typer(
@@ -42,11 +43,14 @@ app = typer.Typer(
     ),
     no_args_is_help=True,
     add_completion=False,
+    pretty_exceptions_show_locals=False,
 )
 
 app.command("simulate", help="Offline connection simulation (no network).")(simulate_command)
 app.command("security-check", help="Offline TLS/endpoint/read-only checks.")(security_check_command)
 app.command("validate-data", help="Offline candle validation.")(validate_command)
+app.command("wallet")(wallet_diagnostic_command)
+app.command("wallet-diagnostic")(wallet_diagnostic_command)
 app.command("probe", help="Explicit read-only live probe (requires --live).")(probe_command)
 app.command(
     "practice-diagnostics",

@@ -39,6 +39,11 @@ from websockets.exceptions import ConnectionClosed
 
 from iqoption_research.connectors.iqoption.exceptions import ConnectionError
 from iqoption_research.connectors.iqoption.http_auth import async_login
+from iqoption_research.connectors.iqoption.protocol import (
+    balance_envelope,
+    balance_response_status,
+    explicit_response_rejection,
+)
 from iqoption_research.connectors.iqoption.ws_client import (
     create_tls_context,
     validate_wss_endpoint,
@@ -608,7 +613,7 @@ class PassivePracticeObserver:
         entry["response_correlated"] = True
         body = message.get("msg")
         accepted = body is True or (isinstance(body, dict) and body.get("success") is True)
-        if self._explicit_response_rejection(message) or (
+        if explicit_response_rejection(message) or (
             isinstance(body, dict) and body.get("success") is False
         ):
             status = "REJECTED"
@@ -692,7 +697,7 @@ class PassivePracticeObserver:
                 raise ObserverStageTimeout("HISTORY_RESPONSE", "HISTORY_REQUEST_TIMEOUT") from exc
             if response.get("name") == "observer-connection-closed":
                 raise self._fail("HISTORY_RESPONSE", "WS_CONNECTION_CLOSED")
-            if self._explicit_response_rejection(response):
+            if explicit_response_rejection(response):
                 diagnostics = self.history_schema_diagnostics()
                 if diagnostics is not None:
                     diagnostics["schema_rejection_reason"] = "BROKER_REPORTED_FAILURE"
@@ -738,19 +743,6 @@ class PassivePracticeObserver:
         except (ValueError, TypeError, OverflowError, OSError):
             return None
 
-    @staticmethod
-    def _explicit_response_rejection(message: dict[str, Any]) -> bool:
-        name = message.get("name")
-        status = message.get("status")
-        msg = message.get("msg")
-        if name == "error" or status is False or msg is False:
-            return True
-        if isinstance(status, str):
-            return status.lower() in {"error", "failed", "rejected"}
-        if isinstance(status, (int, float)) and status >= 4000:
-            return True
-        return name == "result" and isinstance(msg, dict) and msg.get("success") is False
-
     def _handle_profile_response(self, message: dict[str, Any], name: str, req_id: str) -> None:
         recognized = name in {"profile", "get-profile", "user-profile"}
         matches = self._profile_request_id is not None and req_id == self._profile_request_id
@@ -768,7 +760,7 @@ class PassivePracticeObserver:
         profile = None
         msg = message.get("msg")
         if (
-            self._explicit_response_rejection(message)
+            explicit_response_rejection(message)
             or (isinstance(msg, dict) and msg.get("success") is False)
             or (body is not None and body.get("success") is False)
         ):
@@ -820,63 +812,6 @@ class PassivePracticeObserver:
             })
         elif attempt is not None:
             attempt["additional_responses_omitted"] += 1
-
-    @staticmethod
-    def _balance_envelope(message: dict[str, Any]) -> tuple[list[Any] | None, str]:
-        """Recognize the account envelopes used by the existing read-only clients."""
-        arrays = []
-        body = message.get("msg")
-        if isinstance(body, list):
-            arrays.append((body, "MSG_LIST"))
-        elif isinstance(body, dict):
-            for key, label in (
-                ("balances", "MSG_BALANCES_LIST"),
-                ("result", "MSG_RESULT_LIST"),
-                ("msg", "MSG_MSG_LIST"),
-            ):
-                if isinstance(body.get(key), list):
-                    arrays.append((body[key], label))
-            result = body.get("result")
-            if isinstance(result, dict) and isinstance(result.get("balances"), list):
-                arrays.append((result["balances"], "MSG_RESULT_BALANCES_LIST"))
-        body = message.get("body")
-        if isinstance(body, list):
-            arrays.append((body, "BODY_LIST"))
-        elif isinstance(body, dict) and isinstance(body.get("balances"), list):
-            arrays.append((body["balances"], "BODY_BALANCES_LIST"))
-        if len(arrays) > 1:
-            return None, "AMBIGUOUS"
-        return arrays[0] if arrays else (None, "UNRECOGNIZED")
-
-    @classmethod
-    def _balance_status(cls, message: dict[str, Any]) -> str:
-        status = message.get("status")
-        name = message.get("name")
-        msg = message.get("msg")
-        envelopes = (
-            message,
-            msg,
-            msg.get("result") if isinstance(msg, dict) else None,
-            message.get("body"),
-        )
-        if cls._explicit_response_rejection(message) or any(
-            isinstance(body, dict) and body.get("success") is False for body in envelopes
-        ):
-            return "REJECTED"
-        if status is None:
-            return "ABSENT"
-        # The authenticated IQ Option get-balances v1.0 reply uses integer 0
-        # on its balances/list envelope. Snapshot and request ID checks still apply.
-        if (
-            type(status) is int
-            and status == 0
-            and name == "balances"
-            and isinstance(message.get("msg"), list)
-        ):
-            return "SUCCESS"
-        if type(status) in (int, float) and status == 2000:
-            return "SUCCESS"
-        return "UNRECOGNIZED"
 
     @staticmethod
     def _status_wire_metadata(message: dict[str, Any]) -> dict[str, str | int]:
@@ -961,9 +896,9 @@ class PassivePracticeObserver:
     def _parse_balance_response(cls, message: dict[str, Any]) -> list[Balance]:
         if message.get("name") not in {"balances", "get-balances", "balance"}:
             return []
-        if cls._balance_status(message) not in {"ABSENT", "SUCCESS"}:
+        if balance_response_status(message) not in {"ABSENT", "SUCCESS"}:
             return []
-        body, _ = cls._balance_envelope(message)
+        body, _ = balance_envelope(message)
         return cls._parse_balance_entries(body)
 
     def _record_balance_frame(self, message: dict[str, Any], req_id: str) -> None:
@@ -987,7 +922,7 @@ class PassivePracticeObserver:
             bucket = "known_non_balance" if name in known_other else "unrecognized"
             attempt["other_frame_counts"][bucket] += 1
             return
-        body, envelope = self._balance_envelope(message)
+        body, envelope = balance_envelope(message)
         valid_count = sum(self._parse_balance_entry(item) is not None for item in body or [])
         frames = attempt["responses"]
         if len(frames) < 30:
@@ -998,7 +933,7 @@ class PassivePracticeObserver:
                 else "DIFFERENT"
                 if req_id
                 else "ABSENT",
-                "status": self._balance_status(message),
+                "status": balance_response_status(message),
                 **self._status_wire_metadata(message),
                 "envelope": envelope,
                 "balance_array_detected": body is not None,
@@ -1101,7 +1036,7 @@ class PassivePracticeObserver:
             if balance_response.get("name") == "observer-connection-closed":
                 self._last_refresh_failure = "WS_CONNECTION_CLOSED"
                 return False
-            status = self._balance_status(balance_response)
+            status = balance_response_status(balance_response)
             if status == "REJECTED":
                 self._last_refresh_failure = "BALANCES_RESPONSE_REJECTED"
                 return False

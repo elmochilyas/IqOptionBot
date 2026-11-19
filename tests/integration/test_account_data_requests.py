@@ -135,7 +135,7 @@ async def test_explicit_account_requests_sent_after_auth(fake_credentials: Crede
 
 
 @pytest.mark.asyncio
-async def test_correlated_request_responses_accepted_and_verified(
+async def test_correlated_request_responses_accepted_with_unverified_selection(
     fake_credentials: Credentials,
 ) -> None:
     """Verifies that responses correlated by request_id are properly processed."""
@@ -191,8 +191,8 @@ async def test_correlated_request_responses_accepted_and_verified(
 
         status = await client.get_account_status()
         verification = status.practice_verification()
-        assert verification.status == PracticeStatus.VERIFIED_ACTIVE_PRACTICE
-        assert verification.is_verified is True
+        assert verification.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
+        assert verification.is_verified is False
 
         await client.close()
 
@@ -253,7 +253,7 @@ async def test_reversed_response_order_handled_correctly(
         assert status.active_balance is not None
         assert status.active_balance.id == "20"
         assert status.active_balance.is_practice is True
-        assert status.practice_verified is True
+        assert status.practice_verified is False
 
         await client.close()
 

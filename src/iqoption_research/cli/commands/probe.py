@@ -214,7 +214,7 @@ def probe_command(
                 print_json(summary["diagnostics"], title="Safe Protocol Diagnostics")
         elif not summary.get("practice_verified", False):
             practice_status = summary.get("practice_status")
-            if practice_status == PracticeStatus.ACTIVE_REAL.value:
+            if practice_status == PracticeStatus.VERIFIED_ACTIVE_REAL.value:
                 print_warning(
                     "CRITICAL WARNING: Server-reported active account is REAL. "
                     "Probe halted before market-data retrieval to protect real account. "

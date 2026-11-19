@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 from iqoption_research.cli.main import app
 from iqoption_research.connectors.iqoption.client import AsyncIQOption, CandleFetchResult
 from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+from iqoption_research.models.account import PracticeStatus
 from iqoption_research.security.credentials import Credentials
 from iqoption_research.timing.instrumentation import ClockDiscipline, TimingRecorder
 from iqoption_research.timing.supervised_session import (
@@ -198,11 +199,9 @@ async def test_live_session_console_reporting_distinguishes_stages(
     # Mock client and practice verification
     mock_client = AsyncMock()
     mock_client.assert_read_only = MagicMock()
-    mock_status = MagicMock()
-    mock_practice_verif = MagicMock(is_verified=True, message="OK")
-    mock_status.practice_verification.return_value = mock_practice_verif
-    mock_status.active_balance = MagicMock(is_practice=True)
-    mock_client.get_account_status.return_value = mock_status
+    mock_client.measurement_wallet_status = MagicMock(
+        return_value=PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
+    )
 
     now_wall = int(time.time())
     F = (now_wall // 60) * 60

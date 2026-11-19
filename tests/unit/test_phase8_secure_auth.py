@@ -795,7 +795,7 @@ def test_account_status_authoritative_single_balance_fallback() -> None:
     assert len(status.balances) == 1
     assert status.balances[0].id == "404"
     assert status.balances[0].type == AccountType.PRACTICE
-    assert status.practice_verified is True
+    assert status.practice_verified is False
     verification = status.practice_verification()
-    assert verification.is_verified is True
-    assert verification.status == PracticeStatus.VERIFIED_ACTIVE_PRACTICE
+    assert verification.is_verified is False
+    assert verification.status == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED

@@ -113,6 +113,7 @@ class ConnectionConfig:
 
     # Diagnostics
     diagnostics: bool = False
+    timing_market_data_only: bool = False
 
     def __post_init__(self) -> None:
         # Validate timeouts are positive

@@ -5,7 +5,7 @@ Executes strictly within operator-supervised foreground boundaries:
 - Maximum completed candles: 5 cycles
 - Read-only broker requests exclusively through verified AsyncIQOption facade
 - Zero real or demo orders (validate_outgoing_frame enforced)
-- Zero wallet switching (strictly practice verified)
+- Wallet-independent candle acquisition; zero wallet switching
 - Zero saved credentials (runtime interactive prompt only)
 - Zero unattended reconnect loops (fail-closed on socket close)
 - Zero speculative subscriptions
@@ -19,6 +19,7 @@ import getpass
 import logging
 import time
 import uuid
+import warnings
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,6 +77,8 @@ class SupervisedSessionConfig:
                 f"max_candle_cycles ({self.max_candle_cycles}) exceeds hard limit "
                 f"of {HARD_MAX_CANDLE_CYCLES} cycles"
             )
+        if not self.simulation_mode and not self.live_mode:
+            raise ValueError("Live measurement requires explicit live mode.")
         if self.live_mode and not self.operator_confirmed:
             raise ValueError(
                 "Live authenticated measurement requires explicit operator confirmation "
@@ -194,24 +197,25 @@ class SupervisedSessionRunner:
         logger.info("Initializing LIVE operator-supervised timing measurement")
         print("\n" + "=" * 70)
         print("  OPERATOR-SUPERVISED REAL-TIME DATA TIMING MEASUREMENT")
-        print("  Mode: READ-ONLY LIVE (Zero orders, PRACTICE verified, Max 300s, Max 5 cycles)")
+        print("  Mode: READ-ONLY LIVE (wallet-independent candles, zero orders)")
         print("=" * 70)
 
         # Interactive operator credentials prompt (NO .env or disk storage)
-        print("\nEnter IQ Option Practice credentials (interactive prompt only):")
-        email_raw = await asyncio.to_thread(input, "Broker Account Email: ")
-        email = email_raw.strip()
-        if not email:
-            raise ValueError("Email cannot be empty.")
-        password_raw = await asyncio.to_thread(getpass.getpass, "Broker Account Password: ")
-        password = password_raw.strip()
-        if not password:
-            raise ValueError("Password cannot be empty.")
+        print("\nEnter IQ Option credentials (interactive prompt only):")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            email = (await asyncio.to_thread(getpass.getpass, "Broker Account Email: ")).strip()
+            if not email:
+                raise ValueError("Email cannot be empty.")
+            password = await asyncio.to_thread(getpass.getpass, "Broker Account Password: ")
+            if not password:
+                raise ValueError("Password cannot be empty.")
 
         creds = Credentials(email=email, password=password)
 
         conn_config = ConnectionConfig(
             request_timeout=15.0,
+            timing_market_data_only=True,
             max_reconnect_attempts=0,  # Fail closed immediately, no reconnect loops
         )
 
@@ -222,20 +226,8 @@ class SupervisedSessionRunner:
             timing_recorder=self.recorder,
         ) as client:
             client.assert_read_only()
-            print("\n[1/4] Verifying broker account and wallet authority...")
-            status = await client.get_account_status()
-            practice_verif = status.practice_verification()
-            if not practice_verif.is_verified:
-                raise RuntimeError(
-                    f"Session aborted: Account is not PRACTICE verified ({practice_verif.message})"
-                )
-
-            if status.active_balance and not status.active_balance.is_practice:
-                raise RuntimeError(
-                    "Session aborted: Active wallet is not PRACTICE. Automated switching forbidden."
-                )
-
-            print("      PRACTICE wallet verified successfully.")
+            wallet_at_start = client.measurement_wallet_status()
+            print(f"\n[1/4] Read-only candle acquisition. Wallet evidence: {wallet_at_start.name}")
             print("[2/4] Initializing clock discipline anchor and stability checks...")
             self.clock.check_clock_stability()
             print(f"      Anchor UTC epoch ns: {self.clock.anchor_utc_ns}")
@@ -246,6 +238,7 @@ class SupervisedSessionRunner:
                 f"(loop duration ceiling: max {self.config.max_duration_seconds}s)..."
             )
             start_mono = time.perf_counter()
+            deadline = start_mono + self.config.max_duration_seconds
             cycles_done = 0
             observed_candle_boundaries: set[int] = set()
 
@@ -269,7 +262,9 @@ class SupervisedSessionRunner:
                     if F in observed_candle_boundaries or sec_in_minute > 15:
                         wait_seconds = 60 - sec_in_minute
                         print(f"      Waiting {wait_seconds}s for next boundary (F={F + 60})...")
-                        await asyncio.sleep(min(wait_seconds, 5.0))
+                        await asyncio.sleep(
+                            min(wait_seconds, 5.0, max(0, deadline - time.perf_counter()))
+                        )
                         continue
 
                     # We are in the post-close arrival window for candle F
@@ -281,12 +276,13 @@ class SupervisedSessionRunner:
                     observed_candle_boundaries.add(F)
 
                     try:
-                        result = await client.get_candles(
-                            self.config.symbol,
-                            size=self.config.candle_size_seconds,
-                            count=22,
-                            endtime=F,
-                        )
+                        async with asyncio.timeout(max(0, deadline - time.perf_counter())):
+                            result = await client.get_candles(
+                                self.config.symbol,
+                                size=self.config.candle_size_seconds,
+                                count=22,
+                                endtime=F,
+                            )
                         # Record separate request-completion instant (method return)
                         if result.request_completion_mono_ns is not None:
                             self.recorder.record_request_completed(
@@ -363,6 +359,10 @@ class SupervisedSessionRunner:
                             )
                             print(f"        - Observation verdict:      {obs.gate_verdict}")
 
+                    except TimeoutError:
+                        obs.rejection_reason = "OBSERVATION_DEADLINE"
+                        obs.compute_latencies_and_gate(self.clock)
+                        break
                     except ConnectionError as exc:
                         print(f"      Broker connection closed: {exc}. Fail closed immediately.")
                         obs.rejection_reason = "CONNECTION_INTERRUPTED_FAIL_CLOSED"
@@ -371,7 +371,8 @@ class SupervisedSessionRunner:
 
                     cycles_done += 1
                     # Sleep to prevent rapid polling
-                    await asyncio.sleep(5.0)
+                    if cycles_done < self.config.max_candle_cycles:
+                        await asyncio.sleep(min(5.0, max(0, deadline - time.perf_counter())))
 
             except (asyncio.CancelledError, KeyboardInterrupt):
                 print("\n\n[!] Operator interrupt received. Cleaning up session gracefully...")
@@ -381,6 +382,7 @@ class SupervisedSessionRunner:
         registry = TimingEvidenceRegistry.create(
             session_id=self.session_id,
             operational_mode="OPERATOR_SUPERVISED_LIVE",
+            measurement_wallet_at_start=wallet_at_start,
             project_root=self.config.project_root,
             clock=self.clock,
             observations=self.recorder.observations,

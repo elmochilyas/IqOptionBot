@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
+from iqoption_research.models.account import PracticeStatus
 from iqoption_research.timing.instrumentation import (
     CandleTimingObservation,
     ClockDiscipline,
@@ -124,6 +125,7 @@ class TimingEvidenceRegistry:
         *,
         symbol: str = "EURUSD",
         candle_size_seconds: int = 60,
+        measurement_wallet_at_start: PracticeStatus | None = None,
     ) -> TimingEvidenceRegistry:
         """Create a sanitized, hashed registry from completed observations."""
         if not session_id or not session_id.strip():
@@ -240,6 +242,12 @@ class TimingEvidenceRegistry:
             "median_close_to_commit_total_ms": median(totals),
         }
 
+        if measurement_wallet_at_start is not None:
+            summary.update({
+                "authorization": "READ_ONLY_MARKET_DATA_AUTHORIZATION",
+                "wallet_specific_operations": "DISABLED",
+                "wallet_classification_at_start": measurement_wallet_at_start.name,
+            })
         registry = cls(
             session_id=session_id,
             session_created_at_utc=now_iso,

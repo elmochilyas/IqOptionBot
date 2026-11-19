@@ -1,0 +1,797 @@
+{
+  "shadow:EURUSD:60:1795106520": {
+    "actual_broker_payout_verified": false,
+    "allowlist": "validate_timing_frame",
+    "analytical_direction": "SKIP",
+    "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+    "assumed_payout_for_gate_only": 0.85,
+    "boundary": 1795106520,
+    "calibrated_probability": 0.48053672568135697,
+    "clock_uncertainty_ms": 83.2675,
+    "confidence": 0.519463274318643,
+    "decision": "SKIP",
+    "decision_time": {
+      "details": {
+        "analytical_direction": "SKIP",
+        "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+        "decision": "SKIP",
+        "eligibility_block": "missing_payout_data",
+        "side_probability": 0.519463274318643,
+        "skip_reason": "BELOW_FROZEN_THRESHOLD",
+        "tradable_payout": null
+      },
+      "disciplined_utc_iso": "2026-11-19T16:42:00.094600+00:00",
+      "disciplined_utc_ns": 1795106520094600500,
+      "mono_ns": 10091766003200,
+      "stage_name": "STAGE_POLICY_DECISION",
+      "wall_clock_ns": 1795106520096262300
+    },
+    "disposition": "NO_DEMONSTRATED_EDGE",
+    "execution_authority": "NONE",
+    "feature_pipeline": "CausalFeaturePipeline/v1",
+    "feature_schema": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio",
+      "log_volume",
+      "volume_ratio_10"
+    ],
+    "kind": "SHADOW_DECISION",
+    "max_candle_cycles": 5,
+    "max_duration_seconds": 300,
+    "model_eligible": true,
+    "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+    "model_name": "random_forest",
+    "model_provenance": "authentic_trained",
+    "observation_started_utc_ns": 1795106481519631300,
+    "orders_sent": 0,
+    "policy": "ProspectivePolicy/0.60/assumed-payout-0.85/v1",
+    "precommit_stages": {
+      "STAGE_1_REQUEST_INIT": {
+        "details": {
+          "frame_name": "sendMessage",
+          "request_id": "candles-1"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:42:00.016763+00:00",
+        "disciplined_utc_ns": 1795106520016763200,
+        "mono_ns": 10091688165900,
+        "stage_name": "STAGE_1_REQUEST_INIT",
+        "wall_clock_ns": 1795106520019107100
+      },
+      "STAGE_2_NETWORK_RECV": {
+        "details": {
+          "payload_bytes": 3332,
+          "request_id": "candles-1"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:42:00.079266+00:00",
+        "disciplined_utc_ns": 1795106520079265600,
+        "mono_ns": 10091750668300,
+        "stage_name": "STAGE_2_NETWORK_RECV",
+        "wall_clock_ns": 1795106520075019200
+      },
+      "STAGE_3_PARSE_VALIDATE": {
+        "details": {
+          "frame_name": "candles",
+          "request_id": "candles-1"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:42:00.079398+00:00",
+        "disciplined_utc_ns": 1795106520079398400,
+        "mono_ns": 10091750801100,
+        "stage_name": "STAGE_3_PARSE_VALIDATE",
+        "wall_clock_ns": 1795106520075019200
+      },
+      "STAGE_4_CANDLE_VALIDATE": {
+        "details": {
+          "candle_count": 22,
+          "is_complete": true,
+          "request_id": "candles-1"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:42:00.080635+00:00",
+        "disciplined_utc_ns": 1795106520080635200,
+        "mono_ns": 10091752037900,
+        "stage_name": "STAGE_4_CANDLE_VALIDATE",
+        "wall_clock_ns": 1795106520083286300
+      },
+      "STAGE_5_COMPLETED_RECOG": {
+        "details": {
+          "completed_to_ts": 1795106520
+        },
+        "disciplined_utc_iso": "2026-11-19T16:42:00.080829+00:00",
+        "disciplined_utc_ns": 1795106520080829500,
+        "mono_ns": 10091752232200,
+        "stage_name": "STAGE_5_COMPLETED_RECOG",
+        "wall_clock_ns": 1795106520083286300
+      },
+      "STAGE_7_FEATURE_AVAIL": {
+        "details": {
+          "feature_count": 18
+        },
+        "disciplined_utc_iso": "2026-11-19T16:42:00.081138+00:00",
+        "disciplined_utc_ns": 1795106520081138100,
+        "mono_ns": 10091752540800,
+        "stage_name": "STAGE_7_FEATURE_AVAIL",
+        "wall_clock_ns": 1795106520083286300
+      },
+      "STAGE_8_INFERENCE": {
+        "details": {
+          "cal_prob": 0.48053672568135697,
+          "decision": "NOT_MEASURED",
+          "raw_prob": 0.5159173465814247
+        },
+        "disciplined_utc_iso": "2026-11-19T16:42:00.094568+00:00",
+        "disciplined_utc_ns": 1795106520094567900,
+        "mono_ns": 10091765970600,
+        "stage_name": "STAGE_8_INFERENCE",
+        "wall_clock_ns": 1795106520096262300
+      },
+      "STAGE_POLICY_DECISION": {
+        "details": {
+          "analytical_direction": "SKIP",
+          "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+          "decision": "SKIP",
+          "eligibility_block": "missing_payout_data",
+          "side_probability": 0.519463274318643,
+          "skip_reason": "BELOW_FROZEN_THRESHOLD",
+          "tradable_payout": null
+        },
+        "disciplined_utc_iso": "2026-11-19T16:42:00.094600+00:00",
+        "disciplined_utc_ns": 1795106520094600500,
+        "mono_ns": 10091766003200,
+        "stage_name": "STAGE_POLICY_DECISION",
+        "wall_clock_ns": 1795106520096262300
+      }
+    },
+    "raw_probability": 0.5159173465814247,
+    "session": "shadow_1758c4a42993483fa41c48e3cb4ab386",
+    "skip_reason": "BELOW_FROZEN_THRESHOLD",
+    "source": "IQOPTION_EURUSD_SPOT_60S",
+    "stop_reason": "SESSION_INCOMPLETE",
+    "trading_eligibility": "UNPROVEN",
+    "wallet_classification_at_start": "CONFLICTING_ACCOUNT_INDICATORS",
+    "window_sha256": "08aeca0f87c20c76786c5015a83d2f4274657f60f541164d1fb75aaab593a9d7"
+  },
+  "shadow:EURUSD:60:1795106580": {
+    "actual_broker_payout_verified": false,
+    "allowlist": "validate_timing_frame",
+    "analytical_direction": "SKIP",
+    "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+    "assumed_payout_for_gate_only": 0.85,
+    "boundary": 1795106580,
+    "calibrated_probability": 0.47839363112559813,
+    "clock_uncertainty_ms": 83.8595,
+    "confidence": 0.5216063688744019,
+    "decision": "SKIP",
+    "decision_time": {
+      "details": {
+        "analytical_direction": "SKIP",
+        "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+        "decision": "SKIP",
+        "eligibility_block": "missing_payout_data",
+        "side_probability": 0.5216063688744019,
+        "skip_reason": "BELOW_FROZEN_THRESHOLD",
+        "tradable_payout": null
+      },
+      "disciplined_utc_iso": "2026-11-19T16:43:00.085243+00:00",
+      "disciplined_utc_ns": 1795106580085242800,
+      "mono_ns": 10151756645500,
+      "stage_name": "STAGE_POLICY_DECISION",
+      "wall_clock_ns": 1795106580079569500
+    },
+    "disposition": "NO_DEMONSTRATED_EDGE",
+    "execution_authority": "NONE",
+    "feature_pipeline": "CausalFeaturePipeline/v1",
+    "feature_schema": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio",
+      "log_volume",
+      "volume_ratio_10"
+    ],
+    "kind": "SHADOW_DECISION",
+    "max_candle_cycles": 5,
+    "max_duration_seconds": 300,
+    "model_eligible": true,
+    "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+    "model_name": "random_forest",
+    "model_provenance": "authentic_trained",
+    "observation_started_utc_ns": 1795106481519631300,
+    "orders_sent": 0,
+    "policy": "ProspectivePolicy/0.60/assumed-payout-0.85/v1",
+    "precommit_stages": {
+      "STAGE_1_REQUEST_INIT": {
+        "details": {
+          "frame_name": "sendMessage",
+          "request_id": "candles-2"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:43:00.013712+00:00",
+        "disciplined_utc_ns": 1795106580013711500,
+        "mono_ns": 10151685114200,
+        "stage_name": "STAGE_1_REQUEST_INIT",
+        "wall_clock_ns": 1795106580015952700
+      },
+      "STAGE_2_NETWORK_RECV": {
+        "details": {
+          "payload_bytes": 3332,
+          "request_id": "candles-2"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:43:00.078121+00:00",
+        "disciplined_utc_ns": 1795106580078120700,
+        "mono_ns": 10151749523400,
+        "stage_name": "STAGE_2_NETWORK_RECV",
+        "wall_clock_ns": 1795106580079569500
+      },
+      "STAGE_3_PARSE_VALIDATE": {
+        "details": {
+          "frame_name": "candles",
+          "request_id": "candles-2"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:43:00.078250+00:00",
+        "disciplined_utc_ns": 1795106580078250500,
+        "mono_ns": 10151749653200,
+        "stage_name": "STAGE_3_PARSE_VALIDATE",
+        "wall_clock_ns": 1795106580079569500
+      },
+      "STAGE_4_CANDLE_VALIDATE": {
+        "details": {
+          "candle_count": 22,
+          "is_complete": true,
+          "request_id": "candles-2"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:43:00.079334+00:00",
+        "disciplined_utc_ns": 1795106580079333600,
+        "mono_ns": 10151750736300,
+        "stage_name": "STAGE_4_CANDLE_VALIDATE",
+        "wall_clock_ns": 1795106580079569500
+      },
+      "STAGE_5_COMPLETED_RECOG": {
+        "details": {
+          "completed_to_ts": 1795106580
+        },
+        "disciplined_utc_iso": "2026-11-19T16:43:00.079492+00:00",
+        "disciplined_utc_ns": 1795106580079491800,
+        "mono_ns": 10151750894500,
+        "stage_name": "STAGE_5_COMPLETED_RECOG",
+        "wall_clock_ns": 1795106580079569500
+      },
+      "STAGE_7_FEATURE_AVAIL": {
+        "details": {
+          "feature_count": 18
+        },
+        "disciplined_utc_iso": "2026-11-19T16:43:00.079712+00:00",
+        "disciplined_utc_ns": 1795106580079712100,
+        "mono_ns": 10151751114800,
+        "stage_name": "STAGE_7_FEATURE_AVAIL",
+        "wall_clock_ns": 1795106580079569500
+      },
+      "STAGE_8_INFERENCE": {
+        "details": {
+          "cal_prob": 0.47839363112559813,
+          "decision": "NOT_MEASURED",
+          "raw_prob": 0.5137465456170343
+        },
+        "disciplined_utc_iso": "2026-11-19T16:43:00.085211+00:00",
+        "disciplined_utc_ns": 1795106580085211500,
+        "mono_ns": 10151756614200,
+        "stage_name": "STAGE_8_INFERENCE",
+        "wall_clock_ns": 1795106580079569500
+      },
+      "STAGE_POLICY_DECISION": {
+        "details": {
+          "analytical_direction": "SKIP",
+          "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+          "decision": "SKIP",
+          "eligibility_block": "missing_payout_data",
+          "side_probability": 0.5216063688744019,
+          "skip_reason": "BELOW_FROZEN_THRESHOLD",
+          "tradable_payout": null
+        },
+        "disciplined_utc_iso": "2026-11-19T16:43:00.085243+00:00",
+        "disciplined_utc_ns": 1795106580085242800,
+        "mono_ns": 10151756645500,
+        "stage_name": "STAGE_POLICY_DECISION",
+        "wall_clock_ns": 1795106580079569500
+      }
+    },
+    "raw_probability": 0.5137465456170343,
+    "session": "shadow_1758c4a42993483fa41c48e3cb4ab386",
+    "skip_reason": "BELOW_FROZEN_THRESHOLD",
+    "source": "IQOPTION_EURUSD_SPOT_60S",
+    "stop_reason": "SESSION_INCOMPLETE",
+    "trading_eligibility": "UNPROVEN",
+    "wallet_classification_at_start": "CONFLICTING_ACCOUNT_INDICATORS",
+    "window_sha256": "c6e898b9e6a7cc40c6999951ca223e63cb49834439c0da750f6883dccdef028d"
+  },
+  "shadow:EURUSD:60:1795106640": {
+    "actual_broker_payout_verified": false,
+    "allowlist": "validate_timing_frame",
+    "analytical_direction": "SKIP",
+    "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+    "assumed_payout_for_gate_only": 0.85,
+    "boundary": 1795106640,
+    "calibrated_probability": 0.48716033180636403,
+    "clock_uncertainty_ms": 79.024,
+    "confidence": 0.512839668193636,
+    "decision": "SKIP",
+    "decision_time": {
+      "details": {
+        "analytical_direction": "SKIP",
+        "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+        "decision": "SKIP",
+        "eligibility_block": "missing_payout_data",
+        "side_probability": 0.512839668193636,
+        "skip_reason": "BELOW_FROZEN_THRESHOLD",
+        "tradable_payout": null
+      },
+      "disciplined_utc_iso": "2026-11-19T16:44:00.080123+00:00",
+      "disciplined_utc_ns": 1795106640080122800,
+      "mono_ns": 10211751525500,
+      "stage_name": "STAGE_POLICY_DECISION",
+      "wall_clock_ns": 1795106640072073800
+    },
+    "disposition": "NO_DEMONSTRATED_EDGE",
+    "execution_authority": "NONE",
+    "feature_pipeline": "CausalFeaturePipeline/v1",
+    "feature_schema": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio",
+      "log_volume",
+      "volume_ratio_10"
+    ],
+    "kind": "SHADOW_DECISION",
+    "max_candle_cycles": 5,
+    "max_duration_seconds": 300,
+    "model_eligible": true,
+    "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+    "model_name": "random_forest",
+    "model_provenance": "authentic_trained",
+    "observation_started_utc_ns": 1795106481519631300,
+    "orders_sent": 0,
+    "policy": "ProspectivePolicy/0.60/assumed-payout-0.85/v1",
+    "precommit_stages": {
+      "STAGE_1_REQUEST_INIT": {
+        "details": {
+          "frame_name": "sendMessage",
+          "request_id": "candles-3"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:44:00.003627+00:00",
+        "disciplined_utc_ns": 1795106640003627300,
+        "mono_ns": 10211675030000,
+        "stage_name": "STAGE_1_REQUEST_INIT",
+        "wall_clock_ns": 1795106640005247500
+      },
+      "STAGE_2_NETWORK_RECV": {
+        "details": {
+          "payload_bytes": 3331,
+          "request_id": "candles-3"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:44:00.072752+00:00",
+        "disciplined_utc_ns": 1795106640072751900,
+        "mono_ns": 10211744154600,
+        "stage_name": "STAGE_2_NETWORK_RECV",
+        "wall_clock_ns": 1795106640072073800
+      },
+      "STAGE_3_PARSE_VALIDATE": {
+        "details": {
+          "frame_name": "candles",
+          "request_id": "candles-3"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:44:00.072885+00:00",
+        "disciplined_utc_ns": 1795106640072885300,
+        "mono_ns": 10211744288000,
+        "stage_name": "STAGE_3_PARSE_VALIDATE",
+        "wall_clock_ns": 1795106640072073800
+      },
+      "STAGE_4_CANDLE_VALIDATE": {
+        "details": {
+          "candle_count": 22,
+          "is_complete": true,
+          "request_id": "candles-3"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:44:00.073931+00:00",
+        "disciplined_utc_ns": 1795106640073930500,
+        "mono_ns": 10211745333200,
+        "stage_name": "STAGE_4_CANDLE_VALIDATE",
+        "wall_clock_ns": 1795106640072073800
+      },
+      "STAGE_5_COMPLETED_RECOG": {
+        "details": {
+          "completed_to_ts": 1795106640
+        },
+        "disciplined_utc_iso": "2026-11-19T16:44:00.074092+00:00",
+        "disciplined_utc_ns": 1795106640074092100,
+        "mono_ns": 10211745494800,
+        "stage_name": "STAGE_5_COMPLETED_RECOG",
+        "wall_clock_ns": 1795106640072073800
+      },
+      "STAGE_7_FEATURE_AVAIL": {
+        "details": {
+          "feature_count": 18
+        },
+        "disciplined_utc_iso": "2026-11-19T16:44:00.074309+00:00",
+        "disciplined_utc_ns": 1795106640074309400,
+        "mono_ns": 10211745712100,
+        "stage_name": "STAGE_7_FEATURE_AVAIL",
+        "wall_clock_ns": 1795106640072073800
+      },
+      "STAGE_8_INFERENCE": {
+        "details": {
+          "cal_prob": 0.48716033180636403,
+          "decision": "NOT_MEASURED",
+          "raw_prob": 0.5226223522653655
+        },
+        "disciplined_utc_iso": "2026-11-19T16:44:00.080094+00:00",
+        "disciplined_utc_ns": 1795106640080093800,
+        "mono_ns": 10211751496500,
+        "stage_name": "STAGE_8_INFERENCE",
+        "wall_clock_ns": 1795106640072073800
+      },
+      "STAGE_POLICY_DECISION": {
+        "details": {
+          "analytical_direction": "SKIP",
+          "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+          "decision": "SKIP",
+          "eligibility_block": "missing_payout_data",
+          "side_probability": 0.512839668193636,
+          "skip_reason": "BELOW_FROZEN_THRESHOLD",
+          "tradable_payout": null
+        },
+        "disciplined_utc_iso": "2026-11-19T16:44:00.080123+00:00",
+        "disciplined_utc_ns": 1795106640080122800,
+        "mono_ns": 10211751525500,
+        "stage_name": "STAGE_POLICY_DECISION",
+        "wall_clock_ns": 1795106640072073800
+      }
+    },
+    "raw_probability": 0.5226223522653655,
+    "session": "shadow_1758c4a42993483fa41c48e3cb4ab386",
+    "skip_reason": "BELOW_FROZEN_THRESHOLD",
+    "source": "IQOPTION_EURUSD_SPOT_60S",
+    "stop_reason": "SESSION_INCOMPLETE",
+    "trading_eligibility": "UNPROVEN",
+    "wallet_classification_at_start": "CONFLICTING_ACCOUNT_INDICATORS",
+    "window_sha256": "60c8e1db6f072bbed3c9025d2de4016747995f50305274db05329124e40f28b4"
+  },
+  "shadow:EURUSD:60:1795106700": {
+    "actual_broker_payout_verified": false,
+    "allowlist": "validate_timing_frame",
+    "analytical_direction": "SKIP",
+    "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+    "assumed_payout_for_gate_only": 0.85,
+    "boundary": 1795106700,
+    "calibrated_probability": 0.4700308912342122,
+    "clock_uncertainty_ms": 78.1514,
+    "confidence": 0.5299691087657878,
+    "decision": "SKIP",
+    "decision_time": {
+      "details": {
+        "analytical_direction": "SKIP",
+        "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+        "decision": "SKIP",
+        "eligibility_block": "missing_payout_data",
+        "side_probability": 0.5299691087657878,
+        "skip_reason": "BELOW_FROZEN_THRESHOLD",
+        "tradable_payout": null
+      },
+      "disciplined_utc_iso": "2026-11-19T16:45:00.079763+00:00",
+      "disciplined_utc_ns": 1795106700079763200,
+      "mono_ns": 10271751165900,
+      "stage_name": "STAGE_POLICY_DECISION",
+      "wall_clock_ns": 1795106700076688100
+    },
+    "disposition": "NO_DEMONSTRATED_EDGE",
+    "execution_authority": "NONE",
+    "feature_pipeline": "CausalFeaturePipeline/v1",
+    "feature_schema": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio",
+      "log_volume",
+      "volume_ratio_10"
+    ],
+    "kind": "SHADOW_DECISION",
+    "max_candle_cycles": 5,
+    "max_duration_seconds": 300,
+    "model_eligible": true,
+    "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+    "model_name": "random_forest",
+    "model_provenance": "authentic_trained",
+    "observation_started_utc_ns": 1795106481519631300,
+    "orders_sent": 0,
+    "policy": "ProspectivePolicy/0.60/assumed-payout-0.85/v1",
+    "precommit_stages": {
+      "STAGE_1_REQUEST_INIT": {
+        "details": {
+          "frame_name": "sendMessage",
+          "request_id": "candles-4"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:45:00.011833+00:00",
+        "disciplined_utc_ns": 1795106700011832900,
+        "mono_ns": 10271683235600,
+        "stage_name": "STAGE_1_REQUEST_INIT",
+        "wall_clock_ns": 1795106700013143900
+      },
+      "STAGE_2_NETWORK_RECV": {
+        "details": {
+          "payload_bytes": 3332,
+          "request_id": "candles-4"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:45:00.075636+00:00",
+        "disciplined_utc_ns": 1795106700075636400,
+        "mono_ns": 10271747039100,
+        "stage_name": "STAGE_2_NETWORK_RECV",
+        "wall_clock_ns": 1795106700076688100
+      },
+      "STAGE_3_PARSE_VALIDATE": {
+        "details": {
+          "frame_name": "candles",
+          "request_id": "candles-4"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:45:00.075700+00:00",
+        "disciplined_utc_ns": 1795106700075699800,
+        "mono_ns": 10271747102500,
+        "stage_name": "STAGE_3_PARSE_VALIDATE",
+        "wall_clock_ns": 1795106700076688100
+      },
+      "STAGE_4_CANDLE_VALIDATE": {
+        "details": {
+          "candle_count": 22,
+          "is_complete": true,
+          "request_id": "candles-4"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:45:00.076190+00:00",
+        "disciplined_utc_ns": 1795106700076189600,
+        "mono_ns": 10271747592300,
+        "stage_name": "STAGE_4_CANDLE_VALIDATE",
+        "wall_clock_ns": 1795106700076688100
+      },
+      "STAGE_5_COMPLETED_RECOG": {
+        "details": {
+          "completed_to_ts": 1795106700
+        },
+        "disciplined_utc_iso": "2026-11-19T16:45:00.076257+00:00",
+        "disciplined_utc_ns": 1795106700076256500,
+        "mono_ns": 10271747659200,
+        "stage_name": "STAGE_5_COMPLETED_RECOG",
+        "wall_clock_ns": 1795106700076688100
+      },
+      "STAGE_7_FEATURE_AVAIL": {
+        "details": {
+          "feature_count": 18
+        },
+        "disciplined_utc_iso": "2026-11-19T16:45:00.076365+00:00",
+        "disciplined_utc_ns": 1795106700076365600,
+        "mono_ns": 10271747768300,
+        "stage_name": "STAGE_7_FEATURE_AVAIL",
+        "wall_clock_ns": 1795106700076688100
+      },
+      "STAGE_8_INFERENCE": {
+        "details": {
+          "cal_prob": 0.4700308912342122,
+          "decision": "NOT_MEASURED",
+          "raw_prob": 0.505267236325548
+        },
+        "disciplined_utc_iso": "2026-11-19T16:45:00.079735+00:00",
+        "disciplined_utc_ns": 1795106700079734800,
+        "mono_ns": 10271751137500,
+        "stage_name": "STAGE_8_INFERENCE",
+        "wall_clock_ns": 1795106700076688100
+      },
+      "STAGE_POLICY_DECISION": {
+        "details": {
+          "analytical_direction": "SKIP",
+          "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+          "decision": "SKIP",
+          "eligibility_block": "missing_payout_data",
+          "side_probability": 0.5299691087657878,
+          "skip_reason": "BELOW_FROZEN_THRESHOLD",
+          "tradable_payout": null
+        },
+        "disciplined_utc_iso": "2026-11-19T16:45:00.079763+00:00",
+        "disciplined_utc_ns": 1795106700079763200,
+        "mono_ns": 10271751165900,
+        "stage_name": "STAGE_POLICY_DECISION",
+        "wall_clock_ns": 1795106700076688100
+      }
+    },
+    "raw_probability": 0.505267236325548,
+    "session": "shadow_1758c4a42993483fa41c48e3cb4ab386",
+    "skip_reason": "BELOW_FROZEN_THRESHOLD",
+    "source": "IQOPTION_EURUSD_SPOT_60S",
+    "stop_reason": "SESSION_INCOMPLETE",
+    "trading_eligibility": "UNPROVEN",
+    "wallet_classification_at_start": "CONFLICTING_ACCOUNT_INDICATORS",
+    "window_sha256": "96a6ba92baaf0c6608a14b123a207d8ae04f413861f85ac2a51a9f9eb0bba49a"
+  },
+  "shadow:EURUSD:60:1795106760": {
+    "actual_broker_payout_verified": false,
+    "allowlist": "validate_timing_frame",
+    "analytical_direction": "SKIP",
+    "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+    "assumed_payout_for_gate_only": 0.85,
+    "boundary": 1795106760,
+    "calibrated_probability": 0.458875225353162,
+    "clock_uncertainty_ms": 76.731,
+    "confidence": 0.541124774646838,
+    "decision": "SKIP",
+    "decision_time": {
+      "details": {
+        "analytical_direction": "SKIP",
+        "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+        "decision": "SKIP",
+        "eligibility_block": "missing_payout_data",
+        "side_probability": 0.541124774646838,
+        "skip_reason": "BELOW_FROZEN_THRESHOLD",
+        "tradable_payout": null
+      },
+      "disciplined_utc_iso": "2026-11-19T16:46:00.133770+00:00",
+      "disciplined_utc_ns": 1795106760133769700,
+      "mono_ns": 10331805172400,
+      "stage_name": "STAGE_POLICY_DECISION",
+      "wall_clock_ns": 1795106760134274500
+    },
+    "disposition": "NO_DEMONSTRATED_EDGE",
+    "execution_authority": "NONE",
+    "feature_pipeline": "CausalFeaturePipeline/v1",
+    "feature_schema": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio",
+      "log_volume",
+      "volume_ratio_10"
+    ],
+    "kind": "SHADOW_DECISION",
+    "max_candle_cycles": 5,
+    "max_duration_seconds": 300,
+    "model_eligible": true,
+    "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+    "model_name": "random_forest",
+    "model_provenance": "authentic_trained",
+    "observation_started_utc_ns": 1795106481519631300,
+    "orders_sent": 0,
+    "policy": "ProspectivePolicy/0.60/assumed-payout-0.85/v1",
+    "precommit_stages": {
+      "STAGE_1_REQUEST_INIT": {
+        "details": {
+          "frame_name": "sendMessage",
+          "request_id": "candles-5"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:46:00.017368+00:00",
+        "disciplined_utc_ns": 1795106760017368400,
+        "mono_ns": 10331688771100,
+        "stage_name": "STAGE_1_REQUEST_INIT",
+        "wall_clock_ns": 1795106760018392800
+      },
+      "STAGE_2_NETWORK_RECV": {
+        "details": {
+          "payload_bytes": 3330,
+          "request_id": "candles-5"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:46:00.126173+00:00",
+        "disciplined_utc_ns": 1795106760126173200,
+        "mono_ns": 10331797575900,
+        "stage_name": "STAGE_2_NETWORK_RECV",
+        "wall_clock_ns": 1795106760114527200
+      },
+      "STAGE_3_PARSE_VALIDATE": {
+        "details": {
+          "frame_name": "candles",
+          "request_id": "candles-5"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:46:00.126309+00:00",
+        "disciplined_utc_ns": 1795106760126308800,
+        "mono_ns": 10331797711500,
+        "stage_name": "STAGE_3_PARSE_VALIDATE",
+        "wall_clock_ns": 1795106760114527200
+      },
+      "STAGE_4_CANDLE_VALIDATE": {
+        "details": {
+          "candle_count": 22,
+          "is_complete": true,
+          "request_id": "candles-5"
+        },
+        "disciplined_utc_iso": "2026-11-19T16:46:00.127503+00:00",
+        "disciplined_utc_ns": 1795106760127502700,
+        "mono_ns": 10331798905400,
+        "stage_name": "STAGE_4_CANDLE_VALIDATE",
+        "wall_clock_ns": 1795106760128533200
+      },
+      "STAGE_5_COMPLETED_RECOG": {
+        "details": {
+          "completed_to_ts": 1795106760
+        },
+        "disciplined_utc_iso": "2026-11-19T16:46:00.127655+00:00",
+        "disciplined_utc_ns": 1795106760127655000,
+        "mono_ns": 10331799057700,
+        "stage_name": "STAGE_5_COMPLETED_RECOG",
+        "wall_clock_ns": 1795106760128533200
+      },
+      "STAGE_7_FEATURE_AVAIL": {
+        "details": {
+          "feature_count": 18
+        },
+        "disciplined_utc_iso": "2026-11-19T16:46:00.127875+00:00",
+        "disciplined_utc_ns": 1795106760127874600,
+        "mono_ns": 10331799277300,
+        "stage_name": "STAGE_7_FEATURE_AVAIL",
+        "wall_clock_ns": 1795106760128533200
+      },
+      "STAGE_8_INFERENCE": {
+        "details": {
+          "cal_prob": 0.458875225353162,
+          "decision": "NOT_MEASURED",
+          "raw_prob": 0.4939286355210556
+        },
+        "disciplined_utc_iso": "2026-11-19T16:46:00.133744+00:00",
+        "disciplined_utc_ns": 1795106760133743700,
+        "mono_ns": 10331805146400,
+        "stage_name": "STAGE_8_INFERENCE",
+        "wall_clock_ns": 1795106760134274500
+      },
+      "STAGE_POLICY_DECISION": {
+        "details": {
+          "analytical_direction": "SKIP",
+          "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+          "decision": "SKIP",
+          "eligibility_block": "missing_payout_data",
+          "side_probability": 0.541124774646838,
+          "skip_reason": "BELOW_FROZEN_THRESHOLD",
+          "tradable_payout": null
+        },
+        "disciplined_utc_iso": "2026-11-19T16:46:00.133770+00:00",
+        "disciplined_utc_ns": 1795106760133769700,
+        "mono_ns": 10331805172400,
+        "stage_name": "STAGE_POLICY_DECISION",
+        "wall_clock_ns": 1795106760134274500
+      }
+    },
+    "raw_probability": 0.4939286355210556,
+    "session": "shadow_1758c4a42993483fa41c48e3cb4ab386",
+    "skip_reason": "BELOW_FROZEN_THRESHOLD",
+    "source": "IQOPTION_EURUSD_SPOT_60S",
+    "stop_reason": "SESSION_INCOMPLETE",
+    "trading_eligibility": "UNPROVEN",
+    "wallet_classification_at_start": "CONFLICTING_ACCOUNT_INDICATORS",
+    "window_sha256": "78759530f252b87c82e22a6b1365d01bfd8d32c2a648b53ec526a25c398b770c"
+  }
+}

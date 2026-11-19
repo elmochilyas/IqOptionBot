@@ -333,14 +333,16 @@ def extract_predictions_from_registry(
     # Optional cross-check against SQLite journal
     journal_events: dict[str, dict[str, Any]] = {}
     if db_path is not None and db_path.is_file():
+        conn = sqlite3.connect(db_path)
         try:
-            with sqlite3.connect(db_path) as conn:
-                for row in conn.execute("SELECT event_key, payload FROM events"):
-                    journal_events[row[0]] = json.loads(row[1])
+            for row in conn.execute("SELECT event_key, payload FROM events"):
+                journal_events[row[0]] = json.loads(row[1])
         except (sqlite3.Error, json.JSONDecodeError) as exc:
             raise TamperedEvidenceError(
                 f"Failed to read prospective journal {db_path}: {exc}"
             ) from exc
+        finally:
+            conn.close()
 
     predictions: list[PredictionRecord] = []
     summary = registry.summary or {}

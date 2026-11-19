@@ -17,7 +17,9 @@ Tests cover:
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -80,6 +82,48 @@ def _make_candle(
     )
 
 
+def _create_phase35_fixture(directory: Path) -> tuple[Path, Path]:
+    """Create authentic Phase 35 shadow trial session and SQLite journal in directory."""
+    fixture_session = Path("tests/fixtures/phase35_shadow_session.json")
+    fixture_journal = Path("tests/fixtures/phase35_shadow_journal.json")
+
+    shadow_path = directory / "shadow_1758c4a42993483fa41c48e3cb4ab386.json"
+    if fixture_session.is_file():
+        shadow_path.write_text(fixture_session.read_text(encoding="utf-8"), encoding="utf-8")
+    elif Path(
+        "data/phase34/operator_supervised_live/shadow_1758c4a42993483fa41c48e3cb4ab386.json"
+    ).is_file():
+        real_p = Path(
+            "data/phase34/operator_supervised_live/shadow_1758c4a42993483fa41c48e3cb4ab386.json"
+        )
+        shadow_path.write_text(real_p.read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        raise FileNotFoundError("Phase 35 fixture session not found")
+
+    db_path = directory / "observations.db"
+    events_data: dict[str, Any] = {}
+    if fixture_journal.is_file():
+        events_data = json.loads(fixture_journal.read_text(encoding="utf-8"))
+    elif Path("data/phase34/operator_supervised_live/observations.db").is_file():
+        conn = sqlite3.connect("data/phase34/operator_supervised_live/observations.db")
+        try:
+            for row in conn.execute("SELECT event_key, payload FROM events"):
+                events_data[row[0]] = json.loads(row[1])
+        finally:
+            conn.close()
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS events(event_key TEXT PRIMARY KEY, payload TEXT)")
+        for k, v in events_data.items():
+            conn.execute("INSERT OR REPLACE INTO events VALUES (?, ?)", (k, json.dumps(v)))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return shadow_path, db_path
+
+
 def test_audit_frozen_candidate_model() -> None:
     """Audit the authentic frozen Random Forest model artifact."""
     model_path = Path("data/phase13/candidate_models/candidate_h1_rf")
@@ -102,12 +146,9 @@ def test_audit_frozen_candidate_model() -> None:
     assert audit["inference_contract"]["disposition"] == "NO_DEMONSTRATED_EDGE"
 
 
-def test_extract_predictions_from_phase35_shadow_session() -> None:
+def test_extract_predictions_from_phase35_shadow_session(tmp_path: Path) -> None:
     """Extract and verify all 5 committed predictions from Phase 35 shadow session."""
-    shadow_path = Path(
-        "data/phase34/operator_supervised_live/shadow_1758c4a42993483fa41c48e3cb4ab386.json"
-    )
-    db_path = shadow_path.parent / "observations.db"
+    shadow_path, db_path = _create_phase35_fixture(tmp_path)
 
     registry = TimingEvidenceRegistry.load_from_file(shadow_path)
     predictions = extract_predictions_from_registry(registry, db_path)
@@ -134,12 +175,21 @@ def test_extract_predictions_from_phase35_shadow_session() -> None:
     mean_cal_prob = sum(p.calibrated_probability for p in predictions) / 5
     assert np.isclose(mean_cal_prob, 0.475, atol=0.005)
 
+    # When real repository evidence is present locally, also verify that
+    real_path = Path(
+        "data/phase34/operator_supervised_live/shadow_1758c4a42993483fa41c48e3cb4ab386.json"
+    )
+    if real_path.is_file():
+        real_reg = TimingEvidenceRegistry.load_from_file(real_path)
+        real_preds = extract_predictions_from_registry(
+            real_reg, real_path.parent / "observations.db"
+        )
+        assert len(real_preds) == 5
+
 
 def test_tamper_detection_in_evidence_registry(tmp_path: Path) -> None:
     """Tampering with an evidence registry JSON file must fail verification."""
-    shadow_path = Path(
-        "data/phase34/operator_supervised_live/shadow_1758c4a42993483fa41c48e3cb4ab386.json"
-    )
+    shadow_path, _ = _create_phase35_fixture(tmp_path)
     data = json.loads(shadow_path.read_text(encoding="utf-8"))
 
     # Tamper with calibrated probability in first observation
@@ -160,17 +210,18 @@ def test_tamper_detection_in_evidence_registry(tmp_path: Path) -> None:
 
 def test_tamper_detection_in_journal_receipt_mismatch(tmp_path: Path) -> None:
     """Tampering with SQLite journal events must fail receipt verification."""
-    shadow_path = Path(
-        "data/phase34/operator_supervised_live/shadow_1758c4a42993483fa41c48e3cb4ab386.json"
-    )
+    shadow_path, _ = _create_phase35_fixture(tmp_path)
     registry = TimingEvidenceRegistry.load_from_file(shadow_path)
 
     # Point to an empty SQLite database (missing committed events)
     fake_db = tmp_path / "fake_observations.db"
-    import sqlite3
 
-    with sqlite3.connect(fake_db) as conn:
+    conn = sqlite3.connect(fake_db)
+    try:
         conn.execute("CREATE TABLE events(event_key TEXT PRIMARY KEY, payload TEXT)")
+        conn.commit()
+    finally:
+        conn.close()
 
     with pytest.raises(TamperedEvidenceError, match="missing from journal"):
         extract_predictions_from_registry(registry, fake_db)
@@ -454,9 +505,7 @@ def test_evaluation_report_sealing_and_tamper_detection() -> None:
 
 def test_cli_evaluate_predictions_human_and_json(tmp_path: Path) -> None:
     """CLI evaluate-predictions runs offline and supports human and JSON output."""
-    shadow_path = Path(
-        "data/phase34/operator_supervised_live/shadow_1758c4a42993483fa41c48e3cb4ab386.json"
-    )
+    shadow_path, _ = _create_phase35_fixture(tmp_path)
     out_file = tmp_path / "report.json"
 
     # Human-formatted execution
@@ -498,11 +547,9 @@ def test_cli_evaluate_predictions_human_and_json(tmp_path: Path) -> None:
     assert verify_evaluation_report_integrity(parsed) is True
 
 
-def test_cli_prospective_alias_command() -> None:
+def test_cli_prospective_alias_command(tmp_path: Path) -> None:
     """The prospective command group also provides the evaluate-predictions command."""
-    shadow_path = Path(
-        "data/phase34/operator_supervised_live/shadow_1758c4a42993483fa41c48e3cb4ab386.json"
-    )
+    shadow_path, _ = _create_phase35_fixture(tmp_path)
     res = runner.invoke(
         app,
         [

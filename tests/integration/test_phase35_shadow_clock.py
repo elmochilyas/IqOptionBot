@@ -14,7 +14,8 @@ import pytest
 
 from iqoption_research.connectors.iqoption.client import AsyncIQOption
 from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
-from iqoption_research.models.connection import ConnectionConfig
+from iqoption_research.models.clock import BrokerClockSyncStatus
+from iqoption_research.models.connection import ConnectionConfig, DisconnectReason
 from iqoption_research.timing.shadow import (
     MODEL_PATH,
     ShadowTrial,
@@ -276,3 +277,66 @@ async def test_deadline_enforcement_terminates_fail_closed(
     assert obs["rejection_reason"] == "SESSION_DEADLINE"
     assert obs["gate_verdict"] == "FAIL_REJECTED"
     assert trial.metadata["orders_sent"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reconnect_before_120s_wipes_clock_state_and_cannot_reuse_previous_timesync(
+    tmp_path: Path, clock: list[int]
+) -> None:
+    """A reconnected session cannot reuse previous connection's timeSync even if within 120s."""
+    trial = ShadowTrial(
+        SupervisedSessionConfig(
+            live_mode=True,
+            simulation_mode=False,
+            operator_confirmed=True,
+            max_candle_cycles=1,
+            max_duration_seconds=300,
+        ),
+        tmp_path,
+        MODEL_PATH,
+    )
+    socket1 = ClockScenarioSocket(push_timesync=True)
+    socket2 = ClockScenarioSocket(push_timesync=False)
+
+    client = AsyncIQOption(
+        ssid="synthetic",
+        config=ConnectionConfig(timing_market_data_only=True, max_reconnect_attempts=1),
+        offline=False,
+        timing_recorder=trial.recorder,
+    )
+
+    with (
+        patch.object(
+            IQOptionWebSocketClient,
+            "_open_socket",
+            new=AsyncMock(side_effect=[socket1, socket2]),
+        ),
+        patch("iqoption_research.connectors.iqoption.client.async_logout", new=AsyncMock()),
+    ):
+        # Connect socket 1
+        await client.connect()
+        assert client.is_server_time_fresh is True
+        assert client.clock_diagnostics.status == BrokerClockSyncStatus.SYNCHRONIZED_AND_FRESH
+
+        # 20 seconds later, trigger disconnect and reconnect to socket 2 (which sends no timeSync)
+        ws = client._ws
+        assert ws is not None
+        await ws._shutdown_transport(DisconnectReason.NETWORK_ERROR)
+        assert ws.is_server_time_fresh is False
+        assert ws.clock_diagnostics.status == BrokerClockSyncStatus.NEVER_SYNCHRONIZED
+
+        # Reconnect to socket 2
+        await ws._connect_and_authenticate()
+        # On new connection (socket 2), with no timeSync pushed:
+        assert ws.is_server_time_fresh is False
+        assert ws.clock_diagnostics.status == BrokerClockSyncStatus.NEVER_SYNCHRONIZED
+
+        # Attempt trial cycle on this new connection -> must fail closed
+        await trial.cycle(client, F, time.perf_counter() + 10, retry_delay_seconds=0.01)
+        await client.close()
+
+    reg = trial.save()
+    obs = reg.observations[0]
+    assert obs["rejection_reason"] == "BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED"
+    assert obs["acquisition_attempts"][0]["broker_clock_fresh"] is False
+    assert obs["acquisition_attempts"][0]["broker_clock_sync_status"] == "NEVER_SYNCHRONIZED"

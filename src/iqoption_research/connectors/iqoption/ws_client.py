@@ -197,6 +197,7 @@ class IQOptionWebSocketClient:
             DEFAULT_SERVER_TIME_FRESHNESS_THRESHOLD_SECONDS
         )
         self._timesync_event = asyncio.Event()
+        self._timesync_waiters: list[asyncio.Future[None]] = []
         self._last_timesync_payload_invalid: bool = False
         self._last_timesync_error: str | None = None
         self._clock_step_detected: bool = False
@@ -214,6 +215,13 @@ class IQOptionWebSocketClient:
         if self._monitor is not None and self._monitor.state != to_state:
             with contextlib.suppress(ValueError):
                 self._monitor.transition(to_state, reason=reason)
+
+    def _notify_timesync_waiters(self) -> None:
+        """Wake up all active wait_for_server_time_sync callers and clear list."""
+        for fut in list(self._timesync_waiters):
+            if not fut.done():
+                fut.set_result(None)
+        self._timesync_waiters.clear()
 
     # ----- properties -----
 
@@ -482,11 +490,22 @@ class IQOptionWebSocketClient:
         """
         if self.is_server_time_fresh:
             return True
+        if self._closed:
+            return False
+
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[None] = loop.create_future()
+        self._timesync_waiters.append(waiter)
         try:
-            await asyncio.wait_for(self._timesync_event.wait(), timeout=max(0.001, timeout))
-            return self.is_server_time_fresh
+            async with asyncio.timeout(max(0.001, timeout)):
+                await waiter
         except TimeoutError:
             return False
+        finally:
+            if waiter in self._timesync_waiters:
+                self._timesync_waiters.remove(waiter)
+
+        return self.is_server_time_fresh
 
     @property
     def profile_request_id(self) -> str | None:
@@ -569,12 +588,15 @@ class IQOptionWebSocketClient:
         self._authenticated_ok = False
         self._profile_event.clear()
         self._balances_event.clear()
-        self._timesync_event.clear()
-        self._timesync_event.clear()
+        self._server_time_ns = None
+        self._server_time_synced_at = None
+        self._server_time_synced_at_mono_ns = None
         self._last_timesync_payload_invalid = False
         self._last_timesync_error = None
         self._clock_step_detected = False
         self._clock_step_record = None
+        self._timesync_event.clear()
+        self._notify_timesync_waiters()
         self._listed_balances = None
         self._change_indicator = None
         self._changed_wallet_type = None
@@ -756,7 +778,15 @@ class IQOptionWebSocketClient:
         self._authenticated_event.clear()
         self._profile_event.clear()
         self._balances_event.clear()
+        self._server_time_ns = None
+        self._server_time_synced_at = None
+        self._server_time_synced_at_mono_ns = None
+        self._last_timesync_payload_invalid = False
+        self._last_timesync_error = None
+        self._clock_step_detected = False
+        self._clock_step_record = None
         self._timesync_event.clear()
+        self._notify_timesync_waiters()
 
         exc = ConnectionError(f"Connection closed: {reason.value}")
         for pending in self._pending.values():
@@ -972,6 +1002,7 @@ class IQOptionWebSocketClient:
                     "Invalid timeSync payload received from broker (type=%s)",
                     type(raw_msg).__name__,
                 )
+                self._notify_timesync_waiters()
                 return
 
             # Check for broker clock step relative to monotonic progression
@@ -1003,6 +1034,7 @@ class IQOptionWebSocketClient:
             self._last_timesync_payload_invalid = False
             self._last_timesync_error = None
             self._timesync_event.set()
+            self._notify_timesync_waiters()
 
             if self._timing_recorder is not None:
                 server_msg = message.get("msg")

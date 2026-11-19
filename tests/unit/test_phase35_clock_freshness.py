@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import patch
 
 import pytest
@@ -15,6 +16,7 @@ from iqoption_research.models.clock import (
     BrokerClockDiagnostics,
     BrokerClockSyncStatus,
 )
+from iqoption_research.models.connection import DisconnectReason
 from iqoption_research.timing.instrumentation import TimingRecorder
 from iqoption_research.timing.reliability import evaluate
 from iqoption_research.timing.taxonomy import (
@@ -305,3 +307,122 @@ def test_offline_reliability_failure_modes_separation() -> None:
         "BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED": 1,
         "INVALID_OR_INCOMPLETE_WINDOW": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_ws_client_clock_cleared_on_shutdown_and_reconnect() -> None:
+    """Transport shutdown and reconnection must clear clock state completely."""
+    client = IQOptionWebSocketClient(ssid="test-ssid")
+
+    # 1. Establish valid sync at virtual t=1000.0
+    with patch("time.monotonic", return_value=1000.0):
+        client._dispatch({"name": "timeSync", "msg": 1795099080000}, recv_mono_ns=10**12)
+        assert client.is_server_time_fresh is True
+        assert client.clock_diagnostics.status == BrokerClockSyncStatus.SYNCHRONIZED_AND_FRESH
+
+    # 2. Simulate transport shutdown at t=1020.0 (only 20s later, well before 120s window)
+    with patch("time.monotonic", return_value=1020.0):
+        await client._shutdown_transport(DisconnectReason.NETWORK_ERROR)
+        assert client._server_time_ns is None
+        assert client._server_time_synced_at is None
+        assert client._server_time_synced_at_mono_ns is None
+        assert client.clock_diagnostics.status == BrokerClockSyncStatus.NEVER_SYNCHRONIZED
+        assert client.is_server_time_fresh is False
+
+
+@pytest.mark.asyncio
+async def test_wait_for_server_time_sync_after_synchronization_expiry() -> None:
+    """After 120s expiry, wait_for_server_time_sync does NOT return immediately with stale state."""
+    client = IQOptionWebSocketClient(ssid="test-ssid")
+
+    # Initial sync
+    client._dispatch({"name": "timeSync", "msg": 1795099080000})
+    assert client.is_server_time_fresh is True
+
+    # Simulate 130s elapsed without monkeypatching time.monotonic globally
+    client._server_time_synced_at = time.monotonic() - 130.0
+    assert client.is_server_time_fresh is False
+    assert client.clock_diagnostics.status == BrokerClockSyncStatus.STALE_SYNCHRONIZATION
+
+    # Must NOT return immediately! Must actively await and timeout waiting for a new sync
+    res = await client.wait_for_server_time_sync(timeout=0.03)
+    assert res is False
+
+
+@pytest.mark.asyncio
+async def test_wait_for_server_time_sync_valid_refresh_during_wait() -> None:
+    """Valid refresh pushed during active wait wakes waiter and establishes freshness."""
+    client = IQOptionWebSocketClient(ssid="test-ssid")
+
+    # Initial sync, then expire
+    client._dispatch({"name": "timeSync", "msg": 1795099080000})
+    client._server_time_synced_at = time.monotonic() - 130.0
+    assert client.is_server_time_fresh is False
+
+    async def push_refresh() -> None:
+        await asyncio.sleep(0.01)
+        client._dispatch({"name": "timeSync", "msg": 1795099210000})
+
+    bg_task = asyncio.create_task(push_refresh())
+    res = await client.wait_for_server_time_sync(timeout=0.1)
+    await bg_task
+    assert res is True
+    assert client.is_server_time_fresh is True
+    assert client.clock_diagnostics.status == BrokerClockSyncStatus.SYNCHRONIZED_AND_FRESH
+
+
+@pytest.mark.asyncio
+async def test_wait_for_server_time_sync_invalid_payload_fails_closed_immediately() -> None:
+    """Invalid timeSync payload during wait terminates waiter fail-closed immediately."""
+    client = IQOptionWebSocketClient(ssid="test-ssid")
+
+    async def push_invalid() -> None:
+        await asyncio.sleep(0.01)
+        client._dispatch({"name": "timeSync", "msg": "malformed_string"})
+
+    bg_task = asyncio.create_task(push_invalid())
+    # Generous timeout 1.0s. It should return in ~0.02s upon receiving the invalid frame.
+    res = await client.wait_for_server_time_sync(timeout=1.0)
+    await bg_task
+    assert res is False
+    assert client.clock_diagnostics.status == BrokerClockSyncStatus.INVALID_SYNCHRONIZATION_PAYLOAD
+    assert client.is_server_time_fresh is False
+
+
+@pytest.mark.asyncio
+async def test_wait_for_server_time_sync_clock_step_fails_closed_immediately() -> None:
+    """Clock step detected during wait terminates waiter fail-closed immediately."""
+    client = IQOptionWebSocketClient(ssid="test-ssid")
+
+    # Initial sync, then expire so wait_for_server_time_sync actively waits
+    client._dispatch({"name": "timeSync", "msg": 1795099080000})
+    client._server_time_synced_at = time.monotonic() - 130.0
+    assert client.is_server_time_fresh is False
+
+    async def push_step() -> None:
+        await asyncio.sleep(0.01)
+        # 500s jump relative to recent sync (>5s drift)
+        client._dispatch({"name": "timeSync", "msg": 1795099580000})
+
+    bg_task = asyncio.create_task(push_step())
+    res = await client.wait_for_server_time_sync(timeout=1.0)
+    await bg_task
+    assert res is False
+    assert client.clock_diagnostics.status == BrokerClockSyncStatus.CLOCK_STEP_DETECTED
+    assert client.is_server_time_fresh is False
+
+
+@pytest.mark.asyncio
+async def test_wait_for_server_time_sync_disconnection_fails_closed_immediately() -> None:
+    """Transport disconnection during wait terminates waiter fail-closed immediately."""
+    client = IQOptionWebSocketClient(ssid="test-ssid")
+
+    async def trigger_shutdown() -> None:
+        await asyncio.sleep(0.01)
+        await client._shutdown_transport(DisconnectReason.NETWORK_ERROR)
+
+    bg_task = asyncio.create_task(trigger_shutdown())
+    res = await client.wait_for_server_time_sync(timeout=1.0)
+    await bg_task
+    assert res is False
+    assert client.is_server_time_fresh is False

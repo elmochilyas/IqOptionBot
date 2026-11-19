@@ -95,6 +95,8 @@ class ShadowTrial:
             "model_provenance": "authentic_trained" if self.model else None,
             "feature_pipeline": "CausalFeaturePipeline/v1",
             "policy": "ProspectivePolicy/0.60/assumed-payout-0.85/v1",
+            "assumed_payout_for_gate_only": POLICY.assumed_payout,
+            "actual_broker_payout_verified": False,
             "trading_eligibility": "UNPROVEN",
             "execution_authority": "NONE",
             "orders_sent": 0,
@@ -106,7 +108,11 @@ class ShadowTrial:
         }
 
     def decide(
-        self, result: CandleFetchResult, obs: CandleTimingObservation, deadline: float
+        self,
+        result: CandleFetchResult,
+        obs: CandleTimingObservation,
+        deadline: float,
+        tradable_payout: float | None = None,
     ) -> None:
         candles = result.candles
         if (
@@ -126,8 +132,10 @@ class ShadowTrial:
             return
         self.recorder.record_completed_recognized(time.perf_counter_ns(), candles[-1].to_ts)
         rows = CausalFeaturePipeline(drop_warmup=True).transform(candles).rows
-        action = "SKIP"
-        reason: str | None = "MODEL_UNAVAILABLE" if self.model is None else "MISSING_FEATURES"
+        analytical_action = "SKIP"
+        analytical_reason: str | None = (
+            "MODEL_UNAVAILABLE" if self.model is None else "MISSING_FEATURES"
+        )
         if rows and rows[-1].available_at_ts == obs.feature_close_F:
             row = rows[-1]
             self.recorder.record_features_computed(time.perf_counter_ns(), len(row.features))
@@ -140,34 +148,65 @@ class ShadowTrial:
                     "SCHEMA_MISMATCH",
                     "INFERENCE_EXCEPTION",
                 )) or not all(math.isfinite(p) and 0 <= p <= 1 for p in (raw, cal)):
-                    reason = "INVALID_INFERENCE"
+                    analytical_reason = "INVALID_INFERENCE"
                 else:
                     self.recorder.record_inference_completed(
                         time.perf_counter_ns(), raw, cal, "NOT_MEASURED"
                     )
                     gate = self.gate.evaluate(cal)
-                    action = gate.recommended_direction.value.upper() if gate.passed else "SKIP"
-                    reason = None if gate.passed else "BELOW_FROZEN_THRESHOLD"
+                    analytical_action = (
+                        gate.recommended_direction.value.upper() if gate.passed else "SKIP"
+                    )
+                    analytical_reason = None if gate.passed else "BELOW_FROZEN_THRESHOLD"
 
         offset = self.recorder.clock.mono_to_utc_ns(time.perf_counter_ns()) - obs.feature_close_F_ns
-        if (
+        timing_risk = (
             obs.clock_step_detected
             or self.recorder.clock.total_uncertainty_ms() > 5000
             or not 0 <= offset <= 15_000_000_000
-        ):
-            reason, action = "TIMING_RISK", "SKIP"
+        )
         calibrated = obs.calibrated_probability
         confidence = max(calibrated, 1 - calibrated) if calibrated is not None else None
+
         # The spot feed supplies no tradable contract payout.
-        risk = market_risk_rejection(None, confidence, minimum_payout=0.70, minimum_confidence=0.55)
+        # An assumed 0.85 payout in the analytical gate defines the 0.60 decision threshold,
+        # but is NEVER evidence of an actual broker offer.
+        risk = market_risk_rejection(
+            tradable_payout,
+            confidence,
+            minimum_payout=POLICY.assumed_payout,
+            minimum_confidence=0.55,
+        )
+
+        if timing_risk:
+            action, reason = "SKIP", "TIMING_RISK"
+        elif analytical_reason is not None:
+            action, reason = "SKIP", analytical_reason
+        elif risk is not None:
+            action = "SKIP"
+            code, _ = risk
+            if code == "missing_payout_data":
+                reason = "MISSING_TRADABLE_PAYOUT"
+            elif code == "low_payout_rate":
+                reason = "LOW_PAYOUT_RATE"
+            elif code == "low_confidence":
+                reason = "LOW_CONFIDENCE"
+            else:
+                reason = code.upper()
+        else:
+            action, reason = analytical_action, None
+
         obs.decision = action
         decision = self.recorder.record_stage(
             "STAGE_POLICY_DECISION",
             details={
                 "decision": action,
                 "skip_reason": reason,
+                "analytical_direction": analytical_action,
+                "analytical_reason": analytical_reason,
                 "side_probability": confidence,
                 "eligibility_block": risk[0] if risk else None,
+                "tradable_payout": tradable_payout,
             },
         )
         if time.perf_counter() >= deadline:
@@ -180,8 +219,11 @@ class ShadowTrial:
             "boundary": obs.feature_close_F,
             "decision": action,
             "skip_reason": reason,
+            "analytical_direction": analytical_action,
+            "analytical_reason": analytical_reason,
             "raw_probability": obs.raw_probability,
             "calibrated_probability": obs.calibrated_probability,
+            "confidence": confidence,
             "decision_time": decision.to_dict(),
             "window_sha256": digest([
                 (c.from_ts, c.to_ts, c.open, c.high, c.low, c.close, c.volume) for c in candles
@@ -201,13 +243,19 @@ class ShadowTrial:
         if time.perf_counter() > deadline:
             obs.rejection_reason = "SESSION_DEADLINE"
 
-    async def cycle(self, client: AsyncIQOption, boundary: int, deadline: float) -> bool:
+    async def cycle(
+        self,
+        client: AsyncIQOption,
+        boundary: int,
+        deadline: float,
+        tradable_payout: float | None = None,
+    ) -> bool:
         obs = self.recorder.start_candle_observation(boundary)
         obs.measurement_status = "SHADOW_DECISION"
         try:
             async with asyncio.timeout(max(0, deadline - time.perf_counter())):
                 result = await client.get_candles("EURUSD", 60, 22, endtime=boundary)
-            self.decide(result, obs, deadline)
+            self.decide(result, obs, deadline, tradable_payout=tradable_payout)
         except (IQOptionError, TimeoutError, sqlite3.Error, ValueError, OSError) as exc:
             obs.rejection_reason = type(exc).__name__
             return False

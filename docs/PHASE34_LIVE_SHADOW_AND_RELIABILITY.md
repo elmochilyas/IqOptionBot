@@ -117,10 +117,13 @@ flowchart TD
    - If model is unavailable or manifest mismatch occurs, sets `skip_reason="MODEL_UNAVAILABLE"` and defaults to `SKIP`.
 5. **Strategy & Policy Decision**:
    - Reuses `BinaryPayoffGate(assumed_payout=0.85, margin=0.059)` with frozen decision threshold $0.60$.
-   - Gated calibrated probability determines direction (`CALL`, `PUT`, or `SKIP` with `BELOW_FROZEN_THRESHOLD`).
-6. **Market Risk Controls**:
+   - The model's analytical direction (`CALL`, `PUT`, or `SKIP` with `BELOW_FROZEN_THRESHOLD`) and probabilities are evaluated and preserved as a separate research signal.
+   - The assumed 0.85 payout is solely an analytical modeling parameter to define the 0.60 threshold margin; it is **never** evidence of an actual broker offer.
+6. **Market Risk Controls & Trade Eligibility**:
    - Evaluates confidence bounds ($\ge 0.55$) and payout bounds ($\ge 0.70$) via `market_risk_rejection`.
-   - Spot market data does not carry contract payout rates; records `eligibility_block="missing_payout_data"`.
+   - Authentic EURUSD 1-minute spot candles supply no tradable contract payout.
+   - The final shadow policy decision strictly applies market-risk eligibility: when tradable payout data is unavailable, the final eligible action is strictly `SKIP` with reason `MISSING_TRADABLE_PAYOUT`.
+   - Positive CALL/PUT analytical signals from the model cannot become trade-eligible decisions when payout or contract context is missing.
 7. **Durable SQLite Journal**:
    - Appends to `observations.db` with `PRAGMA synchronous=FULL`, `BEGIN IMMEDIATE`, and SHA-256 hash chaining (`previous_hash` $\to$ `event_hash`).
    - SQLite table constraints and triggers prevent duplicate boundary decisions and enforce immutability.

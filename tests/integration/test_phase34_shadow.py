@@ -17,7 +17,9 @@ from iqoption_research.cli.main import app
 from iqoption_research.connectors.iqoption.client import AsyncIQOption
 from iqoption_research.connectors.iqoption.exceptions import TradingNotAllowedError
 from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+from iqoption_research.inference.pipeline import InferenceResult
 from iqoption_research.models.connection import ConnectionConfig
+from iqoption_research.research.backtest.models import SignalDirection
 from iqoption_research.timing.reliability import evaluate
 from iqoption_research.timing.shadow import MODEL_PATH, ShadowTrial, eligible_model
 from iqoption_research.timing.supervised_session import SupervisedSessionConfig
@@ -182,6 +184,15 @@ async def test_shadow(scenario: str, tmp_path: Path, clock: list[int]) -> None:
                 assert obs["phase30_gate_satisfied"] == (
                     scenario not in ("clock_step", "late", "commit_overrun")
                 )
+                assert event["decision"] == "SKIP"
+                if scenario in ("normal", "missing_wallet"):
+                    assert event["skip_reason"] == "MISSING_TRADABLE_PAYOUT"
+                    assert "analytical_direction" in event
+                    assert obs["stages"]["STAGE_POLICY_DECISION"]["details"]["decision"] == "SKIP"
+                    assert (
+                        obs["stages"]["STAGE_POLICY_DECISION"]["details"]["skip_reason"]
+                        == "MISSING_TRADABLE_PAYOUT"
+                    )
         assert evaluate([trial.output])["unique_live_boundaries"] == 0
 
 
@@ -237,3 +248,121 @@ async def test_shadow_runner_forbids_trading_and_account_mutations(tmp_path: Pat
     assert trial.metadata["orders_sent"] == 0
     assert trial.metadata["execution_authority"] == "NONE"
     assert trial.metadata["trading_eligibility"] == "UNPROVEN"
+
+
+async def test_positive_signal_cannot_become_trade_eligible_without_payout(
+    tmp_path: Path, clock: list[int]
+) -> None:
+    trial = ShadowTrial(
+        SupervisedSessionConfig(max_candle_cycles=1),
+        tmp_path,
+        MODEL_PATH,
+    )
+    assert trial.model is not None
+    assert trial.metadata["assumed_payout_for_gate_only"] == 0.85
+    assert trial.metadata["actual_broker_payout_verified"] is False
+
+    # Force model prediction to a strong CALL signal (0.80 > 0.60 threshold)
+    strong_call = InferenceResult(
+        direction=SignalDirection.CALL,
+        calibrated_probability=0.80,
+        raw_probability=0.80,
+        confidence=0.80,
+        abstention_reason=None,
+        latency_ms=1.0,
+        candle_timestamp=F,
+        model_name="random_forest",
+        feature_count=10,
+        calibrated_prob_up=0.80,
+        side_probability=0.80,
+    )
+    socket = CandleSocket("normal")
+    client = AsyncIQOption(
+        ssid="synthetic",
+        config=ConnectionConfig(timing_market_data_only=True, max_reconnect_attempts=0),
+        offline=False,
+        timing_recorder=trial.recorder,
+    )
+    with (
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=socket)),
+        patch("iqoption_research.connectors.iqoption.client.async_logout", new=AsyncMock()),
+        patch.object(trial.model, "infer", return_value=strong_call),
+    ):
+        async with client:
+            await trial.observe(client)
+
+    reg = trial.save()
+    obs = reg.observations[0]
+    policy_stage = obs["stages"]["STAGE_POLICY_DECISION"]["details"]
+
+    # Analytical signal is CALL
+    assert policy_stage["analytical_direction"] == "CALL"
+    assert policy_stage["analytical_reason"] is None
+    assert policy_stage["eligibility_block"] == "missing_payout_data"
+
+    # But eligible shadow action is strictly SKIP because actual tradable payout is missing
+    assert policy_stage["decision"] == "SKIP"
+    assert policy_stage["skip_reason"] == "MISSING_TRADABLE_PAYOUT"
+    assert obs["decision"] == "SKIP"
+
+    # Full 15-second pipeline timing is satisfied (engineering compliance)
+    assert obs["prediction_stages_measured"] is True
+    assert obs["phase30_gate_satisfied"] is True
+    assert obs["gate_verdict"] == "PASS"
+
+    # Journal records the distinction between analytical direction and trade eligibility
+    event = trial.journal.events()[-1]
+    assert event["decision"] == "SKIP"
+    assert event["skip_reason"] == "MISSING_TRADABLE_PAYOUT"
+    assert event["analytical_direction"] == "CALL"
+    assert event["analytical_reason"] is None
+    assert event["calibrated_probability"] == 0.80
+
+    # Strict zero-orders guarantee maintained
+    assert reg.summary["orders_sent"] == 0
+    assert trial.metadata["orders_sent"] == 0
+    assert trial.metadata["execution_authority"] == "NONE"
+
+
+async def test_low_payout_and_contract_risk_rejections(tmp_path: Path, clock: list[int]) -> None:
+    trial = ShadowTrial(
+        SupervisedSessionConfig(max_candle_cycles=1),
+        tmp_path,
+        MODEL_PATH,
+    )
+    assert trial.model is not None
+    strong_call = InferenceResult(
+        direction=SignalDirection.CALL,
+        calibrated_probability=0.80,
+        raw_probability=0.80,
+        confidence=0.80,
+        abstention_reason=None,
+        latency_ms=1.0,
+        candle_timestamp=F,
+        model_name="random_forest",
+        feature_count=10,
+        calibrated_prob_up=0.80,
+        side_probability=0.80,
+    )
+    socket = CandleSocket("normal")
+    client = AsyncIQOption(
+        ssid="synthetic",
+        config=ConnectionConfig(timing_market_data_only=True, max_reconnect_attempts=0),
+        offline=False,
+        timing_recorder=trial.recorder,
+    )
+    with (
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=socket)),
+        patch("iqoption_research.connectors.iqoption.client.async_logout", new=AsyncMock()),
+        patch.object(trial.model, "infer", return_value=strong_call),
+    ):
+        async with client:
+            await trial.cycle(client, F, time.perf_counter() + 10, tradable_payout=0.50)
+
+    reg = trial.save()
+    obs = reg.observations[0]
+    policy_stage = obs["stages"]["STAGE_POLICY_DECISION"]["details"]
+    assert policy_stage["analytical_direction"] == "CALL"
+    assert policy_stage["decision"] == "SKIP"
+    assert policy_stage["skip_reason"] == "LOW_PAYOUT_RATE"
+    assert policy_stage["eligibility_block"] == "low_payout_rate"

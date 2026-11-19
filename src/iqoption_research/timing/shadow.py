@@ -348,33 +348,27 @@ class ShadowTrial:
         obs = self.recorder.start_candle_observation(boundary)
         obs.measurement_status = "SHADOW_DECISION"
         attempts = 0
-        candle_deadline = self.candle_deadline_mono(boundary)
         try:
             while True:
                 now_mono = time.perf_counter()
-                if now_mono >= deadline:
+                session_time_left = deadline - now_mono
+                if session_time_left <= 0:
                     obs.rejection_reason = "SESSION_DEADLINE"
-                    if attempts == 0:
-                        attempts = 1
-                        self.recorder.record_acquisition_attempt(
-                            attempt_number=attempts,
-                            request_id=f"deadline-expired-{obs.observation_index}-{attempts}",
-                            broker_clock_fresh=False,
-                            candle_count=0,
-                            is_complete=False,
-                            rejection_classification="TIMEOUT_EXCEEDED_DEADLINE",
-                            retry_attempted=False,
-                        )
+                    if obs.acquisition_attempts:
+                        obs.acquisition_attempts[-1]["retry_attempted"] = False
+                    break
+
+                candle_deadline = self.candle_deadline_mono(boundary)
+                candle_time_left = candle_deadline - self.pipeline_reserve_seconds - now_mono
+                if candle_time_left <= 0:
+                    obs.rejection_reason = "OUTSIDE_15_SECOND_ACQUISITION_GATE"
+                    if obs.acquisition_attempts:
+                        obs.acquisition_attempts[-1]["retry_attempted"] = False
                     break
 
                 attempts += 1
-                candle_time_left = candle_deadline - self.pipeline_reserve_seconds - now_mono
-                session_time_left = deadline - now_mono
                 req_timeout = getattr(client, "request_timeout", 10.0)
-                if candle_time_left > 0:
-                    attempt_timeout = min(session_time_left, candle_time_left, req_timeout)
-                else:
-                    attempt_timeout = min(session_time_left, req_timeout)
+                attempt_timeout = min(session_time_left, candle_time_left, req_timeout)
 
                 try:
                     async with asyncio.timeout(max(0.001, attempt_timeout)):
@@ -427,7 +421,7 @@ class ShadowTrial:
                         request_id=result.request_id or obs.request_id,
                         broker_clock_fresh=fresh,
                         candle_count=len(result.candles) if result.candles else 0,
-                        is_complete=True,
+                        is_complete=bool(result.candles and result.candles[-1].is_complete),
                         rejection_classification=None,
                         retry_attempted=False,
                     )
@@ -453,12 +447,14 @@ class ShadowTrial:
                     and (deadline - now_mono) > deadline_margin
                 )
 
+                last_candle = result.candles[-1] if result.candles else None
+                c_complete = bool(last_candle and last_candle.is_complete)
                 self.recorder.record_acquisition_attempt(
                     attempt_number=attempts,
                     request_id=result.request_id or obs.request_id,
                     broker_clock_fresh=fresh,
                     candle_count=len(result.candles) if result.candles else 0,
-                    is_complete=bool(result.candles and result.candles[-1].to_ts == boundary),
+                    is_complete=c_complete,
                     rejection_classification=diag,
                     retry_attempted=can_retry,
                 )

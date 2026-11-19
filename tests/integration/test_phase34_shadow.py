@@ -170,17 +170,24 @@ async def test_shadow(scenario: str, tmp_path: Path, clock: list[int]) -> None:
             == 0
         )
         obs = reg.observations[0]
-        assert [f["msg"]["name"] for f in socket.sent[1:]] == [
-            "get-profile",
-            "get-balances",
-            "get-candles",
-        ]
+        if scenario == "late":
+            assert [f["msg"]["name"] for f in socket.sent[1:]] == [
+                "get-profile",
+                "get-balances",
+            ]
+        else:
+            assert [f["msg"]["name"] for f in socket.sent[1:]] == [
+                "get-profile",
+                "get-balances",
+                "get-candles",
+            ]
         assert reg.summary["orders_sent"] == 0
-        if scenario in ("invalid", "partial", "disconnect", "journal_failure") or attempt:
+        if scenario in ("invalid", "partial", "disconnect", "journal_failure", "late") or attempt:
             assert obs["rejection_reason"]
             assert "STAGE_9_JOURNAL_COMMIT" not in obs["stages"]
             assert not obs["phase30_gate_satisfied"]
-            assert len(trial.journal.events()) == (2 if attempt else 1)
+            expected_events = 1 if scenario == "late" else (2 if attempt else 1)
+            assert len(trial.journal.events()) == expected_events
         else:
             event = trial.journal.events()[-1]
             assert event["session"] == reg.session_id
@@ -722,7 +729,7 @@ async def test_unretryable_quality_failures(tmp_path: Path, clock: list[int]) ->
 
 
 async def test_retry_deadline_expiration_never_compliant(tmp_path: Path, clock: list[int]) -> None:
-    """When decision completes after F + 15s deadline, it is NEVER classified as compliant."""
+    """When deadline expires before transmission, socket send count does not increase."""
     trial = ShadowTrial(
         SupervisedSessionConfig(max_candle_cycles=1),
         tmp_path,
@@ -740,17 +747,21 @@ async def test_retry_deadline_expiration_never_compliant(tmp_path: Path, clock: 
         patch("iqoption_research.connectors.iqoption.client.async_logout", new=AsyncMock()),
     ):
         async with client:
-            # Advance clock past 15-second deadline before cycle completes
+            # Advance clock past 15-second deadline before cycle starts
             clock[0] += 16 * 10**9
             trial.recorder.clock.anchor_utc_ns += 16 * 10**9
+            initial_sent = len(socket.sent)
             await trial.cycle(client, F, time.perf_counter() + 10)
+            # Socket send count does not increase when acquisition deadline is expired
+            assert len(socket.sent) == initial_sent
 
     reg = trial.save()
     obs = reg.observations[0]
     assert obs["phase30_gate_satisfied"] is False
-    assert obs["gate_verdict"] == "FAIL_GATE_OVERRUN"
+    assert obs["gate_verdict"] == "FAIL_REJECTED"
     assert obs["rejection_reason"] == "OUTSIDE_15_SECOND_ACQUISITION_GATE"
-    assert obs["prediction_stages_measured"] is True
+    assert obs["prediction_stages_measured"] is False
+    assert len(obs.get("acquisition_attempts", [])) == 0
 
 
 async def test_successful_retry_preserves_attempt_history(tmp_path: Path, clock: list[int]) -> None:
@@ -809,13 +820,13 @@ async def test_successful_retry_preserves_attempt_history(tmp_path: Path, clock:
     attempts = obs.get("acquisition_attempts", [])
     assert len(attempts) == 2
 
-    # Attempt 1 forensic assertions
+    # Attempt 1 forensic assertions (complete historical candles, but boundary mismatch)
     att1 = attempts[0]
     assert att1["attempt_number"] == 1
     assert att1["request_id"] == "candles-1"
     assert att1["retry_attempted"] is True
     assert att1["rejection_classification"] == "REQUESTED_BOUNDARY_MISMATCH"
-    assert att1["is_complete"] is False
+    assert att1["is_complete"] is True
     assert att1["candle_count"] == 22
     assert att1["request_mono_ns"] is not None
     assert att1["receipt_mono_ns"] is not None
@@ -1123,3 +1134,151 @@ async def test_attempt_history_integrity_verification_and_tampering(
         p34_valid, p34_errs = p34_reg.verify_integrity()
         assert p34_valid is True, f"Phase 34 baseline failed integrity: {p34_errs}"
         assert p34_reg.integrity_hash == p34_reg.compute_hash()
+
+
+async def test_incomplete_forming_candle_at_boundary_preserves_completeness(
+    tmp_path: Path, clock: list[int]
+) -> None:
+    """Candle with to_ts == F but is_complete=False records False in attempt 1 and retries."""
+    trial = ShadowTrial(
+        SupervisedSessionConfig(max_candle_cycles=1),
+        tmp_path,
+        MODEL_PATH,
+    )
+    bars = [
+        {
+            "from": F - 60 * (22 - i),
+            "to": F - 60 * (21 - i),
+            "open": 1.08,
+            "close": 1.0801 + i * 0.00001,
+            "min": 1.07,
+            "max": 1.09,
+            "volume": i + 1,
+        }
+        for i in range(22)
+    ]
+    # Both attempts return bars ending at boundary F
+    socket = MultiAttemptCandleSocket([bars, bars])
+    client = AsyncIQOption(
+        ssid="synthetic",
+        config=ConnectionConfig(timing_market_data_only=True, max_reconnect_attempts=0),
+        offline=False,
+        timing_recorder=trial.recorder,
+    )
+
+    # Attempt 1: broker server_time_ns is F - 1s (forming candle -> is_complete=False)
+    # Attempt 2: broker server_time_ns is F + 3s (closed candle -> is_complete=True)
+    server_time_sequence = [(F - 1) * 10**9, (F + 3) * 10**9, (F + 3) * 10**9]
+    st_idx = [0]
+
+    def mock_server_time_ns(self_ws: Any) -> int:
+        val = server_time_sequence[min(st_idx[0], len(server_time_sequence) - 1)]
+        st_idx[0] += 1
+        return val
+
+    with (
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=socket)),
+        patch("iqoption_research.connectors.iqoption.client.async_logout", new=AsyncMock()),
+        patch.object(
+            IQOptionWebSocketClient,
+            "server_time_ns",
+            new_callable=lambda: property(mock_server_time_ns),
+        ),
+    ):
+        async with client:
+            ok = await trial.cycle(client, F, time.perf_counter() + 10, retry_delay_seconds=0.01)
+            assert ok is True
+
+    reg = trial.save()
+    is_valid, errors = reg.verify_integrity()
+    assert is_valid is True, f"Integrity verification failed: {errors}"
+    obs = reg.observations[0]
+    assert obs["phase30_gate_satisfied"] is True
+    assert obs["gate_verdict"] == "PASS"
+
+    attempts = obs.get("acquisition_attempts", [])
+    assert len(attempts) == 2
+
+    # Attempt 1: to_ts == F but is_complete is False
+    att1 = attempts[0]
+    assert att1["attempt_number"] == 1
+    assert att1["request_id"] == "candles-1"
+    assert att1["is_complete"] is False
+    assert att1["rejection_classification"] == "LAST_CANDLE_NOT_YET_COMPLETE"
+    assert att1["retry_attempted"] is True
+
+    # Attempt 2: to_ts == F and is_complete is True
+    att2 = attempts[1]
+    assert att2["attempt_number"] == 2
+    assert att2["request_id"] == "candles-2"
+    assert att2["is_complete"] is True
+    assert att2["rejection_classification"] is None
+    assert att2["retry_attempted"] is False
+
+
+async def test_retry_acquisition_deadline_exhaustion_fails_closed_without_send(
+    tmp_path: Path, clock: list[int]
+) -> None:
+    """When deadline expires during backoff, attempt 2 is not sent and attempt 1 is preserved."""
+    trial = ShadowTrial(
+        SupervisedSessionConfig(max_candle_cycles=1),
+        tmp_path,
+        MODEL_PATH,
+    )
+    lagged_bars = [
+        {
+            "from": (F - 60) - 60 * (22 - i),
+            "to": (F - 60) - 60 * (21 - i),
+            "open": 1.08,
+            "close": 1.0801 + i * 0.00001,
+            "min": 1.07,
+            "max": 1.09,
+            "volume": i + 1,
+        }
+        for i in range(22)
+    ]
+    socket = MultiAttemptCandleSocket([lagged_bars, lagged_bars])
+    client = AsyncIQOption(
+        ssid="synthetic",
+        config=ConnectionConfig(timing_market_data_only=True, max_reconnect_attempts=0),
+        offline=False,
+        timing_recorder=trial.recorder,
+    )
+
+    original_sleep = asyncio.sleep
+
+    async def advance_clock_on_sleep(delay: float) -> None:
+        # Advance clock past F + 15s specifically during the retry backoff sleep
+        if delay == 0.01:
+            clock[0] += 16 * 10**9
+            trial.recorder.clock.anchor_utc_ns += 16 * 10**9
+            await original_sleep(0.001)
+            return
+        await original_sleep(delay)
+
+    with (
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=socket)),
+        patch("iqoption_research.connectors.iqoption.client.async_logout", new=AsyncMock()),
+        patch("asyncio.sleep", side_effect=advance_clock_on_sleep),
+    ):
+        async with client:
+            await trial.cycle(client, F, time.perf_counter() + 10, retry_delay_seconds=0.01)
+
+    reg = trial.save()
+    is_valid, errors = reg.verify_integrity()
+    assert is_valid is True, f"Integrity verification failed: {errors}"
+    obs = reg.observations[0]
+    # Observation cannot report PASS
+    assert obs["phase30_gate_satisfied"] is False
+    assert obs["rejection_reason"] == "OUTSIDE_15_SECOND_ACQUISITION_GATE"
+
+    # Only 1 request was sent to socket (attempt 2 was not sent because deadline expired)
+    assert socket.call_count == 1
+
+    # Genuine attempt 1 is preserved in evidence and its retry_attempted is False
+    attempts = obs.get("acquisition_attempts", [])
+    assert len(attempts) == 1
+    assert attempts[0]["attempt_number"] == 1
+    assert attempts[0]["rejection_classification"] == "REQUESTED_BOUNDARY_MISMATCH"
+    assert attempts[0]["retry_attempted"] is False
+    assert attempts[0]["is_complete"] is True

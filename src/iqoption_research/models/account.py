@@ -198,7 +198,7 @@ class Balance:
             raise ValueError("Invalid balance amount: non-finite value")
 
         currency = str(data.get("currency") or "USD").strip()
-        is_active = active_balance_id is not None and wallet_identifier(active_balance_id) == balance_id
+        is_active = wallet_identifier(active_balance_id) == balance_id
 
         def flag(primary: str, alias: str) -> bool | None:
             value = data.get(primary, data.get(alias))

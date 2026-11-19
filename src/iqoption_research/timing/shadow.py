@@ -58,6 +58,74 @@ def eligible_model(path: Path) -> ModelInferencePipeline | None:
         return None
 
 
+def diagnose_candle_window(
+    result: CandleFetchResult,
+    expected_boundary_F: int,
+    *,
+    is_server_time_fresh: bool = True,
+    expected_count: int = 22,
+    mode: str = "OPERATOR_SUPERVISED_LIVE",
+) -> str | None:
+    """Diagnose candle window health and return a sanitized rejection reason or None if valid.
+
+    Diagnostics:
+    - BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED: Broker timeSync stale (>120s) or unverified.
+    - NO_VALID_CANDLES: Empty candle list returned.
+    - NORMALIZATION_ERROR: Candle parsing/normalization errors or raw count mismatch.
+    - REQUESTED_BOUNDARY_MISMATCH: The last candle's to_ts does not match expected_boundary_F.
+    - MISSING_GAPPED_OR_DUPLICATE_CANDLES: Non-contiguous timestamps, duplicate timestamps,
+      incorrect bar duration, or count mismatch.
+    - DATA_QUALITY_REJECTION: Data quality report failed (not research grade) or symbol mismatch.
+    - LAST_CANDLE_NOT_YET_COMPLETE: Candle at F or window has is_complete=False.
+    """
+    if not is_server_time_fresh:
+        return "BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED"
+
+    candles = result.candles
+    if not candles:
+        return "NO_VALID_CANDLES"
+
+    if result.errors or result.raw_count != len(candles):
+        return "NORMALIZATION_ERROR"
+
+    if candles[-1].to_ts != expected_boundary_F:
+        return "REQUESTED_BOUNDARY_MISMATCH"
+
+    if (
+        len(candles) != expected_count
+        or any(c.to_ts - c.from_ts != 60 for c in candles)
+        or any(a.to_ts != b.from_ts for a, b in itertools.pairwise(candles))
+        or len({c.from_ts for c in candles}) != len(candles)
+    ):
+        return "MISSING_GAPPED_OR_DUPLICATE_CANDLES"
+
+    if (
+        (mode == "OPERATOR_SUPERVISED_LIVE" and result.source != "iqoption")
+        or not result.quality.is_research_grade
+        or any(c.symbol != "EURUSD" for c in candles)
+    ):
+        return "DATA_QUALITY_REJECTION"
+
+    if any(not c.is_complete for c in candles):
+        return "LAST_CANDLE_NOT_YET_COMPLETE"
+
+    return None
+
+
+def is_temporary_readiness_condition(
+    reason: str | None,
+    result: CandleFetchResult | None,
+    expected_boundary_F: int,
+) -> bool:
+    """True if rejection is a transient broker readiness delay eligible for bounded retry."""
+    if reason == "LAST_CANDLE_NOT_YET_COMPLETE":
+        return True
+    if reason == "REQUESTED_BOUNDARY_MISMATCH" and result and result.candles:
+        # Broker index delayed: last available candle in window is the preceding minute F - 60
+        return result.candles[-1].to_ts == expected_boundary_F - 60
+    return False
+
+
 class ShadowTrial:
     def __init__(self, config: SupervisedSessionConfig, root: Path, model_path: Path) -> None:
         config.validate()
@@ -114,22 +182,22 @@ class ShadowTrial:
         deadline: float,
         tradable_payout: float | None = None,
     ) -> None:
-        candles = result.candles
-        if (
-            not candles
-            or candles[-1].to_ts != obs.feature_close_F
-            or result.source != "iqoption"
-            or result.errors
-            or result.raw_count != len(candles)
-            or not result.quality.is_research_grade
-            or any(
-                not c.is_complete or c.symbol != "EURUSD" or c.to_ts - c.from_ts != 60
-                for c in candles
-            )
-            or any(a.to_ts != b.from_ts for a, b in itertools.pairwise(candles))
-        ):
-            obs.rejection_reason = "INVALID_OR_INCOMPLETE_WINDOW"
+        fresh = (
+            result.server_time_fresh
+            if result.server_time_fresh is not None and self.mode == "OPERATOR_SUPERVISED_LIVE"
+            else getattr(self, "_server_time_fresh", True)
+        )
+        diag = diagnose_candle_window(
+            result,
+            obs.feature_close_F,
+            is_server_time_fresh=fresh,
+            expected_count=22,
+            mode=self.mode,
+        )
+        if diag is not None:
+            obs.rejection_reason = diag
             return
+        candles = result.candles
         self.recorder.record_completed_recognized(time.perf_counter_ns(), candles[-1].to_ts)
         rows = CausalFeaturePipeline(drop_warmup=True).transform(candles).rows
         analytical_action = "SKIP"
@@ -249,13 +317,76 @@ class ShadowTrial:
         boundary: int,
         deadline: float,
         tradable_payout: float | None = None,
+        *,
+        max_readiness_retries: int = 3,
+        retry_delay_seconds: float = 0.5,
     ) -> bool:
         obs = self.recorder.start_candle_observation(boundary)
         obs.measurement_status = "SHADOW_DECISION"
+        attempts = 0
         try:
-            async with asyncio.timeout(max(0, deadline - time.perf_counter())):
-                result = await client.get_candles("EURUSD", 60, 22, endtime=boundary)
-            self.decide(result, obs, deadline, tradable_payout=tradable_payout)
+            while True:
+                attempts += 1
+                async with asyncio.timeout(max(0, deadline - time.perf_counter())):
+                    result = await client.get_candles("EURUSD", 60, 22, endtime=boundary)
+
+                fresh = (
+                    client.is_server_time_fresh
+                    if self.mode == "OPERATOR_SUPERVISED_LIVE"
+                    else getattr(client, "is_server_time_fresh_override", True)
+                )
+                diag = diagnose_candle_window(
+                    result,
+                    boundary,
+                    is_server_time_fresh=fresh,
+                    expected_count=22,
+                    mode=self.mode,
+                )
+
+                if diag is None:
+                    if attempts > 1:
+                        stg4 = obs.stages.get("STAGE_4_CANDLE_VALIDATE")
+                        if stg4 is not None:
+                            updated_details = dict(stg4.details)
+                            updated_details["attempts"] = attempts
+                            self.recorder.record_stage(
+                                "STAGE_4_CANDLE_VALIDATE",
+                                mono_ns=stg4.mono_ns,
+                                details=updated_details,
+                                allow_overwrite=True,
+                            )
+                    self.decide(result, obs, deadline, tradable_payout=tradable_payout)
+                    break
+
+                now_mono = time.perf_counter_ns()
+                now_utc = self.recorder.clock.mono_to_utc_ns(now_mono)
+                elapsed_s = (now_utc - obs.feature_close_F_ns) / 1_000_000_000.0
+
+                can_retry = (
+                    attempts <= max_readiness_retries
+                    and is_temporary_readiness_condition(diag, result, boundary)
+                    and elapsed_s < 12.0
+                    and (deadline - time.perf_counter()) > (retry_delay_seconds + 1.0)
+                )
+
+                if can_retry:
+                    self.recorder.reset_observation_pipeline_for_retry()
+                    await asyncio.sleep(retry_delay_seconds)
+                    continue
+
+                obs.rejection_reason = diag
+                if attempts > 1:
+                    stg4 = obs.stages.get("STAGE_4_CANDLE_VALIDATE")
+                    if stg4 is not None:
+                        updated_details = dict(stg4.details)
+                        updated_details["attempts"] = attempts
+                        self.recorder.record_stage(
+                            "STAGE_4_CANDLE_VALIDATE",
+                            mono_ns=stg4.mono_ns,
+                            details=updated_details,
+                            allow_overwrite=True,
+                        )
+                break
         except (IQOptionError, TimeoutError, sqlite3.Error, ValueError, OSError) as exc:
             obs.rejection_reason = type(exc).__name__
             return False

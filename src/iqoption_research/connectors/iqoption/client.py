@@ -223,6 +223,13 @@ class AsyncIQOption:
         return self._ws is not None and self._ws.is_practice_verified
 
     @property
+    def is_server_time_fresh(self) -> bool:
+        """True if the broker server clock reference was verified via timeSync within 120s."""
+        if self._ws is None:
+            return False
+        return bool(getattr(self._ws, "is_server_time_fresh", True))
+
+    @property
     def ws(self) -> IQOptionWebSocketClient | None:
         """Low-level transport (read-only). Intended for diagnostics."""
         return self._ws
@@ -537,6 +544,7 @@ class AsyncIQOption:
             parsed_mono_ns=correlated_parsed_mono_ns,
             request_completion_mono_ns=t_request_completed_ns,
             request_id=request_id,
+            server_time_fresh=getattr(ws, "is_server_time_fresh", True),
         )
 
     @staticmethod

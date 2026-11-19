@@ -360,6 +360,13 @@ class IQOptionWebSocketClient:
         return int(time.time() * 1_000_000_000)
 
     @property
+    def is_server_time_fresh(self) -> bool:
+        """True if server time has been synchronized and was updated within the last 120 seconds."""
+        if self._server_time_ns is None or self._server_time_synced_at is None:
+            return False
+        return (time.monotonic() - self._server_time_synced_at) <= 120.0
+
+    @property
     def profile_request_id(self) -> str | None:
         """Request identifier used for explicit get-profile request."""
         return self._profile_request_id

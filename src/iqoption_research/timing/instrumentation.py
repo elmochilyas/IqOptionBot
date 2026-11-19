@@ -555,6 +555,23 @@ class TimingRecorder:
         self.observations.append(obs)
         return obs
 
+    def reset_observation_pipeline_for_retry(self) -> None:
+        """Clear pipeline stages and request tracking on current observation for bounded retry."""
+        if self._current_obs is not None:
+            self._current_obs.stages.clear()
+            self._current_obs.latencies_ms.clear()
+            self._current_obs.request_id = None
+            self._current_obs.rejection_reason = None
+            self._current_obs.candle_received_within_15s = False
+            self._current_obs.candle_validated_within_15s = False
+            self._current_obs.prediction_stages_measured = False
+            self._current_obs.phase30_gate_satisfied = False
+            self._current_obs.gate_verdict = "PENDING"
+            self._current_obs.decision = "NOT_MEASURED"
+            self._current_obs.raw_probability = None
+            self._current_obs.calibrated_probability = None
+        self._expected_request_id = None
+
     def record_stage(
         self,
         stage_name: str,

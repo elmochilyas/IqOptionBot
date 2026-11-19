@@ -844,6 +844,10 @@ def evaluate_predictions_command(
     meta_table.add_row("Signal Coverage Rate", f"{report.signal_coverage_rate * 100:.1f}%")
     meta_table.add_row("Abstention Rate", f"{report.abstention_rate * 100:.1f}%")
     meta_table.add_row("Evidence Provenance", f"[bold]{report.provenance_level}[/bold]")
+    meta_table.add_row(
+        "Authentic Outcomes Verified",
+        f"[bold]{report.all_outcomes_authentic}[/bold]",
+    )
     meta_table.add_row("Report Evidence SHA-256", f"[dim]{report.evidence_sha256[:16]}...[/dim]")
     console.print(meta_table)
 

@@ -1,5 +1,5 @@
 {
-  "evaluated_at_utc": "2026-11-19T17:59:40.171360+00:00",
+  "evaluated_at_utc": "2026-11-19T18:50:57.952272+00:00",
   "cohort": {
     "sessions": [
       "shadow_1758c4a42993483fa41c48e3cb4ab386"
@@ -18,9 +18,9 @@
     "uncommitted_observations_count": 0,
     "invalid_probability_count": 0,
     "rejection_reasons_breakdown": {},
-    "provenance_level": "REGISTRY_ONLY"
+    "provenance_level": "JOURNAL_VERIFIED"
   },
-  "provenance_level": "REGISTRY_ONLY",
+  "provenance_level": "JOURNAL_VERIFIED",
   "total_predictions": 5,
   "aligned_pairs_count": 0,
   "missing_outcomes_count": 5,
@@ -65,7 +65,9 @@
     "disposition": "NO_DEMONSTRATED_EDGE",
     "execution_authority": "NONE"
   },
-  "all_outcomes_authentic": true,
+  "all_outcomes_authentic": "NO_OUTCOMES_TO_VERIFY",
+  "paired_outcome_details": [],
+  "source_file_fingerprints": {},
   "tamper_evidence_disclaimer": "UNKEYED_SHA256_TAMPER_EVIDENCE_LIMITATION: The evidence_sha256 digest is an unkeyed SHA-256 hash providing accidental corruption and tamper detection in the local environment. It does not provide asymmetric cryptographic non-repudiation or independent third-party authentication against deliberate adversarial forgery.",
-  "evidence_sha256": "9cccef3ac7743f7e191ce7c634e65eb63bbf261f4f8c273fae2b162cd0697089"
+  "evidence_sha256": "272813923478401fe15d3beeb2f3f14890705b93ccc242ffb8955570dcbf0884"
 }

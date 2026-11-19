@@ -38,6 +38,7 @@ from iqoption_research.research.prospective_eval import (
     EXPLORATORY_SAMPLE_DISCLAIMER,
     FROZEN_TRAINING_PRIOR_UP,
     UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER,
+    UNVERIFIED_HEURISTIC_PRIOR_UP,
     CausalAlignmentError,
     CohortIdentity,
     DuplicateOutcomeConflictError,
@@ -48,6 +49,7 @@ from iqoption_research.research.prospective_eval import (
     ProspectiveEvaluationError,
     SyntheticDataRejectedError,
     TamperedEvidenceError,
+    UnverifiedOutcomeProvenanceError,
     audit_frozen_model,
     calculate_autocorrelation,
     calculate_wilson_ci,
@@ -56,6 +58,7 @@ from iqoption_research.research.prospective_eval import (
     evaluate_prospective_shadow_offline,
     extract_predictions_from_registry,
     extract_predictions_with_audit,
+    load_candles_from_storage,
     pair_predictions_with_candles,
     validate_cohort_compatibility,
     verify_evaluation_report_integrity,
@@ -75,9 +78,14 @@ def _make_candle(
     volume: float = 10.0,
     symbol: str = "EURUSD",
     is_complete: bool = True,
+    source: str = "broker_authentic_collection",
+    raw_extra: dict[str, Any] | None = None,
 ) -> Candle:
     hp = max(open_p, close_p) if high_p is None else high_p
     lp = min(open_p, close_p) if low_p is None else low_p
+    raw: dict[str, Any] = {"source": source}
+    if raw_extra:
+        raw.update(raw_extra)
     return Candle(
         active_id=1,
         symbol=symbol,
@@ -92,8 +100,39 @@ def _make_candle(
         volume=volume,
         bid=open_p - 0.00005,
         ask=open_p + 0.00005,
+        raw=raw,
         is_complete=is_complete,
     )
+
+
+def _write_simple_parquet(path: Path, candles: list[Candle]) -> Path:
+    """Helper to write test candles into a valid parquet file."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from iqoption_research.market_data.parquet_storage import CANDLE_ARROW_SCHEMA
+
+    table_dict: dict[str, list[Any]] = {
+        "symbol": [c.symbol for c in candles],
+        "active_id": [c.active_id for c in candles],
+        "is_otc": [False for _ in candles],
+        "size_seconds": [c.size.value for c in candles],
+        "from_ts": [c.from_ts for c in candles],
+        "to_ts": [c.to_ts for c in candles],
+        "at_ts": [c.at_ts for c in candles],
+        "open": [c.open for c in candles],
+        "high": [c.high for c in candles],
+        "low": [c.low for c in candles],
+        "close": [c.close for c in candles],
+        "volume": [c.volume for c in candles],
+        "bid": [c.bid for c in candles],
+        "ask": [c.ask for c in candles],
+        "is_complete": [c.is_complete for c in candles],
+        "original_index": list(range(len(candles))),
+    }
+    table = pa.Table.from_pydict(table_dict, schema=CANDLE_ARROW_SCHEMA)
+    pq.write_table(table, path)
+    return path
 
 
 def _create_phase35_fixture(directory: Path) -> tuple[Path, Path]:
@@ -891,3 +930,279 @@ def test_cli_prospective_alias_command(tmp_path: Path) -> None:
     assert res.exit_code == 0
     parsed = json.loads(res.output)
     assert parsed["total_predictions"] == 5
+
+
+def test_journal_payload_tampering_rejected_with_same_session_and_boundary(
+    tmp_path: Path,
+) -> None:
+    """Altered journal payload contents preserving session and boundary must fail verification."""
+    shadow_path, db_path = _create_phase35_fixture(tmp_path)
+    reg = TimingEvidenceRegistry.load_from_file(shadow_path)
+
+    # Tamper with an event payload directly in SQLite without changing session or boundary
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("SELECT event_key, payload FROM events LIMIT 1")
+    row = cursor.fetchone()
+    assert row is not None
+    ev_key, raw_json = row[0], row[1]
+    payload = json.loads(raw_json)
+
+    # Alter calibrated probability inside the payload
+    payload["calibrated_probability"] = 0.589123
+    tampered_json = json.dumps(payload)
+    cursor.execute("UPDATE events SET payload = ? WHERE event_key = ?", (tampered_json, ev_key))
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(TamperedEvidenceError, match=r"payload SHA-256 mismatch"):
+        extract_predictions_with_audit(reg, db_path)
+
+
+def test_explicit_missing_journal_fails_closed(tmp_path: Path) -> None:
+    """Providing a non-existent explicit --journal path must fail closed."""
+    shadow_path, _ = _create_phase35_fixture(tmp_path)
+    non_existent = tmp_path / "does_not_exist_journal.db"
+
+    with pytest.raises(ProspectiveEvaluationError, match=r"Explicit journal database not found"):
+        evaluate_prospective_shadow_offline([shadow_path], journal_path=non_existent)
+
+    # CLI also exits with error code 1
+    res = runner.invoke(
+        app,
+        [
+            "timing",
+            "evaluate-predictions",
+            "--evidence",
+            str(shadow_path),
+            "--journal",
+            str(non_existent),
+            "--json",
+        ],
+    )
+    assert res.exit_code == 1
+    assert "Explicit journal database not found" in res.output
+
+
+def test_load_candles_from_storage_rejects_conflicting_duplicates_across_parquet_files(
+    tmp_path: Path,
+) -> None:
+    """Conflicting duplicate candles across separate Parquet files must raise conflict error."""
+    f = 1795100000
+    c1 = _make_candle(
+        from_ts=f,
+        open_p=1.1500,
+        close_p=1.1505,
+        high_p=1.1510,
+        low_p=1.1490,
+        volume=10.0,
+    )
+    c2 = _make_candle(
+        from_ts=f,
+        open_p=1.1500,
+        close_p=1.1495,
+        high_p=1.1510,
+        low_p=1.1490,
+        volume=10.0,
+    )
+
+    pf1 = tmp_path / "batch_001.parquet"
+    pf2 = tmp_path / "batch_002.parquet"
+    _write_simple_parquet(pf1, [c1])
+    _write_simple_parquet(pf2, [c2])
+
+    with pytest.raises(
+        DuplicateOutcomeConflictError, match=r"Conflicting duplicate candle outcomes"
+    ):
+        load_candles_from_storage(tmp_path, symbol="EURUSD")
+
+
+def test_load_candles_from_storage_accepts_exact_duplicates_across_parquet_files(
+    tmp_path: Path,
+) -> None:
+    """Identical duplicate candles across separate Parquet files are deduplicated cleanly."""
+    f = 1795100000
+    c1 = _make_candle(
+        from_ts=f,
+        open_p=1.1500,
+        close_p=1.1505,
+        high_p=1.1510,
+        low_p=1.1490,
+        volume=10.0,
+    )
+    c2 = _make_candle(
+        from_ts=f,
+        open_p=1.1500,
+        close_p=1.1505,
+        high_p=1.1510,
+        low_p=1.1490,
+        volume=10.0,
+    )
+
+    pf1 = tmp_path / "batch_001.parquet"
+    pf2 = tmp_path / "batch_002.parquet"
+    _write_simple_parquet(pf1, [c1])
+    _write_simple_parquet(pf2, [c2])
+
+    candles, fingerprints = load_candles_from_storage(tmp_path, symbol="EURUSD")
+    assert len(candles) == 1
+    assert candles[0].from_ts == f
+    assert len(fingerprints) == 2
+    assert pf1.name in fingerprints
+    assert pf2.name in fingerprints
+
+
+def test_authentic_outcome_fails_closed_on_unverified_source() -> None:
+    """Authentic evaluation mode rejects candles that lack trusted broker acquisition evidence."""
+    f = 1795100000
+    pred = PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.48)
+    unverified_candle = _make_candle(
+        from_ts=f,
+        open_p=1.1500,
+        close_p=1.1505,
+        source="UNKNOWN_FEED",
+        raw_extra={"source": "UNKNOWN_FEED"},
+    )
+
+    with pytest.raises(
+        UnverifiedOutcomeProvenanceError, match=r"lacks verifiable broker acquisition evidence"
+    ):
+        pair_predictions_with_candles([pred], [unverified_candle], allow_synthetic=False)
+
+
+def test_zero_matched_outcomes_reported_as_no_outcomes_to_verify(tmp_path: Path) -> None:
+    """Zero matched outcomes must be reported as NO_OUTCOMES_TO_VERIFY, not true."""
+    shadow_path, db_path = _create_phase35_fixture(tmp_path)
+    report = evaluate_prospective_shadow_offline([shadow_path], journal_path=db_path)
+
+    assert report.total_predictions == 5
+    assert report.aligned_pairs_count == 0
+    assert report.all_outcomes_authentic == "NO_OUTCOMES_TO_VERIFY"
+
+    report_dict = report.to_dict()
+    assert report_dict["all_outcomes_authentic"] == "NO_OUTCOMES_TO_VERIFY"
+    assert report_dict["paired_outcome_details"] == []
+    assert report_dict["source_file_fingerprints"] == {}
+    assert verify_evaluation_report_integrity(report_dict) is True
+
+
+def test_walk_forward_prior_respects_delayed_adjacent_candle_finalization() -> None:
+    """Walk-forward prior must exclude delayed candles whose availability > decision time."""
+    f1, f2, f3 = 1000, 1060, 1120
+    candle1 = _make_candle(
+        from_ts=f1,
+        open_p=1.1500,
+        close_p=1.1510,  # UP (binary_label=1)
+        raw_extra={"available_utc_ns": 1065 * 1_000_000_000},
+    )
+    candle2 = _make_candle(
+        from_ts=f2,
+        open_p=1.1510,
+        close_p=1.1500,  # DOWN (binary_label=0)
+        raw_extra={"available_utc_ns": 1125 * 1_000_000_000},
+    )
+    candle3 = _make_candle(
+        from_ts=f3,
+        open_p=1.1500,
+        close_p=1.1505,
+        raw_extra={"available_utc_ns": 1185 * 1_000_000_000},
+    )
+
+    preds = [
+        # Pred 1: Decision at 1001s. No prior outcomes available -> Prior=0.50
+        PredictionRecord(
+            session_id="s1",
+            boundary_F=f1,
+            calibrated_probability=0.48,
+            decision_time_utc_ns=1001 * 1_000_000_000,
+        ),
+        # Pred 2: Decision at 1061s. Candle 1 validated at 1065s (> 1061s), so NOT available!
+        # Conservative fallback -> Prior=0.50
+        PredictionRecord(
+            session_id="s1",
+            boundary_F=f2,
+            calibrated_probability=0.48,
+            decision_time_utc_ns=1061 * 1_000_000_000,
+        ),
+        # Pred 3: Decision at 1126s. Candle 1 and Candle 2 (<= 1126s) are available!
+        PredictionRecord(
+            session_id="s1",
+            boundary_F=f3,
+            calibrated_probability=0.48,
+            decision_time_utc_ns=1126 * 1_000_000_000,
+        ),
+    ]
+
+    paired, _ = pair_predictions_with_candles(
+        preds, [candle1, candle2, candle3], allow_synthetic=True
+    )
+    report = compute_prospective_metrics(paired, CohortIdentity(sessions=["s1"]))
+
+    wf_bench = next(b for b in report.benchmarks if b.name == "walk_forward_expanding_prior")
+    assert wf_bench.is_causal is True
+    assert len(report.paired_outcome_details) == 3
+    assert report.paired_outcome_details[0]["available_utc_ns"] == 1065 * 1_000_000_000
+
+
+def test_walk_forward_prior_handles_missing_historical_labels() -> None:
+    """Walk-forward prior computes Laplace smoothing correctly over missing historical labels."""
+    f1, f2, f3 = 1000, 1060, 1120
+    # Candle for f2 is missing!
+    candle1 = _make_candle(
+        from_ts=f1,
+        open_p=1.1500,
+        close_p=1.1510,  # UP
+        raw_extra={"available_utc_ns": 1060 * 1_000_000_000},
+    )
+    candle3 = _make_candle(
+        from_ts=f3,
+        open_p=1.1500,
+        close_p=1.1505,
+        raw_extra={"available_utc_ns": 1180 * 1_000_000_000},
+    )
+
+    preds = [
+        PredictionRecord(
+            session_id="s1",
+            boundary_F=f1,
+            calibrated_probability=0.48,
+            decision_time_utc_ns=1001 * 1_000_000_000,
+        ),
+        PredictionRecord(
+            session_id="s1",
+            boundary_F=f2,
+            calibrated_probability=0.48,
+            decision_time_utc_ns=1061 * 1_000_000_000,
+        ),
+        PredictionRecord(
+            session_id="s1",
+            boundary_F=f3,
+            calibrated_probability=0.48,
+            decision_time_utc_ns=1121 * 1_000_000_000,
+        ),
+    ]
+
+    paired, missing = pair_predictions_with_candles(preds, [candle1, candle3], allow_synthetic=True)
+    assert missing == [f2]
+    report = compute_prospective_metrics(paired, CohortIdentity(sessions=["s1"]))
+
+    assert report.total_predictions == 3
+    assert report.aligned_pairs_count == 2
+    assert report.missing_outcomes_count == 1
+    wf_bench = next(b for b in report.benchmarks if b.name == "walk_forward_expanding_prior")
+    assert wf_bench.is_causal is True
+
+
+def test_verified_training_prior_claim_removed_from_heuristic_baseline() -> None:
+    """Heuristic prior baseline removes verified-training-prior claim."""
+    f = 1795100000
+    pred = PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.48)
+    candle = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1505)
+
+    paired, _ = pair_predictions_with_candles([pred], [candle], allow_synthetic=True)
+    report = compute_prospective_metrics(paired, CohortIdentity(sessions=["s1"]))
+
+    heuristic_bench = next(b for b in report.benchmarks if b.name == "constant_heuristic_prior")
+    assert heuristic_bench.prior_type == "UNVERIFIED_HEURISTIC_PRIOR"
+    assert "Verified training prior claim removed" in heuristic_bench.description
+    assert np.isclose(UNVERIFIED_HEURISTIC_PRIOR_UP, 0.4985)

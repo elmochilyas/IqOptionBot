@@ -71,15 +71,24 @@ flowchart TD
 2. **Preservation of Skipped Decisions with Durable Commit Verification**:
    - Probabilistic forecasting metrics are evaluated unconditionally across all valid inference samples, preserving $(p_{\text{raw}}, p_{\text{cal}})$ even when the analytical policy decision was `SKIP` due to `BELOW_FROZEN_THRESHOLD`.
    - Only durably committed forecasts with a valid decision timestamp and calibrated probability are evaluated. Rejected, uncommitted, or invalid observations are tracked separately and excluded from prediction counts.
-3. **Missing-Outcome Handling & Zero Matches to Date**:
-   - Exactly zero authentic future outcomes have been matched to date for Phase 35 observations.
-   - All 5 boundaries remain in `AWAITING_LABEL_COLLECTION` status. The pipeline enumerates exact missing boundaries without fabricating labels.
-4. **Authentic Provenance & Conflicting Duplicate Rejection**:
-   - Conflicting duplicate candles for the same boundary are rejected via `DuplicateOutcomeConflictError`.
-   - Synthetic fixtures are explicitly labeled (`source_provenance = "SYNTHETIC_FIXTURE"`) and rejected when authentic evaluation is required.
-5. **Cohort Incompatibility Rejection**:
+3. **Cryptographic Journal Verification & Tamper Detection**:
+   - When an append-only journal (`observations.db`) is present, the pipeline recomputes the canonical SHA-256 digest of every matched journal event payload (`digest({k: v for k, v in payload.items() if k != 'key'})`).
+   - The computed hash is strictly verified against the commit-stage `payload_sha256` recorded in the evidence registry.
+   - Consistency is rigorously checked across session ID, boundary $F$, analytical decision, calibrated probability, and raw probability. Any discrepancy (including altered payload contents preserving the same session and boundary) raises `TamperedEvidenceError`.
+   - If an explicit `--journal` path is specified by the operator and does not exist, the pipeline fails closed with `ProspectiveEvaluationError` rather than silently falling back to unverified registry-only evidence.
+4. **Authentic Provenance & Fail-Closed Outcome Verification**:
+   - The pipeline fails closed against unverified or synthetic outcome sources: any outcome candle lacking verifiable broker acquisition evidence raises `UnverifiedOutcomeProvenanceError`.
+   - Provenance is verified from trusted collection metadata (`raw.source in TRUSTED_BROKER_PROVENANCES`), normalized broker ingestion stamps (`_identity_provenance`), or verified Parquet storage files, **never** defaulting unknown sources to `AUTHENTIC_BROKER_FEED`.
+   - Synthetic fixtures are rejected in authentic evaluation mode via `SyntheticDataRejectedError`, remaining available exclusively for labeled offline unit tests (`allow_synthetic=True`).
+   - Zero matched outcomes are explicitly reported as `all_outcomes_authentic: "NO_OUTCOMES_TO_VERIFY"`, avoiding misleading affirmative authenticity claims when no outcomes exist to verify.
+   - The sealed evaluation report embeds `paired_outcome_details` (including boundary, price points, direction, binary label, source file, and verified availability timestamp) and `source_file_fingerprints`.
+5. **Cross-File Duplicate Outcome Conflict Detection**:
+   - In `load_candles_from_storage()`, silent timestamp-only deduplication is eliminated.
+   - Candles across separate Parquet storage files are compared against their full canonical identity: $\text{to\_ts}$, $\text{open}$, $\text{close}$, $\text{high}$, $\text{low}$, $\text{volume}$, and $\text{is\_complete}$.
+   - Any price, volume, or duration divergence raises `DuplicateOutcomeConflictError` detailing the conflicting files and OHLC values. Exact duplicates are accepted only after passing full canonical verification.
+6. **Cohort Incompatibility Rejection**:
    - Rejects silent merging of sessions across differences in model manifest, policy version, instrumentation version, symbols, or candle sizes via `IncompatibleCohortError`.
-6. **Tamper Evidence & Unkeyed Hash Limitation**:
+7. **Tamper Evidence & Unkeyed Hash Limitation**:
    - The evaluation report calculates a canonical SHA-256 digest (`evidence_sha256`) covering all metadata, distributions, metrics, and uncertainty diagnostics. Any mutation invalidates `verify_evaluation_report_integrity`.
    - *Limitation disclosure*: An unkeyed SHA-256 hash provides tamper evidence against accidental corruption within the local environment; it does not provide cryptographic non-repudiation or independent third-party authentication against deliberate adversarial tampering.
 
@@ -98,12 +107,13 @@ To prevent future label leakage, reference benchmarks must be strictly causal:
 1. **Uninformative 50/50 Baseline** (`uninformative_prior_50_50`):
    - Constant $p_t = 0.50$ for all $t$.
    - Fixed uninformative reference ($BS = 0.25$, accuracy = $50\%$).
-2. **Frozen Training Prior Baseline** (`frozen_training_prior`):
-   - Constant $p_t = 0.4985$ derived from the frozen training distribution cutoff (`2026-11-14T14:41:11 UTC`).
-   - Evaluates whether prospective forecasts outperform historical climatological drift known prior to deployment.
+2. **Constant Heuristic Prior Baseline** (`constant_heuristic_prior` / `frozen_training_prior` alias):
+   - Constant $p_t = 0.4985$ baseline (`UNVERIFIED_HEURISTIC_PRIOR`).
+   - *Audit disclosure*: Candidate model `candidate_h1_rf` bundle manifest records 37,609 training rows, but does not embed or certify an immutable training base rate of $0.4985$. The verified-training-prior claim is formally removed; the value is retained strictly as an unverified heuristic constant baseline.
 3. **Walk-Forward Expanding Prior** (`walk_forward_expanding_prior`):
-   - Sequential causal prior using only strictly earlier prospective observations ($j < i$) with Laplace smoothing:
-     $$p_{\text{wf}, i} = \frac{1 + \sum_{j=1}^{i-1} y_j}{2 + (i - 1)}, \quad p_{\text{wf}, 1} = 0.50$$
+   - Sequential causal prior using exclusively past prospective observations whose verified availability timestamp is earlier than or equal to the prediction decision timestamp ($t_{\text{avail}, j} \le t_{\text{decision}, i}$):
+     $$p_{\text{wf}, i} = \frac{1 + \sum_{j \in S_i} y_j}{2 + |S_i|}, \quad S_i = \{ j \mid F_j < F_i \text{ and } t_{\text{avail}, j} \le t_{\text{decision}, i} \}$$
+   - Conservative fallback: When $|S_i| = 0$ (including when adjacent candle finalization is delayed such that $t_{\text{avail}} > t_{\text{decision}}$, or when intermediate historical labels are missing), the prior falls back conservatively to $p = 0.50$.
    - Changes to future labels $y_k$ ($k \ge i$) have zero effect on predictions made at step $i$.
 4. **Retrospective Sample Mean (Oracle)** (`retrospective_sample_mean_oracle`):
    - Constant $p = \bar{y}$ across the entire evaluation sample.

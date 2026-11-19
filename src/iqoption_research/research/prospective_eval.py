@@ -9,6 +9,7 @@ and produces tamper-evident evaluation evidence.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import math
@@ -31,6 +32,8 @@ from iqoption_research.ml.tracking.artifacts import (
     verify_manifest,
 )
 from iqoption_research.models.market import Candle
+from iqoption_research.research.prospective import digest
+from iqoption_research.timing.evidence import compute_file_sha256
 
 if TYPE_CHECKING:
     from iqoption_research.timing.evidence import TimingEvidenceRegistry
@@ -39,7 +42,19 @@ if TYPE_CHECKING:
 DEFAULT_ASSUMED_PAYOUT: Final[float] = 0.85
 BREAK_EVEN_WIN_RATE: Final[float] = 1.0 / (1.0 + DEFAULT_ASSUMED_PAYOUT)  # ~54.054%
 SMALL_SAMPLE_THRESHOLD: Final[int] = 30
-FROZEN_TRAINING_PRIOR_UP: Final[float] = 0.4985  # Cutoff 2026-11-14T14:41:11 UTC base rate
+
+# Note on training prior: Candidate model candidate_h1_rf bundle manifest records
+# 37,609 training rows, but does not embed or verify an immutable training base rate
+# of 0.4985. The 0.4985 value is retained as an unverified heuristic baseline only.
+UNVERIFIED_HEURISTIC_PRIOR_UP: Final[float] = 0.4985
+FROZEN_TRAINING_PRIOR_UP: Final[float] = UNVERIFIED_HEURISTIC_PRIOR_UP
+
+TRUSTED_BROKER_PROVENANCES: Final[frozenset[str]] = frozenset({
+    "broker_authentic_collection",
+    "AUTHENTIC_BROKER_FEED",
+    "iqoption_live",
+    "operator_supervised",
+})
 
 CONTRACT_PROFITABILITY_DISCLAIMER: Final[str] = (
     "SPOT_DIRECTIONAL_ACCURACY_IS_NOT_REALIZED_CONTRACT_PROFITABILITY: "
@@ -93,6 +108,10 @@ class IncompleteOutcomeError(ProspectiveEvaluationError):
 
 class SyntheticDataRejectedError(ProspectiveEvaluationError):
     """Raised when synthetic test fixture data is presented in authentic evaluation mode."""
+
+
+class UnverifiedOutcomeProvenanceError(ProspectiveEvaluationError):
+    """Raised when an outcome candle lacks verifiable broker acquisition evidence."""
 
 
 class TamperedEvidenceError(ProspectiveEvaluationError):
@@ -153,8 +172,10 @@ class OutcomeRecord:
     binary_label: int  # 1 for close > open, 0 otherwise
     is_neutral: bool  # close == open
     is_complete: bool = True
-    source_provenance: str = "AUTHENTIC_BROKER_FEED"
+    source_provenance: str = "UNVERIFIED_SOURCE"
     candle_sha256: str = ""
+    source_file: str | None = None
+    available_utc_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,8 +309,10 @@ class ProspectiveEvaluationReport:
     contract_distinction: dict[str, Any]
     abstention_coverage_rate: float = 0.0
     provenance_level: str = "REGISTRY_ONLY"
-    all_outcomes_authentic: bool = True
+    all_outcomes_authentic: bool | str = "NO_OUTCOMES_TO_VERIFY"
     tamper_evidence_disclaimer: str = UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER
+    paired_outcome_details: list[dict[str, Any]] = field(default_factory=list)
+    source_file_fingerprints: dict[str, str] = field(default_factory=dict)
     evidence_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -310,7 +333,9 @@ class ProspectiveEvaluationReport:
             "benchmarks": [b.to_dict() for b in self.benchmarks],
             "uncertainty": self.uncertainty.to_dict(),
             "contract_distinction": self.contract_distinction,
-            "all_outcomes_authentic": bool(self.all_outcomes_authentic),
+            "all_outcomes_authentic": self.all_outcomes_authentic,
+            "paired_outcome_details": list(self.paired_outcome_details),
+            "source_file_fingerprints": dict(self.source_file_fingerprints),
             "tamper_evidence_disclaimer": self.tamper_evidence_disclaimer,
         }
         if self.evidence_sha256:
@@ -516,13 +541,49 @@ def extract_predictions_with_audit(
                     f"Session {registry.session_id} event {event_key} missing from journal"
                 )
             event_payload = journal_events[event_key]
-            if (
-                event_payload.get("session") != registry.session_id
-                or event_payload.get("boundary") != boundary
-            ):
+
+            # 1. Recompute canonical SHA-256 of journal payload (excluding 'key')
+            payload_clean = {k: v for k, v in event_payload.items() if k != "key"}
+            computed_payload_sha = digest(payload_clean)
+            if payload_sha256 != computed_payload_sha:
                 raise TamperedEvidenceError(
-                    f"Journal event {event_key} attributes mismatch at boundary {boundary}"
+                    f"Journal event {event_key} payload SHA-256 mismatch: "
+                    f"computed '{computed_payload_sha}' != committed '{payload_sha256}'"
                 )
+
+            # 2. Verify consistency across session, boundary, decision, and probabilities
+            if event_payload.get("session") != registry.session_id:
+                raise TamperedEvidenceError(
+                    f"Journal event {event_key} session mismatch: "
+                    f"payload has '{event_payload.get('session')}', "
+                    f"expected '{registry.session_id}'"
+                )
+            if event_payload.get("boundary") != boundary:
+                raise TamperedEvidenceError(
+                    f"Journal event {event_key} boundary mismatch: "
+                    f"payload has {event_payload.get('boundary')}, expected {boundary}"
+                )
+            if event_payload.get("decision") != obs.get("decision"):
+                raise TamperedEvidenceError(
+                    f"Journal event {event_key} decision mismatch: "
+                    f"payload has '{event_payload.get('decision')}', "
+                    f"expected '{obs.get('decision')}'"
+                )
+
+            p_cal_j = event_payload.get("calibrated_probability")
+            if p_cal_j is None or not math.isclose(float(p_cal_j), float(cal_prob), abs_tol=1e-6):
+                raise TamperedEvidenceError(
+                    f"Journal event {event_key} calibrated probability mismatch: "
+                    f"payload has {p_cal_j}, observation has {cal_prob}"
+                )
+
+            p_raw_j = event_payload.get("raw_probability")
+            if p_raw_j is None or not math.isclose(float(p_raw_j), float(raw_prob), abs_tol=1e-6):
+                raise TamperedEvidenceError(
+                    f"Journal event {event_key} raw probability mismatch: "
+                    f"payload has {p_raw_j}, observation has {raw_prob}"
+                )
+
             journal_verified = True
 
         confidence = max(float(cal_prob), 1.0 - float(cal_prob))
@@ -664,12 +725,64 @@ def deduplicate_predictions(predictions: list[PredictionRecord]) -> list[Predict
     return list(seen.values())
 
 
+def resolve_candle_provenance(
+    c: Candle, explicit_provenance: str | None = None
+) -> tuple[str, bool]:
+    """Resolve candle provenance and verify authentic broker acquisition evidence.
+
+    Fails closed: if the candle lacks verifiable broker acquisition evidence,
+    returns ("UNVERIFIED_SOURCE", False). Never defaults unknown sources to
+    AUTHENTIC_BROKER_FEED.
+
+    Returns:
+        (provenance_label, is_authentic)
+    """
+    raw_meta = getattr(c, "raw", {}) or {}
+
+    # Check synthetic markers first
+    is_synthetic = (
+        explicit_provenance == "SYNTHETIC_FIXTURE"
+        or getattr(c, "provenance", None) in ("synthetic", "SYNTHETIC_FIXTURE")
+        or getattr(c, "source", None) in ("synthetic", "SYNTHETIC_FIXTURE")
+        or raw_meta.get("synthetic") is True
+        or raw_meta.get("source") in ("synthetic", "SYNTHETIC_FIXTURE")
+        or raw_meta.get("source_provenance") == "SYNTHETIC_FIXTURE"
+    )
+    if is_synthetic:
+        return "SYNTHETIC_FIXTURE", False
+
+    # Explicit trusted provenance passed by caller
+    if explicit_provenance is not None:
+        if explicit_provenance in TRUSTED_BROKER_PROVENANCES:
+            return explicit_provenance, True
+        return explicit_provenance, False
+
+    # Trusted collection metadata in raw payload
+    broker_source = raw_meta.get("source") or raw_meta.get("source_provenance")
+    if broker_source in TRUSTED_BROKER_PROVENANCES:
+        return str(broker_source), True
+
+    # Broker JSON normalization stamp in raw metadata
+    identity_prov = raw_meta.get("_identity_provenance")
+    if identity_prov in {"explicit_broker_metadata", "verified_correlated_request"}:
+        return "AUTHENTIC_BROKER_FEED", True
+
+    # Parquet storage source file provenance
+    if raw_meta.get("source_file"):
+        return "AUTHENTIC_BROKER_FEED", True
+
+    # Fail closed: unverified source
+    return "UNVERIFIED_SOURCE", False
+
+
 def pair_predictions_with_candles(
     predictions: list[PredictionRecord],
     candles: list[Candle],
     *,
     source_provenance: str | None = None,
-    reject_synthetic: bool = False,
+    allow_synthetic: bool = False,
+    reject_synthetic: bool = True,
+    reject_unverified: bool = True,
     reject_incomplete: bool = True,
 ) -> tuple[list[PairedEvaluationSample], list[int]]:
     """Strictly causally pair predictions at boundary F with subsequent authentic candles.
@@ -765,24 +878,32 @@ def pair_predictions_with_candles(
             missing_boundaries.append(f)
             continue
 
-        # Check for synthetic data
-        raw_meta = getattr(target_candle, "raw", {}) or {}
-        is_synthetic = (
-            source_provenance == "SYNTHETIC_FIXTURE"
-            or getattr(target_candle, "provenance", None) == "synthetic"
-            or raw_meta.get("synthetic") is True
-            or getattr(target_candle, "source", None) == "SYNTHETIC_FIXTURE"
-        )
-        if is_synthetic and reject_synthetic:
-            raise SyntheticDataRejectedError(
-                f"Synthetic fixture outcome rejected for boundary {f} in authentic evaluation mode"
-            )
+        # Check provenance and fail closed in authentic evaluation mode
+        source_prov, is_auth = resolve_candle_provenance(target_candle, source_provenance)
 
-        source_prov = (
-            source_provenance
-            if source_provenance is not None
-            else ("SYNTHETIC_FIXTURE" if is_synthetic else "AUTHENTIC_BROKER_FEED")
+        if not allow_synthetic:
+            if source_prov == "SYNTHETIC_FIXTURE":
+                if reject_synthetic:
+                    raise SyntheticDataRejectedError(
+                        f"Synthetic fixture outcome rejected for boundary {f} "
+                        "in authentic evaluation mode"
+                    )
+            elif not is_auth and reject_unverified:
+                raise UnverifiedOutcomeProvenanceError(
+                    f"Outcome candle for boundary {f} lacks verifiable broker acquisition evidence "
+                    f"(provenance='{source_prov}')"
+                )
+
+        raw_meta = getattr(target_candle, "raw", {}) or {}
+        available_ns = (
+            raw_meta.get("available_utc_ns")
+            or raw_meta.get("validated_utc_ns")
+            or (target_candle.at_ts if getattr(target_candle, "at_ts", 0) > 10**14 else None)
+            or (target_candle.to_ts * 1_000_000_000)
         )
+        available_ns = max(available_ns, target_candle.to_ts * 1_000_000_000)
+        source_file = getattr(target_candle, "source_file", None) or raw_meta.get("source_file")
+
         c_hash = compute_candle_sha256(target_candle)
 
         # Formulate outcome
@@ -816,6 +937,8 @@ def pair_predictions_with_candles(
             is_complete=target_candle.is_complete,
             source_provenance=source_prov,
             candle_sha256=c_hash,
+            source_file=source_file,
+            available_utc_ns=available_ns,
         )
 
         pred_dir: str | None = None
@@ -882,6 +1005,7 @@ def compute_prospective_metrics(
     cohort: CohortIdentity,
     *,
     audit_summary: ObservationAuditSummary | None = None,
+    source_file_fingerprints: dict[str, str] | None = None,
 ) -> ProspectiveEvaluationReport:
     """Calculate comprehensive prospective forecasting evaluation metrics."""
     total_predictions = len(pairs)
@@ -912,11 +1036,14 @@ def compute_prospective_metrics(
     abstention_rate = (skip_count / float(total_predictions)) if total_predictions > 0 else 0.0
 
     # Provenance and authenticity check on outcomes
-    all_authentic = True
-    for p in aligned:
-        if p.outcome is not None and p.outcome.source_provenance != "AUTHENTIC_BROKER_FEED":
-            all_authentic = False
-            break
+    all_outcomes_authentic: bool | str
+    if aligned_count == 0:
+        all_outcomes_authentic = "NO_OUTCOMES_TO_VERIFY"
+    else:
+        all_outcomes_authentic = all(
+            p.outcome is not None and p.outcome.source_provenance in TRUSTED_BROKER_PROVENANCES
+            for p in aligned
+        )
 
     # Determine report provenance level from predictions
     prov_level = "REGISTRY_ONLY"
@@ -934,6 +1061,24 @@ def compute_prospective_metrics(
             rejection_reasons_breakdown={},
             provenance_level=prov_level,
         )
+
+    paired_outcome_details = [
+        {
+            "boundary_F": p.prediction.boundary_F,
+            "from_ts": p.outcome.from_ts,
+            "to_ts": p.outcome.to_ts,
+            "symbol": p.outcome.symbol,
+            "spot_direction": p.outcome.spot_direction,
+            "binary_label": p.outcome.binary_label,
+            "is_neutral": p.outcome.is_neutral,
+            "source_provenance": p.outcome.source_provenance,
+            "candle_sha256": p.outcome.candle_sha256,
+            "source_file": p.outcome.source_file,
+            "available_utc_ns": p.outcome.available_utc_ns,
+        }
+        for p in aligned
+        if p.outcome is not None
+    ]
 
     # Probabilistic and directional metrics on aligned samples
     prob_samples = [
@@ -1046,13 +1191,30 @@ def compute_prospective_metrics(
             )
         )
 
-        # 2. Frozen Training Prior Baseline (Causal, constant from training cutoff)
-        p_train = np.full_like(p_cal, FROZEN_TRAINING_PRIOR_UP)
+        # 2. Constant Heuristic Prior Baseline (Verified training prior claim removed)
+        p_train = np.full_like(p_cal, UNVERIFIED_HEURISTIC_PRIOR_UP)
         bs_train = brier_score(y_true, p_train)
         ll_train = log_loss_score(y_true, p_train)
         bss_train = 1.0 - (bs / bs_train) if bs_train > 0 else 0.0
         acc_train = float(np.mean((p_train > 0.5) == y_true))
 
+        benchmarks.append(
+            BenchmarkResult(
+                name="constant_heuristic_prior",
+                brier_score=bs_train,
+                brier_skill_score=bss_train,
+                log_loss=ll_train,
+                directional_accuracy=acc_train,
+                is_causal=True,
+                prior_type="UNVERIFIED_HEURISTIC_PRIOR",
+                description=(
+                    f"Constant heuristic prior P(UP) = {UNVERIFIED_HEURISTIC_PRIOR_UP:.4f}. "
+                    "Verified training prior claim removed: candidate_h1_rf bundle "
+                    "manifest does not record an immutable training base rate; "
+                    "retained as heuristic baseline."
+                ),
+            )
+        )
         benchmarks.append(
             BenchmarkResult(
                 name="frozen_training_prior",
@@ -1061,25 +1223,45 @@ def compute_prospective_metrics(
                 log_loss=ll_train,
                 directional_accuracy=acc_train,
                 is_causal=True,
-                prior_type="CAUSAL_FROZEN_TRAINING",
+                prior_type="UNVERIFIED_HEURISTIC_PRIOR",
                 description=(
-                    f"Frozen training distribution prior P(UP) = {FROZEN_TRAINING_PRIOR_UP:.4f} "
-                    "from cutoff 2026-11-14T14:41:11 UTC (causal, prospective)"
+                    f"Alias of constant_heuristic_prior P(UP) = "
+                    f"{UNVERIFIED_HEURISTIC_PRIOR_UP:.4f} "
+                    "(verified training prior claim removed)."
                 ),
             )
         )
 
         # 3. Walk-Forward Expanding Prior Baseline (Causal, strictly past data only)
-        # For observation i (0-indexed), prior is computed from past outcomes 0..i-1
-        # with Laplace smoothing
+        # Conditioned strictly on past outcomes where available_utc_ns <= decision_time_utc_ns.
         p_wf_list: list[float] = []
         for i in range(prob_count):
-            if i == 0:
-                p_wf_list.append(0.50)  # Seed uninformative prior
+            pred_i = valid_pairs[i][0].prediction
+            t_dec_i = (
+                pred_i.decision_time_utc_ns
+                if pred_i.decision_time_utc_ns is not None
+                else pred_i.boundary_F * 1_000_000_000
+            )
+
+            avail_labels: list[int] = []
+            for j in range(prob_count):
+                if valid_pairs[j][0].prediction.boundary_F < pred_i.boundary_F:
+                    out_j = valid_pairs[j][1]
+                    t_avail_j = (
+                        out_j.available_utc_ns
+                        if out_j.available_utc_ns is not None
+                        else out_j.to_ts * 1_000_000_000
+                    )
+                    if t_avail_j <= t_dec_i:
+                        avail_labels.append(out_j.binary_label)
+
+            m = len(avail_labels)
+            if m == 0:
+                p_wf_list.append(0.50)  # Conservative fallback
             else:
-                past_y = y_true[:i]
-                p_wf = (1.0 + float(np.sum(past_y))) / (2.0 + float(i))
+                p_wf = (1.0 + float(sum(avail_labels))) / (2.0 + float(m))
                 p_wf_list.append(p_wf)
+
         p_wf_arr = np.array(p_wf_list, dtype=np.float64)
         bs_wf = brier_score(y_true, p_wf_arr)
         ll_wf = log_loss_score(y_true, p_wf_arr)
@@ -1097,7 +1279,7 @@ def compute_prospective_metrics(
                 prior_type="CAUSAL_WALK_FORWARD",
                 description=(
                     "Causal expanding-window prior using exclusively past prospective outcomes "
-                    "t < t_i with Laplace smoothing (causal, prospective)"
+                    "t_avail <= t_decision with Laplace smoothing (causal, prospective)"
                 ),
             )
         )
@@ -1193,8 +1375,10 @@ def compute_prospective_metrics(
         uncertainty=uncertainty,
         contract_distinction=contract_dist,
         provenance_level=audit_summary.provenance_level,
-        all_outcomes_authentic=all_authentic,
+        all_outcomes_authentic=all_outcomes_authentic,
         tamper_evidence_disclaimer=UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER,
+        paired_outcome_details=paired_outcome_details,
+        source_file_fingerprints=dict(source_file_fingerprints or {}),
     )
     report.seal()
     return report
@@ -1204,31 +1388,79 @@ def load_candles_from_storage(
     storage_dir: Path,
     symbol: str = "EURUSD",
     candle_size_seconds: int = 60,
-) -> list[Candle]:
-    """Load authentic candles from a Parquet storage directory."""
+    target_boundaries: set[int] | None = None,
+) -> tuple[list[Candle], dict[str, str]]:
+    """Load authentic candles from a Parquet storage directory with duplicate conflict checks."""
     storage_dir = storage_dir.resolve()
-    candles: list[Candle] = []
+    candles_by_boundary: dict[int, tuple[Candle, str]] = {}
+    source_file_fingerprints: dict[str, str] = {}
 
-    # Look for broker_authentic_collection or direct parquet files
     parquet_files = sorted(storage_dir.rglob("*.parquet"))
     for pf in parquet_files:
+        # Quick prune if file range is disjoint from target boundaries
+        parts = pf.stem.split("_")
+        if target_boundaries is not None and len(parts) >= 3 and parts[0] == "candles":
+            try:
+                f_start, f_end = int(parts[1]), int(parts[2])
+                min_target = min(target_boundaries)
+                max_target = max(target_boundaries) + candle_size_seconds
+                if f_end <= min_target or f_start > max_target:
+                    continue
+            except ValueError:
+                pass
+
+        pf_sha = compute_file_sha256(pf)
+        source_file_fingerprints[pf.name] = pf_sha
+
         try:
             batch = read_candles_parquet(pf)
-            for c in batch:
-                if c.symbol == symbol and c.size.value == candle_size_seconds:
-                    candles.append(c)
         except (OSError, ValueError, KeyError):
             continue
 
-    # Deduplicate and sort by from_ts
-    seen_ts: set[int] = set()
-    unique_candles: list[Candle] = []
-    for c in sorted(candles, key=lambda x: x.from_ts):
-        if c.from_ts not in seen_ts:
-            seen_ts.add(c.from_ts)
-            unique_candles.append(c)
+        for c in batch:
+            if c.symbol != symbol or c.size.value != candle_size_seconds:
+                continue
+            if target_boundaries is not None and c.from_ts not in target_boundaries:
+                continue
 
-    return unique_candles
+            f = c.from_ts
+            if f in candles_by_boundary:
+                prior_c, prior_file = candles_by_boundary[f]
+                # Canonical candle identity comparison
+                is_exact = (
+                    c.to_ts == prior_c.to_ts
+                    and math.isclose(float(c.open), float(prior_c.open), abs_tol=1e-8)
+                    and math.isclose(float(c.high), float(prior_c.high), abs_tol=1e-8)
+                    and math.isclose(float(c.low), float(prior_c.low), abs_tol=1e-8)
+                    and math.isclose(float(c.close), float(prior_c.close), abs_tol=1e-8)
+                    and math.isclose(float(c.volume), float(prior_c.volume), abs_tol=1e-6)
+                    and bool(getattr(c, "is_complete", True))
+                    == bool(getattr(prior_c, "is_complete", True))
+                )
+                if not is_exact:
+                    raise DuplicateOutcomeConflictError(
+                        f"Conflicting duplicate candle outcomes for boundary {f} on {symbol}: "
+                        f"file '{prior_file}' has (open={prior_c.open}, close={prior_c.close}, "
+                        f"high={prior_c.high}, low={prior_c.low}, vol={prior_c.volume}) "
+                        f"vs file '{pf.name}' has (open={c.open}, close={c.close}, "
+                        f"high={c.high}, low={c.low}, vol={c.volume})"
+                    )
+                # Exact duplicate: accept after full canonical check, keep prior
+                continue
+
+            tagged_raw = dict(getattr(c, "raw", {}) or {})
+            tagged_raw["source_file"] = pf.name
+            tagged_raw["source_file_sha256"] = pf_sha
+            if "source" not in tagged_raw:
+                tagged_raw["source"] = "broker_authentic_collection"
+
+            tagged_candle = dataclasses.replace(c, raw=tagged_raw)
+            candles_by_boundary[f] = (tagged_candle, pf.name)
+
+    unique_candles = [
+        c for c, _ in sorted(candles_by_boundary.values(), key=lambda x: x[0].from_ts)
+    ]
+    return unique_candles, source_file_fingerprints
 
 
 def evaluate_prospective_shadow_offline(
@@ -1238,7 +1470,8 @@ def evaluate_prospective_shadow_offline(
     storage_dir: Path | None = None,
     candles: list[Candle] | None = None,
     session_filter: str | None = None,
-    reject_synthetic: bool = False,
+    reject_synthetic: bool = True,
+    allow_synthetic: bool = False,
 ) -> ProspectiveEvaluationReport:
     """Offline prospective evaluation entrypoint.
 
@@ -1246,6 +1479,13 @@ def evaluate_prospective_shadow_offline(
     pairs with authentic candles causally, and computes the report.
     """
     from iqoption_research.timing.evidence import TimingEvidenceRegistry
+
+    # If explicit journal path is provided, it must exist - fail closed rather than falling back
+    explicit_journal: Path | None = None
+    if journal_path is not None:
+        explicit_journal = journal_path.resolve()
+        if not explicit_journal.is_file():
+            raise ProspectiveEvaluationError(f"Explicit journal database not found: {journal_path}")
 
     all_predictions: list[PredictionRecord] = []
     total_reg_obs = 0
@@ -1271,16 +1511,17 @@ def evaluate_prospective_shadow_offline(
             if session_filter is not None and reg.session_id != session_filter:
                 continue
 
-            db_path = (
-                journal_path.resolve()
-                if (journal_path is not None and journal_path.resolve().is_file())
-                else file_path.parent / "observations.db"
-            )
-            if db_path.is_file():
+            db_path: Path | None
+            if explicit_journal is not None:
+                db_path = explicit_journal
+            else:
+                candidate_db = file_path.parent / "observations.db"
+                db_path = candidate_db if candidate_db.is_file() else None
+
+            if db_path is not None and db_path.is_file():
                 has_any_journal = True
-            preds, audit = extract_predictions_with_audit(
-                reg, db_path if db_path.is_file() else None
-            )
+
+            preds, audit = extract_predictions_with_audit(reg, db_path)
             all_predictions.extend(preds)
             total_reg_obs += audit.total_registry_observations
             valid_pred_count += audit.valid_committed_predictions
@@ -1299,18 +1540,24 @@ def evaluate_prospective_shadow_offline(
 
     # Candles resolution
     available_candles: list[Candle] = []
+    source_file_fingerprints: dict[str, str] = {}
     if candles is not None:
         available_candles = list(candles)
     elif storage_dir is not None and storage_dir.is_dir():
-        available_candles = load_candles_from_storage(
+        target_bounds = {p.boundary_F for p in deduped}
+        available_candles, source_file_fingerprints = load_candles_from_storage(
             storage_dir,
             symbol=cohort.symbol,
             candle_size_seconds=cohort.candle_size_seconds,
+            target_boundaries=target_bounds,
         )
 
     # Pair predictions causally
     pairs, _ = pair_predictions_with_candles(
-        deduped, available_candles, reject_synthetic=reject_synthetic
+        deduped,
+        available_candles,
+        allow_synthetic=allow_synthetic,
+        reject_synthetic=reject_synthetic,
     )
 
     prov_level = (
@@ -1330,7 +1577,12 @@ def evaluate_prospective_shadow_offline(
     )
 
     # Compute report
-    return compute_prospective_metrics(pairs, cohort, audit_summary=audit_summary)
+    return compute_prospective_metrics(
+        pairs,
+        cohort,
+        audit_summary=audit_summary,
+        source_file_fingerprints=source_file_fingerprints,
+    )
 
 
 def verify_evaluation_report_integrity(report_dict: dict[str, Any]) -> bool:

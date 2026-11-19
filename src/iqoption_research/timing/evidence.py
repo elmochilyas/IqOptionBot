@@ -304,6 +304,7 @@ class TimingEvidenceRegistry:
 
         seen_boundaries: set[int] = set()
         seen_indices: set[int] = set()
+        seen_request_ids: set[str] = set()
 
         # Validate each observation in sequence
         for idx, obs in enumerate(self.observations):
@@ -420,7 +421,48 @@ class TimingEvidenceRegistry:
                             "without FAIL_TIMESTAMP_ORDERING verdict."
                         )
 
-            # 7. Independent observation hash recomputation from serialized dict
+            # 7. Request ID correlation across pipeline stages and uniqueness across session
+            obs_req_id = obs.get("request_id")
+            if obs_req_id:
+                req_str = str(obs_req_id)
+                if req_str in seen_request_ids:
+                    errors.append(
+                        f"Observation {idx} (F={obs_f}) duplicate request_id: '{req_str}' "
+                        "was already observed in an earlier observation."
+                    )
+                seen_request_ids.add(req_str)
+
+                for s_key in (
+                    "STAGE_1_REQUEST_INIT",
+                    "STAGE_2_NETWORK_RECV",
+                    "STAGE_3_PARSE_VALIDATE",
+                ):
+                    stg = stages.get(s_key) if isinstance(stages, dict) else None
+                    if isinstance(stg, dict):
+                        stg_details = stg.get("details", {})
+                        if isinstance(stg_details, dict):
+                            stg_req_id = stg_details.get("request_id")
+                            if stg_req_id and str(stg_req_id) != req_str:
+                                errors.append(
+                                    f"Observation {idx} (F={obs_f}) request_id mismatch "
+                                    f"in {s_key}: observation has '{req_str}', "
+                                    f"stage details has '{stg_req_id}'."
+                                )
+                stg_val = (
+                    stages.get("STAGE_4_CANDLE_VALIDATE") if isinstance(stages, dict) else None
+                )
+                if isinstance(stg_val, dict):
+                    val_details = stg_val.get("details", {})
+                    if isinstance(val_details, dict) and "request_id" in val_details:
+                        val_req_id = val_details.get("request_id")
+                        if str(val_req_id) != req_str:
+                            errors.append(
+                                f"Observation {idx} (F={obs_f}) request_id mismatch in "
+                                f"STAGE_4_CANDLE_VALIDATE: observation has '{req_str}', "
+                                f"stage details has '{val_req_id}'."
+                            )
+
+            # 8. Independent observation hash recomputation from serialized dict
             expected_obs_hash = compute_observation_dict_hash(obs)
             actual_obs_hash = obs.get("integrity_hash", "")
             if actual_obs_hash != expected_obs_hash:
@@ -429,7 +471,7 @@ class TimingEvidenceRegistry:
                     f"expected {expected_obs_hash}, got {actual_obs_hash}"
                 )
 
-        # 8. Summary metrics reconciliation
+        # 9. Summary metrics reconciliation
         expected_recv = sum(1 for obs in self.observations if obs.get("candle_received_within_15s"))
         actual_recv = self.summary.get("candle_received_within_15s_count")
         if actual_recv != expected_recv:
@@ -462,7 +504,7 @@ class TimingEvidenceRegistry:
                 f"expected {expected_gate}, got {actual_gate}."
             )
 
-        # 9. Independently validate registry hash
+        # 10. Independently validate registry hash
         expected_registry_hash = self.compute_hash()
         if self.integrity_hash != expected_registry_hash:
             errors.append(

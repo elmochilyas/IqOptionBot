@@ -197,6 +197,7 @@ def compute_observation_dict_hash(obs: dict[str, Any]) -> str:
     data = {
         "session_id": str(obs.get("session_id", "")),
         "observation_index": int(obs.get("observation_index", 0)),
+        "request_id": str(obs.get("request_id") or ""),
         "symbol": str(obs.get("symbol", "")),
         "candle_size_seconds": int(obs.get("candle_size_seconds", 60)),
         "feature_close_F": int(obs.get("feature_close_F", 0)),
@@ -252,6 +253,7 @@ class CandleTimingObservation:
     provenance: str = "OFFLINE_SIMULATION"
     is_synthetic: bool = True
     measurement_status: str = "NOT_MEASURED"
+    request_id: str | None = None
 
     def compute_latencies_and_gate(self, clock: ClockDiscipline) -> None:
         """Calculate stage intervals, broker offsets, and evaluate the Phase 30 gate."""
@@ -460,6 +462,7 @@ class CandleTimingObservation:
             "provenance": self.provenance,
             "is_synthetic": self.is_synthetic,
             "measurement_status": self.measurement_status,
+            "request_id": self.request_id,
             "integrity_hash": self.integrity_hash,
         }
 
@@ -492,7 +495,9 @@ class TimingRecorder:
 
     def set_expected_request_id(self, request_id: str | None) -> None:
         """Associate an expected broker request ID with the currently active observation."""
-        self._expected_request_id = request_id
+        self._expected_request_id = str(request_id) if request_id is not None else None
+        if self._current_obs is not None and request_id is not None:
+            self._current_obs.request_id = str(request_id)
 
     def start_candle_observation(
         self,
@@ -516,9 +521,12 @@ class TimingRecorder:
             provenance=self.provenance,
             is_synthetic=self.is_synthetic,
             measurement_status="MEASURED",
+            request_id=str(expected_request_id) if expected_request_id is not None else None,
         )
         self._current_obs = obs
-        self._expected_request_id = expected_request_id
+        self._expected_request_id = (
+            str(expected_request_id) if expected_request_id is not None else None
+        )
         self.observations.append(obs)
         return obs
 
@@ -580,10 +588,14 @@ class TimingRecorder:
         *,
         allow_overwrite: bool = False,
     ) -> StageTimingRecord:
+        req_id = str(request_id)
+        self._expected_request_id = req_id
+        if self._current_obs is not None:
+            self._current_obs.request_id = req_id
         return self.record_stage(
             "STAGE_1_REQUEST_INIT",
             mono_ns=mono_ns,
-            details={"request_id": request_id, "frame_name": name},
+            details={"request_id": req_id, "frame_name": name},
             allow_overwrite=allow_overwrite,
         )
 
@@ -602,24 +614,25 @@ class TimingRecorder:
         If expected_request_id is configured for the active observation and does not match,
         the incoming frame is rejected to prevent contamination.
         """
-        if self._expected_request_id is not None and request_id != self._expected_request_id:
+        req_id = str(request_id)
+        if self._expected_request_id is not None and req_id != self._expected_request_id:
             logger.warning(
                 "Ignored non-matching correlated frame: expected %s, got %s",
                 self._expected_request_id,
-                request_id,
+                req_id,
             )
             return None
 
         r_rec = self.record_stage(
             "STAGE_2_NETWORK_RECV",
             mono_ns=recv_mono_ns,
-            details={"request_id": request_id, "payload_bytes": payload_bytes},
+            details={"request_id": req_id, "payload_bytes": payload_bytes},
             allow_overwrite=allow_overwrite,
         )
         r_parse = self.record_stage(
             "STAGE_3_PARSE_VALIDATE",
             mono_ns=parsed_mono_ns,
-            details={"request_id": request_id, "frame_name": frame_name},
+            details={"request_id": req_id, "frame_name": frame_name},
             allow_overwrite=allow_overwrite,
         )
         return r_rec, r_parse
@@ -682,13 +695,28 @@ class TimingRecorder:
         mono_ns: int,
         candle_count: int,
         is_complete: bool = True,
+        request_id: str | None = None,
         *,
         allow_overwrite: bool = False,
     ) -> StageTimingRecord:
+        req_id = (
+            str(request_id)
+            if request_id is not None
+            else (
+                self._expected_request_id
+                or (self._current_obs.request_id if self._current_obs else "")
+            )
+        )
+        details: dict[str, Any] = {
+            "candle_count": candle_count,
+            "is_complete": is_complete,
+        }
+        if req_id:
+            details["request_id"] = req_id
         return self.record_stage(
             "STAGE_4_CANDLE_VALIDATE",
             mono_ns=mono_ns,
-            details={"candle_count": candle_count, "is_complete": is_complete},
+            details=details,
             allow_overwrite=allow_overwrite,
         )
 

@@ -501,7 +501,7 @@ def measure_command(
         help=f"Maximum candle cycles to observe (hard ceiling {HARD_MAX_CANDLE_CYCLES})",
     ),
     output: Path = typer.Option(
-        Path("data/phase32/supervised_timing_evidence.json"),
+        Path("data/phase33/supervised_timing_evidence.json"),
         "--output",
         help="Path to persist the immutable timing evidence registry",
     ),

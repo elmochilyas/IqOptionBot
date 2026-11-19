@@ -53,7 +53,7 @@ class SupervisedSessionConfig:
     simulation_mode: bool = True
     operator_confirmed: bool = False
     allow_overwrite: bool = False
-    output_destination: Path = Path("data/phase32/supervised_timing_evidence.json")
+    output_destination: Path = Path("data/phase33/supervised_timing_evidence.json")
     project_root: Path = Path()
 
     def validate(self) -> None:
@@ -143,7 +143,9 @@ class SupervisedSessionRunner:
         f_base = harness.base_epoch_f
         for idx, sc_fn in enumerate(scenarios, start=1):
             f_candle = f_base + (idx * 60)
-            obs = self.recorder.start_candle_observation(f_candle)
+            obs = self.recorder.start_candle_observation(
+                f_candle, expected_request_id=f"sim-candles-{idx}"
+            )
             obs.provenance = "OFFLINE_SIMULATION"
             obs.is_synthetic = True
             obs.measurement_status = "MEASURED"
@@ -240,7 +242,8 @@ class SupervisedSessionRunner:
             print(f"      NTP uncertainty budget: +/-{self.clock.total_uncertainty_ms():.2f} ms")
 
             print(
-                f"\n[3/4] Starting observation window (max {self.config.max_duration_seconds}s)..."
+                "\n[3/4] Starting observation window loop "
+                f"(loop duration ceiling: max {self.config.max_duration_seconds}s)..."
             )
             start_mono = time.perf_counter()
             cycles_done = 0
@@ -250,7 +253,10 @@ class SupervisedSessionRunner:
                 while cycles_done < self.config.max_candle_cycles:
                     elapsed = time.perf_counter() - start_mono
                     if elapsed >= self.config.max_duration_seconds:
-                        print("\n      Session duration ceiling (300s) reached.")
+                        print(
+                            f"\n      Observation loop duration ceiling "
+                            f"({self.config.max_duration_seconds}s) reached."
+                        )
                         break
 
                     now_utc = datetime.now(UTC)
@@ -268,17 +274,13 @@ class SupervisedSessionRunner:
 
                     # We are in the post-close arrival window for candle F
                     print(f"\n      Observing F={F} (now={now_epoch}, offset={sec_in_minute}s)...")
-                    obs = self.recorder.start_candle_observation(
-                        F, expected_request_id=f"candles-{F}"
-                    )
+                    obs = self.recorder.start_candle_observation(F)
                     obs.provenance = "OPERATOR_SUPERVISED_LIVE"
                     obs.is_synthetic = False
                     obs.measurement_status = "ACQUISITION_ONLY"
                     observed_candle_boundaries.add(F)
 
                     try:
-                        t_req_ns = time.perf_counter_ns()
-                        self.recorder.record_stage("STAGE_1_REQUEST_INIT", mono_ns=t_req_ns)
                         result = await client.get_candles(
                             self.config.symbol,
                             size=self.config.candle_size_seconds,
@@ -289,20 +291,10 @@ class SupervisedSessionRunner:
                         if result.request_completion_mono_ns is not None:
                             self.recorder.record_request_completed(
                                 result.request_completion_mono_ns,
-                                details={"candle_count": len(result.candles)},
-                            )
-
-                        # If STAGE_2_NETWORK_RECV was not recorded via WebSocketClient,
-                        # record using genuine correlated timestamps from CandleFetchResult
-                        if (
-                            "STAGE_2_NETWORK_RECV" not in obs.stages
-                            and result.recv_mono_ns is not None
-                        ):
-                            self.recorder.record_correlated_frame(
-                                request_id=f"candles-{F}",
-                                frame_name="candles",
-                                recv_mono_ns=result.recv_mono_ns,
-                                parsed_mono_ns=result.parsed_mono_ns or result.recv_mono_ns,
+                                details={
+                                    "candle_count": len(result.candles),
+                                    "request_id": result.request_id,
+                                },
                             )
 
                         candles = result.candles
@@ -312,12 +304,6 @@ class SupervisedSessionRunner:
                             print("      Candle not yet available at broker. Fail closed.")
                         else:
                             last = candles[-1]
-                            if "STAGE_4_CANDLE_VALIDATE" not in obs.stages:
-                                self.recorder.record_candle_validated(
-                                    time.perf_counter_ns(),
-                                    len(candles),
-                                    is_complete=bool(last.is_complete),
-                                )
                             if "STAGE_5_COMPLETED_RECOG" not in obs.stages:
                                 self.recorder.record_completed_recognized(
                                     time.perf_counter_ns(), last.to_ts

@@ -500,6 +500,7 @@ class AsyncIQOption:
                 t_validated,
                 len(candles),
                 is_complete=bool(candles and candles[-1].is_complete),
+                request_id=request_id,
             )
         return CandleFetchResult(
             symbol=canonical,
@@ -515,6 +516,7 @@ class AsyncIQOption:
             recv_mono_ns=correlated_recv_mono_ns,
             parsed_mono_ns=correlated_parsed_mono_ns,
             request_completion_mono_ns=t_request_completed_ns,
+            request_id=request_id,
         )
 
     @staticmethod

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 
 import typer
@@ -581,31 +582,28 @@ def measure_command(
     table = Table(title="Observed Candle Cycles", border_style="blue")
     table.add_column("Cycle", justify="center")
     table.add_column("Nominal Close (F)", justify="center")
-    table.add_column("Gate Verdict", justify="center")
-    table.add_column("15s Gate?", justify="center")
-    table.add_column("Delivery Offset", justify="right")
-    table.add_column("Pipeline Latency", justify="right")
-    table.add_column("Total Latency", justify="right")
-
+    table.add_column("Receipt <=15s")
+    table.add_column("Validation <=15s")
+    table.add_column("Acquisition")
+    table.add_column("Full contract", no_wrap=True)
     for obs in registry.observations:
-        g_str = (
-            "[green]PASS[/green]" if obs["phase30_gate_satisfied"] else "[bold red]FAIL[/bold red]"
-        )
-        lats = obs.get("latencies_ms", {})
+        receipt = obs["candle_received_within_15s"]
+        validation = obs["candle_validated_within_15s"]
+        full = "PASS" if obs["phase30_gate_satisfied"] else "FAIL"
+        lats = obs["latencies_ms"]
+        receipt_text = "PASS" if receipt else "NO"
+        if "broker_delivery_offset_ms" in lats:
+            receipt_text += f"\n{lats['broker_delivery_offset_ms']:.1f} ms"
+        latency = lats.get("close_to_commit_total_ms")
+        if latency is not None:
+            full += f"\n{latency:.1f} ms"
         table.add_row(
             str(obs["observation_index"]),
             str(obs["feature_close_F"]),
-            obs["gate_verdict"],
-            g_str,
-            f"{lats.get('broker_delivery_offset_ms', 0):.1f} ms"
-            if "broker_delivery_offset_ms" in lats
-            else "-",
-            f"{lats.get('local_pipeline_total_ms', 0):.1f} ms"
-            if "local_pipeline_total_ms" in lats
-            else "-",
-            f"{lats.get('close_to_commit_total_ms', 0):.1f} ms"
-            if "close_to_commit_total_ms" in lats
-            else "-",
+            receipt_text,
+            "PASS" if validation else "NO",
+            "PASS" if receipt and validation and not obs["rejection_reason"] else "INCOMPLETE/FAIL",
+            full if obs["prediction_stages_measured"] else "NOT_MEASURED",
         )
     console.print(table)
 
@@ -632,7 +630,11 @@ def verify_evidence_command(
         content = json.loads(path.read_text(encoding="utf-8"))
         registry = TimingEvidenceRegistry.from_dict(content)
         is_valid, errors = registry.verify_integrity()
-    except (json.JSONDecodeError, ValueError, OSError, KeyError, TypeError) as exc:
+        if is_valid and registry.instrumentation_version == "PHASE_34_SHADOW_V1":
+            from iqoption_research.timing.shadow import verify_shadow_receipts
+
+            verify_shadow_receipts(registry, path.parent)
+    except (ValueError, OSError, KeyError, TypeError, AttributeError, sqlite3.Error) as exc:
         is_valid = False
         errors = [f"Failed to load or parse evidence file: {exc}"]
         registry = None
@@ -655,6 +657,8 @@ def verify_evidence_command(
         recv_cnt = registry.summary.get("candle_received_within_15s_count", 0)
         val_cnt = registry.summary.get("candle_validated_within_15s_count", 0)
         gate_cnt = registry.summary.get("full_phase30_gate_compliant_count", 0)
+        measured = registry.summary["prediction_stages_measured_count"]
+        full = f"{gate_cnt}/{measured} measured" if measured else "NOT_MEASURED"
         console.print(
             Panel(
                 f"[bold green]Evidence Registry Verification PASSED[/bold green]\n\n"
@@ -664,7 +668,7 @@ def verify_evidence_command(
                 f"Observations:       {len(registry.observations)}\n"
                 f"Receipt <= 15s:     {recv_cnt}\n"
                 f"Validated <= 15s:   {val_cnt}\n"
-                f"Full Phase 30 Gate: {gate_cnt}\n"
+                f"Full Phase 30 Gate: {full}\n"
                 f"Integrity Hash:     [green]{registry.integrity_hash}[/green]\n\n"
                 "[dim]Epistemic Notice: Unkeyed SHA-256 integrity hash provides tamper-evidence "
                 "against accidental mutation, not cryptographic non-repudiation.[/dim]",
@@ -685,3 +689,58 @@ def verify_evidence_command(
         for err in errors:
             console.print(f"  [red]•[/red] {err}")
         raise typer.Exit(code=1)
+
+
+@app.command("reliability")
+def reliability_command(paths: list[Path] = typer.Argument(...)) -> None:
+    """Evaluate immutable registries or directories offline."""
+    from iqoption_research.timing.reliability import evaluate
+
+    try:
+        report = evaluate(paths)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(report, indent=2))
+    if report["invalid_registries"]:
+        raise typer.Exit(1)
+
+
+@app.command("shadow-trial")
+def shadow_trial_command(
+    live: bool = typer.Option(False, "--live"),
+    yes_i_understand: bool = typer.Option(False, "--yes-i-understand"),
+    duration: int = typer.Option(300, min=1, max=300),
+    max_candles: int = typer.Option(5, min=1, max=5),
+) -> None:
+    """Preflight offline or run one foreground read-only EURUSD shadow trial."""
+    import sys
+
+    from iqoption_research.timing.shadow import MODEL_PATH, ShadowTrial, eligible_model
+
+    if not live:
+        typer.echo(
+            json.dumps({
+                "mode": "OFFLINE_PREFLIGHT",
+                "model_eligible": eligible_model(MODEL_PATH) is not None,
+                "orders_sent": 0,
+            })
+        )
+        return
+    if not yes_i_understand or not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise typer.BadParameter(
+            "Live trials require an interactive terminal and --yes-i-understand"
+        )
+    config = SupervisedSessionConfig(
+        live_mode=True,
+        simulation_mode=False,
+        operator_confirmed=True,
+        max_duration_seconds=duration,
+        max_candle_cycles=max_candles,
+        project_root=_project_root(),
+    )
+    trial = ShadowTrial(config, Path("data/phase34"), MODEL_PATH)
+    try:
+        registry = asyncio.run(trial.run_live())
+    finally:
+        typer.echo(f"Shadow evidence destination {trial.output}")
+    typer.echo(json.dumps(registry.summary, indent=2))

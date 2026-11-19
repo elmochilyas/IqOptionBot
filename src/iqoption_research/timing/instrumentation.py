@@ -280,6 +280,7 @@ class CandleTimingObservation:
             t_persisted,
             t_features,
             t_inferred,
+            st.get("STAGE_POLICY_DECISION"),
             t_committed,
         ]
         present_stages = [s for s in stage_order if s is not None]
@@ -367,7 +368,7 @@ class CandleTimingObservation:
             self.integrity_hash = self.compute_hash()
             return
 
-        if self.rejection_reason:
+        if self.rejection_reason and self.measurement_status != "SHADOW_DECISION":
             self.phase30_gate_satisfied = False
             self.gate_verdict = "FAIL_REJECTED"
             self.integrity_hash = self.compute_hash()
@@ -399,6 +400,16 @@ class CandleTimingObservation:
         else:
             self.candle_validated_within_15s = False
 
+        if self.measurement_status == "SHADOW_DECISION":
+            self.candle_validated_within_15s &= bool(
+                t_completed and t_completed.details.get("completed_to_ts") == self.feature_close_F
+            )
+            if self.rejection_reason:
+                self.phase30_gate_satisfied = False
+                self.gate_verdict = "FAIL_REJECTED"
+                self.integrity_hash = self.compute_hash()
+                return
+
         # Evaluate full Phase 30 prediction contract:
         # F <= observed <= decision <= durable_commit <= F + 15s
         # Requires genuine evidence for all required stages.
@@ -408,12 +419,26 @@ class CandleTimingObservation:
             and t_inferred is not None
             and t_committed is not None
         )
+        if self.measurement_status == "SHADOW_DECISION":
+            has_all_prediction_stages = has_all_prediction_stages and all((
+                t_req,
+                t_recv,
+                t_parsed,
+                t_validated,
+                st.get("STAGE_POLICY_DECISION"),
+            ))
         has_valid_decision = self.decision in ("SKIP", "CALL", "PUT")
 
         if has_all_prediction_stages and has_valid_decision:
             self.prediction_stages_measured = True
             close_to_commit = lats.get("close_to_commit_total_ms")
-            if close_to_commit is not None and 0.0 <= close_to_commit <= 15000.0:
+            if (
+                close_to_commit is not None
+                and 0.0 <= close_to_commit <= 15000.0
+                and (
+                    self.measurement_status != "SHADOW_DECISION" or self.candle_validated_within_15s
+                )
+            ):
                 self.phase30_gate_satisfied = True
                 self.gate_verdict = "PASS"
             else:

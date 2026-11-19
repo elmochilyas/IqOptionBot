@@ -200,31 +200,7 @@ class SupervisedSessionRunner:
         print("  Mode: READ-ONLY LIVE (wallet-independent candles, zero orders)")
         print("=" * 70)
 
-        # Interactive operator credentials prompt (NO .env or disk storage)
-        print("\nEnter IQ Option credentials (interactive prompt only):")
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", getpass.GetPassWarning)
-            email = (await asyncio.to_thread(getpass.getpass, "Broker Account Email: ")).strip()
-            if not email:
-                raise ValueError("Email cannot be empty.")
-            password = await asyncio.to_thread(getpass.getpass, "Broker Account Password: ")
-            if not password:
-                raise ValueError("Password cannot be empty.")
-
-        creds = Credentials(email=email, password=password)
-
-        conn_config = ConnectionConfig(
-            request_timeout=15.0,
-            timing_market_data_only=True,
-            max_reconnect_attempts=0,  # Fail closed immediately, no reconnect loops
-        )
-
-        async with AsyncIQOption(
-            credentials=creds,
-            config=conn_config,
-            offline=False,
-            timing_recorder=self.recorder,
-        ) as client:
+        async with await supervised_client(self.recorder) as client:
             client.assert_read_only()
             wallet_at_start = client.measurement_wallet_status()
             print(f"\n[1/4] Read-only candle acquisition. Wallet evidence: {wallet_at_start.name}")
@@ -394,3 +370,31 @@ class SupervisedSessionRunner:
         print(f"      Evidence registry saved to: {self.output_destination}")
         print("      Measurement session completed successfully.\n")
         return registry
+
+
+async def supervised_client(recorder: TimingRecorder) -> AsyncIQOption:
+    # Interactive operator credentials prompt (NO .env or disk storage)
+    print("\nEnter IQ Option credentials (interactive prompt only):")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        email = (await asyncio.to_thread(getpass.getpass, "Broker Account Email: ")).strip()
+        if not email:
+            raise ValueError("Email cannot be empty.")
+        password = await asyncio.to_thread(getpass.getpass, "Broker Account Password: ")
+        if not password:
+            raise ValueError("Password cannot be empty.")
+
+    creds = Credentials(email=email, password=password)
+
+    conn_config = ConnectionConfig(
+        request_timeout=15.0,
+        timing_market_data_only=True,
+        max_reconnect_attempts=0,  # Fail closed immediately, no reconnect loops
+    )
+
+    return AsyncIQOption(
+        credentials=creds,
+        config=conn_config,
+        offline=False,
+        timing_recorder=recorder,
+    )

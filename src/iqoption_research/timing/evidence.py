@@ -87,6 +87,7 @@ STANDARD_STAGE_ORDER: Final[tuple[str, ...]] = (
     "STAGE_6_STORAGE_PERSIST",
     "STAGE_7_FEATURE_AVAIL",
     "STAGE_8_INFERENCE",
+    "STAGE_POLICY_DECISION",
     "STAGE_9_JOURNAL_COMMIT",
 )
 
@@ -428,6 +429,27 @@ class TimingEvidenceRegistry:
                             f"{prev_name} ({prev_rec.get('mono_ns')}) "
                             "without FAIL_TIMESTAMP_ORDERING verdict."
                         )
+
+            if self.instrumentation_version == "PHASE_34_SHADOW_V1" and gate_sat:
+                required = [
+                    name for name in STANDARD_STAGE_ORDER if name != "STAGE_6_STORAGE_PERSIST"
+                ]
+                records = [stages.get(name, {}) for name in required]
+                utc = [record.get("disciplined_utc_ns") for record in records]
+                close = obs.get("feature_close_F_ns")
+                if (
+                    any(type(t) is not int for t in utc)
+                    or not isinstance(close, int)
+                    or not close <= utc[1] <= utc[-1] <= close + 15_000_000_000
+                    or utc != sorted(utc)
+                    or records[4].get("details", {}).get("completed_to_ts") != obs_f
+                    or records[-2].get("details", {}).get("decision") != decision
+                    or not records[-1].get("details", {}).get("payload_sha256")
+                    or obs.get("clock_step_detected")
+                    or obs.get("rejection_reason")
+                    or not obs.get("candle_validated_within_15s")
+                ):
+                    errors.append(f"Observation {idx} has an incomplete or invalid shadow contract")
 
             # 7. Request ID correlation across pipeline stages and uniqueness across session
             obs_req_id = obs.get("request_id")

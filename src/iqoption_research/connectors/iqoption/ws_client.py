@@ -14,11 +14,12 @@ import asyncio
 import contextlib
 import itertools
 import logging
+import math
 import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Final
 
 import websockets
 from websockets.asyncio.client import ClientConnection
@@ -64,6 +65,10 @@ from iqoption_research.models.account import (
     wallet_identifier,
     wallet_type_conflict,
 )
+from iqoption_research.models.clock import (
+    BrokerClockDiagnostics,
+    BrokerClockSyncStatus,
+)
 from iqoption_research.models.connection import (
     ConnectionConfig,
     ConnectionState,
@@ -77,6 +82,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_WSS_URL = "wss://iqoption.com/echo/websocket"
 PROTOCOL_VERSION = 3
+DEFAULT_SERVER_TIME_FRESHNESS_THRESHOLD_SECONDS: Final[float] = 120.0
+MAX_CLOCK_STEP_SECONDS: Final[float] = 5.0
 
 SubscriptionKey = tuple[str, int, int]  # (kind, active_id, size)
 
@@ -185,6 +192,16 @@ class IQOptionWebSocketClient:
         self._fail_reason: DisconnectReason | None = None
         self._server_time_ns: int | None = None
         self._server_time_synced_at: float | None = None
+        self._server_time_synced_at_mono_ns: int | None = None
+        self._server_time_freshness_threshold: float = (
+            DEFAULT_SERVER_TIME_FRESHNESS_THRESHOLD_SECONDS
+        )
+        self._timesync_event = asyncio.Event()
+        self._timesync_waiters: list[asyncio.Future[None]] = []
+        self._last_timesync_payload_invalid: bool = False
+        self._last_timesync_error: str | None = None
+        self._clock_step_detected: bool = False
+        self._clock_step_record: dict[str, Any] | None = None
 
         self.messages_rx = 0
         self.messages_tx = 0
@@ -198,6 +215,13 @@ class IQOptionWebSocketClient:
         if self._monitor is not None and self._monitor.state != to_state:
             with contextlib.suppress(ValueError):
                 self._monitor.transition(to_state, reason=reason)
+
+    def _notify_timesync_waiters(self) -> None:
+        """Wake up all active wait_for_server_time_sync callers and clear list."""
+        for fut in list(self._timesync_waiters):
+            if not fut.done():
+                fut.set_result(None)
+        self._timesync_waiters.clear()
 
     # ----- properties -----
 
@@ -360,11 +384,128 @@ class IQOptionWebSocketClient:
         return int(time.time() * 1_000_000_000)
 
     @property
+    def clock_diagnostics(self) -> BrokerClockDiagnostics:
+        """Compute current broker clock synchronization status and age."""
+        now_mono = time.monotonic()
+        skew_ms: float | None = None
+        uncertainty_ms: float | None = None
+        if self._timing_recorder is not None:
+            skew_ms = self._timing_recorder.clock.broker_skew_ms
+            uncertainty_ms = self._timing_recorder.clock.total_uncertainty_ms()
+
+        # 1. Clock step state
+        if self._clock_step_detected:
+            age = (
+                now_mono - self._server_time_synced_at
+                if self._server_time_synced_at is not None
+                else None
+            )
+            return BrokerClockDiagnostics(
+                status=BrokerClockSyncStatus.CLOCK_STEP_DETECTED,
+                is_fresh=False,
+                age_seconds=age,
+                server_time_ns=self.server_time_ns,
+                last_synced_mono_ns=self._server_time_synced_at_mono_ns,
+                skew_ms=skew_ms,
+                total_uncertainty_ms=uncertainty_ms,
+                step_detected=True,
+                step_details=self._clock_step_record,
+                payload_error=self._last_timesync_error,
+            )
+
+        # 2. Never synchronized state / Invalid payload without prior sync
+        if self._server_time_ns is None or self._server_time_synced_at is None:
+            if self._last_timesync_payload_invalid:
+                return BrokerClockDiagnostics(
+                    status=BrokerClockSyncStatus.INVALID_SYNCHRONIZATION_PAYLOAD,
+                    is_fresh=False,
+                    age_seconds=None,
+                    server_time_ns=None,
+                    last_synced_mono_ns=None,
+                    skew_ms=skew_ms,
+                    total_uncertainty_ms=uncertainty_ms,
+                    step_detected=False,
+                    payload_error=self._last_timesync_error,
+                )
+            return BrokerClockDiagnostics(
+                status=BrokerClockSyncStatus.NEVER_SYNCHRONIZED,
+                is_fresh=False,
+                age_seconds=None,
+                server_time_ns=None,
+                last_synced_mono_ns=None,
+                skew_ms=skew_ms,
+                total_uncertainty_ms=uncertainty_ms,
+                step_detected=False,
+            )
+
+        # 3. Invalid payload received after prior valid sync
+        age_s = now_mono - self._server_time_synced_at
+        if self._last_timesync_payload_invalid:
+            return BrokerClockDiagnostics(
+                status=BrokerClockSyncStatus.INVALID_SYNCHRONIZATION_PAYLOAD,
+                is_fresh=False,
+                age_seconds=age_s,
+                server_time_ns=self.server_time_ns,
+                last_synced_mono_ns=self._server_time_synced_at_mono_ns,
+                skew_ms=skew_ms,
+                total_uncertainty_ms=uncertainty_ms,
+                step_detected=False,
+                payload_error=self._last_timesync_error,
+            )
+
+        # 4. Age calculation and freshness check
+        if age_s > self._server_time_freshness_threshold:
+            return BrokerClockDiagnostics(
+                status=BrokerClockSyncStatus.STALE_SYNCHRONIZATION,
+                is_fresh=False,
+                age_seconds=age_s,
+                server_time_ns=self.server_time_ns,
+                last_synced_mono_ns=self._server_time_synced_at_mono_ns,
+                skew_ms=skew_ms,
+                total_uncertainty_ms=uncertainty_ms,
+                step_detected=False,
+            )
+
+        # 5. Synchronized and fresh
+        return BrokerClockDiagnostics(
+            status=BrokerClockSyncStatus.SYNCHRONIZED_AND_FRESH,
+            is_fresh=True,
+            age_seconds=age_s,
+            server_time_ns=self.server_time_ns,
+            last_synced_mono_ns=self._server_time_synced_at_mono_ns,
+            skew_ms=skew_ms,
+            total_uncertainty_ms=uncertainty_ms,
+            step_detected=False,
+        )
+
+    @property
     def is_server_time_fresh(self) -> bool:
         """True if server time has been synchronized and was updated within the last 120 seconds."""
-        if self._server_time_ns is None or self._server_time_synced_at is None:
+        return self.clock_diagnostics.is_fresh
+
+    async def wait_for_server_time_sync(self, timeout: float = 10.0) -> bool:
+        """Passively wait for incoming server timeSync frame without sending any frame.
+
+        Returns True if fresh server time is available within timeout, False otherwise.
+        """
+        if self.is_server_time_fresh:
+            return True
+        if self._closed:
             return False
-        return (time.monotonic() - self._server_time_synced_at) <= 120.0
+
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[None] = loop.create_future()
+        self._timesync_waiters.append(waiter)
+        try:
+            async with asyncio.timeout(max(0.001, timeout)):
+                await waiter
+        except TimeoutError:
+            return False
+        finally:
+            if waiter in self._timesync_waiters:
+                self._timesync_waiters.remove(waiter)
+
+        return self.is_server_time_fresh
 
     @property
     def profile_request_id(self) -> str | None:
@@ -447,6 +588,15 @@ class IQOptionWebSocketClient:
         self._authenticated_ok = False
         self._profile_event.clear()
         self._balances_event.clear()
+        self._server_time_ns = None
+        self._server_time_synced_at = None
+        self._server_time_synced_at_mono_ns = None
+        self._last_timesync_payload_invalid = False
+        self._last_timesync_error = None
+        self._clock_step_detected = False
+        self._clock_step_record = None
+        self._timesync_event.clear()
+        self._notify_timesync_waiters()
         self._listed_balances = None
         self._change_indicator = None
         self._changed_wallet_type = None
@@ -628,6 +778,15 @@ class IQOptionWebSocketClient:
         self._authenticated_event.clear()
         self._profile_event.clear()
         self._balances_event.clear()
+        self._server_time_ns = None
+        self._server_time_synced_at = None
+        self._server_time_synced_at_mono_ns = None
+        self._last_timesync_payload_invalid = False
+        self._last_timesync_error = None
+        self._clock_step_detected = False
+        self._clock_step_record = None
+        self._timesync_event.clear()
+        self._notify_timesync_waiters()
 
         exc = ConnectionError(f"Connection closed: {reason.value}")
         for pending in self._pending.values():
@@ -831,17 +990,58 @@ class IQOptionWebSocketClient:
         if name == "timeSync":
             handled = True
             self._diagnostics.record_incoming(name, msg, handled=True)
-            self._server_time_ns = _to_epoch_ns(message.get("msg"))
-            self._server_time_synced_at = time.monotonic()
+            t_recv_mono_ns = recv_mono_ns if recv_mono_ns is not None else time.perf_counter_ns()
+            raw_msg = message.get("msg")
+            parsed_epoch_ns = _to_epoch_ns(raw_msg)
+            now_mono = time.monotonic()
+
+            if parsed_epoch_ns is None:
+                self._last_timesync_payload_invalid = True
+                self._last_timesync_error = "MALFORMED_NON_NUMERIC_OR_NON_POSITIVE_PAYLOAD"
+                logger.warning(
+                    "Invalid timeSync payload received from broker (type=%s)",
+                    type(raw_msg).__name__,
+                )
+                self._notify_timesync_waiters()
+                return
+
+            # Check for broker clock step relative to monotonic progression
+            if self._server_time_ns is not None and self._server_time_synced_at is not None:
+                elapsed_s = now_mono - self._server_time_synced_at
+                expected_epoch_ns = self._server_time_ns + int(elapsed_s * 1_000_000_000)
+                step_ns = parsed_epoch_ns - expected_epoch_ns
+                step_ms = step_ns / 1_000_000.0
+                if abs(step_ms) > (MAX_CLOCK_STEP_SECONDS * 1000.0):
+                    self._clock_step_detected = True
+                    self._clock_step_record = {
+                        "detected_at_mono_ns": t_recv_mono_ns,
+                        "drift_ms": step_ms,
+                        "previous_server_time_ns": self._server_time_ns,
+                        "new_server_time_ns": parsed_epoch_ns,
+                    }
+                    logger.warning(
+                        "Broker clock step detected in timeSync: drift=%.2f ms",
+                        step_ms,
+                    )
+                    if self._timing_recorder is not None:
+                        self._timing_recorder.clock.clock_steps_detected.append(
+                            self._clock_step_record
+                        )
+
+            self._server_time_ns = parsed_epoch_ns
+            self._server_time_synced_at = now_mono
+            self._server_time_synced_at_mono_ns = t_recv_mono_ns
+            self._last_timesync_payload_invalid = False
+            self._last_timesync_error = None
+            self._timesync_event.set()
+            self._notify_timesync_waiters()
+
             if self._timing_recorder is not None:
                 server_msg = message.get("msg")
                 if isinstance(server_msg, (int, float)):
-                    t_sync_recv = (
-                        recv_mono_ns if recv_mono_ns is not None else time.perf_counter_ns()
-                    )
                     self._timing_recorder.clock.record_time_sync(
                         broker_time_epoch_ms=server_msg,
-                        recv_mono_ns=t_sync_recv,
+                        recv_mono_ns=t_recv_mono_ns,
                     )
             return
 
@@ -1272,19 +1472,26 @@ class IQOptionWebSocketClient:
 
 
 def _to_epoch_ns(value: Any) -> int | None:
-    """Normalize a timeSync payload to epoch nanoseconds, if numeric."""
+    """Normalize a timeSync payload to epoch nanoseconds, if numeric and finite."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value):
         return None
     if value <= 0:
         return None
     magnitude = abs(value)
     if magnitude >= 1e17:
-        return int(value)
-    if magnitude >= 1e14:
-        return int(value * 1_000)
-    if magnitude >= 1e11:
-        return int(value * 1_000_000)
-    return int(value * 1_000_000_000)
+        res = int(value)
+    elif magnitude >= 1e14:
+        res = int(value * 1_000)
+    elif magnitude >= 1e11:
+        res = int(value * 1_000_000)
+    else:
+        res = int(value * 1_000_000_000)
+    # Check plausible epoch bounds: year 2017 (1.48e18 ns) to year 2049 (2.5e18 ns)
+    if res < 1_480_000_000_000_000_000 or res > 2_500_000_000_000_000_000:
+        return None
+    return res
 
 
 def decode_encoder(payload: dict[str, Any]) -> str:

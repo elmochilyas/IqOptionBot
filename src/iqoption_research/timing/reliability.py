@@ -96,6 +96,12 @@ def evaluate(paths: list[Path]) -> dict[str, Any]:
     validation: list[float] = []
     passed = Counter[str]()
     issues = Counter[str]()
+    rejection_reasons = Counter[str]()
+    network_receipt_failures = 0
+    candle_completeness_failures = 0
+    broker_clock_freshness_failures = 0
+    end_to_end_decision_failures = 0
+
     for (_, _, f), group in boundaries.items():
         # Choose the first attempt by session creation-independent local receipt time.
         # If any attempt lacks a receipt, retain that incomplete attempt conservatively.
@@ -108,8 +114,10 @@ def evaluate(paths: list[Path]) -> dict[str, Any]:
         )
         stages = o["stages"]
         issues["duplicate_boundary_attempts"] += len(group) - 1
-        if o.get("rejection_reason"):
+        rej = o.get("rejection_reason")
+        if rej:
             issues["rejected"] += 1
+            rejection_reasons[rej] += 1
         correlated = bool(o.get("request_id")) and all(
             stages.get(stage, {}).get("details", {}).get("request_id") == o["request_id"]
             for stage in ("STAGE_1_REQUEST_INIT", "STAGE_2_NETWORK_RECV", "STAGE_3_PARSE_VALIDATE")
@@ -122,6 +130,58 @@ def evaluate(paths: list[Path]) -> dict[str, Any]:
         stable = not o["clock_step_detected"] and 0 <= o["clock_uncertainty_ms"] <= 5000
         if not (correlated and complete and stable):
             issues["incomplete_or_invalid"] += 1
+
+        receipt_offset = (
+            (stages["STAGE_2_NETWORK_RECV"]["disciplined_utc_ns"] - f * 1_000_000_000) / 1e6
+            if "STAGE_2_NETWORK_RECV" in stages
+            else None
+        )
+        is_receipt_ok = (
+            receipt_offset is not None
+            and correlated
+            and 0 <= receipt_offset <= 15000
+            and o.get("candle_received_within_15s", False)
+        )
+
+        clock_failure = (
+            rej == "BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED"
+            or not stable
+            or o.get("clock_step_detected", False)
+            or any(a.get("broker_clock_fresh") is False for a in o.get("acquisition_attempts", []))
+        )
+
+        validation_offset = (
+            (stages["STAGE_4_CANDLE_VALIDATE"]["disciplined_utc_ns"] - f * 1_000_000_000) / 1e6
+            if "STAGE_4_CANDLE_VALIDATE" in stages
+            else None
+        )
+        is_candle_validated = (
+            is_receipt_ok
+            and complete
+            and stable
+            and not clock_failure
+            and validation_offset is not None
+            and 0 <= validation_offset <= 15000
+            and o.get("candle_validated_within_15s", False)
+            and rej is None
+        )
+
+        is_decision_ok = (
+            is_candle_validated
+            and o.get("prediction_stages_measured", False)
+            and "STAGE_9_JOURNAL_COMMIT" in stages
+            and o.get("decision") != "NOT_MEASURED"
+        )
+
+        if not is_receipt_ok:
+            network_receipt_failures += 1
+        elif clock_failure:
+            broker_clock_freshness_failures += 1
+        elif not is_candle_validated:
+            candle_completeness_failures += 1
+        elif not is_decision_ok:
+            end_to_end_decision_failures += 1
+
         for stage, key, samples in (
             ("STAGE_2_NETWORK_RECV", "receipt", receipt),
             ("STAGE_4_CANDLE_VALIDATE", "validation", validation),
@@ -154,6 +214,13 @@ def evaluate(paths: list[Path]) -> dict[str, Any]:
         "invalid_registries": errors,
         "within_session_gaps": gaps,
         "observation_issues": dict(issues),
+        "failure_modes": {
+            "network_receipt_failures": network_receipt_failures,
+            "candle_completeness_failures": candle_completeness_failures,
+            "broker_clock_freshness_failures": broker_clock_freshness_failures,
+            "end_to_end_decision_failures": end_to_end_decision_failures,
+            "rejection_reasons_breakdown": dict(rejection_reasons),
+        },
         "receipt_ms": distribution(receipt),
         "validation_ms": distribution(validation),
         "receipt_15s": compliance(passed["receipt"], n),

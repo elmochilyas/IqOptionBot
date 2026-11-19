@@ -11,6 +11,7 @@ import hashlib
 import itertools
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -96,6 +97,11 @@ class ClockDiscipline:
             self.broker_skew_ns = broker_epoch_ns - local_midpoint_utc_ns
         else:
             self.broker_skew_ns = broker_epoch_ns - local_recv_utc_ns
+
+    @property
+    def broker_skew_ms(self) -> float:
+        """Estimated clock skew in milliseconds."""
+        return self.broker_skew_ns / 1_000_000.0
 
     def total_uncertainty_ms(self) -> float:
         """Compute the total symmetric clock uncertainty budget in milliseconds."""
@@ -226,7 +232,7 @@ def compute_observation_dict_hash(obs: dict[str, Any]) -> str:
         clean_attempts: list[dict[str, Any]] = []
         for att in raw_attempts:
             if isinstance(att, dict):
-                clean_attempts.append({
+                clean_att: dict[str, Any] = {
                     "attempt_number": int(att.get("attempt_number", 0)),
                     "request_id": str(att.get("request_id") or ""),
                     "request_mono_ns": att.get("request_mono_ns"),
@@ -240,7 +246,46 @@ def compute_observation_dict_hash(obs: dict[str, Any]) -> str:
                     "is_complete": bool(att.get("is_complete")),
                     "rejection_classification": att.get("rejection_classification"),
                     "retry_attempted": bool(att.get("retry_attempted")),
-                })
+                }
+                # Phase 35 clock diagnostics: included when present,
+                # preserving Phase 33/34 backward compatibility
+                if "broker_clock_sync_status" in att:
+                    clean_att["broker_clock_sync_status"] = (
+                        str(att["broker_clock_sync_status"])
+                        if att["broker_clock_sync_status"] is not None
+                        else None
+                    )
+                if "broker_clock_age_seconds" in att:
+                    age_val = att["broker_clock_age_seconds"]
+                    try:
+                        clean_att["broker_clock_age_seconds"] = (
+                            round(float(age_val), 4)
+                            if age_val is not None and math.isfinite(float(age_val))
+                            else (None if age_val is None else str(age_val))
+                        )
+                    except (ValueError, TypeError):
+                        clean_att["broker_clock_age_seconds"] = str(age_val)
+                if "broker_clock_skew_ms" in att:
+                    skew_val = att["broker_clock_skew_ms"]
+                    try:
+                        clean_att["broker_clock_skew_ms"] = (
+                            round(float(skew_val), 4)
+                            if skew_val is not None and math.isfinite(float(skew_val))
+                            else (None if skew_val is None else str(skew_val))
+                        )
+                    except (ValueError, TypeError):
+                        clean_att["broker_clock_skew_ms"] = str(skew_val)
+                if "broker_clock_total_uncertainty_ms" in att:
+                    unc_val = att["broker_clock_total_uncertainty_ms"]
+                    try:
+                        clean_att["broker_clock_total_uncertainty_ms"] = (
+                            round(float(unc_val), 4)
+                            if unc_val is not None and math.isfinite(float(unc_val))
+                            else (None if unc_val is None else str(unc_val))
+                        )
+                    except (ValueError, TypeError):
+                        clean_att["broker_clock_total_uncertainty_ms"] = str(unc_val)
+                clean_attempts.append(clean_att)
         data["acquisition_attempts"] = clean_attempts
 
     canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
@@ -607,6 +652,10 @@ class TimingRecorder:
         attempt_number: int,
         request_id: str | None = None,
         broker_clock_fresh: bool = True,
+        broker_clock_sync_status: str | None = None,
+        broker_clock_age_seconds: float | None = None,
+        broker_clock_skew_ms: float | None = None,
+        broker_clock_total_uncertainty_ms: float | None = None,
         candle_count: int | None = None,
         is_complete: bool | None = None,
         rejection_classification: str | None = None,
@@ -660,6 +709,22 @@ class TimingRecorder:
             "validation_mono_ns": val_mono,
             "validation_utc_iso": val_iso,
             "broker_clock_fresh": bool(broker_clock_fresh),
+            "broker_clock_sync_status": (
+                str(broker_clock_sync_status) if broker_clock_sync_status is not None else None
+            ),
+            "broker_clock_age_seconds": (
+                round(float(broker_clock_age_seconds), 4)
+                if broker_clock_age_seconds is not None
+                else None
+            ),
+            "broker_clock_skew_ms": (
+                round(float(broker_clock_skew_ms), 4) if broker_clock_skew_ms is not None else None
+            ),
+            "broker_clock_total_uncertainty_ms": (
+                round(float(broker_clock_total_uncertainty_ms), 4)
+                if broker_clock_total_uncertainty_ms is not None
+                else None
+            ),
             "candle_count": c_count,
             "is_complete": c_complete,
             "rejection_classification": rejection_classification,

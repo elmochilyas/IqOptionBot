@@ -94,6 +94,7 @@ class CandleFetchResult:
     recv_mono_ns: int | None = None
     parsed_mono_ns: int | None = None
     request_completion_mono_ns: int | None = None
+    request_id: str | None = None
 
     @property
     def candle_list(self) -> list[Candle]:

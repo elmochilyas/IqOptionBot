@@ -744,3 +744,252 @@ def shadow_trial_command(
     finally:
         typer.echo(f"Shadow evidence destination {trial.output}")
     typer.echo(json.dumps(registry.summary, indent=2))
+
+
+@app.command(
+    "evaluate-predictions",
+    help="Offline prospective evaluation pairing predictions with authentic candle outcomes.",
+)
+def evaluate_predictions_command(
+    evidence: list[Path] = typer.Option(
+        None,
+        "--evidence",
+        "-e",
+        help="Path(s) to shadow evidence JSON file(s) or directory.",
+    ),
+    journal: Path | None = typer.Option(
+        None,
+        "--journal",
+        "-j",
+        help="Path to prospective SQLite journal database (observations.db).",
+    ),
+    storage: Path = typer.Option(
+        Path("data/datasets"),
+        "--storage",
+        "-s",
+        help="Path to historical authentic catalog storage.",
+    ),
+    catalog: Path | None = typer.Option(
+        None,
+        "--catalog",
+        "-c",
+        help="Optional path to SQLite dataset catalog (catalog.db).",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session-id",
+        help="Filter to a specific session ID to prevent cross-session combination.",
+    ),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Path to write the immutable prospective evaluation report JSON.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
+) -> None:
+    from iqoption_research.research.prospective_eval import (
+        CONTRACT_PROFITABILITY_DISCLAIMER,
+        ProspectiveEvaluationError,
+        evaluate_prospective_shadow_offline,
+    )
+
+    paths = evidence or [Path("data/phase34/operator_supervised_live")]
+    storage_dir = (
+        storage
+        if (isinstance(storage, Path) and storage.is_dir())
+        else (Path("data/datasets") if Path("data/datasets").is_dir() else None)
+    )
+    cat_path = catalog if isinstance(catalog, Path) else None
+    j_path = journal if isinstance(journal, Path) else None
+    sess_id = session_id if isinstance(session_id, str) else None
+
+    try:
+        report = evaluate_prospective_shadow_offline(
+            paths,
+            journal_path=j_path,
+            storage_dir=storage_dir,
+            catalog_path=cat_path,
+            session_filter=sess_id,
+        )
+    except ProspectiveEvaluationError as exc:
+        if json_output:
+            typer.echo(json.dumps({"error": str(exc), "status": "FAILED"}, indent=2))
+        else:
+            console.print(f"[bold red]Prospective Evaluation Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if output is not None:
+        output = output.resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+
+    if json_output:
+        typer.echo(json.dumps(report.to_dict(), indent=2))
+        return
+
+    # Rich formatted presentation
+    console.print(
+        Panel(
+            "[bold cyan]Authentic Prospective Model Evaluation (Phase 36)[/bold cyan]\n"
+            "Causally aligned offline evaluation against authentic outcomes.\n"
+            "[yellow]Authority: NONE | Disposition: NO_DEMONSTRATED_EDGE | Orders: 0[/yellow]",
+            title="Model Evaluation Pipeline",
+            border_style="cyan",
+        )
+    )
+
+    # Cohort & Overview Table
+    meta_table = Table(title="Evaluation Cohort & Summary", border_style="blue")
+    meta_table.add_column("Property", style="bold yellow")
+    meta_table.add_column("Value", style="white")
+
+    meta_table.add_row("Sessions Evaluated", ", ".join(report.cohort.sessions))
+    meta_table.add_row("Model Name", str(report.cohort.model_name))
+    meta_table.add_row(
+        "Model Manifest SHA-256", str(report.cohort.model_manifest_sha256)[:16] + "..."
+    )
+    meta_table.add_row("Total Committed Predictions", str(report.total_predictions))
+    meta_table.add_row("Causally Aligned Pairs", f"[green]{report.aligned_pairs_count}[/green]")
+    meta_table.add_row(
+        "Missing/Pending Outcomes",
+        f"[yellow]{report.missing_outcomes_count}[/yellow]"
+        if report.missing_outcomes_count > 0
+        else "0",
+    )
+    meta_table.add_row("Signal Coverage Rate", f"{report.signal_coverage_rate * 100:.1f}%")
+    meta_table.add_row("Abstention Rate", f"{report.abstention_rate * 100:.1f}%")
+    meta_table.add_row("Evidence Provenance", f"[bold]{report.provenance_level}[/bold]")
+    meta_table.add_row(
+        "Authentic Outcomes Verified",
+        f"[bold]{report.all_outcomes_authentic}[/bold]",
+    )
+    meta_table.add_row("Report Evidence SHA-256", f"[dim]{report.evidence_sha256[:16]}...[/dim]")
+    console.print(meta_table)
+
+    # Decisions breakdown
+    dec_table = Table(title="Decisions & Policy Abstention", border_style="magenta")
+    dec_table.add_column("Decision", justify="center", style="bold")
+    dec_table.add_column("Count", justify="right")
+    dec_table.add_column("Notes", style="dim")
+    for dec, cnt in report.decision_distribution.items():
+        dec_table.add_row(dec, str(cnt), "Frozen threshold: 0.60")
+    console.print(dec_table)
+
+    if report.skip_reasons_breakdown:
+        skip_table = Table(title="Analytical Skip Reasons Breakdown", border_style="dim")
+        skip_table.add_column("Reason", style="yellow")
+        skip_table.add_column("Count", justify="right")
+        for reason, count in report.skip_reasons_breakdown.items():
+            skip_table.add_row(reason, str(count))
+        console.print(skip_table)
+
+    # Missing Labels Notice
+    if report.missing_outcomes_count > 0:
+        missing_str = ", ".join(str(b) for b in report.missing_boundaries[:10])
+        if len(report.missing_boundaries) > 10:
+            missing_str += f" (+{len(report.missing_boundaries) - 10} more)"
+        console.print(
+            Panel(
+                f"[bold yellow]Missing Outcome Labels:[/bold yellow] "
+                f"{report.missing_outcomes_count} boundary(ies) await backfill.\n"
+                f"Missing boundaries: [dim]{missing_str}[/dim]\n"
+                "Predictions remain preserved. Forecast scoring will complete once candles arrive.",
+                title="Label Completeness Notice",
+                border_style="yellow",
+            )
+        )
+
+    # Probabilistic & Directional Metrics (if aligned)
+    prob = report.probabilistic_metrics
+    if prob.get("status") == "COMPLETED":
+        metrics_table = Table(title="Probabilistic Forecasting Quality", border_style="green")
+        metrics_table.add_column("Metric", style="bold green")
+        metrics_table.add_column("Score", justify="right")
+        metrics_table.add_column("Description", style="dim")
+
+        metrics_table.add_row(
+            "Brier Score",
+            f"{prob.get('brier_score', 0.0):.4f}",
+            "Mean squared probability error (lower is better)",
+        )
+        metrics_table.add_row(
+            "Log Loss",
+            f"{prob.get('log_loss', 0.0):.4f}",
+            "Binary cross-entropy loss (lower is better)",
+        )
+        metrics_table.add_row(
+            "Expected Calibration Error (ECE)",
+            f"{prob.get('expected_calibration_error', 0.0):.4f}",
+            "Reliability bin divergence",
+        )
+        metrics_table.add_row(
+            "Mean Calibration Bias",
+            f"{prob.get('mean_calibration_bias', 0.0):+.4f}",
+            "Predicted mean - Empirical base rate",
+        )
+        metrics_table.add_row(
+            "Spot Directional Accuracy",
+            f"{prob.get('directional_accuracy_overall', 0.0) * 100:.1f}%",
+            "Overall directional forecast accuracy",
+        )
+        if prob.get("directional_accuracy_non_neutral") is not None:
+            metrics_table.add_row(
+                "Non-Neutral Directional Accuracy",
+                f"{prob.get('directional_accuracy_non_neutral', 0.0) * 100:.1f}%",
+                "Excluding flat candles (C == O)",
+            )
+        metrics_table.add_row(
+            "Binary Target Accuracy",
+            f"{prob.get('binary_target_accuracy', 0.0) * 100:.1f}%",
+            "Accuracy on training target 1(C > O)",
+        )
+        console.print(metrics_table)
+
+        # Benchmarks Table
+        if report.benchmarks:
+            bench_table = Table(title="Benchmark Model Comparisons", border_style="cyan")
+            bench_table.add_column("Benchmark", style="bold")
+            bench_table.add_column("Causal / Type")
+            bench_table.add_column("Brier Score", justify="right")
+            bench_table.add_column("Brier Skill Score", justify="right")
+            bench_table.add_column("Log Loss", justify="right")
+            bench_table.add_column("Accuracy", justify="right")
+
+            for b in report.benchmarks:
+                bss_str = (
+                    f"[bold green]{b.brier_skill_score:+.4f}[/bold green]"
+                    if b.brier_skill_score > 0
+                    else f"[red]{b.brier_skill_score:+.4f}[/red]"
+                )
+                causal_tag = (
+                    "[green]CAUSAL[/green]"
+                    if b.is_causal
+                    else "[yellow]ORACLE (NON-CAUSAL)[/yellow]"
+                )
+                bench_table.add_row(
+                    b.name,
+                    causal_tag,
+                    f"{b.brier_score:.4f}",
+                    bss_str,
+                    f"{b.log_loss:.4f}",
+                    f"{b.directional_accuracy * 100:.1f}%",
+                )
+            console.print(bench_table)
+
+    # Uncertainty & Epistemic Panel
+    u = report.uncertainty
+    console.print(
+        Panel(
+            f"[bold]Epistemic Status:[/bold] [yellow]{u.epistemic_status}[/yellow]\n"
+            f"[bold]Statistical Interpretation:[/bold] {u.interpretation}\n\n"
+            f"[dim]{CONTRACT_PROFITABILITY_DISCLAIMER}[/dim]",
+            title="Statistical Uncertainty & Safety Notice",
+            border_style="yellow"
+            if u.epistemic_status == "EXPLORATORY_DESCRIPTIVE_ONLY"
+            else "green",
+        )
+    )
+
+    if output is not None:
+        console.print(f"[bold green]Evaluation report saved to:[/bold green] {output}")

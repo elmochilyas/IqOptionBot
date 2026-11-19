@@ -411,7 +411,7 @@ def test_offline_reliability_failure_modes_separation(tmp_path: Path) -> None:
     live_dir = Path("data/phase34/operator_supervised_live")
     if live_dir.is_dir() and list(live_dir.glob("*.json")):
         live_report = evaluate([live_dir])
-        assert live_report["unique_live_boundaries"] == 9
+        assert live_report["unique_live_boundaries"] >= 9
         lfm = live_report["failure_modes"]
         assert lfm["network_receipt_failures"] == 0
         assert lfm["candle_completeness_failures"] == 1

@@ -1,0 +1,902 @@
+{
+  "session_id": "shadow_1758c4a42993483fa41c48e3cb4ab386",
+  "session_created_at_utc": "2026-11-19T16:46:00.586884+00:00",
+  "instrumentation_version": "PHASE_34_SHADOW_V1",
+  "operational_mode": "OPERATOR_SUPERVISED_LIVE",
+  "symbol": "EURUSD",
+  "candle_size_seconds": 60,
+  "code_fingerprints": {
+    "taxonomy.py": "87141132ed5caf4597e2723d1f317c1e0ebe99e816dffcdd7781830e7f97db14",
+    "instrumentation.py": "6986176123df8c9f57e6a10390b57ba398d4a28bf44aa20982b6cb62a6243cd9",
+    "pipeline_audit.py": "8d97eccafd61e39239f1f514e3de05073d55a7c83817a684ef35c8e57a9cbeec",
+    "replay.py": "4620e0a45742244b796a8ebd83a1ac50f59b8bbef4df8a86e41d618d77e5d96b",
+    "evidence.py": "caee32f3d3a1615369fce50d7fe7594d50f3115e482a1abb5103a777339f05c7",
+    "supervised_session.py": "641023597f8bfb2da0b9b385e3c42fa4a46da99cba845cfe0ad2bc244bb4b308",
+    "feasibility.py": "dbce6996027de39825bbc073bb11a6b590a9b1d6f1e5567b7063d1d4ab8b257c",
+    "shadow.py": "2bc6e0ad285b6b46f112b0611fc5eda17067ef6f32c09ee8c98c388f2dab55ac"
+  },
+  "clock_discipline": {
+    "anchor_utc_ns": 1795096428328597300,
+    "clock_source_type": "LOCAL_SYSTEM_WALLCLOCK",
+    "ntp_status": "ASSUMED_UNVERIFIED_LOCAL_CLOCK",
+    "ntp_uncertainty_ns": 25000000,
+    "ntp_uncertainty_ms": 25.0,
+    "broker_skew_status": "ESTIMATED_ROUNDTRIP_HEURISTIC",
+    "broker_time_sync_source": "BROKER_WEBSOCKET_TIMESYNC_ESTIMATE",
+    "broker_skew_ns": 51731000,
+    "broker_skew_ms": 51.731,
+    "broker_rtt_ns": 0,
+    "broker_rtt_ms": 0.0,
+    "total_uncertainty_ms": 76.731,
+    "clock_steps_detected_count": 0
+  },
+  "observations": [
+    {
+      "session_id": "shadow_1758c4a42993483fa41c48e3cb4ab386",
+      "observation_index": 1,
+      "symbol": "EURUSD",
+      "candle_size_seconds": 60,
+      "feature_close_F": 1795106520,
+      "feature_close_F_ns": 1795106520000000000,
+      "feature_close_F_iso": "2026-11-19T16:42:00+00:00",
+      "stages": {
+        "STAGE_1_REQUEST_INIT": {
+          "stage_name": "STAGE_1_REQUEST_INIT",
+          "mono_ns": 10091688165900,
+          "disciplined_utc_ns": 1795106520016763200,
+          "disciplined_utc_iso": "2026-11-19T16:42:00.016763+00:00",
+          "wall_clock_ns": 1795106520019107100,
+          "details": {
+            "request_id": "candles-1",
+            "frame_name": "sendMessage"
+          }
+        },
+        "STAGE_2_NETWORK_RECV": {
+          "stage_name": "STAGE_2_NETWORK_RECV",
+          "mono_ns": 10091750668300,
+          "disciplined_utc_ns": 1795106520079265600,
+          "disciplined_utc_iso": "2026-11-19T16:42:00.079266+00:00",
+          "wall_clock_ns": 1795106520075019200,
+          "details": {
+            "request_id": "candles-1",
+            "payload_bytes": 3332
+          }
+        },
+        "STAGE_3_PARSE_VALIDATE": {
+          "stage_name": "STAGE_3_PARSE_VALIDATE",
+          "mono_ns": 10091750801100,
+          "disciplined_utc_ns": 1795106520079398400,
+          "disciplined_utc_iso": "2026-11-19T16:42:00.079398+00:00",
+          "wall_clock_ns": 1795106520075019200,
+          "details": {
+            "request_id": "candles-1",
+            "frame_name": "candles"
+          }
+        },
+        "STAGE_4_CANDLE_VALIDATE": {
+          "stage_name": "STAGE_4_CANDLE_VALIDATE",
+          "mono_ns": 10091752037900,
+          "disciplined_utc_ns": 1795106520080635200,
+          "disciplined_utc_iso": "2026-11-19T16:42:00.080635+00:00",
+          "wall_clock_ns": 1795106520083286300,
+          "details": {
+            "candle_count": 22,
+            "is_complete": true,
+            "request_id": "candles-1"
+          }
+        },
+        "STAGE_5_COMPLETED_RECOG": {
+          "stage_name": "STAGE_5_COMPLETED_RECOG",
+          "mono_ns": 10091752232200,
+          "disciplined_utc_ns": 1795106520080829500,
+          "disciplined_utc_iso": "2026-11-19T16:42:00.080829+00:00",
+          "wall_clock_ns": 1795106520083286300,
+          "details": {
+            "completed_to_ts": 1795106520
+          }
+        },
+        "STAGE_7_FEATURE_AVAIL": {
+          "stage_name": "STAGE_7_FEATURE_AVAIL",
+          "mono_ns": 10091752540800,
+          "disciplined_utc_ns": 1795106520081138100,
+          "disciplined_utc_iso": "2026-11-19T16:42:00.081138+00:00",
+          "wall_clock_ns": 1795106520083286300,
+          "details": {
+            "feature_count": 18
+          }
+        },
+        "STAGE_8_INFERENCE": {
+          "stage_name": "STAGE_8_INFERENCE",
+          "mono_ns": 10091765970600,
+          "disciplined_utc_ns": 1795106520094567900,
+          "disciplined_utc_iso": "2026-11-19T16:42:00.094568+00:00",
+          "wall_clock_ns": 1795106520096262300,
+          "details": {
+            "raw_prob": 0.5159173465814247,
+            "cal_prob": 0.48053672568135697,
+            "decision": "NOT_MEASURED"
+          }
+        },
+        "STAGE_POLICY_DECISION": {
+          "stage_name": "STAGE_POLICY_DECISION",
+          "mono_ns": 10091766003200,
+          "disciplined_utc_ns": 1795106520094600500,
+          "disciplined_utc_iso": "2026-11-19T16:42:00.094600+00:00",
+          "wall_clock_ns": 1795106520096262300,
+          "details": {
+            "decision": "SKIP",
+            "skip_reason": "BELOW_FROZEN_THRESHOLD",
+            "analytical_direction": "SKIP",
+            "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+            "side_probability": 0.519463274318643,
+            "eligibility_block": "missing_payout_data",
+            "tradable_payout": null
+          }
+        },
+        "STAGE_9_JOURNAL_COMMIT": {
+          "stage_name": "STAGE_9_JOURNAL_COMMIT",
+          "mono_ns": 10091773586100,
+          "disciplined_utc_ns": 1795106520102183400,
+          "disciplined_utc_iso": "2026-11-19T16:42:00.102183+00:00",
+          "wall_clock_ns": 1795106520103274300,
+          "details": {
+            "event_key": "shadow:EURUSD:60:1795106520",
+            "payload_sha256": "0e7ddc7c5b44e8d8dde6701ca8507d2fbe777ec992a0a8b9be5a705a202bd62f"
+          }
+        }
+      },
+      "latencies_ms": {
+        "request_to_recv_ms": 62.5024,
+        "recv_to_parsed_ms": 0.1328,
+        "parsed_to_validated_ms": 1.2368,
+        "validated_to_completed_ms": 0.1943,
+        "completed_to_features_ms": 0.3086,
+        "features_to_inferred_ms": 13.4298,
+        "inferred_to_committed_ms": 7.6155,
+        "local_pipeline_total_ms": 22.9178,
+        "broker_delivery_offset_ms": 79.2656,
+        "close_to_commit_total_ms": 102.1834
+      },
+      "clock_uncertainty_ms": 83.2675,
+      "clock_step_detected": false,
+      "candle_received_within_15s": true,
+      "candle_validated_within_15s": true,
+      "prediction_stages_measured": true,
+      "phase30_gate_satisfied": true,
+      "gate_verdict": "PASS",
+      "rejection_reason": null,
+      "raw_probability": 0.5159173465814247,
+      "calibrated_probability": 0.48053672568135697,
+      "decision": "SKIP",
+      "provenance": "OPERATOR_SUPERVISED_LIVE",
+      "is_synthetic": false,
+      "measurement_status": "SHADOW_DECISION",
+      "request_id": "candles-1",
+      "integrity_hash": "5d33a9e5f3b22db36078c3bdb75c9a3ca53da020fb9cf11abcd445b7a94cb7cf",
+      "acquisition_attempts": [
+        {
+          "attempt_number": 1,
+          "request_id": "candles-1",
+          "request_mono_ns": 10091688165900,
+          "request_utc_iso": "2026-11-19T16:42:00.016763+00:00",
+          "receipt_mono_ns": 10091750668300,
+          "receipt_utc_iso": "2026-11-19T16:42:00.079266+00:00",
+          "validation_mono_ns": 10091752037900,
+          "validation_utc_iso": "2026-11-19T16:42:00.080635+00:00",
+          "broker_clock_fresh": true,
+          "broker_clock_sync_status": "SYNCHRONIZED_AND_FRESH",
+          "broker_clock_age_seconds": 1.0,
+          "broker_clock_skew_ms": 58.2675,
+          "broker_clock_total_uncertainty_ms": 83.2675,
+          "candle_count": 22,
+          "is_complete": true,
+          "rejection_classification": null,
+          "retry_attempted": false
+        }
+      ]
+    },
+    {
+      "session_id": "shadow_1758c4a42993483fa41c48e3cb4ab386",
+      "observation_index": 2,
+      "symbol": "EURUSD",
+      "candle_size_seconds": 60,
+      "feature_close_F": 1795106580,
+      "feature_close_F_ns": 1795106580000000000,
+      "feature_close_F_iso": "2026-11-19T16:43:00+00:00",
+      "stages": {
+        "STAGE_1_REQUEST_INIT": {
+          "stage_name": "STAGE_1_REQUEST_INIT",
+          "mono_ns": 10151685114200,
+          "disciplined_utc_ns": 1795106580013711500,
+          "disciplined_utc_iso": "2026-11-19T16:43:00.013712+00:00",
+          "wall_clock_ns": 1795106580015952700,
+          "details": {
+            "request_id": "candles-2",
+            "frame_name": "sendMessage"
+          }
+        },
+        "STAGE_2_NETWORK_RECV": {
+          "stage_name": "STAGE_2_NETWORK_RECV",
+          "mono_ns": 10151749523400,
+          "disciplined_utc_ns": 1795106580078120700,
+          "disciplined_utc_iso": "2026-11-19T16:43:00.078121+00:00",
+          "wall_clock_ns": 1795106580079569500,
+          "details": {
+            "request_id": "candles-2",
+            "payload_bytes": 3332
+          }
+        },
+        "STAGE_3_PARSE_VALIDATE": {
+          "stage_name": "STAGE_3_PARSE_VALIDATE",
+          "mono_ns": 10151749653200,
+          "disciplined_utc_ns": 1795106580078250500,
+          "disciplined_utc_iso": "2026-11-19T16:43:00.078250+00:00",
+          "wall_clock_ns": 1795106580079569500,
+          "details": {
+            "request_id": "candles-2",
+            "frame_name": "candles"
+          }
+        },
+        "STAGE_4_CANDLE_VALIDATE": {
+          "stage_name": "STAGE_4_CANDLE_VALIDATE",
+          "mono_ns": 10151750736300,
+          "disciplined_utc_ns": 1795106580079333600,
+          "disciplined_utc_iso": "2026-11-19T16:43:00.079334+00:00",
+          "wall_clock_ns": 1795106580079569500,
+          "details": {
+            "candle_count": 22,
+            "is_complete": true,
+            "request_id": "candles-2"
+          }
+        },
+        "STAGE_5_COMPLETED_RECOG": {
+          "stage_name": "STAGE_5_COMPLETED_RECOG",
+          "mono_ns": 10151750894500,
+          "disciplined_utc_ns": 1795106580079491800,
+          "disciplined_utc_iso": "2026-11-19T16:43:00.079492+00:00",
+          "wall_clock_ns": 1795106580079569500,
+          "details": {
+            "completed_to_ts": 1795106580
+          }
+        },
+        "STAGE_7_FEATURE_AVAIL": {
+          "stage_name": "STAGE_7_FEATURE_AVAIL",
+          "mono_ns": 10151751114800,
+          "disciplined_utc_ns": 1795106580079712100,
+          "disciplined_utc_iso": "2026-11-19T16:43:00.079712+00:00",
+          "wall_clock_ns": 1795106580079569500,
+          "details": {
+            "feature_count": 18
+          }
+        },
+        "STAGE_8_INFERENCE": {
+          "stage_name": "STAGE_8_INFERENCE",
+          "mono_ns": 10151756614200,
+          "disciplined_utc_ns": 1795106580085211500,
+          "disciplined_utc_iso": "2026-11-19T16:43:00.085211+00:00",
+          "wall_clock_ns": 1795106580079569500,
+          "details": {
+            "raw_prob": 0.5137465456170343,
+            "cal_prob": 0.47839363112559813,
+            "decision": "NOT_MEASURED"
+          }
+        },
+        "STAGE_POLICY_DECISION": {
+          "stage_name": "STAGE_POLICY_DECISION",
+          "mono_ns": 10151756645500,
+          "disciplined_utc_ns": 1795106580085242800,
+          "disciplined_utc_iso": "2026-11-19T16:43:00.085243+00:00",
+          "wall_clock_ns": 1795106580079569500,
+          "details": {
+            "decision": "SKIP",
+            "skip_reason": "BELOW_FROZEN_THRESHOLD",
+            "analytical_direction": "SKIP",
+            "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+            "side_probability": 0.5216063688744019,
+            "eligibility_block": "missing_payout_data",
+            "tradable_payout": null
+          }
+        },
+        "STAGE_9_JOURNAL_COMMIT": {
+          "stage_name": "STAGE_9_JOURNAL_COMMIT",
+          "mono_ns": 10151763048000,
+          "disciplined_utc_ns": 1795106580091645300,
+          "disciplined_utc_iso": "2026-11-19T16:43:00.091645+00:00",
+          "wall_clock_ns": 1795106580079569500,
+          "details": {
+            "event_key": "shadow:EURUSD:60:1795106580",
+            "payload_sha256": "bb5090cb0ee82caf23c594e335ce3fc305dfb1944328dd8b7d67c9c7560ddcd9"
+          }
+        }
+      },
+      "latencies_ms": {
+        "request_to_recv_ms": 64.4092,
+        "recv_to_parsed_ms": 0.1298,
+        "parsed_to_validated_ms": 1.0831,
+        "validated_to_completed_ms": 0.1582,
+        "completed_to_features_ms": 0.2203,
+        "features_to_inferred_ms": 5.4994,
+        "inferred_to_committed_ms": 6.4338,
+        "local_pipeline_total_ms": 13.5246,
+        "broker_delivery_offset_ms": 78.1207,
+        "close_to_commit_total_ms": 91.6453
+      },
+      "clock_uncertainty_ms": 83.8595,
+      "clock_step_detected": false,
+      "candle_received_within_15s": true,
+      "candle_validated_within_15s": true,
+      "prediction_stages_measured": true,
+      "phase30_gate_satisfied": true,
+      "gate_verdict": "PASS",
+      "rejection_reason": null,
+      "raw_probability": 0.5137465456170343,
+      "calibrated_probability": 0.47839363112559813,
+      "decision": "SKIP",
+      "provenance": "OPERATOR_SUPERVISED_LIVE",
+      "is_synthetic": false,
+      "measurement_status": "SHADOW_DECISION",
+      "request_id": "candles-2",
+      "integrity_hash": "7ddeebf603f47a76f858b943a665f0243df1e9e1d1679a556752157b48b3c4f8",
+      "acquisition_attempts": [
+        {
+          "attempt_number": 1,
+          "request_id": "candles-2",
+          "request_mono_ns": 10151685114200,
+          "request_utc_iso": "2026-11-19T16:43:00.013712+00:00",
+          "receipt_mono_ns": 10151749523400,
+          "receipt_utc_iso": "2026-11-19T16:43:00.078121+00:00",
+          "validation_mono_ns": 10151750736300,
+          "validation_utc_iso": "2026-11-19T16:43:00.079334+00:00",
+          "broker_clock_fresh": true,
+          "broker_clock_sync_status": "SYNCHRONIZED_AND_FRESH",
+          "broker_clock_age_seconds": 1.032,
+          "broker_clock_skew_ms": 58.8595,
+          "broker_clock_total_uncertainty_ms": 83.8595,
+          "candle_count": 22,
+          "is_complete": true,
+          "rejection_classification": null,
+          "retry_attempted": false
+        }
+      ]
+    },
+    {
+      "session_id": "shadow_1758c4a42993483fa41c48e3cb4ab386",
+      "observation_index": 3,
+      "symbol": "EURUSD",
+      "candle_size_seconds": 60,
+      "feature_close_F": 1795106640,
+      "feature_close_F_ns": 1795106640000000000,
+      "feature_close_F_iso": "2026-11-19T16:44:00+00:00",
+      "stages": {
+        "STAGE_1_REQUEST_INIT": {
+          "stage_name": "STAGE_1_REQUEST_INIT",
+          "mono_ns": 10211675030000,
+          "disciplined_utc_ns": 1795106640003627300,
+          "disciplined_utc_iso": "2026-11-19T16:44:00.003627+00:00",
+          "wall_clock_ns": 1795106640005247500,
+          "details": {
+            "request_id": "candles-3",
+            "frame_name": "sendMessage"
+          }
+        },
+        "STAGE_2_NETWORK_RECV": {
+          "stage_name": "STAGE_2_NETWORK_RECV",
+          "mono_ns": 10211744154600,
+          "disciplined_utc_ns": 1795106640072751900,
+          "disciplined_utc_iso": "2026-11-19T16:44:00.072752+00:00",
+          "wall_clock_ns": 1795106640072073800,
+          "details": {
+            "request_id": "candles-3",
+            "payload_bytes": 3331
+          }
+        },
+        "STAGE_3_PARSE_VALIDATE": {
+          "stage_name": "STAGE_3_PARSE_VALIDATE",
+          "mono_ns": 10211744288000,
+          "disciplined_utc_ns": 1795106640072885300,
+          "disciplined_utc_iso": "2026-11-19T16:44:00.072885+00:00",
+          "wall_clock_ns": 1795106640072073800,
+          "details": {
+            "request_id": "candles-3",
+            "frame_name": "candles"
+          }
+        },
+        "STAGE_4_CANDLE_VALIDATE": {
+          "stage_name": "STAGE_4_CANDLE_VALIDATE",
+          "mono_ns": 10211745333200,
+          "disciplined_utc_ns": 1795106640073930500,
+          "disciplined_utc_iso": "2026-11-19T16:44:00.073931+00:00",
+          "wall_clock_ns": 1795106640072073800,
+          "details": {
+            "candle_count": 22,
+            "is_complete": true,
+            "request_id": "candles-3"
+          }
+        },
+        "STAGE_5_COMPLETED_RECOG": {
+          "stage_name": "STAGE_5_COMPLETED_RECOG",
+          "mono_ns": 10211745494800,
+          "disciplined_utc_ns": 1795106640074092100,
+          "disciplined_utc_iso": "2026-11-19T16:44:00.074092+00:00",
+          "wall_clock_ns": 1795106640072073800,
+          "details": {
+            "completed_to_ts": 1795106640
+          }
+        },
+        "STAGE_7_FEATURE_AVAIL": {
+          "stage_name": "STAGE_7_FEATURE_AVAIL",
+          "mono_ns": 10211745712100,
+          "disciplined_utc_ns": 1795106640074309400,
+          "disciplined_utc_iso": "2026-11-19T16:44:00.074309+00:00",
+          "wall_clock_ns": 1795106640072073800,
+          "details": {
+            "feature_count": 18
+          }
+        },
+        "STAGE_8_INFERENCE": {
+          "stage_name": "STAGE_8_INFERENCE",
+          "mono_ns": 10211751496500,
+          "disciplined_utc_ns": 1795106640080093800,
+          "disciplined_utc_iso": "2026-11-19T16:44:00.080094+00:00",
+          "wall_clock_ns": 1795106640072073800,
+          "details": {
+            "raw_prob": 0.5226223522653655,
+            "cal_prob": 0.48716033180636403,
+            "decision": "NOT_MEASURED"
+          }
+        },
+        "STAGE_POLICY_DECISION": {
+          "stage_name": "STAGE_POLICY_DECISION",
+          "mono_ns": 10211751525500,
+          "disciplined_utc_ns": 1795106640080122800,
+          "disciplined_utc_iso": "2026-11-19T16:44:00.080123+00:00",
+          "wall_clock_ns": 1795106640072073800,
+          "details": {
+            "decision": "SKIP",
+            "skip_reason": "BELOW_FROZEN_THRESHOLD",
+            "analytical_direction": "SKIP",
+            "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+            "side_probability": 0.512839668193636,
+            "eligibility_block": "missing_payout_data",
+            "tradable_payout": null
+          }
+        },
+        "STAGE_9_JOURNAL_COMMIT": {
+          "stage_name": "STAGE_9_JOURNAL_COMMIT",
+          "mono_ns": 10211759094800,
+          "disciplined_utc_ns": 1795106640087692100,
+          "disciplined_utc_iso": "2026-11-19T16:44:00.087692+00:00",
+          "wall_clock_ns": 1795106640084683000,
+          "details": {
+            "event_key": "shadow:EURUSD:60:1795106640",
+            "payload_sha256": "639bdfc19545c07c27c32dbe93f5e947d0e8abc6133d41564edf0bfd9dc2f720"
+          }
+        }
+      },
+      "latencies_ms": {
+        "request_to_recv_ms": 69.1246,
+        "recv_to_parsed_ms": 0.1334,
+        "parsed_to_validated_ms": 1.0452,
+        "validated_to_completed_ms": 0.1616,
+        "completed_to_features_ms": 0.2173,
+        "features_to_inferred_ms": 5.7844,
+        "inferred_to_committed_ms": 7.5983,
+        "local_pipeline_total_ms": 14.9402,
+        "broker_delivery_offset_ms": 72.7519,
+        "close_to_commit_total_ms": 87.6921
+      },
+      "clock_uncertainty_ms": 79.024,
+      "clock_step_detected": false,
+      "candle_received_within_15s": true,
+      "candle_validated_within_15s": true,
+      "prediction_stages_measured": true,
+      "phase30_gate_satisfied": true,
+      "gate_verdict": "PASS",
+      "rejection_reason": null,
+      "raw_probability": 0.5226223522653655,
+      "calibrated_probability": 0.48716033180636403,
+      "decision": "SKIP",
+      "provenance": "OPERATOR_SUPERVISED_LIVE",
+      "is_synthetic": false,
+      "measurement_status": "SHADOW_DECISION",
+      "request_id": "candles-3",
+      "integrity_hash": "6961f77dc2974c123a2d4b5b4783f123da5a07069ce08c784e445e346a0200b3",
+      "acquisition_attempts": [
+        {
+          "attempt_number": 1,
+          "request_id": "candles-3",
+          "request_mono_ns": 10211675030000,
+          "request_utc_iso": "2026-11-19T16:44:00.003627+00:00",
+          "receipt_mono_ns": 10211744154600,
+          "receipt_utc_iso": "2026-11-19T16:44:00.072752+00:00",
+          "validation_mono_ns": 10211745333200,
+          "validation_utc_iso": "2026-11-19T16:44:00.073931+00:00",
+          "broker_clock_fresh": true,
+          "broker_clock_sync_status": "SYNCHRONIZED_AND_FRESH",
+          "broker_clock_age_seconds": 0.016,
+          "broker_clock_skew_ms": 54.024,
+          "broker_clock_total_uncertainty_ms": 79.024,
+          "candle_count": 22,
+          "is_complete": true,
+          "rejection_classification": null,
+          "retry_attempted": false
+        }
+      ]
+    },
+    {
+      "session_id": "shadow_1758c4a42993483fa41c48e3cb4ab386",
+      "observation_index": 4,
+      "symbol": "EURUSD",
+      "candle_size_seconds": 60,
+      "feature_close_F": 1795106700,
+      "feature_close_F_ns": 1795106700000000000,
+      "feature_close_F_iso": "2026-11-19T16:45:00+00:00",
+      "stages": {
+        "STAGE_1_REQUEST_INIT": {
+          "stage_name": "STAGE_1_REQUEST_INIT",
+          "mono_ns": 10271683235600,
+          "disciplined_utc_ns": 1795106700011832900,
+          "disciplined_utc_iso": "2026-11-19T16:45:00.011833+00:00",
+          "wall_clock_ns": 1795106700013143900,
+          "details": {
+            "request_id": "candles-4",
+            "frame_name": "sendMessage"
+          }
+        },
+        "STAGE_2_NETWORK_RECV": {
+          "stage_name": "STAGE_2_NETWORK_RECV",
+          "mono_ns": 10271747039100,
+          "disciplined_utc_ns": 1795106700075636400,
+          "disciplined_utc_iso": "2026-11-19T16:45:00.075636+00:00",
+          "wall_clock_ns": 1795106700076688100,
+          "details": {
+            "request_id": "candles-4",
+            "payload_bytes": 3332
+          }
+        },
+        "STAGE_3_PARSE_VALIDATE": {
+          "stage_name": "STAGE_3_PARSE_VALIDATE",
+          "mono_ns": 10271747102500,
+          "disciplined_utc_ns": 1795106700075699800,
+          "disciplined_utc_iso": "2026-11-19T16:45:00.075700+00:00",
+          "wall_clock_ns": 1795106700076688100,
+          "details": {
+            "request_id": "candles-4",
+            "frame_name": "candles"
+          }
+        },
+        "STAGE_4_CANDLE_VALIDATE": {
+          "stage_name": "STAGE_4_CANDLE_VALIDATE",
+          "mono_ns": 10271747592300,
+          "disciplined_utc_ns": 1795106700076189600,
+          "disciplined_utc_iso": "2026-11-19T16:45:00.076190+00:00",
+          "wall_clock_ns": 1795106700076688100,
+          "details": {
+            "candle_count": 22,
+            "is_complete": true,
+            "request_id": "candles-4"
+          }
+        },
+        "STAGE_5_COMPLETED_RECOG": {
+          "stage_name": "STAGE_5_COMPLETED_RECOG",
+          "mono_ns": 10271747659200,
+          "disciplined_utc_ns": 1795106700076256500,
+          "disciplined_utc_iso": "2026-11-19T16:45:00.076257+00:00",
+          "wall_clock_ns": 1795106700076688100,
+          "details": {
+            "completed_to_ts": 1795106700
+          }
+        },
+        "STAGE_7_FEATURE_AVAIL": {
+          "stage_name": "STAGE_7_FEATURE_AVAIL",
+          "mono_ns": 10271747768300,
+          "disciplined_utc_ns": 1795106700076365600,
+          "disciplined_utc_iso": "2026-11-19T16:45:00.076365+00:00",
+          "wall_clock_ns": 1795106700076688100,
+          "details": {
+            "feature_count": 18
+          }
+        },
+        "STAGE_8_INFERENCE": {
+          "stage_name": "STAGE_8_INFERENCE",
+          "mono_ns": 10271751137500,
+          "disciplined_utc_ns": 1795106700079734800,
+          "disciplined_utc_iso": "2026-11-19T16:45:00.079735+00:00",
+          "wall_clock_ns": 1795106700076688100,
+          "details": {
+            "raw_prob": 0.505267236325548,
+            "cal_prob": 0.4700308912342122,
+            "decision": "NOT_MEASURED"
+          }
+        },
+        "STAGE_POLICY_DECISION": {
+          "stage_name": "STAGE_POLICY_DECISION",
+          "mono_ns": 10271751165900,
+          "disciplined_utc_ns": 1795106700079763200,
+          "disciplined_utc_iso": "2026-11-19T16:45:00.079763+00:00",
+          "wall_clock_ns": 1795106700076688100,
+          "details": {
+            "decision": "SKIP",
+            "skip_reason": "BELOW_FROZEN_THRESHOLD",
+            "analytical_direction": "SKIP",
+            "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+            "side_probability": 0.5299691087657878,
+            "eligibility_block": "missing_payout_data",
+            "tradable_payout": null
+          }
+        },
+        "STAGE_9_JOURNAL_COMMIT": {
+          "stage_name": "STAGE_9_JOURNAL_COMMIT",
+          "mono_ns": 10271757763100,
+          "disciplined_utc_ns": 1795106700086360400,
+          "disciplined_utc_iso": "2026-11-19T16:45:00.086360+00:00",
+          "wall_clock_ns": 1795106700083325600,
+          "details": {
+            "event_key": "shadow:EURUSD:60:1795106700",
+            "payload_sha256": "7ebcbe15eb34fad823c8fdeec1b940cc74741522c71ca38c654b0c4b6ca7d827"
+          }
+        }
+      },
+      "latencies_ms": {
+        "request_to_recv_ms": 63.8035,
+        "recv_to_parsed_ms": 0.0634,
+        "parsed_to_validated_ms": 0.4898,
+        "validated_to_completed_ms": 0.0669,
+        "completed_to_features_ms": 0.1091,
+        "features_to_inferred_ms": 3.3692,
+        "inferred_to_committed_ms": 6.6256,
+        "local_pipeline_total_ms": 10.724,
+        "broker_delivery_offset_ms": 75.6364,
+        "close_to_commit_total_ms": 86.3604
+      },
+      "clock_uncertainty_ms": 78.1514,
+      "clock_step_detected": false,
+      "candle_received_within_15s": true,
+      "candle_validated_within_15s": true,
+      "prediction_stages_measured": true,
+      "phase30_gate_satisfied": true,
+      "gate_verdict": "PASS",
+      "rejection_reason": null,
+      "raw_probability": 0.505267236325548,
+      "calibrated_probability": 0.4700308912342122,
+      "decision": "SKIP",
+      "provenance": "OPERATOR_SUPERVISED_LIVE",
+      "is_synthetic": false,
+      "measurement_status": "SHADOW_DECISION",
+      "request_id": "candles-4",
+      "integrity_hash": "3c35d0e8be05f456cb7755914687ccaaded8786b8979dd2711c0ebca3032b062",
+      "acquisition_attempts": [
+        {
+          "attempt_number": 1,
+          "request_id": "candles-4",
+          "request_mono_ns": 10271683235600,
+          "request_utc_iso": "2026-11-19T16:45:00.011833+00:00",
+          "receipt_mono_ns": 10271747039100,
+          "receipt_utc_iso": "2026-11-19T16:45:00.075636+00:00",
+          "validation_mono_ns": 10271747592300,
+          "validation_utc_iso": "2026-11-19T16:45:00.076190+00:00",
+          "broker_clock_fresh": true,
+          "broker_clock_sync_status": "SYNCHRONIZED_AND_FRESH",
+          "broker_clock_age_seconds": 0.047,
+          "broker_clock_skew_ms": 53.1514,
+          "broker_clock_total_uncertainty_ms": 78.1514,
+          "candle_count": 22,
+          "is_complete": true,
+          "rejection_classification": null,
+          "retry_attempted": false
+        }
+      ]
+    },
+    {
+      "session_id": "shadow_1758c4a42993483fa41c48e3cb4ab386",
+      "observation_index": 5,
+      "symbol": "EURUSD",
+      "candle_size_seconds": 60,
+      "feature_close_F": 1795106760,
+      "feature_close_F_ns": 1795106760000000000,
+      "feature_close_F_iso": "2026-11-19T16:46:00+00:00",
+      "stages": {
+        "STAGE_1_REQUEST_INIT": {
+          "stage_name": "STAGE_1_REQUEST_INIT",
+          "mono_ns": 10331688771100,
+          "disciplined_utc_ns": 1795106760017368400,
+          "disciplined_utc_iso": "2026-11-19T16:46:00.017368+00:00",
+          "wall_clock_ns": 1795106760018392800,
+          "details": {
+            "request_id": "candles-5",
+            "frame_name": "sendMessage"
+          }
+        },
+        "STAGE_2_NETWORK_RECV": {
+          "stage_name": "STAGE_2_NETWORK_RECV",
+          "mono_ns": 10331797575900,
+          "disciplined_utc_ns": 1795106760126173200,
+          "disciplined_utc_iso": "2026-11-19T16:46:00.126173+00:00",
+          "wall_clock_ns": 1795106760114527200,
+          "details": {
+            "request_id": "candles-5",
+            "payload_bytes": 3330
+          }
+        },
+        "STAGE_3_PARSE_VALIDATE": {
+          "stage_name": "STAGE_3_PARSE_VALIDATE",
+          "mono_ns": 10331797711500,
+          "disciplined_utc_ns": 1795106760126308800,
+          "disciplined_utc_iso": "2026-11-19T16:46:00.126309+00:00",
+          "wall_clock_ns": 1795106760114527200,
+          "details": {
+            "request_id": "candles-5",
+            "frame_name": "candles"
+          }
+        },
+        "STAGE_4_CANDLE_VALIDATE": {
+          "stage_name": "STAGE_4_CANDLE_VALIDATE",
+          "mono_ns": 10331798905400,
+          "disciplined_utc_ns": 1795106760127502700,
+          "disciplined_utc_iso": "2026-11-19T16:46:00.127503+00:00",
+          "wall_clock_ns": 1795106760128533200,
+          "details": {
+            "candle_count": 22,
+            "is_complete": true,
+            "request_id": "candles-5"
+          }
+        },
+        "STAGE_5_COMPLETED_RECOG": {
+          "stage_name": "STAGE_5_COMPLETED_RECOG",
+          "mono_ns": 10331799057700,
+          "disciplined_utc_ns": 1795106760127655000,
+          "disciplined_utc_iso": "2026-11-19T16:46:00.127655+00:00",
+          "wall_clock_ns": 1795106760128533200,
+          "details": {
+            "completed_to_ts": 1795106760
+          }
+        },
+        "STAGE_7_FEATURE_AVAIL": {
+          "stage_name": "STAGE_7_FEATURE_AVAIL",
+          "mono_ns": 10331799277300,
+          "disciplined_utc_ns": 1795106760127874600,
+          "disciplined_utc_iso": "2026-11-19T16:46:00.127875+00:00",
+          "wall_clock_ns": 1795106760128533200,
+          "details": {
+            "feature_count": 18
+          }
+        },
+        "STAGE_8_INFERENCE": {
+          "stage_name": "STAGE_8_INFERENCE",
+          "mono_ns": 10331805146400,
+          "disciplined_utc_ns": 1795106760133743700,
+          "disciplined_utc_iso": "2026-11-19T16:46:00.133744+00:00",
+          "wall_clock_ns": 1795106760134274500,
+          "details": {
+            "raw_prob": 0.4939286355210556,
+            "cal_prob": 0.458875225353162,
+            "decision": "NOT_MEASURED"
+          }
+        },
+        "STAGE_POLICY_DECISION": {
+          "stage_name": "STAGE_POLICY_DECISION",
+          "mono_ns": 10331805172400,
+          "disciplined_utc_ns": 1795106760133769700,
+          "disciplined_utc_iso": "2026-11-19T16:46:00.133770+00:00",
+          "wall_clock_ns": 1795106760134274500,
+          "details": {
+            "decision": "SKIP",
+            "skip_reason": "BELOW_FROZEN_THRESHOLD",
+            "analytical_direction": "SKIP",
+            "analytical_reason": "BELOW_FROZEN_THRESHOLD",
+            "side_probability": 0.541124774646838,
+            "eligibility_block": "missing_payout_data",
+            "tradable_payout": null
+          }
+        },
+        "STAGE_9_JOURNAL_COMMIT": {
+          "stage_name": "STAGE_9_JOURNAL_COMMIT",
+          "mono_ns": 10331813500000,
+          "disciplined_utc_ns": 1795106760142097300,
+          "disciplined_utc_iso": "2026-11-19T16:46:00.142097+00:00",
+          "wall_clock_ns": 1795106760136012800,
+          "details": {
+            "event_key": "shadow:EURUSD:60:1795106760",
+            "payload_sha256": "590c9001fcc6d811eef6d9d2b01198d7fdc5f9596da67bdc5391dd8f6db73a01"
+          }
+        }
+      },
+      "latencies_ms": {
+        "request_to_recv_ms": 108.8048,
+        "recv_to_parsed_ms": 0.1356,
+        "parsed_to_validated_ms": 1.1939,
+        "validated_to_completed_ms": 0.1523,
+        "completed_to_features_ms": 0.2196,
+        "features_to_inferred_ms": 5.8691,
+        "inferred_to_committed_ms": 8.3536,
+        "local_pipeline_total_ms": 15.9241,
+        "broker_delivery_offset_ms": 126.1732,
+        "close_to_commit_total_ms": 142.0973
+      },
+      "clock_uncertainty_ms": 76.731,
+      "clock_step_detected": false,
+      "candle_received_within_15s": true,
+      "candle_validated_within_15s": true,
+      "prediction_stages_measured": true,
+      "phase30_gate_satisfied": true,
+      "gate_verdict": "PASS",
+      "rejection_reason": null,
+      "raw_probability": 0.4939286355210556,
+      "calibrated_probability": 0.458875225353162,
+      "decision": "SKIP",
+      "provenance": "OPERATOR_SUPERVISED_LIVE",
+      "is_synthetic": false,
+      "measurement_status": "SHADOW_DECISION",
+      "request_id": "candles-5",
+      "integrity_hash": "129bc8b5ff835e0862a8f2784164108f87ac09299f1445d831e5b136ecf259d6",
+      "acquisition_attempts": [
+        {
+          "attempt_number": 1,
+          "request_id": "candles-5",
+          "request_mono_ns": 10331688771100,
+          "request_utc_iso": "2026-11-19T16:46:00.017368+00:00",
+          "receipt_mono_ns": 10331797575900,
+          "receipt_utc_iso": "2026-11-19T16:46:00.126173+00:00",
+          "validation_mono_ns": 10331798905400,
+          "validation_utc_iso": "2026-11-19T16:46:00.127503+00:00",
+          "broker_clock_fresh": true,
+          "broker_clock_sync_status": "SYNCHRONIZED_AND_FRESH",
+          "broker_clock_age_seconds": 0.11,
+          "broker_clock_skew_ms": 51.731,
+          "broker_clock_total_uncertainty_ms": 76.731,
+          "candle_count": 22,
+          "is_complete": true,
+          "rejection_classification": null,
+          "retry_attempted": false
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_observations": 5,
+    "candle_received_within_15s_count": 5,
+    "candle_validated_within_15s_count": 5,
+    "prediction_stages_measured_count": 5,
+    "full_phase30_gate_compliant_count": 5,
+    "full_phase30_gate_compliance_pct": 100.0,
+    "rejection_reasons_breakdown": {},
+    "median_broker_delivery_offset_ms": 78.1207,
+    "median_local_pipeline_total_ms": 14.9402,
+    "median_close_to_commit_total_ms": 91.6453,
+    "source": "IQOPTION_EURUSD_SPOT_60S",
+    "model_eligible": true,
+    "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+    "feature_schema": [
+      "return_1",
+      "log_return_1",
+      "intrabar_return",
+      "sma_ratio_5",
+      "sma_ratio_20",
+      "volatility_10",
+      "volatility_20",
+      "candle_range",
+      "body_to_range",
+      "upper_shadow_ratio",
+      "lower_shadow_ratio",
+      "log_volume",
+      "volume_ratio_10"
+    ],
+    "model_name": "random_forest",
+    "model_provenance": "authentic_trained",
+    "feature_pipeline": "CausalFeaturePipeline/v1",
+    "policy": "ProspectivePolicy/0.60/assumed-payout-0.85/v1",
+    "assumed_payout_for_gate_only": 0.85,
+    "actual_broker_payout_verified": false,
+    "trading_eligibility": "UNPROVEN",
+    "execution_authority": "NONE",
+    "orders_sent": 0,
+    "max_candle_cycles": 5,
+    "max_duration_seconds": 300,
+    "stop_reason": "CYCLE_LIMIT",
+    "allowlist": "validate_timing_frame",
+    "disposition": "NO_DEMONSTRATED_EDGE",
+    "wallet_classification_at_start": "CONFLICTING_ACCOUNT_INDICATORS",
+    "observation_started_utc_ns": 1795106481519631300
+  },
+  "integrity_hash": "7347ea67602d695a7c8f44d860a924f4a9e18e141d3b7ff5ba85b2d983a034af"
+}

@@ -48,6 +48,7 @@ data/*
 !data/phase13/
 !data/phase14/
 !data/phase15/
+!data/phase36/
 !data/bot_sessions/
 data/bot_sessions/*
 !data/bot_sessions/session_1794842044_summary.json

@@ -1,0 +1,58 @@
+{
+  "evaluated_at_utc": "2026-11-19T17:15:27.477802+00:00",
+  "cohort": {
+    "sessions": [
+      "shadow_1758c4a42993483fa41c48e3cb4ab386"
+    ],
+    "model_manifest_sha256": "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872",
+    "model_name": "random_forest",
+    "instrumentation_version": "PHASE_34_SHADOW_V1",
+    "policy_version": "ProspectivePolicy/0.60/assumed-payout-0.85/v1",
+    "symbol": "EURUSD",
+    "candle_size_seconds": 60
+  },
+  "total_predictions": 5,
+  "aligned_pairs_count": 0,
+  "missing_outcomes_count": 5,
+  "missing_boundaries": [
+    1795106520,
+    1795106580,
+    1795106640,
+    1795106700,
+    1795106760
+  ],
+  "decision_distribution": {
+    "SKIP": 5
+  },
+  "skip_reasons_breakdown": {
+    "BELOW_FROZEN_THRESHOLD": 5
+  },
+  "abstention_coverage_rate": 0.0,
+  "probabilistic_metrics": {
+    "evaluated_sample_count": 0,
+    "status": "AWAITING_LABEL_COLLECTION"
+  },
+  "benchmarks": [],
+  "uncertainty": {
+    "sample_size": 0,
+    "effective_sample_size": 0.0,
+    "lag1_autocorrelation": null,
+    "accuracy_wilson_ci_95": [
+      0.0,
+      1.0
+    ],
+    "epistemic_status": "AWAITING_AUTHENTIC_OUTCOMES",
+    "interpretation": "No authentic outcome candles have been paired yet. Forecast evaluation is pending subsequent authentic market observation."
+  },
+  "contract_distinction": {
+    "disclaimer": "SPOT_DIRECTIONAL_ACCURACY_IS_NOT_REALIZED_CONTRACT_PROFITABILITY: Spot candle direction measures price movement between consecutive spot bars only. Binary contracts require payout hurdle (>54.05% at 0.85 payout to break even). Zero broker orders were sent. Actual tradable payout, broker execution, latency, and fills are unverified.",
+    "spot_candle_direction_evaluated": true,
+    "binary_option_contract_payoff_verified": false,
+    "assumed_payout_rate": 0.85,
+    "break_even_win_rate_required": 0.5405405405405405,
+    "broker_orders_sent": 0,
+    "disposition": "NO_DEMONSTRATED_EDGE",
+    "execution_authority": "NONE"
+  },
+  "evidence_sha256": "c835d2989b8bbecc44692aae85ba2b85e0915dac5c851416f3814e43eed65483"
+}

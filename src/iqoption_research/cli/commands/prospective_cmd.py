@@ -78,3 +78,42 @@ def audit_command(
             "product_classification": products["classification"],
         })
     )
+
+
+@app.command("evaluate-predictions")
+def evaluate_predictions_cmd(
+    evidence: list[Path] = typer.Option(
+        None,
+        "--evidence",
+        "-e",
+        help="Path(s) to shadow evidence JSON file(s) or directory.",
+    ),
+    storage: Path = typer.Option(
+        Path("data/datasets"),
+        "--storage",
+        "-s",
+        help="Path to historical authentic catalog storage.",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session-id",
+        help="Filter to a specific session ID to prevent cross-session combination.",
+    ),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Path to write the immutable prospective evaluation report JSON.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
+) -> None:
+    """Offline prospective evaluation pairing predictions with authentic candle outcomes."""
+    from iqoption_research.cli.commands.timing_cmd import evaluate_predictions_command
+
+    evaluate_predictions_command(
+        evidence=evidence,
+        storage=storage,
+        session_id=session_id,
+        output=output,
+        json_output=json_output,
+    )

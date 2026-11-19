@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
+from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -17,7 +20,12 @@ from iqoption_research.models.clock import (
     BrokerClockSyncStatus,
 )
 from iqoption_research.models.connection import DisconnectReason
-from iqoption_research.timing.instrumentation import TimingRecorder
+from iqoption_research.timing.evidence import TimingEvidenceRegistry
+from iqoption_research.timing.instrumentation import (
+    ClockDiscipline,
+    TimingRecorder,
+    compute_observation_dict_hash,
+)
 from iqoption_research.timing.reliability import evaluate
 from iqoption_research.timing.taxonomy import (
     BrokerClockDiagnostics as TaxonomyDiagnostics,
@@ -426,3 +434,302 @@ async def test_wait_for_server_time_sync_disconnection_fails_closed_immediately(
     await bg_task
     assert res is False
     assert client.is_server_time_fresh is False
+
+
+def _create_sample_phase35_registry(
+    *,
+    status: str = BrokerClockSyncStatus.SYNCHRONIZED_AND_FRESH.value,
+    fresh: bool = True,
+    age: float | None = 1.234,
+    skew: float | None = -12.345,
+    unc: float | None = 37.345,
+) -> TimingEvidenceRegistry:
+    """Helper to build a valid TimingEvidenceRegistry containing Phase 35 clock diagnostics."""
+    clock = ClockDiscipline(anchor_utc_ns=1795000000_000_000_000)
+    recorder = TimingRecorder("p35_test_session", clock=clock, enable_clock_stability_check=False)
+    obs = recorder.start_candle_observation(1795000060)
+    obs.is_synthetic = True
+    obs.provenance = "OFFLINE_SIMULATION"
+    recorder.record_stage("STAGE_1_REQUEST_INIT", mono_ns=1795000060_000_000_000)
+    recorder.record_stage("STAGE_2_NETWORK_RECV", mono_ns=1795000061_000_000_000)
+    recorder.record_stage("STAGE_3_PARSE_VALIDATE", mono_ns=1795000061_500_000_000)
+    recorder.record_stage("STAGE_4_CANDLE_VALIDATE", mono_ns=1795000062_000_000_000)
+    recorder.record_candle_validated(1795000062_000_000_000, candle_count=1)
+    recorder.record_acquisition_attempt(
+        attempt_number=1,
+        request_id="req-p35-001",
+        broker_clock_fresh=fresh,
+        broker_clock_sync_status=status,
+        broker_clock_age_seconds=age,
+        broker_clock_skew_ms=skew,
+        broker_clock_total_uncertainty_ms=unc,
+        candle_count=1,
+        is_complete=True,
+        retry_attempted=False,
+    )
+    obs.compute_latencies_and_gate(clock)
+    obs.compute_hash()
+
+    return TimingEvidenceRegistry.create(
+        session_id="p35_test_session",
+        operational_mode="OFFLINE_SIMULATION",
+        project_root=Path(),
+        clock=clock,
+        observations=[obs],
+    )
+
+
+def test_compute_observation_dict_hash_includes_phase35_fields() -> None:
+    """Verify compute_observation_dict_hash incorporates all Phase 35 clock fields."""
+    base_obs: dict[str, Any] = {
+        "observation_index": 1,
+        "feature_close_F": 1795000060,
+        "feature_close_F_ns": 1795000060_000_000_000,
+        "request_id": "req-1",
+        "symbol": "EURUSD",
+        "candle_size_seconds": 60,
+        "is_synthetic": True,
+        "provenance": "OFFLINE_SIMULATION",
+        "decision": "NOT_MEASURED",
+        "acquisition_attempts": [
+            {
+                "attempt_number": 1,
+                "request_id": "req-1",
+                "request_mono_ns": 1000,
+                "receipt_mono_ns": 2000,
+                "validation_mono_ns": 3000,
+                "broker_clock_fresh": True,
+                "broker_clock_sync_status": "SYNCHRONIZED_AND_FRESH",
+                "broker_clock_age_seconds": 1.2345,
+                "broker_clock_skew_ms": -12.3456,
+                "broker_clock_total_uncertainty_ms": 37.3456,
+                "candle_count": 1,
+                "is_complete": True,
+                "retry_attempted": False,
+            }
+        ],
+    }
+
+    base_hash = compute_observation_dict_hash(base_obs)
+    assert isinstance(base_hash, str) and len(base_hash) == 64
+
+    # 1. Modifying broker_clock_sync_status changes the hash
+    obs_mod_status = copy.deepcopy(base_obs)
+    obs_mod_status["acquisition_attempts"][0]["broker_clock_sync_status"] = "STALE_SYNCHRONIZATION"
+    assert compute_observation_dict_hash(obs_mod_status) != base_hash
+
+    # 2. Modifying broker_clock_age_seconds changes the hash
+    obs_mod_age = copy.deepcopy(base_obs)
+    obs_mod_age["acquisition_attempts"][0]["broker_clock_age_seconds"] = 1.2346
+    assert compute_observation_dict_hash(obs_mod_age) != base_hash
+
+    # 3. Modifying broker_clock_skew_ms changes the hash
+    obs_mod_skew = copy.deepcopy(base_obs)
+    obs_mod_skew["acquisition_attempts"][0]["broker_clock_skew_ms"] = -12.3457
+    assert compute_observation_dict_hash(obs_mod_skew) != base_hash
+
+    # 4. Modifying broker_clock_total_uncertainty_ms changes the hash
+    obs_mod_unc = copy.deepcopy(base_obs)
+    obs_mod_unc["acquisition_attempts"][0]["broker_clock_total_uncertainty_ms"] = 37.3457
+    assert compute_observation_dict_hash(obs_mod_unc) != base_hash
+
+    # 5. Deleting any of the four fields changes the hash
+    for field_name in (
+        "broker_clock_sync_status",
+        "broker_clock_age_seconds",
+        "broker_clock_skew_ms",
+        "broker_clock_total_uncertainty_ms",
+    ):
+        obs_del = copy.deepcopy(base_obs)
+        del obs_del["acquisition_attempts"][0][field_name]
+        assert compute_observation_dict_hash(obs_del) != base_hash
+
+
+def test_compute_observation_dict_hash_preserves_historical_compatibility() -> None:
+    """Historical observations lacking Phase 35 clock fields retain their canonical hash."""
+    historical_obs: dict[str, Any] = {
+        "observation_index": 1,
+        "feature_close_F": 1795000060,
+        "feature_close_F_ns": 1795000060_000_000_000,
+        "request_id": "req-1",
+        "symbol": "EURUSD",
+        "candle_size_seconds": 60,
+        "is_synthetic": True,
+        "provenance": "OFFLINE_SIMULATION",
+        "decision": "NOT_MEASURED",
+        "acquisition_attempts": [
+            {
+                "attempt_number": 1,
+                "request_id": "req-1",
+                "request_mono_ns": 1000,
+                "receipt_mono_ns": 2000,
+                "validation_mono_ns": 3000,
+                "broker_clock_fresh": True,
+                "candle_count": 1,
+                "is_complete": True,
+                "retry_attempted": False,
+            }
+        ],
+    }
+
+    h1 = compute_observation_dict_hash(historical_obs)
+    h2 = compute_observation_dict_hash(copy.deepcopy(historical_obs))
+    assert h1 == h2
+
+
+def test_evidence_registry_verify_integrity_tampering_detection() -> None:
+    """verify_integrity detects any tampering with Phase 35 clock diagnostic fields."""
+    reg = _create_sample_phase35_registry()
+    valid, errors = reg.verify_integrity()
+    assert valid is True
+    assert errors == []
+
+    # Tampering with each diagnostic field without recomputing the observation hash fails integrity
+    for field_name, tampered_val in [
+        ("broker_clock_sync_status", "STALE_SYNCHRONIZATION"),
+        ("broker_clock_age_seconds", 9.999),
+        ("broker_clock_skew_ms", 100.0),
+        ("broker_clock_total_uncertainty_ms", 125.0),
+    ]:
+        data = copy.deepcopy(reg.to_dict())
+        data["observations"][0]["acquisition_attempts"][0][field_name] = tampered_val
+        tampered_reg = TimingEvidenceRegistry.from_dict(data)
+        is_valid, errs = tampered_reg.verify_integrity()
+        assert is_valid is False
+        assert any("integrity hash mismatch" in e for e in errs)
+
+    # Deleting any diagnostic field without recomputing hash fails integrity
+    for field_name in (
+        "broker_clock_sync_status",
+        "broker_clock_age_seconds",
+        "broker_clock_skew_ms",
+        "broker_clock_total_uncertainty_ms",
+    ):
+        data = copy.deepcopy(reg.to_dict())
+        del data["observations"][0]["acquisition_attempts"][0][field_name]
+        tampered_reg = TimingEvidenceRegistry.from_dict(data)
+        is_valid, errs = tampered_reg.verify_integrity()
+        assert is_valid is False
+        assert any("integrity hash mismatch" in e for e in errs)
+
+
+def test_evidence_registry_verify_integrity_consistency_checks() -> None:
+    """verify_integrity enforces semantic validity of Phase 35 clock fields even if rehashed."""
+    reg = _create_sample_phase35_registry()
+
+    invalid_cases: list[tuple[str, dict[str, Any], str]] = [
+        (
+            "unrecognized status",
+            {"broker_clock_sync_status": "UNKNOWN_SYNC_STATE"},
+            "unrecognized broker_clock_sync_status",
+        ),
+        (
+            "fresh=True but status=STALE",
+            {
+                "broker_clock_fresh": True,
+                "broker_clock_sync_status": "STALE_SYNCHRONIZATION",
+                "broker_clock_age_seconds": 130.0,
+            },
+            "broker_clock_fresh=True but broker_clock_sync_status='STALE_SYNCHRONIZATION'",
+        ),
+        (
+            "fresh=False but status=SYNCHRONIZED_AND_FRESH",
+            {
+                "broker_clock_fresh": False,
+                "broker_clock_sync_status": "SYNCHRONIZED_AND_FRESH",
+                "broker_clock_age_seconds": 1.0,
+            },
+            "broker_clock_fresh=False but broker_clock_sync_status='SYNCHRONIZED_AND_FRESH'",
+        ),
+        (
+            "status=SYNCHRONIZED_AND_FRESH but age > 120s",
+            {
+                "broker_clock_fresh": True,
+                "broker_clock_sync_status": "SYNCHRONIZED_AND_FRESH",
+                "broker_clock_age_seconds": 120.1,
+            },
+            "broker_clock_sync_status='SYNCHRONIZED_AND_FRESH' but age 120.1s exceeds 120.0s",
+        ),
+        (
+            "status=STALE_SYNCHRONIZATION but age <= 120s",
+            {
+                "broker_clock_fresh": False,
+                "broker_clock_sync_status": "STALE_SYNCHRONIZATION",
+                "broker_clock_age_seconds": 50.0,
+            },
+            "broker_clock_sync_status='STALE_SYNCHRONIZATION' but age 50.0s <= 120.0s",
+        ),
+        (
+            "status=NEVER_SYNCHRONIZED but age present",
+            {
+                "broker_clock_fresh": False,
+                "broker_clock_sync_status": "NEVER_SYNCHRONIZED",
+                "broker_clock_age_seconds": 10.0,
+            },
+            "broker_clock_sync_status='NEVER_SYNCHRONIZED' but age is present",
+        ),
+        (
+            "negative age",
+            {"broker_clock_age_seconds": -0.5},
+            "invalid broker_clock_age_seconds: expected finite non-negative number",
+        ),
+        (
+            "non-finite age inf",
+            {"broker_clock_age_seconds": float("inf")},
+            "invalid broker_clock_age_seconds: expected finite non-negative number",
+        ),
+        (
+            "boolean age",
+            {"broker_clock_age_seconds": True},
+            "invalid broker_clock_age_seconds: expected finite non-negative number",
+        ),
+        (
+            "non-finite skew nan",
+            {"broker_clock_skew_ms": float("nan")},
+            "invalid broker_clock_skew_ms: expected finite number",
+        ),
+        (
+            "boolean skew",
+            {"broker_clock_skew_ms": False},
+            "invalid broker_clock_skew_ms: expected finite number",
+        ),
+        (
+            "negative uncertainty",
+            {"broker_clock_total_uncertainty_ms": -1.0},
+            "invalid broker_clock_total_uncertainty_ms: expected finite non-negative number",
+        ),
+        (
+            "boolean uncertainty",
+            {"broker_clock_total_uncertainty_ms": True},
+            "invalid broker_clock_total_uncertainty_ms: expected finite non-negative number",
+        ),
+    ]
+
+    for label, updates, expected_substring in invalid_cases:
+        data = copy.deepcopy(reg.to_dict())
+        data["observations"][0]["acquisition_attempts"][0].update(updates)
+        # Rehash observation and registry to isolate the semantic consistency check
+        data["observations"][0]["integrity_hash"] = compute_observation_dict_hash(
+            data["observations"][0]
+        )
+        tampered_reg = TimingEvidenceRegistry.from_dict(data)
+        tampered_reg.integrity_hash = tampered_reg.compute_hash()
+
+        is_valid, errs = tampered_reg.verify_integrity()
+        assert is_valid is False, f"Case '{label}' unexpectedly passed verification"
+        assert any(expected_substring in e for e in errs), (
+            f"Case '{label}' did not produce expected error containing '{expected_substring}'. "
+            f"Actual errors: {errs}"
+        )
+
+
+def test_historical_evidence_files_pass_integrity() -> None:
+    """Historical Phase 33 and Phase 34 evidence registries verify cleanly with zero errors."""
+    for base_dir in (Path("data/phase34/operator_supervised_live"), Path("data/phase33")):
+        if not base_dir.is_dir():
+            continue
+        for file_path in base_dir.rglob("*.json"):
+            registry = TimingEvidenceRegistry.load_from_file(file_path)
+            valid, errors = registry.verify_integrity()
+            assert valid is True, f"Historical file {file_path.name} failed integrity: {errors}"
+            assert errors == []

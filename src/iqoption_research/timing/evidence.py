@@ -11,6 +11,7 @@ import hashlib
 import itertools
 import json
 import logging
+import math
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from iqoption_research.models.account import PracticeStatus
+from iqoption_research.models.clock import BrokerClockSyncStatus
 from iqoption_research.timing.instrumentation import (
     CandleTimingObservation,
     ClockDiscipline,
@@ -26,6 +28,10 @@ from iqoption_research.timing.instrumentation import (
 )
 
 logger = logging.getLogger(__name__)
+
+ALLOWED_CLOCK_SYNC_STATUSES: Final[frozenset[str]] = frozenset(
+    s.value for s in BrokerClockSyncStatus
+)
 
 FORBIDDEN_SENSITIVE_KEYS = frozenset({
     "password",
@@ -522,6 +528,107 @@ class TimingEvidenceRegistry:
                             f"previous attempt finished ({req_mono} < {prev_att_mono})."
                         )
                     prev_att_mono = val_mono or recv_mono or req_mono
+
+                    # Phase 35 broker clock diagnostics consistency checks
+                    if "broker_clock_sync_status" in att:
+                        sync_status = att.get("broker_clock_sync_status")
+                        if sync_status is not None:
+                            if (
+                                not isinstance(sync_status, str)
+                                or sync_status not in ALLOWED_CLOCK_SYNC_STATUSES
+                            ):
+                                errors.append(
+                                    f"Observation {idx} (F={obs_f}) attempt {att_num} unrecognized "
+                                    f"broker_clock_sync_status: '{sync_status}'."
+                                )
+                            elif "broker_clock_fresh" in att:
+                                is_fresh = att.get("broker_clock_fresh")
+                                fresh_val = BrokerClockSyncStatus.SYNCHRONIZED_AND_FRESH.value
+                                if is_fresh is True and sync_status != fresh_val:
+                                    errors.append(
+                                        f"Observation {idx} (F={obs_f}) attempt {att_num} "
+                                        "inconsistent clock freshness: broker_clock_fresh=True "
+                                        f"but broker_clock_sync_status='{sync_status}'."
+                                    )
+                                elif is_fresh is False and sync_status == fresh_val:
+                                    errors.append(
+                                        f"Observation {idx} (F={obs_f}) attempt {att_num} "
+                                        "inconsistent clock freshness: broker_clock_fresh=False "
+                                        f"but broker_clock_sync_status='{sync_status}'."
+                                    )
+
+                    if (
+                        "broker_clock_age_seconds" in att
+                        and (age := att.get("broker_clock_age_seconds")) is not None
+                    ):
+                        if (
+                            isinstance(age, bool)
+                            or not isinstance(age, (int, float))
+                            or not math.isfinite(age)
+                            or age < 0
+                        ):
+                            errors.append(
+                                f"Observation {idx} (F={obs_f}) attempt {att_num} invalid "
+                                "broker_clock_age_seconds: expected finite non-negative number, "
+                                f"got {age!r}."
+                            )
+                        else:
+                            status = att.get("broker_clock_sync_status")
+                            if (
+                                status == BrokerClockSyncStatus.SYNCHRONIZED_AND_FRESH.value
+                                and age > 120.0
+                            ):
+                                errors.append(
+                                    f"Observation {idx} (F={obs_f}) attempt {att_num} "
+                                    "inconsistent clock freshness: "
+                                    f"broker_clock_sync_status='SYNCHRONIZED_AND_FRESH' "
+                                    f"but age {age}s exceeds 120.0s."
+                                )
+                            elif (
+                                status == BrokerClockSyncStatus.STALE_SYNCHRONIZATION.value
+                                and age <= 120.0
+                            ):
+                                errors.append(
+                                    f"Observation {idx} (F={obs_f}) attempt {att_num} "
+                                    "inconsistent clock freshness: "
+                                    f"broker_clock_sync_status='STALE_SYNCHRONIZATION' "
+                                    f"but age {age}s <= 120.0s."
+                                )
+                            elif status == BrokerClockSyncStatus.NEVER_SYNCHRONIZED.value:
+                                errors.append(
+                                    f"Observation {idx} (F={obs_f}) attempt {att_num} "
+                                    "inconsistent clock freshness: "
+                                    f"broker_clock_sync_status='NEVER_SYNCHRONIZED' "
+                                    f"but age is present ({age})."
+                                )
+
+                    if (
+                        "broker_clock_skew_ms" in att
+                        and (skew := att.get("broker_clock_skew_ms")) is not None
+                    ) and (
+                        isinstance(skew, bool)
+                        or not isinstance(skew, (int, float))
+                        or not math.isfinite(skew)
+                    ):
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) attempt {att_num} invalid "
+                            f"broker_clock_skew_ms: expected finite number, got {skew!r}."
+                        )
+
+                    if (
+                        "broker_clock_total_uncertainty_ms" in att
+                        and (unc := att.get("broker_clock_total_uncertainty_ms")) is not None
+                    ) and (
+                        isinstance(unc, bool)
+                        or not isinstance(unc, (int, float))
+                        or not math.isfinite(unc)
+                        or unc < 0
+                    ):
+                        errors.append(
+                            f"Observation {idx} (F={obs_f}) attempt {att_num} invalid "
+                            "broker_clock_total_uncertainty_ms: expected finite "
+                            f"non-negative number, got {unc!r}."
+                        )
 
                 final_att = raw_attempts[-1]
                 if isinstance(final_att, dict):

@@ -46,15 +46,20 @@ from iqoption_research.connectors.iqoption.protocol import (
     encode_frame,
     parse_authenticated,
     validate_outgoing_frame,
+    validate_timing_frame,
 )
 from iqoption_research.models.account import (
+    AccountType,
     Balance,
+    PracticeStatus,
     Profile,
+    WalletContext,
     WalletIndicator,
     WalletSource,
     balance_wallet_indicators,
     profile_wallet_indicators,
     wallet_decision,
+    wallet_type_conflict,
 )
 from iqoption_research.models.connection import (
     ConnectionConfig,
@@ -148,6 +153,9 @@ class IQOptionWebSocketClient:
         self._balances: list[Balance] = []
         self._listed_balances: tuple[Balance, ...] | None = None
         self._change_indicator: WalletIndicator | None = None
+        self._changed_wallet_type: tuple[str, str] | None = None
+        self._selection: WalletContext | None = None
+        self._inventory_valid = False
         self._list_response_event = asyncio.Event()
         self._list_correlated = False
         self._active_balance_id: str | None = None
@@ -244,9 +252,9 @@ class IQOptionWebSocketClient:
     @property
     def is_practice_verified(self) -> bool:
         """True only if active balance is confirmed as PRACTICE (type 4)."""
-        return wallet_decision(
-            tuple(self._balances), self.wallet_indicators, complete=self.is_ready
-        ).is_verified
+        return (
+            self.is_ready and self.wallet_classification is PracticeStatus.VERIFIED_ACTIVE_PRACTICE
+        )
 
     @property
     def wallet_indicators(self) -> tuple[WalletIndicator, ...]:
@@ -258,6 +266,41 @@ class IQOptionWebSocketClient:
             indicators.append(self._change_indicator)
         return tuple(indicators)
 
+    @property
+    def changed_wallet_type(self) -> tuple[str, str] | None:
+        return self._changed_wallet_type
+
+    def _type_conflict(self) -> bool:
+        return wallet_type_conflict(
+            tuple(self._balances),
+            self._profile.raw if self._profile else {},
+            self._changed_wallet_type,
+        )
+
+    @property
+    def wallet_classification(self) -> PracticeStatus:
+        return wallet_decision(
+            tuple(self._balances),
+            self.wallet_indicators,
+            complete=self.is_authenticated and bool(self._profile and self._profile.raw),
+            conflicting_types=self._type_conflict(),
+        ).status
+
+    @property
+    def wallet_context(self) -> WalletContext | None:
+        return self._selection
+
+    def select_wallet_context(self, requested: AccountType) -> WalletContext:
+        """Resolve the current inventory locally. Selection has no outbound side effects."""
+        self._selection = None
+        if not self.is_authenticated or not self._inventory_valid:
+            raise ValueError("A fresh, complete balance inventory is required.")
+        if self._type_conflict():
+            raise ValueError("Broker sources disagree on wallet type.")
+        context = WalletContext.resolve(requested, self._listed_balances or ())
+        self._selection = context
+        return context
+
     async def wallet_diagnostic(self) -> dict[str, object]:
         # Profile-embedded inventory can make the connection READY before the
         # independent reply arrives. Observe that reply for a bounded interval.
@@ -266,18 +309,14 @@ class IQOptionWebSocketClient:
                 await asyncio.wait_for(
                     self._list_response_event.wait(), self._config.request_timeout
                 )
-        balances = (
-            self._listed_balances if self._listed_balances is not None else tuple(self._balances)
-        )
+        return self.wallet_report()
+
+    def wallet_report(self) -> dict[str, object]:
+        balances = tuple(self._balances)
         indicators = self.wallet_indicators
         sources = {i.source for i in indicators}
         families = {s.value.partition(".")[0] for s in sources}
         distinct = {i.balance_id for i in indicators}
-        decision = wallet_decision(
-            balances,
-            indicators,
-            complete=self.is_authenticated and bool(self._profile and self._profile.raw),
-        )
         return {
             "account_types": sorted({b.type.name for b in balances}),
             "practice_balance_exists": any(b.is_practice for b in balances),
@@ -290,7 +329,13 @@ class IQOptionWebSocketClient:
                 for s in sources
             },
             "independent_indicators_agree": len(distinct) == 1 if len(families) > 1 else None,
-            "classification": decision.status.name,
+            "classification": self.wallet_classification.name,
+            "selected_local_context": self._selection.wallet_type.name if self._selection else None,
+            "selection_scope": "connection_local_inspection",
+            "broker_acknowledged_selection": False,
+            "broker_verified_effective_wallet": False,
+            "wallet_specific_operation_authorization": "DISABLED",
+            "inventory_valid_for_selection": self._inventory_valid and not self._type_conflict(),
         }
 
     @property
@@ -394,6 +439,9 @@ class IQOptionWebSocketClient:
         self._balances_event.clear()
         self._listed_balances = None
         self._change_indicator = None
+        self._changed_wallet_type = None
+        self._selection = None
+        self._inventory_valid = False
         self._list_response_event.clear()
         self._list_correlated = False
         self._profile = None
@@ -554,6 +602,9 @@ class IQOptionWebSocketClient:
 
         self._listed_balances = None
         self._change_indicator = None
+        self._changed_wallet_type = None
+        self._selection = None
+        self._inventory_valid = False
         self._list_response_event.clear()
         self._list_correlated = False
         self._profile = None
@@ -647,7 +698,10 @@ class IQOptionWebSocketClient:
     async def _send_raw(self, payload: dict[str, Any]) -> None:
         if self._ws is None:
             raise ConnectionError("Not connected")
-        validate_outgoing_frame(payload)
+        if self._config.timing_market_data_only:
+            validate_timing_frame(payload, authenticated=self.is_authenticated)
+        else:
+            validate_outgoing_frame(payload)
         data = encode_frame(payload)
         async with self._send_lock:
             try:
@@ -734,6 +788,9 @@ class IQOptionWebSocketClient:
                 self._transition_monitor(ConnectionState.FAILED, reason="auth_failed")
                 self._listed_balances = None
                 self._change_indicator = None
+                self._changed_wallet_type = None
+                self._selection = None
+                self._inventory_valid = False
                 self._list_response_event.clear()
                 self._list_correlated = False
                 self._profile = None
@@ -861,6 +918,13 @@ class IQOptionWebSocketClient:
                     self._change_indicator = WalletIndicator(
                         WalletSource.CHANGE, str(current["id"]).strip()
                     )
+                    if current.get("type") is not None:
+                        self._changed_wallet_type = (
+                            self._change_indicator.balance_id,
+                            str(current["type"]).strip(),
+                        )
+                        if self._type_conflict():
+                            self._selection = None
                     self._active_balance_id = self._change_indicator.balance_id
                     self._mark_active_balance()
             return
@@ -944,6 +1008,8 @@ class IQOptionWebSocketClient:
         # Check for nested balances array within profile
         nested_balances = raw_profile.get("balances")
         if self._listed_balances is not None:
+            if self._type_conflict():
+                self._selection = None
             return
         if isinstance(nested_balances, list):
             self._apply_balances(nested_balances)
@@ -995,6 +1061,9 @@ class IQOptionWebSocketClient:
     def _handle_balances_message(
         self, message: dict[str, Any], *, correlated: bool = False
     ) -> None:
+        previous = self._selection
+        self._selection = None
+        self._inventory_valid = False
         raw_balances = self._extract_balances_payload(message)
         if raw_balances is None or not isinstance(raw_balances, list):
             self.errors += 1
@@ -1010,6 +1079,18 @@ class IQOptionWebSocketClient:
         self._apply_balances(raw_balances)
         self._listed_balances = tuple(self._balances)
         self._list_correlated = correlated
+        self._inventory_valid = (
+            self.is_authenticated
+            and message.get("name") not in ("error", "reject")
+            and message.get("status") in (None, 2000)
+            and len(self._balances) == len(raw_balances)
+            and bool(self._balances)
+            and len({b.id for b in self._balances}) == len(self._balances)
+        )
+        if previous and self._inventory_valid and not self._type_conflict():
+            matches = [b.id for b in self._balances if b.type is previous.wallet_type]
+            if matches == [previous.balance_id]:
+                self._selection = previous
         self._diagnostics.record_balances_status(len(self._balances) > 0)
 
     def _extract_balances_payload(self, message: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -1021,6 +1102,10 @@ class IQOptionWebSocketClient:
                 return raw["balances"]
             if isinstance(raw.get("msg"), list):
                 return raw["msg"]
+            if isinstance(raw.get("result"), dict) and isinstance(
+                raw["result"].get("balances"), list
+            ):
+                return raw["result"]["balances"]
             if isinstance(raw.get("result"), list):
                 return raw["result"]
         body = message.get("body")

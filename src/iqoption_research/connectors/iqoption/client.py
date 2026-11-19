@@ -58,6 +58,7 @@ from iqoption_research.market_data.validation import assess_data_quality
 from iqoption_research.models.account import (
     AccountStatus,
     Balance,
+    PracticeStatus,
     PracticeVerification,
 )
 from iqoption_research.models.connection import (
@@ -352,7 +353,7 @@ class AsyncIQOption:
                 self.monitor.transition(ConnectionState.DISCONNECTED, reason=reason)
 
     async def __aenter__(self) -> AsyncIQOption:
-        await self.connect()
+        await self.connect(raise_if_incomplete=not self._config.timing_market_data_only)
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -399,6 +400,7 @@ class AsyncIQOption:
             practice_balance=practice_balance,
             real_balance=real_balance,
             indicators=ws.wallet_indicators,
+            changed_wallet_type=ws.changed_wallet_type,
         )
 
     async def get_practice_verification(self) -> PracticeVerification:
@@ -407,6 +409,20 @@ class AsyncIQOption:
         return status.practice_verification()
 
     # ----- market data -----
+
+    def _measurement_socket(self) -> IQOptionWebSocketClient:
+        ws = self._ws
+        if (
+            not self._config.timing_market_data_only
+            or ws is None
+            or not (ws.is_authenticated and ws.state.is_connected())
+        ):
+            raise ConnectionError("Authenticated market-data measurement connection required.")
+        return ws
+
+    def measurement_wallet_status(self) -> PracticeStatus:
+        """Snapshot account evidence separately from read-only candle authorization."""
+        return self._measurement_socket().wallet_classification
 
     async def get_candles(
         self,
@@ -429,7 +445,11 @@ class AsyncIQOption:
             ConnectionError: Not connected.
             ValueError: Invalid count/size/endtime.
         """
-        ws = self._require_ready()
+        ws = (
+            self._measurement_socket()
+            if self._config.timing_market_data_only
+            else self._require_ready()
+        )
         canonical = normalize_symbol(symbol)
         resolved_size = CandleSize(int(size))
 

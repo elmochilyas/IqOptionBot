@@ -43,11 +43,13 @@ app = typer.Typer(
     ),
     no_args_is_help=True,
     add_completion=False,
+    pretty_exceptions_show_locals=False,
 )
 
 app.command("simulate", help="Offline connection simulation (no network).")(simulate_command)
 app.command("security-check", help="Offline TLS/endpoint/read-only checks.")(security_check_command)
 app.command("validate-data", help="Offline candle validation.")(validate_command)
+app.command("wallet")(wallet_diagnostic_command)
 app.command("wallet-diagnostic")(wallet_diagnostic_command)
 app.command("probe", help="Explicit read-only live probe (requires --live).")(probe_command)
 app.command(

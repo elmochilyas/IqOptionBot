@@ -64,6 +64,12 @@ async def test_profile_and_default_agree_without_authority(key: str) -> None:
         "source_scopes": {"get-balances.default": "default", "profile": "session_scope_unproven"},
         "independent_indicators_agree": True,
         "classification": "ACCOUNT_SELECTION_UNVERIFIED",
+        "selected_local_context": None,
+        "selection_scope": "connection_local_inspection",
+        "broker_acknowledged_selection": False,
+        "broker_verified_effective_wallet": False,
+        "wallet_specific_operation_authorization": "DISABLED",
+        "inventory_valid_for_selection": True,
     }
 
 
@@ -149,3 +155,95 @@ def test_diagnostic_cli_emits_only_safe_fields_and_closes() -> None:
         assert sensitive not in result.output
     client.close.assert_awaited_once()
     client.get_candles.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_selections_are_inspection_only_and_connection_local() -> None:
+    first, second = socket(), socket()
+    for ws in (first, second):
+        profile(ws, balance_id=REAL)
+        inventory(ws, active=True)
+        assert ws.wallet_context is None
+    first.select_wallet_context(AccountType.PRACTICE)
+    second.select_wallet_context(AccountType.REAL)
+    assert first.wallet_report()["selected_local_context"] == "PRACTICE"
+    report = second.wallet_report()
+    assert report["selected_local_context"] == "REAL"
+    assert report["classification"] == "CONFLICTING_ACCOUNT_INDICATORS"
+    assert not report["broker_acknowledged_selection"]
+    assert not report["broker_verified_effective_wallet"]
+    assert report["wallet_specific_operation_authorization"] == "DISABLED"
+    assert first.messages_tx == second.messages_tx == 0
+    # Closing the transport clears the selection even if the same WS object is reused.
+    await first.close()
+    assert first.wallet_context is None
+    assert second.wallet_context is not None
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [{"id": REAL, "type": 1}],
+        [{"id": REAL, "type": 1}, {"id": REAL, "type": 4}],
+        [{"id": "one", "type": 4}, {"id": "two", "type": 4}],
+        [{"id": PRACTICE, "type": 4}, {"id": REAL, "type": True}],
+        [{"id": PRACTICE, "type": 4, "balance_type": 1}],
+    ],
+)
+def test_invalid_inventory_revokes_selection(rows: list[dict[str, object]]) -> None:
+    ws = socket()
+    inventory(ws)
+    ws.select_wallet_context(AccountType.PRACTICE)
+    ws._dispatch({"name": "balances", "msg": rows})
+    assert ws.wallet_context is None
+    with pytest.raises(ValueError):
+        ws.select_wallet_context(AccountType.PRACTICE)
+    # Stale correlated data cannot reinstate a selection.
+    ws._dispatch({
+        "name": "balances",
+        "request_id": "expired",
+        "msg": [{"id": PRACTICE, "type": 4}],
+    })
+    assert ws.wallet_context is None
+
+
+def test_typed_profile_contradiction_revokes_selection_until_reselected() -> None:
+    ws = socket()
+    profile(ws, balance_id=REAL)
+    inventory(ws)
+    ws.select_wallet_context(AccountType.PRACTICE)
+    profile(ws, current_balance={"id": PRACTICE, "type": 1})
+    assert ws.wallet_context is None
+    assert ws.wallet_classification is PracticeStatus.CONFLICTING_ACCOUNT_INDICATORS
+    with pytest.raises(ValueError, match="disagree"):
+        ws.select_wallet_context(AccountType.PRACTICE)
+    profile(ws, current_balance={"id": PRACTICE, "type": 4})
+    assert ws.wallet_context is None
+    assert ws.select_wallet_context(AccountType.PRACTICE).balance_id == PRACTICE
+
+
+def test_interactive_context_commands_share_one_connection() -> None:
+    ws = socket()
+    profile(ws, balance_id=REAL)
+    inventory(ws)
+    client = AsyncMock()
+    client.ws = ws
+    client.assert_read_only = Mock()
+    module = "iqoption_research.cli.commands.wallet_diagnostic"
+    with (
+        patch(f"{module}.AsyncIQOption", return_value=client) as constructor,
+        patch(
+            f"{module}.getpass.getpass", side_effect=["private@invalid.test", "private-password"]
+        ),
+        patch("builtins.input", side_effect=["status", "select REAL", "exit"]),
+    ):
+        result = CliRunner().invoke(
+            app, ["wallet", "--live", "--interactive", "--select", "practice"]
+        )
+    assert result.exit_code == 0
+    snapshots = [json.loads(line) for line in result.output.splitlines() if line.startswith("{")]
+    assert [r["selected_local_context"] for r in snapshots] == ["PRACTICE", "PRACTICE", "REAL"]
+    constructor.assert_called_once()
+    client.close.assert_awaited_once()
+    assert ws.messages_tx == 0

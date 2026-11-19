@@ -114,7 +114,7 @@ class OutgoingGetProfileRequestMsg(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Literal["get-profile"]
     version: str = Field(default="1.0", pattern=r"^[0-9]+(\.[0-9]+)*$")
-    body: dict[str, Any] = Field(default_factory=dict)
+    body: dict[str, Any] = Field(default_factory=dict, max_length=0)
 
 
 class OutgoingGetProfileRequestFrame(BaseModel):
@@ -128,7 +128,7 @@ class OutgoingGetBalancesRequestMsg(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Literal["get-balances"]
     version: str = Field(default="1.0", pattern=r"^[0-9]+(\.[0-9]+)*$")
-    body: dict[str, Any] = Field(default_factory=dict)
+    body: dict[str, Any] = Field(default_factory=dict, max_length=0)
 
 
 class OutgoingGetBalancesRequestFrame(BaseModel):
@@ -142,7 +142,7 @@ class OutgoingDirectGetProfileFrame(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Literal["get-profile"]
     version: str = Field(default="1.0", pattern=r"^[0-9]+(\.[0-9]+)*$")
-    body: dict[str, Any] = Field(default_factory=dict)
+    body: dict[str, Any] = Field(default_factory=dict, max_length=0)
     request_id: str | None = None
 
 
@@ -150,7 +150,7 @@ class OutgoingDirectGetBalancesFrame(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Literal["get-balances"]
     version: str = Field(default="1.0", pattern=r"^[0-9]+(\.[0-9]+)*$")
-    body: dict[str, Any] = Field(default_factory=dict)
+    body: dict[str, Any] = Field(default_factory=dict, max_length=0)
     request_id: str | None = None
 
 
@@ -462,3 +462,21 @@ def validate_outgoing_frame(frame: dict[str, Any]) -> None:
         raise TradingNotAllowedError(
             f"Outgoing frame schema validation failed for {name!r}: {safe_errors}"
         ) from None
+
+
+def validate_timing_frame(frame: dict[str, Any], *, authenticated: bool) -> None:
+    """Narrow the validated connector protocol to the Phase 33 call graph."""
+    validate_outgoing_frame(frame)
+    if frame["name"] in (MSG_AUTHENTICATE, MSG_HEARTBEAT):
+        return
+    if authenticated and frame["name"] == "sendMessage":
+        msg = frame["msg"]
+        if msg["name"] in (MSG_GET_PROFILE, MSG_GET_BALANCES) and msg.get("version") == "1.0":
+            return
+        if msg["name"] == MSG_GET_CANDLES and msg.get("version") == "2.0":
+            body = msg["body"]
+            if set(body) == {"active_id", "size", "count", "to"} and all(
+                type(value) is int for value in body.values()
+            ):
+                return
+    raise TradingNotAllowedError("Frame outside the authenticated market-data measurement scope")

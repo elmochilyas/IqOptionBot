@@ -155,6 +155,18 @@ class Balance:
             raise ValueError("Invalid or unknown account type") from exc
 
         raw_id = data.get("id") if data.get("id") is not None else data.get("balance_id")
+        if type(raw_id) not in (str, int):
+            raise ValueError("Invalid wallet identifier type")
+        if (
+            data.get("id") is not None
+            and data.get("balance_id") is not None
+            and str(data["balance_id"]).strip() != str(raw_id).strip()
+        ):
+            raise ValueError("Conflicting wallet identifiers")
+        if data.get("balance_type") is not None and str(data["balance_type"]).strip() != str(
+            parsed_type
+        ):
+            raise ValueError("Conflicting wallet types")
         balance_id = str(raw_id or "").strip()
         if not balance_id:
             raise ValueError("Balance payload missing or empty 'id' field")
@@ -257,6 +269,50 @@ class Profile:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class WalletContext:
+    """Operator-selected inspection target in the current connection's inventory."""
+
+    wallet_type: AccountType
+    balance_id: str = field(repr=False)
+
+    @classmethod
+    def resolve(cls, requested: AccountType, balances: tuple[Balance, ...]) -> "WalletContext":
+        if requested not in (AccountType.PRACTICE, AccountType.REAL):
+            raise ValueError("Select PRACTICE or REAL for inspection.")
+        if len({b.id for b in balances}) != len(balances):
+            raise ValueError("Duplicate wallet identifiers in the broker inventory.")
+        matches = [b for b in balances if b.type is requested]
+        if len(matches) != 1:
+            raise ValueError("Requested type has no unique wallet in the current inventory.")
+        return cls(requested, matches[0].id)
+
+
+def wallet_type_conflict(
+    inventory: tuple[Balance, ...], profile: dict[str, Any], changed: tuple[str, str] | None
+) -> bool:
+    """Compare only claims that bind a type to the same wallet identifier."""
+    ledger = {b.id: str(b.type.value) for b in inventory}
+    claims = [changed] if changed else []
+    profile_type = profile.get("balance_type")
+    if profile_type is not None:
+        for key in ("balance_id", "balanceId", "active_balance_id"):
+            if profile.get(key) is not None:
+                claims.append((str(profile[key]).strip(), str(profile_type).strip()))
+    nested = profile.get("balances", [])
+    if isinstance(nested, dict):
+        nested = nested.get("balances", [])
+    rows = list(nested) if isinstance(nested, list) else []
+    rows.append(profile.get("current_balance"))
+    for row in rows:
+        if isinstance(row, dict):
+            identifier = row.get("id", row.get("balance_id"))
+            kind = row.get("type", row.get("balance_type"))
+            if identifier is not None and kind is not None:
+                claims.append((str(identifier).strip(), str(kind).strip()))
+    return any(key in ledger and ledger[key] != kind for key, kind in claims)
+
+
 class WalletSource(Enum):
     PROFILE = "profile"
     LIST_ACTIVE = "get-balances.active"
@@ -275,7 +331,11 @@ class WalletIndicator:
 
 
 def wallet_decision(
-    balances: tuple[Balance, ...], indicators: tuple[WalletIndicator, ...], *, complete: bool
+    balances: tuple[Balance, ...],
+    indicators: tuple[WalletIndicator, ...],
+    *,
+    complete: bool,
+    conflicting_types: bool = False,
 ) -> PracticeVerification:
     """Compare observations from one connection. No live source proves session scope."""
     ids = {item.balance_id for item in indicators}
@@ -283,7 +343,7 @@ def wallet_decision(
     session = next((i for i in indicators if i.source is WalletSource.SIMULATED_SESSION), None)
     if not complete or not balances:
         status = PracticeStatus.MISSING_ACCOUNT_DATA
-    elif len(ids) > 1 or len(ledger) != len(balances):
+    elif conflicting_types or len(ids) > 1 or len(ledger) != len(balances):
         status = PracticeStatus.CONFLICTING_ACCOUNT_INDICATORS
     elif session and ledger.get(session.balance_id) == AccountType.PRACTICE:
         status = PracticeStatus.VERIFIED_ACTIVE_PRACTICE
@@ -351,6 +411,7 @@ class AccountStatus:
     practice_balance: Balance | None
     real_balance: Balance | None
     indicators: tuple[WalletIndicator, ...] = ()
+    changed_wallet_type: tuple[str, str] | None = field(default=None, repr=False)
 
     @classmethod
     def from_raw(
@@ -449,7 +510,12 @@ class AccountStatus:
 
     def practice_verification(self) -> PracticeVerification:
         return wallet_decision(
-            self.balances, self.indicators, complete=bool(self.profile.raw or self.profile.user_id)
+            self.balances,
+            self.indicators,
+            complete=bool(self.profile.raw or self.profile.user_id),
+            conflicting_types=wallet_type_conflict(
+                self.balances, self.profile.raw, self.changed_wallet_type
+            ),
         )
 
     def __repr__(self) -> str:

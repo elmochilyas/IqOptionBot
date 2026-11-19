@@ -10,6 +10,20 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from iqoption_research.models.clock import (
+    BrokerClockDiagnostics,
+    BrokerClockSyncStatus,
+)
+
+__all__ = [
+    "BrokerClockDiagnostics",
+    "BrokerClockSyncStatus",
+    "LatencyInterval",
+    "MeasurementQuality",
+    "TimestampAuditRecord",
+    "TimestampRole",
+]
+
 
 class TimestampRole(StrEnum):
     """Functional role of a timestamp in the market data and prediction lifecycle."""

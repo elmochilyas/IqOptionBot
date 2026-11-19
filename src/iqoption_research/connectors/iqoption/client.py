@@ -61,6 +61,10 @@ from iqoption_research.models.account import (
     PracticeStatus,
     PracticeVerification,
 )
+from iqoption_research.models.clock import (
+    BrokerClockDiagnostics,
+    BrokerClockSyncStatus,
+)
 from iqoption_research.models.connection import (
     ConnectionConfig,
     ConnectionState,
@@ -228,6 +232,28 @@ class AsyncIQOption:
         if self._ws is None:
             return False
         return bool(getattr(self._ws, "is_server_time_fresh", True))
+
+    @property
+    def clock_diagnostics(self) -> BrokerClockDiagnostics:
+        """Sanitized broker clock diagnostics."""
+        if self._ws is None:
+            return BrokerClockDiagnostics(
+                status=BrokerClockSyncStatus.NEVER_SYNCHRONIZED,
+                is_fresh=False,
+                age_seconds=None,
+                server_time_ns=None,
+                last_synced_mono_ns=None,
+                skew_ms=None,
+                total_uncertainty_ms=None,
+                step_detected=False,
+            )
+        return self._ws.clock_diagnostics
+
+    async def wait_for_server_time_sync(self, timeout: float = 10.0) -> bool:
+        """Passively wait for broker server timeSync frame without sending any frame."""
+        if self._ws is None:
+            return False
+        return await self._ws.wait_for_server_time_sync(timeout)
 
     @property
     def request_timeout(self) -> float:
@@ -550,6 +576,7 @@ class AsyncIQOption:
             request_completion_mono_ns=t_request_completed_ns,
             request_id=request_id,
             server_time_fresh=getattr(ws, "is_server_time_fresh", True),
+            clock_diagnostics=getattr(ws, "clock_diagnostics", None),
         )
 
     @staticmethod

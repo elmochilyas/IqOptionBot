@@ -30,6 +30,9 @@ from iqoption_research.research.prospective import (
 from iqoption_research.timing.evidence import TimingEvidenceRegistry, compute_file_sha256
 from iqoption_research.timing.instrumentation import CandleTimingObservation, TimingRecorder
 from iqoption_research.timing.supervised_session import SupervisedSessionConfig, supervised_client
+from iqoption_research.timing.taxonomy import (
+    BrokerClockDiagnostics,
+)
 
 MODEL_PATH = Path("data/phase13/candidate_models/candidate_h1_rf")
 MODEL_DIGEST = "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872"
@@ -63,13 +66,15 @@ def diagnose_candle_window(
     expected_boundary_F: int,
     *,
     is_server_time_fresh: bool = True,
+    clock_diagnostics: BrokerClockDiagnostics | None = None,
     expected_count: int = 22,
     mode: str = "OPERATOR_SUPERVISED_LIVE",
 ) -> str | None:
     """Diagnose candle window health and return a sanitized rejection reason or None if valid.
 
     Diagnostics:
-    - BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED: Broker timeSync stale (>120s) or unverified.
+    - BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED: Broker timeSync stale (>120s),
+      unverified, or stepped.
     - NO_VALID_CANDLES: Empty candle list returned.
     - NORMALIZATION_ERROR: Candle parsing/normalization errors or raw count mismatch.
     - REQUESTED_BOUNDARY_MISMATCH: The last candle's to_ts does not match expected_boundary_F.
@@ -78,7 +83,12 @@ def diagnose_candle_window(
     - DATA_QUALITY_REJECTION: Data quality report failed (not research grade) or symbol mismatch.
     - LAST_CANDLE_NOT_YET_COMPLETE: Candle at F or window has is_complete=False.
     """
-    if not is_server_time_fresh:
+    if mode == "OPERATOR_SUPERVISED_LIVE":
+        if clock_diagnostics is not None and not clock_diagnostics.is_fresh:
+            return "BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED"
+        if not is_server_time_fresh:
+            return "BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED"
+    elif not is_server_time_fresh:
         return "BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED"
 
     candles = result.candles
@@ -207,6 +217,7 @@ class ShadowTrial:
             result,
             obs.feature_close_F,
             is_server_time_fresh=fresh,
+            clock_diagnostics=result.clock_diagnostics,
             expected_count=22,
             mode=self.mode,
         )
@@ -380,10 +391,23 @@ class ShadowTrial:
                         else "OUTSIDE_15_SECOND_ACQUISITION_GATE"
                     )
                     obs.rejection_reason = reason
+                    to_diag = (
+                        getattr(client, "clock_diagnostics", None)
+                        if self.mode == "OPERATOR_SUPERVISED_LIVE"
+                        else None
+                    )
                     self.recorder.record_acquisition_attempt(
                         attempt_number=attempts,
                         request_id=obs.request_id or f"timeout-{obs.observation_index}-{attempts}",
-                        broker_clock_fresh=False,
+                        broker_clock_fresh=to_diag.is_fresh if to_diag else False,
+                        broker_clock_sync_status=(
+                            to_diag.status.value if to_diag else "NEVER_SYNCHRONIZED"
+                        ),
+                        broker_clock_age_seconds=to_diag.age_seconds if to_diag else None,
+                        broker_clock_skew_ms=to_diag.skew_ms if to_diag else None,
+                        broker_clock_total_uncertainty_ms=(
+                            to_diag.total_uncertainty_ms if to_diag else None
+                        ),
                         candle_count=0,
                         is_complete=False,
                         rejection_classification="TIMEOUT_EXCEEDED_DEADLINE",
@@ -391,15 +415,56 @@ class ShadowTrial:
                     )
                     break
 
-                fresh = (
-                    client.is_server_time_fresh
-                    if self.mode == "OPERATOR_SUPERVISED_LIVE"
-                    else getattr(client, "is_server_time_fresh_override", True)
-                )
+                if self.mode == "OPERATOR_SUPERVISED_LIVE":
+                    clock_diag = result.clock_diagnostics or (
+                        getattr(client, "clock_diagnostics", None)
+                    )
+                    fresh = (
+                        clock_diag.is_fresh
+                        if clock_diag is not None
+                        else client.is_server_time_fresh
+                    )
+                    clock_status = (
+                        clock_diag.status.value
+                        if clock_diag is not None
+                        else ("SYNCHRONIZED_AND_FRESH" if fresh else "NEVER_SYNCHRONIZED")
+                    )
+                    clock_age = clock_diag.age_seconds if clock_diag is not None else None
+                    clock_skew = clock_diag.skew_ms if clock_diag is not None else None
+                    clock_unc = clock_diag.total_uncertainty_ms if clock_diag is not None else None
+                else:
+                    fresh = getattr(client, "is_server_time_fresh_override", True)
+                    clock_diag = result.clock_diagnostics or getattr(
+                        client, "clock_diagnostics", None
+                    )
+                    if fresh:
+                        if clock_diag is not None and clock_diag.is_fresh:
+                            clock_status = clock_diag.status.value
+                            clock_age = clock_diag.age_seconds
+                            clock_skew = clock_diag.skew_ms
+                            clock_unc = clock_diag.total_uncertainty_ms
+                        else:
+                            clock_status = "SYNCHRONIZED_AND_FRESH"
+                            clock_age = 0.0
+                            clock_skew = 0.0
+                            clock_unc = 25.0
+                    else:
+                        clock_status = (
+                            clock_diag.status.value
+                            if clock_diag is not None
+                            else "NEVER_SYNCHRONIZED"
+                        )
+                        clock_age = clock_diag.age_seconds if clock_diag is not None else None
+                        clock_skew = clock_diag.skew_ms if clock_diag is not None else None
+                        clock_unc = (
+                            clock_diag.total_uncertainty_ms if clock_diag is not None else None
+                        )
+
                 diag = diagnose_candle_window(
                     result,
                     boundary,
                     is_server_time_fresh=fresh,
+                    clock_diagnostics=clock_diag,
                     expected_count=22,
                     mode=self.mode,
                 )
@@ -420,6 +485,10 @@ class ShadowTrial:
                         attempt_number=attempts,
                         request_id=result.request_id or obs.request_id,
                         broker_clock_fresh=fresh,
+                        broker_clock_sync_status=clock_status,
+                        broker_clock_age_seconds=clock_age,
+                        broker_clock_skew_ms=clock_skew,
+                        broker_clock_total_uncertainty_ms=clock_unc,
                         candle_count=len(result.candles) if result.candles else 0,
                         is_complete=bool(result.candles and result.candles[-1].is_complete),
                         rejection_classification=None,
@@ -453,6 +522,10 @@ class ShadowTrial:
                     attempt_number=attempts,
                     request_id=result.request_id or obs.request_id,
                     broker_clock_fresh=fresh,
+                    broker_clock_sync_status=clock_status,
+                    broker_clock_age_seconds=clock_age,
+                    broker_clock_skew_ms=clock_skew,
+                    broker_clock_total_uncertainty_ms=clock_unc,
                     candle_count=len(result.candles) if result.candles else 0,
                     is_complete=c_complete,
                     rejection_classification=diag,
@@ -526,6 +599,14 @@ class ShadowTrial:
         self.metadata["observation_started_utc_ns"] = time.time_ns()
         deadline = time.perf_counter() + self.config.max_duration_seconds
         previous = 0
+
+        # Passively await initial broker clock reference synchronization in live mode
+        if self.mode == "OPERATOR_SUPERVISED_LIVE" and not client.is_server_time_fresh:
+            time_left = max(0.0, deadline - time.perf_counter())
+            wait_time = min(15.0, time_left)
+            if wait_time > 0 and hasattr(client, "wait_for_server_time_sync"):
+                await client.wait_for_server_time_sync(timeout=wait_time)
+
         while (
             len(self.recorder.observations) < self.config.max_candle_cycles
             and time.perf_counter() < deadline

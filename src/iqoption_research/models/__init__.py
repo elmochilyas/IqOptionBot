@@ -8,6 +8,10 @@ from iqoption_research.models.account import (
     PracticeVerification,
     Profile,
 )
+from iqoption_research.models.clock import (
+    BrokerClockDiagnostics,
+    BrokerClockSyncStatus,
+)
 from iqoption_research.models.connection import (
     DEFAULT_CONNECTION_CONFIG,
     ConnectionConfig,
@@ -28,6 +32,8 @@ __all__ = [
     "AccountStatus",
     "AccountType",
     "Balance",
+    "BrokerClockDiagnostics",
+    "BrokerClockSyncStatus",
     "Candle",
     "CandleSize",
     "ConnectionConfig",

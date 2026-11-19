@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from iqoption_research.timing.taxonomy import BrokerClockDiagnostics
 
 from iqoption_research.market_data.candles import CandleError
 from iqoption_research.market_data.validation import DataQualityReport
@@ -96,6 +99,7 @@ class CandleFetchResult:
     request_completion_mono_ns: int | None = None
     request_id: str | None = None
     server_time_fresh: bool | None = None
+    clock_diagnostics: BrokerClockDiagnostics | None = None
 
     @property
     def candle_list(self) -> list[Candle]:

@@ -97,6 +97,11 @@ class ClockDiscipline:
         else:
             self.broker_skew_ns = broker_epoch_ns - local_recv_utc_ns
 
+    @property
+    def broker_skew_ms(self) -> float:
+        """Estimated clock skew in milliseconds."""
+        return self.broker_skew_ns / 1_000_000.0
+
     def total_uncertainty_ms(self) -> float:
         """Compute the total symmetric clock uncertainty budget in milliseconds."""
         ntp_ms = self.ntp_uncertainty_ns / 1_000_000.0
@@ -607,6 +612,10 @@ class TimingRecorder:
         attempt_number: int,
         request_id: str | None = None,
         broker_clock_fresh: bool = True,
+        broker_clock_sync_status: str | None = None,
+        broker_clock_age_seconds: float | None = None,
+        broker_clock_skew_ms: float | None = None,
+        broker_clock_total_uncertainty_ms: float | None = None,
         candle_count: int | None = None,
         is_complete: bool | None = None,
         rejection_classification: str | None = None,
@@ -660,6 +669,22 @@ class TimingRecorder:
             "validation_mono_ns": val_mono,
             "validation_utc_iso": val_iso,
             "broker_clock_fresh": bool(broker_clock_fresh),
+            "broker_clock_sync_status": (
+                str(broker_clock_sync_status) if broker_clock_sync_status is not None else None
+            ),
+            "broker_clock_age_seconds": (
+                round(float(broker_clock_age_seconds), 4)
+                if broker_clock_age_seconds is not None
+                else None
+            ),
+            "broker_clock_skew_ms": (
+                round(float(broker_clock_skew_ms), 4) if broker_clock_skew_ms is not None else None
+            ),
+            "broker_clock_total_uncertainty_ms": (
+                round(float(broker_clock_total_uncertainty_ms), 4)
+                if broker_clock_total_uncertainty_ms is not None
+                else None
+            ),
             "candle_count": c_count,
             "is_complete": c_complete,
             "rejection_classification": rejection_classification,

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 DEFAULT_ASSUMED_PAYOUT: Final[float] = 0.85
 BREAK_EVEN_WIN_RATE: Final[float] = 1.0 / (1.0 + DEFAULT_ASSUMED_PAYOUT)  # ~54.054%
 SMALL_SAMPLE_THRESHOLD: Final[int] = 30
+FROZEN_TRAINING_PRIOR_UP: Final[float] = 0.4985  # Cutoff 2026-11-14T14:41:11 UTC base rate
 
 CONTRACT_PROFITABILITY_DISCLAIMER: Final[str] = (
     "SPOT_DIRECTIONAL_ACCURACY_IS_NOT_REALIZED_CONTRACT_PROFITABILITY: "
@@ -50,9 +51,19 @@ CONTRACT_PROFITABILITY_DISCLAIMER: Final[str] = (
 
 EXPLORATORY_SAMPLE_DISCLAIMER: Final[str] = (
     "SAMPLE_SIZE_INSUFFICIENT_FOR_STATISTICAL_INFERENCE: "
-    f"Sample count N < {SMALL_SAMPLE_THRESHOLD} is strictly below the minimum threshold "
-    "required for hypothesis testing or statistical confidence. "
-    "All reported metrics are exploratory and descriptive only. No edge demonstrated."
+    f"Sample count N < {SMALL_SAMPLE_THRESHOLD} is strictly exploratory and descriptive only. "
+    "Neither N=30 nor N=100 establishes statistically significant model skill. "
+    "Detecting a small directional edge (52-54% against a 50% null) with 80% statistical power "
+    "requires thousands of independent bars. All reported metrics are exploratory. "
+    "No edge demonstrated."
+)
+
+UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER: Final[str] = (
+    "UNKEYED_SHA256_TAMPER_EVIDENCE_LIMITATION: "
+    "The evidence_sha256 digest is an unkeyed SHA-256 hash providing accidental corruption "
+    "and tamper detection in the local environment. It does not provide asymmetric cryptographic "
+    "non-repudiation or independent third-party authentication against deliberate adversarial "
+    "forgery."
 )
 
 
@@ -72,8 +83,30 @@ class DuplicatePredictionError(ProspectiveEvaluationError):
     """Raised when conflicting duplicate predictions exist for the same boundary."""
 
 
+class DuplicateOutcomeConflictError(ProspectiveEvaluationError):
+    """Raised when conflicting duplicate candle outcomes exist for the same boundary."""
+
+
+class IncompleteOutcomeError(ProspectiveEvaluationError):
+    """Raised when an outcome candle is incomplete."""
+
+
+class SyntheticDataRejectedError(ProspectiveEvaluationError):
+    """Raised when synthetic test fixture data is presented in authentic evaluation mode."""
+
+
 class TamperedEvidenceError(ProspectiveEvaluationError):
     """Raised when an evidence registry or journal record fails cryptographic integrity."""
+
+
+def compute_candle_sha256(c: Candle) -> str:
+    """Compute canonical SHA-256 digest of an outcome candle."""
+    canonical = (
+        f"{c.symbol}:{c.size.value}:{c.from_ts}:{c.to_ts}:"
+        f"{float(c.open):.8f}:{float(c.high):.8f}:{float(c.low):.8f}:{float(c.close):.8f}:"
+        f"{float(c.volume):.4f}"
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +131,9 @@ class PredictionRecord:
     instrumentation_version: str | None = None
     window_sha256: str | None = None
     payload_sha256: str | None = None
+    journal_event_key: str | None = None
+    journal_verified: bool = False
+    evidence_provenance_level: str = "REGISTRY_ONLY"  # "JOURNAL_VERIFIED" vs "REGISTRY_ONLY"
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +153,8 @@ class OutcomeRecord:
     binary_label: int  # 1 for close > open, 0 otherwise
     is_neutral: bool  # close == open
     is_complete: bool = True
-    source: str = "AUTHENTIC_BROKER_FEED"
+    source_provenance: str = "AUTHENTIC_BROKER_FEED"
+    candle_sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +167,30 @@ class PairedEvaluationSample:
     predicted_direction: str | None
     direction_correct: bool | None
     binary_target_correct: bool | None
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationAuditSummary:
+    """Audit summary of observations processed from evidence registries."""
+
+    total_registry_observations: int
+    valid_committed_predictions: int
+    rejected_observations_count: int
+    uncommitted_observations_count: int
+    invalid_probability_count: int
+    rejection_reasons_breakdown: dict[str, int]
+    provenance_level: str  # "JOURNAL_VERIFIED" or "REGISTRY_ONLY"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total_registry_observations": self.total_registry_observations,
+            "valid_committed_predictions": self.valid_committed_predictions,
+            "rejected_observations_count": self.rejected_observations_count,
+            "uncommitted_observations_count": self.uncommitted_observations_count,
+            "invalid_probability_count": self.invalid_probability_count,
+            "rejection_reasons_breakdown": dict(self.rejection_reasons_breakdown),
+            "provenance_level": self.provenance_level,
+        }
 
 
 @dataclass(slots=True)
@@ -158,13 +219,15 @@ class CohortIdentity:
 
 @dataclass(frozen=True, slots=True)
 class BenchmarkResult:
-    """Performance metrics for a predefined reference benchmark."""
+    """Performance metrics for a reference benchmark."""
 
     name: str
     brier_score: float
     brier_skill_score: float
     log_loss: float
     directional_accuracy: float
+    is_causal: bool
+    prior_type: str  # e.g. "CAUSAL_UNINFORMATIVE", "CAUSAL_FROZEN_TRAINING"
     description: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -174,6 +237,8 @@ class BenchmarkResult:
             "brier_skill_score": float(self.brier_skill_score),
             "log_loss": float(self.log_loss),
             "directional_accuracy": float(self.directional_accuracy),
+            "is_causal": bool(self.is_causal),
+            "prior_type": self.prior_type,
             "description": self.description,
         }
 
@@ -208,34 +273,45 @@ class ProspectiveEvaluationReport:
 
     evaluated_at_utc: str
     cohort: CohortIdentity
+    observation_audit: ObservationAuditSummary
     total_predictions: int
     aligned_pairs_count: int
     missing_outcomes_count: int
     missing_boundaries: list[int]
     decision_distribution: dict[str, int]
     skip_reasons_breakdown: dict[str, int]
-    abstention_coverage_rate: float
+    signal_coverage_rate: float
+    abstention_rate: float
     probabilistic_metrics: dict[str, Any]
     benchmarks: list[BenchmarkResult]
     uncertainty: UncertaintyDiagnostics
     contract_distinction: dict[str, Any]
+    abstention_coverage_rate: float = 0.0
+    provenance_level: str = "REGISTRY_ONLY"
+    all_outcomes_authentic: bool = True
+    tamper_evidence_disclaimer: str = UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER
     evidence_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         res = {
             "evaluated_at_utc": self.evaluated_at_utc,
             "cohort": self.cohort.to_dict(),
+            "observation_audit": self.observation_audit.to_dict(),
+            "provenance_level": self.provenance_level,
             "total_predictions": self.total_predictions,
             "aligned_pairs_count": self.aligned_pairs_count,
             "missing_outcomes_count": self.missing_outcomes_count,
             "missing_boundaries": self.missing_boundaries,
             "decision_distribution": dict(self.decision_distribution),
             "skip_reasons_breakdown": dict(self.skip_reasons_breakdown),
-            "abstention_coverage_rate": float(self.abstention_coverage_rate),
+            "signal_coverage_rate": float(self.signal_coverage_rate),
+            "abstention_rate": float(self.abstention_rate),
             "probabilistic_metrics": self.probabilistic_metrics,
             "benchmarks": [b.to_dict() for b in self.benchmarks],
             "uncertainty": self.uncertainty.to_dict(),
             "contract_distinction": self.contract_distinction,
+            "all_outcomes_authentic": bool(self.all_outcomes_authentic),
+            "tamper_evidence_disclaimer": self.tamper_evidence_disclaimer,
         }
         if self.evidence_sha256:
             res["evidence_sha256"] = self.evidence_sha256
@@ -316,13 +392,16 @@ def audit_frozen_model(model_path: Path) -> dict[str, Any]:
     }
 
 
-def extract_predictions_from_registry(
+def extract_predictions_with_audit(
     registry: TimingEvidenceRegistry,
     db_path: Path | None = None,
-) -> list[PredictionRecord]:
+) -> tuple[list[PredictionRecord], ObservationAuditSummary]:
     """Extract immutable prediction records from a verified TimingEvidenceRegistry.
 
-    Optionally validates each record against SQLite journal commit receipts.
+    Includes only genuine, durably committed forecasts with a valid decision
+    timestamp and calibrated probability. Preserves valid SKIP decisions.
+    Separately tracks rejected, uncommitted, and invalid observations.
+    Validates SQLite journal commit receipts when db_path is supplied.
     """
     is_valid, errors = registry.verify_integrity()
     if not is_valid:
@@ -332,7 +411,10 @@ def extract_predictions_from_registry(
 
     # Optional cross-check against SQLite journal
     journal_events: dict[str, dict[str, Any]] = {}
-    if db_path is not None and db_path.is_file():
+    has_journal = db_path is not None and db_path.is_file()
+    if has_journal:
+        if db_path is None:
+            raise TamperedEvidenceError("Journal database path cannot be None")
         conn = sqlite3.connect(db_path)
         try:
             for row in conn.execute("SELECT event_key, payload FROM events"):
@@ -347,33 +429,88 @@ def extract_predictions_from_registry(
     predictions: list[PredictionRecord] = []
     summary = registry.summary or {}
 
+    total_obs = len(registry.observations)
+    rejected_count = 0
+    uncommitted_count = 0
+    invalid_prob_count = 0
+    rejection_reasons: dict[str, int] = {}
+
     for obs in registry.observations:
         boundary = obs.get("feature_close_F")
         if boundary is None:
+            rejected_count += 1
+            rejection_reasons["MISSING_BOUNDARY_F"] = (
+                rejection_reasons.get("MISSING_BOUNDARY_F", 0) + 1
+            )
             continue
 
         stages = obs.get("stages", {})
         policy_stg = stages.get("STAGE_POLICY_DECISION", {}).get("details", {})
         commit_stg = stages.get("STAGE_9_JOURNAL_COMMIT", {}).get("details", {})
 
-        decision = obs.get("decision", "NOT_MEASURED")
-        skip_reason = obs.get("rejection_reason") or policy_stg.get("skip_reason")
-        raw_prob = obs.get("raw_probability")
-        cal_prob = obs.get("calibrated_probability")
+        # Check for observation-level rejection or failed arrival gates
+        rejection_reason = obs.get("rejection_reason")
+        gate_verdict = obs.get("gate_verdict")
+        validated_15s = obs.get("candle_validated_within_15s")
+        if (
+            rejection_reason is not None
+            or gate_verdict == "FAIL_REJECTED"
+            or validated_15s is False
+        ):
+            rej_key = str(rejection_reason or "TIMING_GATE_REJECTED")
+            rejected_count += 1
+            rejection_reasons[rej_key] = rejection_reasons.get(rej_key, 0) + 1
+            continue
 
-        confidence = None
-        if cal_prob is not None and math.isfinite(cal_prob):
-            confidence = max(cal_prob, 1.0 - cal_prob)
-
-        decision_time_ns = None
-        if "STAGE_POLICY_DECISION" in stages:
-            decision_time_ns = stages["STAGE_POLICY_DECISION"].get("disciplined_utc_ns")
+        # Check for durable journal commit stage
+        if "STAGE_9_JOURNAL_COMMIT" not in stages:
+            uncommitted_count += 1
+            rejection_reasons["UNCOMMITTED_NO_JOURNAL_STAGE"] = (
+                rejection_reasons.get("UNCOMMITTED_NO_JOURNAL_STAGE", 0) + 1
+            )
+            continue
 
         event_key = commit_stg.get("event_key")
         payload_sha256 = commit_stg.get("payload_sha256")
+        if not event_key:
+            uncommitted_count += 1
+            rejection_reasons["UNCOMMITTED_NO_EVENT_KEY"] = (
+                rejection_reasons.get("UNCOMMITTED_NO_EVENT_KEY", 0) + 1
+            )
+            continue
+
+        # Check probability validity
+        raw_prob = obs.get("raw_probability")
+        cal_prob = obs.get("calibrated_probability")
+        if (
+            cal_prob is None
+            or not isinstance(cal_prob, (int, float))
+            or not math.isfinite(cal_prob)
+            or not (0.0 <= cal_prob <= 1.0)
+            or raw_prob is None
+            or not isinstance(raw_prob, (int, float))
+            or not math.isfinite(raw_prob)
+        ):
+            invalid_prob_count += 1
+            rejection_reasons["INVALID_OR_MISSING_PROBABILITY"] = (
+                rejection_reasons.get("INVALID_OR_MISSING_PROBABILITY", 0) + 1
+            )
+            continue
+
+        # Check decision timestamp validity
+        decision_time_ns = None
+        if "STAGE_POLICY_DECISION" in stages:
+            decision_time_ns = stages["STAGE_POLICY_DECISION"].get("disciplined_utc_ns")
+        if decision_time_ns is None or decision_time_ns <= 0:
+            uncommitted_count += 1
+            rejection_reasons["MISSING_OR_INVALID_DECISION_TIMESTAMP"] = (
+                rejection_reasons.get("MISSING_OR_INVALID_DECISION_TIMESTAMP", 0) + 1
+            )
+            continue
 
         # Verify receipt if journal available
-        if db_path is not None and event_key:
+        journal_verified = False
+        if has_journal:
             if event_key not in journal_events:
                 raise TamperedEvidenceError(
                     f"Session {registry.session_id} event {event_key} missing from journal"
@@ -386,6 +523,11 @@ def extract_predictions_from_registry(
                 raise TamperedEvidenceError(
                     f"Journal event {event_key} attributes mismatch at boundary {boundary}"
                 )
+            journal_verified = True
+
+        confidence = max(float(cal_prob), 1.0 - float(cal_prob))
+        decision = str(obs.get("decision", "NOT_MEASURED"))
+        skip_reason = policy_stg.get("skip_reason") or obs.get("rejection_reason")
 
         pred = PredictionRecord(
             session_id=registry.session_id,
@@ -396,8 +538,8 @@ def extract_predictions_from_registry(
             skip_reason=skip_reason,
             analytical_direction=policy_stg.get("analytical_direction"),
             analytical_reason=policy_stg.get("analytical_reason"),
-            raw_probability=raw_prob,
-            calibrated_probability=cal_prob,
+            raw_probability=float(raw_prob),
+            calibrated_probability=float(cal_prob),
             confidence=confidence,
             decision_time_utc_ns=decision_time_ns,
             model_name=summary.get("model_name"),
@@ -406,17 +548,38 @@ def extract_predictions_from_registry(
             instrumentation_version=registry.instrumentation_version,
             window_sha256=obs.get("window_sha256"),
             payload_sha256=payload_sha256,
+            journal_event_key=event_key,
+            journal_verified=journal_verified,
+            evidence_provenance_level="JOURNAL_VERIFIED" if journal_verified else "REGISTRY_ONLY",
         )
         predictions.append(pred)
 
-    return predictions
+    audit_summary = ObservationAuditSummary(
+        total_registry_observations=total_obs,
+        valid_committed_predictions=len(predictions),
+        rejected_observations_count=rejected_count,
+        uncommitted_observations_count=uncommitted_count,
+        invalid_probability_count=invalid_prob_count,
+        rejection_reasons_breakdown=rejection_reasons,
+        provenance_level="JOURNAL_VERIFIED" if (has_journal and predictions) else "REGISTRY_ONLY",
+    )
+    return predictions, audit_summary
+
+
+def extract_predictions_from_registry(
+    registry: TimingEvidenceRegistry,
+    db_path: Path | None = None,
+) -> list[PredictionRecord]:
+    """Extract immutable prediction records from a verified TimingEvidenceRegistry."""
+    preds, _ = extract_predictions_with_audit(registry, db_path)
+    return preds
 
 
 def validate_cohort_compatibility(predictions: list[PredictionRecord]) -> CohortIdentity:
-    """Validate that predictions belong to a compatible cohort.
+    """Validate that predictions belong to a strictly compatible cohort.
 
     Prevents silent combination of predictions from different models,
-    incompatible policies, or different symbols.
+    incompatible policies, different symbols, or different instrumentation versions.
     """
     if not predictions:
         raise ProspectiveEvaluationError("No predictions supplied for cohort validation")
@@ -428,11 +591,12 @@ def validate_cohort_compatibility(predictions: list[PredictionRecord]) -> Cohort
         sessions.add(p.session_id)
         if p.symbol != first.symbol:
             raise IncompatibleCohortError(
-                f"Mismatched symbol: {p.symbol} vs {first.symbol} in session {p.session_id}"
+                f"Mismatched symbol: '{p.symbol}' vs '{first.symbol}' in session {p.session_id}"
             )
         if p.candle_size_seconds != first.candle_size_seconds:
             raise IncompatibleCohortError(
-                f"Mismatched candle size: {p.candle_size_seconds} vs {first.candle_size_seconds}"
+                f"Mismatched candle size: {p.candle_size_seconds} vs {first.candle_size_seconds} "
+                f"in session {p.session_id}"
             )
         if (
             p.model_manifest_sha256 is not None
@@ -440,8 +604,26 @@ def validate_cohort_compatibility(predictions: list[PredictionRecord]) -> Cohort
             and p.model_manifest_sha256 != first.model_manifest_sha256
         ):
             raise IncompatibleCohortError(
-                f"Incompatible model manifest: {p.model_manifest_sha256} "
-                f"vs {first.model_manifest_sha256}"
+                f"Incompatible model manifest: '{p.model_manifest_sha256}' "
+                f"vs '{first.model_manifest_sha256}' in session {p.session_id}"
+            )
+        if (
+            p.policy_version is not None
+            and first.policy_version is not None
+            and p.policy_version != first.policy_version
+        ):
+            raise IncompatibleCohortError(
+                f"Incompatible policy version: '{p.policy_version}' "
+                f"vs '{first.policy_version}' in session {p.session_id}"
+            )
+        if (
+            p.instrumentation_version is not None
+            and first.instrumentation_version is not None
+            and p.instrumentation_version != first.instrumentation_version
+        ):
+            raise IncompatibleCohortError(
+                f"Incompatible instrumentation version: '{p.instrumentation_version}' "
+                f"vs '{first.instrumentation_version}' in session {p.session_id}"
             )
 
     return CohortIdentity(
@@ -464,7 +646,11 @@ def deduplicate_predictions(predictions: list[PredictionRecord]) -> list[Predict
             prior = seen[f]
             # Check for conflict in probabilities or decision
             if (
-                prior.calibrated_probability != p.calibrated_probability
+                not math.isclose(
+                    float(prior.calibrated_probability or 0.0),
+                    float(p.calibrated_probability or 0.0),
+                    abs_tol=1e-8,
+                )
                 or prior.decision != p.decision
             ):
                 raise DuplicatePredictionError(
@@ -481,16 +667,42 @@ def deduplicate_predictions(predictions: list[PredictionRecord]) -> list[Predict
 def pair_predictions_with_candles(
     predictions: list[PredictionRecord],
     candles: list[Candle],
+    *,
+    source_provenance: str | None = None,
+    reject_synthetic: bool = False,
+    reject_incomplete: bool = True,
 ) -> tuple[list[PairedEvaluationSample], list[int]]:
     """Strictly causally pair predictions at boundary F with subsequent authentic candles.
 
     The outcome candle MUST be exactly [F, F + candle_size_seconds].
-    Enforces causal order and catches label leakage.
+    Enforces causal order, catches label leakage, and detects conflicting duplicate candles.
     """
-    # Index candles by (from_ts, symbol)
+    # Index candles by (from_ts, symbol) with duplicate detection
     candle_map: dict[tuple[int, str], Candle] = {}
     for c in candles:
-        candle_map[c.from_ts, c.symbol] = c
+        key = (c.from_ts, c.symbol)
+        if key in candle_map:
+            prior = candle_map[key]
+            # Check for conflict in candle prices/volume
+            is_identical = (
+                math.isclose(float(c.open), float(prior.open), abs_tol=1e-8)
+                and math.isclose(float(c.close), float(prior.close), abs_tol=1e-8)
+                and math.isclose(float(c.high), float(prior.high), abs_tol=1e-8)
+                and math.isclose(float(c.low), float(prior.low), abs_tol=1e-8)
+                and math.isclose(float(c.volume), float(prior.volume), abs_tol=1e-6)
+                and c.to_ts == prior.to_ts
+                and c.is_complete == prior.is_complete
+            )
+            if not is_identical:
+                msg = (
+                    f"Conflicting duplicate candle outcomes for boundary {c.from_ts} on "
+                    f"{c.symbol}: (open={c.open}, close={c.close}, vol={c.volume}) vs "
+                    f"prior (open={prior.open}, close={prior.close}, vol={prior.volume})"
+                )
+                raise DuplicateOutcomeConflictError(msg)
+            # Identical duplicate: keep prior, skip redundant
+            continue
+        candle_map[key] = c
 
     paired: list[PairedEvaluationSample] = []
     missing_boundaries: list[int] = []
@@ -536,6 +748,10 @@ def pair_predictions_with_candles(
             )
 
         if not target_candle.is_complete:
+            if reject_incomplete:
+                raise IncompleteOutcomeError(
+                    f"Outcome candle for boundary {f} is incomplete (is_complete=False)"
+                )
             paired.append(
                 PairedEvaluationSample(
                     prediction=pred,
@@ -548,6 +764,26 @@ def pair_predictions_with_candles(
             )
             missing_boundaries.append(f)
             continue
+
+        # Check for synthetic data
+        raw_meta = getattr(target_candle, "raw", {}) or {}
+        is_synthetic = (
+            source_provenance == "SYNTHETIC_FIXTURE"
+            or getattr(target_candle, "provenance", None) == "synthetic"
+            or raw_meta.get("synthetic") is True
+            or getattr(target_candle, "source", None) == "SYNTHETIC_FIXTURE"
+        )
+        if is_synthetic and reject_synthetic:
+            raise SyntheticDataRejectedError(
+                f"Synthetic fixture outcome rejected for boundary {f} in authentic evaluation mode"
+            )
+
+        source_prov = (
+            source_provenance
+            if source_provenance is not None
+            else ("SYNTHETIC_FIXTURE" if is_synthetic else "AUTHENTIC_BROKER_FEED")
+        )
+        c_hash = compute_candle_sha256(target_candle)
 
         # Formulate outcome
         open_val = float(target_candle.open)
@@ -578,9 +814,10 @@ def pair_predictions_with_candles(
             binary_label=binary_lbl,
             is_neutral=is_neutral,
             is_complete=target_candle.is_complete,
+            source_provenance=source_prov,
+            candle_sha256=c_hash,
         )
 
-        # Evaluate directional correctness
         pred_dir: str | None = None
         cal_p = pred.calibrated_probability
         if cal_p is not None and math.isfinite(cal_p):
@@ -594,9 +831,7 @@ def pair_predictions_with_candles(
         dir_correct = None
         target_correct = None
         if pred_dir is not None:
-            # Directional accuracy against spot direction (neutral is not UP or DOWN)
             dir_correct = pred_dir == spot_dir
-            # Binary target accuracy matching exact training label (1 if UP else 0)
             target_correct = (pred_dir == "UP" and binary_lbl == 1) or (
                 pred_dir == "DOWN" and binary_lbl == 0
             )
@@ -645,6 +880,8 @@ def calculate_autocorrelation(values: list[int | float], max_lag: int = 1) -> fl
 def compute_prospective_metrics(
     pairs: list[PairedEvaluationSample],
     cohort: CohortIdentity,
+    *,
+    audit_summary: ObservationAuditSummary | None = None,
 ) -> ProspectiveEvaluationReport:
     """Calculate comprehensive prospective forecasting evaluation metrics."""
     total_predictions = len(pairs)
@@ -653,10 +890,11 @@ def compute_prospective_metrics(
     missing_count = total_predictions - aligned_count
     missing_boundaries = [p.prediction.boundary_F for p in pairs if p.outcome is None]
 
-    # Decisions and abstention
+    # Decisions, signal coverage, and abstention
     decision_dist: dict[str, int] = {}
     skip_reasons: dict[str, int] = {}
     active_count = 0
+    skip_count = 0
 
     for p in pairs:
         dec = p.prediction.decision
@@ -664,10 +902,38 @@ def compute_prospective_metrics(
         if dec in ("CALL", "PUT"):
             active_count += 1
         elif dec == "SKIP":
+            skip_count += 1
             reason = p.prediction.skip_reason or "UNSPECIFIED"
             skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
 
-    coverage_rate = (active_count / total_predictions) if total_predictions > 0 else 0.0
+    signal_coverage_rate = (
+        (active_count / float(total_predictions)) if total_predictions > 0 else 0.0
+    )
+    abstention_rate = (skip_count / float(total_predictions)) if total_predictions > 0 else 0.0
+
+    # Provenance and authenticity check on outcomes
+    all_authentic = True
+    for p in aligned:
+        if p.outcome is not None and p.outcome.source_provenance != "AUTHENTIC_BROKER_FEED":
+            all_authentic = False
+            break
+
+    # Determine report provenance level from predictions
+    prov_level = "REGISTRY_ONLY"
+    if pairs and all(p.prediction.journal_verified for p in pairs):
+        prov_level = "JOURNAL_VERIFIED"
+
+    # Default audit summary if none provided
+    if audit_summary is None:
+        audit_summary = ObservationAuditSummary(
+            total_registry_observations=total_predictions,
+            valid_committed_predictions=total_predictions,
+            rejected_observations_count=0,
+            uncommitted_observations_count=0,
+            invalid_probability_count=0,
+            rejection_reasons_breakdown={},
+            provenance_level=prov_level,
+        )
 
     # Probabilistic and directional metrics on aligned samples
     prob_samples = [
@@ -694,14 +960,16 @@ def compute_prospective_metrics(
             accuracy_wilson_ci_95=[0.0, 1.0],
             epistemic_status="AWAITING_AUTHENTIC_OUTCOMES",
             interpretation=(
-                "No authentic outcome candles have been paired yet. "
+                "No authentic outcome candles have been paired yet (0 authentic outcomes matched). "
                 "Forecast evaluation is pending subsequent authentic market observation."
             ),
         )
     else:
-        valid_pairs: list[tuple[PairedEvaluationSample, OutcomeRecord]] = [
-            (p, p.outcome) for p in prob_samples if p.outcome is not None
-        ]
+        # Sort chronologically by boundary F for causal walk-forward benchmarking
+        valid_pairs: list[tuple[PairedEvaluationSample, OutcomeRecord]] = sorted(
+            [(p, p.outcome) for p in prob_samples if p.outcome is not None],
+            key=lambda item: item[0].prediction.boundary_F,
+        )
         y_true = np.array([out.binary_label for _, out in valid_pairs], dtype=np.int64)
         p_cal = np.array(
             [p.prediction.calibrated_probability for p, _ in valid_pairs], dtype=np.float64
@@ -758,32 +1026,11 @@ def compute_prospective_metrics(
             "class_balance": class_balance,
         })
 
-        # Predefined Benchmarks
-        # 1. Constant Base-Rate Predictor (p_base = empirical base rate)
-        base_rate = float(np.mean(y_true))
-        p_base = np.full_like(p_cal, base_rate)
-        bs_base = brier_score(y_true, p_base)
-        ll_base = log_loss_score(y_true, p_base)
-        bss_base = 1.0 - (bs / bs_base) if bs_base > 0 else 0.0
-        acc_base = max(base_rate, 1.0 - base_rate)
-
-        benchmarks.append(
-            BenchmarkResult(
-                name="constant_base_rate_prior",
-                brier_score=bs_base,
-                brier_skill_score=bss_base,
-                log_loss=ll_base,
-                directional_accuracy=acc_base,
-                description=(
-                    f"Constant probability equal to observed sample base rate ({base_rate:.4f})"
-                ),
-            )
-        )
-
-        # 2. Naive Uniform (0.50 probability)
-        p_uniform = np.full_like(p_cal, 0.5)
-        bs_uni = brier_score(y_true, p_uniform)
-        ll_uni = log_loss_score(y_true, p_uniform)
+        # --- Reference Benchmarks ---
+        # 1. Uninformative Prior 50/50 Baseline (Causal, constant)
+        p_uni = np.full_like(p_cal, 0.5)
+        bs_uni = brier_score(y_true, p_uni)
+        ll_uni = log_loss_score(y_true, p_uni)
         bss_uni = 1.0 - (bs / bs_uni) if bs_uni > 0 else 0.0
 
         benchmarks.append(
@@ -793,7 +1040,90 @@ def compute_prospective_metrics(
                 brier_skill_score=bss_uni,
                 log_loss=ll_uni,
                 directional_accuracy=0.50,
-                description="Uniform uninformative prior P(UP) = 0.50",
+                is_causal=True,
+                prior_type="CAUSAL_UNINFORMATIVE",
+                description="Uniform uninformative prior P(UP) = 0.50 (causal, prospective)",
+            )
+        )
+
+        # 2. Frozen Training Prior Baseline (Causal, constant from training cutoff)
+        p_train = np.full_like(p_cal, FROZEN_TRAINING_PRIOR_UP)
+        bs_train = brier_score(y_true, p_train)
+        ll_train = log_loss_score(y_true, p_train)
+        bss_train = 1.0 - (bs / bs_train) if bs_train > 0 else 0.0
+        acc_train = float(np.mean((p_train > 0.5) == y_true))
+
+        benchmarks.append(
+            BenchmarkResult(
+                name="frozen_training_prior",
+                brier_score=bs_train,
+                brier_skill_score=bss_train,
+                log_loss=ll_train,
+                directional_accuracy=acc_train,
+                is_causal=True,
+                prior_type="CAUSAL_FROZEN_TRAINING",
+                description=(
+                    f"Frozen training distribution prior P(UP) = {FROZEN_TRAINING_PRIOR_UP:.4f} "
+                    "from cutoff 2026-11-14T14:41:11 UTC (causal, prospective)"
+                ),
+            )
+        )
+
+        # 3. Walk-Forward Expanding Prior Baseline (Causal, strictly past data only)
+        # For observation i (0-indexed), prior is computed from past outcomes 0..i-1
+        # with Laplace smoothing
+        p_wf_list: list[float] = []
+        for i in range(prob_count):
+            if i == 0:
+                p_wf_list.append(0.50)  # Seed uninformative prior
+            else:
+                past_y = y_true[:i]
+                p_wf = (1.0 + float(np.sum(past_y))) / (2.0 + float(i))
+                p_wf_list.append(p_wf)
+        p_wf_arr = np.array(p_wf_list, dtype=np.float64)
+        bs_wf = brier_score(y_true, p_wf_arr)
+        ll_wf = log_loss_score(y_true, p_wf_arr)
+        bss_wf = 1.0 - (bs / bs_wf) if bs_wf > 0 else 0.0
+        acc_wf = float(np.mean((p_wf_arr > 0.5) == y_true))
+
+        benchmarks.append(
+            BenchmarkResult(
+                name="walk_forward_expanding_prior",
+                brier_score=bs_wf,
+                brier_skill_score=bss_wf,
+                log_loss=ll_wf,
+                directional_accuracy=acc_wf,
+                is_causal=True,
+                prior_type="CAUSAL_WALK_FORWARD",
+                description=(
+                    "Causal expanding-window prior using exclusively past prospective outcomes "
+                    "t < t_i with Laplace smoothing (causal, prospective)"
+                ),
+            )
+        )
+
+        # 4. Retrospective Sample Mean Oracle (Non-causal comparator only)
+        sample_mean = float(np.mean(y_true))
+        p_oracle = np.full_like(p_cal, sample_mean)
+        bs_oracle = brier_score(y_true, p_oracle)
+        ll_oracle = log_loss_score(y_true, p_oracle)
+        bss_oracle = 1.0 - (bs / bs_oracle) if bs_oracle > 0 else 0.0
+        acc_oracle = max(sample_mean, 1.0 - sample_mean)
+
+        benchmarks.append(
+            BenchmarkResult(
+                name="retrospective_sample_mean_oracle",
+                brier_score=bs_oracle,
+                brier_skill_score=bss_oracle,
+                log_loss=ll_oracle,
+                directional_accuracy=acc_oracle,
+                is_causal=False,
+                prior_type="NON_CAUSAL_RETROSPECTIVE_ORACLE",
+                description=(
+                    f"RETROSPECTIVE COMPARATOR ONLY (ORACLE): In-sample empirical mean "
+                    f"({sample_mean:.4f}) using future labels not available at prediction time. "
+                    "NOT a prospective benchmark."
+                ),
             )
         )
 
@@ -813,12 +1143,15 @@ def compute_prospective_metrics(
         is_small = prob_count < SMALL_SAMPLE_THRESHOLD
         epistemic = "EXPLORATORY_DESCRIPTIVE_ONLY" if is_small else "STATISTICALLY_EVALUATED"
 
+        ci_str = f"[{wilson_ci[0]:.3f}, {wilson_ci[1]:.3f}]"
+        rho_str = f"{lag1_corr if lag1_corr is not None else 0.0:.3f}"
         interp = (
-            f"Sample size N={prob_count} is exploratory. 95% Wilson confidence interval "
-            f"for directional accuracy is [{wilson_ci[0]:.3f}, {wilson_ci[1]:.3f}]. "
-            f"Lag-1 outcome autocorrelation is {lag1_corr if lag1_corr is not None else 0.0:.3f} "
-            f"(effective sample size N_eff={n_eff:.1f}). "
-            "Findings do NOT establish a statistical edge. No edge demonstrated."
+            f"Sample size N={prob_count} is exploratory (N < {SMALL_SAMPLE_THRESHOLD}). "
+            f"95% Wilson confidence interval for directional accuracy is {ci_str}. "
+            f"Lag-1 autocorrelation is {rho_str} (effective sample size N_eff={n_eff:.1f}). "
+            "Neither N=30 nor N=100 establishes statistical significance. Detecting an edge of "
+            "52-54% against a 50% null requires thousands of independent observations. "
+            "No edge demonstrated."
         )
 
         uncertainty = UncertaintyDiagnostics(
@@ -845,17 +1178,23 @@ def compute_prospective_metrics(
     report = ProspectiveEvaluationReport(
         evaluated_at_utc=datetime.now(UTC).isoformat(),
         cohort=cohort,
+        observation_audit=audit_summary,
         total_predictions=total_predictions,
         aligned_pairs_count=aligned_count,
         missing_outcomes_count=missing_count,
         missing_boundaries=sorted(missing_boundaries),
         decision_distribution=decision_dist,
         skip_reasons_breakdown=skip_reasons,
-        abstention_coverage_rate=coverage_rate,
+        signal_coverage_rate=signal_coverage_rate,
+        abstention_rate=abstention_rate,
+        abstention_coverage_rate=signal_coverage_rate,
         probabilistic_metrics=prob_metrics,
         benchmarks=benchmarks,
         uncertainty=uncertainty,
         contract_distinction=contract_dist,
+        provenance_level=audit_summary.provenance_level,
+        all_outcomes_authentic=all_authentic,
+        tamper_evidence_disclaimer=UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER,
     )
     report.seal()
     return report
@@ -895,9 +1234,11 @@ def load_candles_from_storage(
 def evaluate_prospective_shadow_offline(
     evidence_paths: list[Path],
     *,
+    journal_path: Path | None = None,
     storage_dir: Path | None = None,
     candles: list[Candle] | None = None,
     session_filter: str | None = None,
+    reject_synthetic: bool = False,
 ) -> ProspectiveEvaluationReport:
     """Offline prospective evaluation entrypoint.
 
@@ -907,6 +1248,13 @@ def evaluate_prospective_shadow_offline(
     from iqoption_research.timing.evidence import TimingEvidenceRegistry
 
     all_predictions: list[PredictionRecord] = []
+    total_reg_obs = 0
+    valid_pred_count = 0
+    rej_obs_count = 0
+    uncommitted_obs_count = 0
+    invalid_prob_count = 0
+    aggregated_rejection_reasons: dict[str, int] = {}
+    has_any_journal = False
 
     for path in evidence_paths:
         path = path.resolve()
@@ -923,9 +1271,24 @@ def evaluate_prospective_shadow_offline(
             if session_filter is not None and reg.session_id != session_filter:
                 continue
 
-            db_path = file_path.parent / "observations.db"
-            preds = extract_predictions_from_registry(reg, db_path if db_path.is_file() else None)
+            db_path = (
+                journal_path.resolve()
+                if (journal_path is not None and journal_path.resolve().is_file())
+                else file_path.parent / "observations.db"
+            )
+            if db_path.is_file():
+                has_any_journal = True
+            preds, audit = extract_predictions_with_audit(
+                reg, db_path if db_path.is_file() else None
+            )
             all_predictions.extend(preds)
+            total_reg_obs += audit.total_registry_observations
+            valid_pred_count += audit.valid_committed_predictions
+            rej_obs_count += audit.rejected_observations_count
+            uncommitted_obs_count += audit.uncommitted_observations_count
+            invalid_prob_count += audit.invalid_probability_count
+            for rk, rc in audit.rejection_reasons_breakdown.items():
+                aggregated_rejection_reasons[rk] = aggregated_rejection_reasons.get(rk, 0) + rc
 
     if not all_predictions:
         raise ProspectiveEvaluationError("No predictions loaded from supplied evidence paths")
@@ -946,10 +1309,28 @@ def evaluate_prospective_shadow_offline(
         )
 
     # Pair predictions causally
-    pairs, _ = pair_predictions_with_candles(deduped, available_candles)
+    pairs, _ = pair_predictions_with_candles(
+        deduped, available_candles, reject_synthetic=reject_synthetic
+    )
+
+    prov_level = (
+        "JOURNAL_VERIFIED"
+        if (has_any_journal and all(p.journal_verified for p in deduped))
+        else "REGISTRY_ONLY"
+    )
+
+    audit_summary = ObservationAuditSummary(
+        total_registry_observations=total_reg_obs,
+        valid_committed_predictions=valid_pred_count,
+        rejected_observations_count=rej_obs_count,
+        uncommitted_observations_count=uncommitted_obs_count,
+        invalid_probability_count=invalid_prob_count,
+        rejection_reasons_breakdown=aggregated_rejection_reasons,
+        provenance_level=prov_level,
+    )
 
     # Compute report
-    return compute_prospective_metrics(pairs, cohort)
+    return compute_prospective_metrics(pairs, cohort, audit_summary=audit_summary)
 
 
 def verify_evaluation_report_integrity(report_dict: dict[str, Any]) -> bool:

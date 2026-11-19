@@ -88,6 +88,12 @@ def evaluate_predictions_cmd(
         "-e",
         help="Path(s) to shadow evidence JSON file(s) or directory.",
     ),
+    journal: Path | None = typer.Option(
+        None,
+        "--journal",
+        "-j",
+        help="Path to prospective SQLite journal database (observations.db).",
+    ),
     storage: Path = typer.Option(
         Path("data/datasets"),
         "--storage",
@@ -112,6 +118,7 @@ def evaluate_predictions_cmd(
 
     evaluate_predictions_command(
         evidence=evidence,
+        journal=journal,
         storage=storage,
         session_id=session_id,
         output=output,

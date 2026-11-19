@@ -1,5 +1,5 @@
 {
-  "evaluated_at_utc": "2026-11-19T17:15:27.477802+00:00",
+  "evaluated_at_utc": "2026-11-19T17:59:40.171360+00:00",
   "cohort": {
     "sessions": [
       "shadow_1758c4a42993483fa41c48e3cb4ab386"
@@ -11,6 +11,16 @@
     "symbol": "EURUSD",
     "candle_size_seconds": 60
   },
+  "observation_audit": {
+    "total_registry_observations": 5,
+    "valid_committed_predictions": 5,
+    "rejected_observations_count": 0,
+    "uncommitted_observations_count": 0,
+    "invalid_probability_count": 0,
+    "rejection_reasons_breakdown": {},
+    "provenance_level": "REGISTRY_ONLY"
+  },
+  "provenance_level": "REGISTRY_ONLY",
   "total_predictions": 5,
   "aligned_pairs_count": 0,
   "missing_outcomes_count": 5,
@@ -27,7 +37,8 @@
   "skip_reasons_breakdown": {
     "BELOW_FROZEN_THRESHOLD": 5
   },
-  "abstention_coverage_rate": 0.0,
+  "signal_coverage_rate": 0.0,
+  "abstention_rate": 1.0,
   "probabilistic_metrics": {
     "evaluated_sample_count": 0,
     "status": "AWAITING_LABEL_COLLECTION"
@@ -42,7 +53,7 @@
       1.0
     ],
     "epistemic_status": "AWAITING_AUTHENTIC_OUTCOMES",
-    "interpretation": "No authentic outcome candles have been paired yet. Forecast evaluation is pending subsequent authentic market observation."
+    "interpretation": "No authentic outcome candles have been paired yet (0 authentic outcomes matched). Forecast evaluation is pending subsequent authentic market observation."
   },
   "contract_distinction": {
     "disclaimer": "SPOT_DIRECTIONAL_ACCURACY_IS_NOT_REALIZED_CONTRACT_PROFITABILITY: Spot candle direction measures price movement between consecutive spot bars only. Binary contracts require payout hurdle (>54.05% at 0.85 payout to break even). Zero broker orders were sent. Actual tradable payout, broker execution, latency, and fills are unverified.",
@@ -54,5 +65,7 @@
     "disposition": "NO_DEMONSTRATED_EDGE",
     "execution_authority": "NONE"
   },
-  "evidence_sha256": "c835d2989b8bbecc44692aae85ba2b85e0915dac5c851416f3814e43eed65483"
+  "all_outcomes_authentic": true,
+  "tamper_evidence_disclaimer": "UNKEYED_SHA256_TAMPER_EVIDENCE_LIMITATION: The evidence_sha256 digest is an unkeyed SHA-256 hash providing accidental corruption and tamper detection in the local environment. It does not provide asymmetric cryptographic non-repudiation or independent third-party authentication against deliberate adversarial forgery.",
+  "evidence_sha256": "9cccef3ac7743f7e191ce7c634e65eb63bbf261f4f8c273fae2b162cd0697089"
 }

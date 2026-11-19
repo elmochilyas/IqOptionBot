@@ -757,6 +757,12 @@ def evaluate_predictions_command(
         "-e",
         help="Path(s) to shadow evidence JSON file(s) or directory.",
     ),
+    journal: Path | None = typer.Option(
+        None,
+        "--journal",
+        "-j",
+        help="Path to prospective SQLite journal database (observations.db).",
+    ),
     storage: Path = typer.Option(
         Path("data/datasets"),
         "--storage",
@@ -786,6 +792,7 @@ def evaluate_predictions_command(
     try:
         report = evaluate_prospective_shadow_offline(
             paths,
+            journal_path=journal,
             storage_dir=storage if storage.is_dir() else None,
             session_filter=session_id,
         )
@@ -834,7 +841,9 @@ def evaluate_predictions_command(
         if report.missing_outcomes_count > 0
         else "0",
     )
-    meta_table.add_row("Abstention Coverage Rate", f"{report.abstention_coverage_rate * 100:.1f}%")
+    meta_table.add_row("Signal Coverage Rate", f"{report.signal_coverage_rate * 100:.1f}%")
+    meta_table.add_row("Abstention Rate", f"{report.abstention_rate * 100:.1f}%")
+    meta_table.add_row("Evidence Provenance", f"[bold]{report.provenance_level}[/bold]")
     meta_table.add_row("Report Evidence SHA-256", f"[dim]{report.evidence_sha256[:16]}...[/dim]")
     console.print(meta_table)
 
@@ -921,6 +930,7 @@ def evaluate_predictions_command(
         if report.benchmarks:
             bench_table = Table(title="Benchmark Model Comparisons", border_style="cyan")
             bench_table.add_column("Benchmark", style="bold")
+            bench_table.add_column("Causal / Type")
             bench_table.add_column("Brier Score", justify="right")
             bench_table.add_column("Brier Skill Score", justify="right")
             bench_table.add_column("Log Loss", justify="right")
@@ -932,8 +942,14 @@ def evaluate_predictions_command(
                     if b.brier_skill_score > 0
                     else f"[red]{b.brier_skill_score:+.4f}[/red]"
                 )
+                causal_tag = (
+                    "[green]CAUSAL[/green]"
+                    if b.is_causal
+                    else "[yellow]ORACLE (NON-CAUSAL)[/yellow]"
+                )
                 bench_table.add_row(
                     b.name,
+                    causal_tag,
                     f"{b.brier_score:.4f}",
                     bss_str,
                     f"{b.log_loss:.4f}",

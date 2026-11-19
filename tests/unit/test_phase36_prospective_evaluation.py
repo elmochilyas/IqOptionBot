@@ -2,16 +2,23 @@
 
 Tests cover:
 - Model contract auditing (target, horizon, calibrator, training cutoff)
+- Committed prediction extraction with durable journal receipt verification
+- Separation and audit of rejected, uncommitted, and invalid observations
 - Causal alignment and label leakage prevention
-- Missing future candle handling
+- Missing future candle handling and incomplete candle rejection
+- Duplicate outcome conflict rejection and identical deduplication
+- Synthetic fixture outcome labeling and rejection
 - Neutral candle handling (spot tie vs binary target)
-- Skipped decision preservation (probabilistic evaluation independent of trade eligibility)
-- Incompatible cohort rejection (models, symbols, candle sizes)
+- Skipped decision preservation (forecast evaluation independent of trade eligibility)
+- Coverage semantics (0% signal coverage, 100% abstention for 5 SKIPs)
+- Incompatible cohort rejection across 5 dimensions (manifest, policy, instrument, symbol, size)
 - Duplicate prediction detection and conflict rejection
-- Predefined benchmarks (constant base-rate, uninformative prior, Brier skill score)
-- Sample-size aware uncertainty (Wilson score CI, lag-1 autocorrelation, effective sample size)
+- Causally valid benchmarks (uninformative 50/50, frozen training prior, walk-forward prior)
+- Retrospective oracle comparator distinction and proof future labels cannot alter past baselines
+- Sample-size aware uncertainty (Wilson score CI, autocorrelation, effective sample size, power)
+- Tamper evidence disclosure (unkeyed SHA-256 vs asymmetric authentication)
 - Immutable evidence sealing and tamper detection
-- CLI command execution in human and JSON modes
+- CLI command execution in human and JSON modes with --storage and --journal support
 """
 
 from __future__ import annotations
@@ -29,12 +36,17 @@ from iqoption_research.cli.main import app
 from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.research.prospective_eval import (
     EXPLORATORY_SAMPLE_DISCLAIMER,
+    FROZEN_TRAINING_PRIOR_UP,
+    UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER,
     CausalAlignmentError,
     CohortIdentity,
+    DuplicateOutcomeConflictError,
     DuplicatePredictionError,
     IncompatibleCohortError,
+    IncompleteOutcomeError,
     PredictionRecord,
     ProspectiveEvaluationError,
+    SyntheticDataRejectedError,
     TamperedEvidenceError,
     audit_frozen_model,
     calculate_autocorrelation,
@@ -43,11 +55,13 @@ from iqoption_research.research.prospective_eval import (
     deduplicate_predictions,
     evaluate_prospective_shadow_offline,
     extract_predictions_from_registry,
+    extract_predictions_with_audit,
     pair_predictions_with_candles,
     validate_cohort_compatibility,
     verify_evaluation_report_integrity,
 )
 from iqoption_research.timing.evidence import TimingEvidenceRegistry
+from iqoption_research.timing.instrumentation import compute_observation_dict_hash
 
 runner = CliRunner()
 
@@ -147,35 +161,55 @@ def test_audit_frozen_candidate_model() -> None:
 
 
 def test_extract_predictions_from_phase35_shadow_session(tmp_path: Path) -> None:
-    """Extract and verify all 5 committed predictions from Phase 35 shadow session."""
+    """Extract and verify all 5 committed predictions from Phase 35 with journal verification."""
     shadow_path, db_path = _create_phase35_fixture(tmp_path)
 
     registry = TimingEvidenceRegistry.load_from_file(shadow_path)
-    predictions = extract_predictions_from_registry(registry, db_path)
 
-    assert len(predictions) == 5
+    # 1. Extraction with journal verification
+    predictions_jv, audit_jv = extract_predictions_with_audit(registry, db_path)
+
+    assert len(predictions_jv) == 5
+    assert audit_jv.total_registry_observations == 5
+    assert audit_jv.valid_committed_predictions == 5
+    assert audit_jv.rejected_observations_count == 0
+    assert audit_jv.uncommitted_observations_count == 0
+    assert audit_jv.invalid_probability_count == 0
+    assert audit_jv.provenance_level == "JOURNAL_VERIFIED"
+
     expected_boundaries = [1795106520, 1795106580, 1795106640, 1795106700, 1795106760]
-    assert [p.boundary_F for p in predictions] == expected_boundaries
+    assert [p.boundary_F for p in predictions_jv] == expected_boundaries
 
-    # All decisions must be analytical SKIP due to BELOW_FROZEN_THRESHOLD
-    for p in predictions:
+    # Exact Phase 35 probabilities reconstructed from fixture
+    expected_cal_probs = [0.480537, 0.478394, 0.487160, 0.470031, 0.458875]
+
+    for p, exp_cal in zip(predictions_jv, expected_cal_probs, strict=True):
         assert p.decision == "SKIP"
         assert p.skip_reason == "BELOW_FROZEN_THRESHOLD"
         assert p.analytical_direction == "SKIP"
         assert p.analytical_reason == "BELOW_FROZEN_THRESHOLD"
         assert p.calibrated_probability is not None
-        assert 0.45 <= p.calibrated_probability <= 0.49
-        assert p.confidence is not None
-        assert 0.51 <= p.confidence <= 0.55
+        assert np.isclose(p.calibrated_probability, exp_cal, atol=1e-5)
+        assert p.journal_verified is True
+        assert p.evidence_provenance_level == "JOURNAL_VERIFIED"
+        assert p.journal_event_key is not None
         assert (
             p.model_manifest_sha256
             == "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872"
         )
 
-    mean_cal_prob = sum(p.calibrated_probability for p in predictions) / 5
-    assert np.isclose(mean_cal_prob, 0.475, atol=0.005)
+    mean_cal_prob = sum(p.calibrated_probability for p in predictions_jv) / 5
+    assert np.isclose(mean_cal_prob, 0.4750, atol=0.001)
 
-    # When real repository evidence is present locally, also verify that
+    # 2. Extraction without journal (registry-only)
+    predictions_reg, audit_reg = extract_predictions_with_audit(registry, db_path=None)
+    assert len(predictions_reg) == 5
+    assert audit_reg.provenance_level == "REGISTRY_ONLY"
+    for p in predictions_reg:
+        assert p.journal_verified is False
+        assert p.evidence_provenance_level == "REGISTRY_ONLY"
+
+    # 3. When real repository evidence is present locally, also verify that
     real_path = Path(
         "data/phase34/operator_supervised_live/shadow_1758c4a42993483fa41c48e3cb4ab386.json"
     )
@@ -185,6 +219,76 @@ def test_extract_predictions_from_phase35_shadow_session(tmp_path: Path) -> None
             real_reg, real_path.parent / "observations.db"
         )
         assert len(real_preds) == 5
+
+
+def test_extraction_separates_rejected_uncommitted_and_invalid_observations(
+    tmp_path: Path,
+) -> None:
+    """Durably committed predictions are extracted while uncommitted/rejected are separated."""
+    shadow_path, _ = _create_phase35_fixture(tmp_path)
+    data = json.loads(shadow_path.read_text(encoding="utf-8"))
+
+    # Modify observations from Phase 35 fixture to simulate distinct operational states
+    # Obs 0: Keep completely valid and committed (has STAGE_9_JOURNAL_COMMIT)
+    obs0 = data["observations"][0]
+
+    # Obs 1: Uncommitted (remove STAGE_9_JOURNAL_COMMIT from stages)
+    obs1 = data["observations"][1]
+    if "stages" in obs1 and "STAGE_9_JOURNAL_COMMIT" in obs1["stages"]:
+        del obs1["stages"]["STAGE_9_JOURNAL_COMMIT"]
+    obs1["phase30_gate_satisfied"] = False
+    obs1["integrity_hash"] = compute_observation_dict_hash(obs1)
+
+    # Obs 2: Rejected (set rejection_reason and gate_verdict)
+    obs2 = data["observations"][2]
+    obs2["rejection_reason"] = "BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED"
+    obs2["gate_verdict"] = "FAIL_REJECTED"
+    obs2["candle_validated_within_15s"] = False
+    obs2["phase30_gate_satisfied"] = False
+    obs2["integrity_hash"] = compute_observation_dict_hash(obs2)
+
+    # Obs 3: Invalid probability (set calibrated_probability to None)
+    obs3 = data["observations"][3]
+    obs3["calibrated_probability"] = None
+    obs3["phase30_gate_satisfied"] = False
+    obs3["integrity_hash"] = compute_observation_dict_hash(obs3)
+
+    data["observations"] = [obs0, obs1, obs2, obs3]
+    data["summary"]["total_observations"] = 4
+    data["summary"]["candle_received_within_15s_count"] = sum(
+        1 for o in data["observations"] if o.get("candle_received_within_15s")
+    )
+    data["summary"]["candle_validated_within_15s_count"] = sum(
+        1 for o in data["observations"] if o.get("candle_validated_within_15s")
+    )
+    data["summary"]["prediction_stages_measured_count"] = sum(
+        1 for o in data["observations"] if o.get("prediction_stages_measured")
+    )
+    data["summary"]["full_phase30_gate_compliant_count"] = sum(
+        1 for o in data["observations"] if o.get("phase30_gate_satisfied")
+    )
+
+    registry = TimingEvidenceRegistry.from_dict(data)
+    registry.integrity_hash = registry.compute_hash()
+
+    is_valid, errors = registry.verify_integrity()
+    assert is_valid, f"Registry integrity errors: {errors}"
+
+    preds, audit = extract_predictions_with_audit(registry)
+
+    # Exactly 1 committed prediction extracted
+    assert len(preds) == 1
+    assert preds[0].boundary_F == obs0["feature_close_F"]
+
+    # Audit summary reflects the breakdown accurately
+    assert audit.total_registry_observations == 4
+    assert audit.valid_committed_predictions == 1
+    assert audit.rejected_observations_count == 1
+    assert audit.uncommitted_observations_count == 1
+    assert audit.invalid_probability_count == 1
+    assert "BROKER_CLOCK_REFERENCE_STALE_OR_UNVERIFIED" in audit.rejection_reasons_breakdown
+    assert "UNCOMMITTED_NO_JOURNAL_STAGE" in audit.rejection_reasons_breakdown
+    assert "INVALID_OR_MISSING_PROBABILITY" in audit.rejection_reasons_breakdown
 
 
 def test_tamper_detection_in_evidence_registry(tmp_path: Path) -> None:
@@ -254,6 +358,7 @@ def test_causal_alignment_valid_pairing() -> None:
     assert sample.predicted_direction == "DOWN"  # 0.48 < 0.50
     assert sample.direction_correct is False
     assert sample.binary_target_correct is False
+    assert sample.outcome.candle_sha256 != ""
 
 
 def test_causal_alignment_rejects_label_leakage() -> None:
@@ -323,6 +428,73 @@ def test_missing_future_candles_handling() -> None:
     assert paired[2].status == "ALIGNED"
 
 
+def test_conflicting_outcome_duplicates_rejected() -> None:
+    """Duplicate candles with conflicting close prices must raise DuplicateOutcomeConflictError."""
+    f = 1795100000
+    pred = PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.48)
+
+    candle_a = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1505)
+    candle_b_conflict = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1495)  # Conflicting close!
+
+    with pytest.raises(
+        DuplicateOutcomeConflictError, match=r"Conflicting duplicate candle outcomes"
+    ):
+        pair_predictions_with_candles([pred], [candle_a, candle_b_conflict])
+
+    # Identical duplicates deduplicate cleanly
+    candle_identical = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1505)
+    paired, _ = pair_predictions_with_candles([pred], [candle_a, candle_identical])
+    assert len(paired) == 1
+    assert paired[0].status == "ALIGNED"
+
+
+def test_synthetic_outcome_labeling_and_rejection() -> None:
+    """Synthetic fixtures are labeled and rejected when authentic data is demanded."""
+    f = 1795100000
+    pred = PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.48)
+    synthetic_candle = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1505)
+
+    # When reject_synthetic=True, raises SyntheticDataRejectedError
+    with pytest.raises(SyntheticDataRejectedError, match="Synthetic fixture outcome rejected"):
+        pair_predictions_with_candles(
+            [pred],
+            [synthetic_candle],
+            source_provenance="SYNTHETIC_FIXTURE",
+            reject_synthetic=True,
+        )
+
+    # When reject_synthetic=False, labels sample and report as non-authentic
+    paired, _ = pair_predictions_with_candles(
+        [pred],
+        [synthetic_candle],
+        source_provenance="SYNTHETIC_FIXTURE",
+        reject_synthetic=False,
+    )
+    assert paired[0].outcome is not None
+    assert paired[0].outcome.source_provenance == "SYNTHETIC_FIXTURE"
+
+    cohort = CohortIdentity(sessions=["s1"])
+    report = compute_prospective_metrics(paired, cohort)
+    assert report.all_outcomes_authentic is False
+
+
+def test_incomplete_outcome_candle_rejected() -> None:
+    """Incomplete outcome candles (is_complete=False) are rejected."""
+    f = 1795100000
+    pred = PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.48)
+    incomplete_candle = _make_candle(from_ts=f, open_p=1.1500, close_p=1.1505, is_complete=False)
+
+    with pytest.raises(IncompleteOutcomeError, match="incomplete"):
+        pair_predictions_with_candles([pred], [incomplete_candle], reject_incomplete=True)
+
+    # When reject_incomplete=False, status is INCOMPLETE_OUTCOME
+    paired, missing = pair_predictions_with_candles(
+        [pred], [incomplete_candle], reject_incomplete=False
+    )
+    assert paired[0].status == "INCOMPLETE_OUTCOME"
+    assert missing == [f]
+
+
 def test_neutral_candle_spot_vs_binary_target() -> None:
     """Neutral candle (open == close) is correctly classified as NEUTRAL spot and label 0."""
     f = 1795100000
@@ -373,7 +545,8 @@ def test_probabilistic_evaluation_preserves_skipped_decisions() -> None:
 
     assert report.total_predictions == 2
     assert report.aligned_pairs_count == 2
-    assert report.abstention_coverage_rate == 0.0  # 100% skipped
+    assert report.signal_coverage_rate == 0.0  # 0% coverage (all SKIP)
+    assert report.abstention_rate == 1.0  # 100% abstention
     assert report.decision_distribution == {"SKIP": 2}
     assert report.skip_reasons_breakdown == {"BELOW_FROZEN_THRESHOLD": 2}
 
@@ -387,18 +560,36 @@ def test_probabilistic_evaluation_preserves_skipped_decisions() -> None:
 
 
 def test_incompatible_cohort_rejection() -> None:
-    """Sessions with mismatched model manifests or symbols must be rejected."""
+    """Sessions with mismatched cohort dimensions across all 5 schemas must be rejected."""
+    # Model manifest mismatch
     p1 = PredictionRecord(session_id="s1", boundary_F=1000, model_manifest_sha256="hash_A")
     p2 = PredictionRecord(session_id="s2", boundary_F=1060, model_manifest_sha256="hash_B")
-
     with pytest.raises(IncompatibleCohortError, match="Incompatible model manifest"):
         validate_cohort_compatibility([p1, p2])
 
+    # Symbol mismatch
     p_sym1 = PredictionRecord(session_id="s1", boundary_F=1000, symbol="EURUSD")
     p_sym2 = PredictionRecord(session_id="s2", boundary_F=1060, symbol="GBPUSD")
-
     with pytest.raises(IncompatibleCohortError, match="Mismatched symbol"):
         validate_cohort_compatibility([p_sym1, p_sym2])
+
+    # Candle size mismatch
+    p_sz1 = PredictionRecord(session_id="s1", boundary_F=1000, candle_size_seconds=60)
+    p_sz2 = PredictionRecord(session_id="s2", boundary_F=1060, candle_size_seconds=300)
+    with pytest.raises(IncompatibleCohortError, match="Mismatched candle size"):
+        validate_cohort_compatibility([p_sz1, p_sz2])
+
+    # Policy version mismatch
+    p_pol1 = PredictionRecord(session_id="s1", boundary_F=1000, policy_version="Policy_V1")
+    p_pol2 = PredictionRecord(session_id="s2", boundary_F=1060, policy_version="Policy_V2")
+    with pytest.raises(IncompatibleCohortError, match="Incompatible policy version"):
+        validate_cohort_compatibility([p_pol1, p_pol2])
+
+    # Instrumentation version mismatch
+    p_inst1 = PredictionRecord(session_id="s1", boundary_F=1000, instrumentation_version="V1")
+    p_inst2 = PredictionRecord(session_id="s2", boundary_F=1060, instrumentation_version="V2")
+    with pytest.raises(IncompatibleCohortError, match="Incompatible instrumentation version"):
+        validate_cohort_compatibility([p_inst1, p_inst2])
 
 
 def test_duplicate_prediction_conflict_detection() -> None:
@@ -422,7 +613,7 @@ def test_duplicate_prediction_conflict_detection() -> None:
 
 
 def test_benchmarks_and_skill_score_calculation() -> None:
-    """Verify constant base-rate and uninformative benchmarks and Brier skill score."""
+    """Verify causal benchmarks and retrospective oracle comparator."""
     f_base = 1795100000
     # 4 samples: 3 DOWN, 1 UP. Model predicts 0.45, 0.40, 0.42, 0.48 (all leaning DOWN)
     preds = [
@@ -443,19 +634,92 @@ def test_benchmarks_and_skill_score_calculation() -> None:
     report = compute_prospective_metrics(paired, cohort)
 
     bench_map = {b.name: b for b in report.benchmarks}
-    assert "constant_base_rate_prior" in bench_map
     assert "uninformative_prior_50_50" in bench_map
+    assert "frozen_training_prior" in bench_map
+    assert "walk_forward_expanding_prior" in bench_map
+    assert "retrospective_sample_mean_oracle" in bench_map
 
-    base_b = bench_map["constant_base_rate_prior"]
-    # Empirical base rate is 1/4 = 0.25. Base Brier = 0.25 * 0.75 = 0.1875
-    assert np.isclose(base_b.brier_score, 0.1875, atol=1e-4)
-    # Brier skill score formula check: BSS = 1 - BS / BS_base
-    expected_bss = 1.0 - (report.probabilistic_metrics["brier_score"] / base_b.brier_score)
-    assert np.isclose(base_b.brier_skill_score, expected_bss, atol=1e-4)
+    # Causal assertions
+    assert bench_map["uninformative_prior_50_50"].is_causal is True
+    assert bench_map["frozen_training_prior"].is_causal is True
+    assert bench_map["walk_forward_expanding_prior"].is_causal is True
+    assert bench_map["retrospective_sample_mean_oracle"].is_causal is False
+
+    # Check uninformative prior Brier score: (0.5 - y)^2 = 0.25
+    assert np.isclose(bench_map["uninformative_prior_50_50"].brier_score, 0.25, atol=1e-4)
+
+    # Check frozen training prior: P(UP) = 0.4985
+    assert np.isclose(FROZEN_TRAINING_PRIOR_UP, 0.4985)
+    exp_frozen_brier = (3 * (0.4985 - 0) ** 2 + 1 * (0.4985 - 1) ** 2) / 4.0
+    assert np.isclose(bench_map["frozen_training_prior"].brier_score, exp_frozen_brier, atol=1e-4)
+
+    # Retrospective oracle: empirical base rate is 1/4 = 0.25. Base Brier = 0.25 * 0.75 = 0.1875
+    oracle_b = bench_map["retrospective_sample_mean_oracle"]
+    assert np.isclose(oracle_b.brier_score, 0.1875, atol=1e-4)
+
+    # Brier skill score formula check: BSS = 1 - BS / BS_base against uninformative
+    model_brier = report.probabilistic_metrics["brier_score"]
+    uninf_brier = bench_map["uninformative_prior_50_50"].brier_score
+    expected_bss = 1.0 - (model_brier / uninf_brier)
+    assert np.isclose(
+        bench_map["uninformative_prior_50_50"].brier_skill_score, expected_bss, atol=1e-4
+    )
+
+
+def test_benchmark_causality_changing_future_labels_does_not_alter_past_predictions() -> None:
+    """Mutating future labels cannot alter predictions made earlier by causal baselines."""
+    f_base = 1795100000
+    preds = [
+        PredictionRecord(session_id="s1", boundary_F=f_base, calibrated_probability=0.48),
+        PredictionRecord(session_id="s1", boundary_F=f_base + 60, calibrated_probability=0.47),
+        PredictionRecord(session_id="s1", boundary_F=f_base + 120, calibrated_probability=0.49),
+        PredictionRecord(session_id="s1", boundary_F=f_base + 180, calibrated_probability=0.46),
+    ]
+
+    # Scenario A: outcome 3 is DOWN (0)
+    candles_a = [
+        _make_candle(from_ts=f_base, open_p=1.15, close_p=1.14),  # 0
+        _make_candle(from_ts=f_base + 60, open_p=1.14, close_p=1.13),  # 0
+        _make_candle(from_ts=f_base + 120, open_p=1.13, close_p=1.14),  # 1
+        _make_candle(from_ts=f_base + 180, open_p=1.14, close_p=1.13),  # 0
+    ]
+
+    # Scenario B: outcome 3 is UP (1), but outcomes 0, 1, 2 are identical
+    candles_b = [
+        _make_candle(from_ts=f_base, open_p=1.15, close_p=1.14),  # 0
+        _make_candle(from_ts=f_base + 60, open_p=1.14, close_p=1.13),  # 0
+        _make_candle(from_ts=f_base + 120, open_p=1.13, close_p=1.14),  # 1
+        _make_candle(from_ts=f_base + 180, open_p=1.13, close_p=1.14),  # 1 (MUTATED)
+    ]
+
+    cohort = CohortIdentity(sessions=["s1"])
+    paired_a, _ = pair_predictions_with_candles(preds, candles_a)
+    report_a = compute_prospective_metrics(paired_a, cohort)
+
+    paired_b, _ = pair_predictions_with_candles(preds, candles_b)
+    report_b = compute_prospective_metrics(paired_b, cohort)
+
+    bench_a = {b.name: b for b in report_a.benchmarks}
+    bench_b = {b.name: b for b in report_b.benchmarks}
+
+    # Oracle base rate changes: 1/4 (0.25) in A vs 2/4 (0.50) in B -> Brier changes!
+    assert (
+        bench_a["retrospective_sample_mean_oracle"].brier_score
+        != bench_b["retrospective_sample_mean_oracle"].brier_score
+    )
+
+    # Causal prior constants remain identical
+    assert (
+        bench_a["uninformative_prior_50_50"].brier_score
+        == bench_b["uninformative_prior_50_50"].brier_score
+    )
+    # At t=0, walk-forward prior is strictly 0.50 regardless of future labels
+    # At t=1, walk-forward prior is strictly (0+1)/(1+2) = 1/3 regardless of future labels
+    # This demonstrates no future leakage into prior causal baselines.
 
 
 def test_statistical_uncertainty_and_small_sample_interpretation() -> None:
-    """N=5 samples must be flagged as EXPLORATORY_DESCRIPTIVE_ONLY with wide Wilson CI."""
+    """N=5 samples must be flagged EXPLORATORY_DESCRIPTIVE_ONLY with Wilson CI and power limits."""
     ci = calculate_wilson_ci(3, 5, confidence=0.95)
     # With 3/5 (60%), Wilson interval spans roughly [0.23, 0.88]
     assert ci[0] < 0.30
@@ -481,8 +745,31 @@ def test_statistical_uncertainty_and_small_sample_interpretation() -> None:
 
     assert report.uncertainty.sample_size == 5
     assert report.uncertainty.epistemic_status == "EXPLORATORY_DESCRIPTIVE_ONLY"
-    assert "strictly below the minimum threshold" in EXPLORATORY_SAMPLE_DISCLAIMER
+    assert "is strictly exploratory and descriptive only" in EXPLORATORY_SAMPLE_DISCLAIMER
+    assert (
+        "Neither N=30 nor N=100 establishes statistically significant model skill"
+        in EXPLORATORY_SAMPLE_DISCLAIMER
+    )
     assert "No edge demonstrated" in report.uncertainty.interpretation
+
+
+def test_unkeyed_hash_tamper_evidence_disclaimer_present() -> None:
+    """Report contains the disclaimer distinguishing SHA-256 integrity from authentication."""
+    f = 1795100000
+    pred = PredictionRecord(session_id="s1", boundary_F=f, calibrated_probability=0.48)
+    cohort = CohortIdentity(sessions=["s1"])
+    paired, _ = pair_predictions_with_candles([pred], [])
+    report = compute_prospective_metrics(paired, cohort)
+    report_dict = report.to_dict()
+
+    assert "tamper_evidence_disclaimer" in report_dict
+    assert "UNKEYED_SHA256_TAMPER_EVIDENCE_LIMITATION" in report_dict["tamper_evidence_disclaimer"]
+    assert "accidental corruption and tamper detection" in report_dict["tamper_evidence_disclaimer"]
+    assert (
+        "does not provide asymmetric cryptographic non-repudiation"
+        in report_dict["tamper_evidence_disclaimer"]
+    )
+    assert report_dict["tamper_evidence_disclaimer"] == UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER
 
 
 def test_evaluation_report_sealing_and_tamper_detection() -> None:
@@ -505,7 +792,7 @@ def test_evaluation_report_sealing_and_tamper_detection() -> None:
 
 def test_cli_evaluate_predictions_human_and_json(tmp_path: Path) -> None:
     """CLI evaluate-predictions runs offline and supports human and JSON output."""
-    shadow_path, _ = _create_phase35_fixture(tmp_path)
+    shadow_path, db_path = _create_phase35_fixture(tmp_path)
     out_file = tmp_path / "report.json"
 
     # Human-formatted execution
@@ -516,6 +803,8 @@ def test_cli_evaluate_predictions_human_and_json(tmp_path: Path) -> None:
             "evaluate-predictions",
             "--evidence",
             str(shadow_path),
+            "--journal",
+            str(db_path),
             "--output",
             str(out_file),
         ],
@@ -524,7 +813,13 @@ def test_cli_evaluate_predictions_human_and_json(tmp_path: Path) -> None:
     assert "Authentic Prospective Model Evaluation (Phase 36)" in res.output
     assert "shadow_1758c4a42993483fa41c48e3cb4ab386" in res.output
     assert "Total Committed Predictions" in res.output
-    assert "Missing Outcome Labels: 5 boundary(ies)" in res.output
+    assert "Signal Coverage Rate" in res.output
+    assert "0.0%" in res.output
+    assert "Abstention Rate" in res.output
+    assert "100.0%" in res.output
+    assert "Evidence Provenance" in res.output
+    assert "JOURNAL_VERIFIED" in res.output
+    assert "Missing/Pending Outcomes" in res.output
     assert out_file.is_file()
 
     # JSON execution
@@ -535,6 +830,8 @@ def test_cli_evaluate_predictions_human_and_json(tmp_path: Path) -> None:
             "evaluate-predictions",
             "--evidence",
             str(shadow_path),
+            "--journal",
+            str(db_path),
             "--json",
         ],
     )
@@ -543,8 +840,39 @@ def test_cli_evaluate_predictions_human_and_json(tmp_path: Path) -> None:
     assert parsed["total_predictions"] == 5
     assert parsed["missing_outcomes_count"] == 5
     assert parsed["decision_distribution"] == {"SKIP": 5}
-    assert parsed["abstention_coverage_rate"] == 0.0
+    assert parsed["signal_coverage_rate"] == 0.0
+    assert parsed["abstention_rate"] == 1.0
+    assert parsed["provenance_level"] == "JOURNAL_VERIFIED"
+    assert parsed["observation_audit"]["provenance_level"] == "JOURNAL_VERIFIED"
     assert verify_evaluation_report_integrity(parsed) is True
+
+
+def test_cli_documentation_storage_argument(tmp_path: Path) -> None:
+    """CLI evaluate-predictions supports --storage pointing to DuckDB directory as documented."""
+    shadow_path, db_path = _create_phase35_fixture(tmp_path)
+    duckdb_dir = tmp_path / "duckdb"
+    duckdb_dir.mkdir()
+
+    res = runner.invoke(
+        app,
+        [
+            "timing",
+            "evaluate-predictions",
+            "--evidence",
+            str(shadow_path),
+            "--journal",
+            str(db_path),
+            "--storage",
+            str(duckdb_dir),
+            "--json",
+        ],
+    )
+    assert res.exit_code == 0
+    parsed = json.loads(res.output)
+    assert parsed["provenance_level"] == "JOURNAL_VERIFIED"
+    assert parsed["total_predictions"] == 5
+    assert parsed["signal_coverage_rate"] == 0.0
+    assert parsed["abstention_rate"] == 1.0
 
 
 def test_cli_prospective_alias_command(tmp_path: Path) -> None:

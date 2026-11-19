@@ -68,17 +68,20 @@ flowchart TD
    - Each prediction committed at boundary $F$ is paired exclusively with the subsequent candle starting at $F$ and closing at $F + 60$.
    - Any candle with $\text{to\_ts} \le F$ or duration $\neq 60$ seconds is rejected with a `CausalAlignmentError`.
    - Predictions whose decision timestamp occurs at or after the outcome candle close ($\text{decision\_time\_utc\_ns} \ge (F + 60) \times 10^9$) are rejected as causality violations.
-2. **Preservation of Skipped Decisions**:
+2. **Preservation of Skipped Decisions with Durable Commit Verification**:
    - Probabilistic forecasting metrics are evaluated unconditionally across all valid inference samples, preserving $(p_{\text{raw}}, p_{\text{cal}})$ even when the analytical policy decision was `SKIP` due to `BELOW_FROZEN_THRESHOLD`.
-3. **Missing-Outcome Handling**:
-   - If subsequent authentic candles are not yet in the catalog, predictions are preserved and marked `MISSING_OUTCOME`. The report returns status `AWAITING_LABEL_COLLECTION` and enumerates exact missing boundaries without fabricating labels.
-4. **Neutral Candle Handling**:
-   - Flat candles where open equals close ($C_{t+1} = O_{t+1}$) are explicitly flagged as `is_neutral = True` with spot direction `NEUTRAL`.
-   - The pipeline computes both overall directional accuracy (neutral is not a win) and non-neutral directional accuracy.
+   - Only durably committed forecasts with a valid decision timestamp and calibrated probability are evaluated. Rejected, uncommitted, or invalid observations are tracked separately and excluded from prediction counts.
+3. **Missing-Outcome Handling & Zero Matches to Date**:
+   - Exactly zero authentic future outcomes have been matched to date for Phase 35 observations.
+   - All 5 boundaries remain in `AWAITING_LABEL_COLLECTION` status. The pipeline enumerates exact missing boundaries without fabricating labels.
+4. **Authentic Provenance & Conflicting Duplicate Rejection**:
+   - Conflicting duplicate candles for the same boundary are rejected via `DuplicateOutcomeConflictError`.
+   - Synthetic fixtures are explicitly labeled (`source_provenance = "SYNTHETIC_FIXTURE"`) and rejected when authentic evaluation is required.
 5. **Cohort Incompatibility Rejection**:
-   - Rejects silent merging of sessions with different model manifest digests, different symbols, or different candle sizes via `IncompatibleCohortError`.
-6. **Tamper Evidence & Cryptographic Sealing**:
+   - Rejects silent merging of sessions across differences in model manifest, policy version, instrumentation version, symbols, or candle sizes via `IncompatibleCohortError`.
+6. **Tamper Evidence & Unkeyed Hash Limitation**:
    - The evaluation report calculates a canonical SHA-256 digest (`evidence_sha256`) covering all metadata, distributions, metrics, and uncertainty diagnostics. Any mutation invalidates `verify_evaluation_report_integrity`.
+   - *Limitation disclosure*: An unkeyed SHA-256 hash provides tamper evidence against accidental corruption within the local environment; it does not provide cryptographic non-repudiation or independent third-party authentication against deliberate adversarial tampering.
 
 ---
 
@@ -86,33 +89,57 @@ flowchart TD
 
 ### 1. Brier Score & Brier Skill Score (BSS)
 $$BS = \frac{1}{N} \sum_{i=1}^N (p_i - y_i)^2$$
-$$BSS = 1.0 - \frac{BS_{\text{model}}}{BS_{\text{base}}}$$
-Where $BS_{\text{base}} = \bar{y}(1 - \bar{y})$ is the Brier score of a constant base-rate predictor forecasting the empirical sample mean $\bar{y}$. A positive $BSS > 0$ indicates forecasting skill superior to climatological base rate; $BSS \le 0$ indicates zero or negative skill.
+$$BSS = 1.0 - \frac{BS_{\text{model}}}{BS_{\text{benchmark}}}$$
 
-### 2. Log Loss (Binary Cross-Entropy)
+### 2. Causally Valid Benchmarks vs Retrospective Oracle Comparators
+
+To prevent future label leakage, reference benchmarks must be strictly causal:
+
+1. **Uninformative 50/50 Baseline** (`uninformative_prior_50_50`):
+   - Constant $p_t = 0.50$ for all $t$.
+   - Fixed uninformative reference ($BS = 0.25$, accuracy = $50\%$).
+2. **Frozen Training Prior Baseline** (`frozen_training_prior`):
+   - Constant $p_t = 0.4985$ derived from the frozen training distribution cutoff (`2026-11-14T14:41:11 UTC`).
+   - Evaluates whether prospective forecasts outperform historical climatological drift known prior to deployment.
+3. **Walk-Forward Expanding Prior** (`walk_forward_expanding_prior`):
+   - Sequential causal prior using only strictly earlier prospective observations ($j < i$) with Laplace smoothing:
+     $$p_{\text{wf}, i} = \frac{1 + \sum_{j=1}^{i-1} y_j}{2 + (i - 1)}, \quad p_{\text{wf}, 1} = 0.50$$
+   - Changes to future labels $y_k$ ($k \ge i$) have zero effect on predictions made at step $i$.
+4. **Retrospective Sample Mean (Oracle)** (`retrospective_sample_mean_oracle`):
+   - Constant $p = \bar{y}$ across the entire evaluation sample.
+   - **Explicitly labeled as non-causal**: Because $\bar{y}$ uses future in-sample evaluation outcomes that were unknown at prediction time, it is an in-sample oracle comparator, **not** a prospective benchmark.
+
+### 3. Log Loss (Binary Cross-Entropy)
 $$LL = -\frac{1}{N} \sum_{i=1}^N \left[ y_i \ln(p_i) + (1 - y_i) \ln(1 - p_i) \right]$$
 Probabilities are bounded to $[\epsilon, 1 - \epsilon]$ with $\epsilon = 10^{-15}$ to ensure numerical stability.
 
-### 3. Expected Calibration Error (ECE) & Mean Calibration Bias
+### 4. Expected Calibration Error (ECE) & Mean Calibration Bias
 $$\text{Bias} = \frac{1}{N} \sum_{i=1}^N p_i - \frac{1}{N} \sum_{i=1}^N y_i$$
 $$ECE = \sum_{m=1}^M \frac{|B_m|}{N} \left| \text{acc}(B_m) - \text{conf}(B_m) \right|$$
 
-### 4. Directional Accuracy
-- **Overall Spot Directional Accuracy**:
-  $$\text{Acc}_{\text{overall}} = \frac{1}{N} \sum_{i=1}^N \mathbf{1}(\text{pred\_dir}_i = \text{spot\_dir}_i)$$
-  Where $\text{pred\_dir}_i = \text{UP}$ if $p_i > 0.5$ else $\text{DOWN}$, and $\text{spot\_dir}_i \in \{\text{UP}, \text{DOWN}, \text{NEUTRAL}\}$.
-- **Non-Neutral Directional Accuracy**:
-  $$\text{Acc}_{\text{non-neutral}} = \frac{1}{N_{\text{active\_moves}}} \sum_{i: C_i \neq O_i} \mathbf{1}(\text{pred\_dir}_i = \text{spot\_dir}_i)$$
-- **Binary Target Accuracy**: Evaluated against the exact model training formulation: $\mathbf{1}(C_i > O_i)$.
+### 5. Directional Accuracy & Signal Coverage
+- **Signal Coverage Rate**: $\text{Coverage} = \frac{N_{\text{active}}}{N_{\text{total}}}$ (where active decisions are CALL or PUT). For Phase 35, coverage is **0.0%**.
+- **Abstention Rate**: $\text{Abstention} = \frac{N_{\text{SKIP}}}{N_{\text{total}}}$. For Phase 35, abstention is **100.0%**.
+- **Spot Directional Accuracy**: Evaluates directional movement against spot candle price change. Neutral spot moves ($C = O$) are non-directional.
+- **Binary Target Accuracy**: Evaluates prediction against the exact training label $\mathbf{1}(C_{t+1} > O_{t+1})$.
 
 ---
 
 ## 5. Sample-Size-Aware Uncertainty & Time-Series Dependence
 
-### Epistemic Status & Small Sample Threshold
-Following research standards, sample sizes $N < 30$ are automatically classified as:
+### Epistemic Status & Statistical Power Limitations
+
+Sample sizes $N < 30$ are automatically classified as:
 $$\mathbf{EXPLORATORY\_DESCRIPTIVE\_ONLY}$$
-With $N = 5$, statistical power is virtually zero, and asymptotic normality assumptions fail.
+
+> [!WARNING]
+> **SAMPLE SIZE AND STATISTICAL SIGNIFICANCE LIMITATIONS**:
+> Neither $N = 30$ nor $N = 100$ automatically establishes statistically significant model skill or a commercial edge.
+> In financial market direction forecasting, anticipated directional edge sizes are small (typically $52\%$ to $54\%$ accuracy vs. a $50.0\%$ null). Standard two-sided binomial power calculations at $\alpha = 0.05$ with $80\%$ statistical power demonstrate:
+>
+> $$N \approx \frac{(z_{\alpha/2} + z_{\beta})^2 \cdot p(1 - p)}{(p - 0.50)^2} \approx \frac{(1.96 + 0.84)^2 \cdot 0.25}{(0.03)^2} \approx 2,178 \text{ independent observations}$$
+>
+> Therefore, sample sizes under hundreds or thousands of independent observations are strictly exploratory and severely underpowered.
 
 ### Exact Wilson Score 95% Confidence Intervals
 For $N$ trials with $k$ directional successes ($p = k / N$):
@@ -120,10 +147,10 @@ $$\text{center} = \frac{p + \frac{z^2}{2N}}{1 + \frac{z^2}{N}}, \quad \text{marg
 $$\text{CI}_{95\%} = \left[ \max(0, \text{center} - \text{margin}), \min(1, \text{center} + \text{margin}) \right]$$
 For $N = 5$ with e.g. 3/5 successes (60%), the 95% Wilson confidence interval spans:
 $$[0.231, 0.882]$$
-Demonstrating that no statistically significant conclusion can be drawn from 5 samples.
+Demonstrating that no statistically supported finding can be inferred from small prospective sets.
 
 ### Lag-1 Autocorrelation & Effective Sample Size ($N_{\text{eff}}$)
-To account for potential adjacent-candle dependence:
+To account for adjacent-candle serial dependence:
 $$\rho_1 = \frac{\sum_{t=2}^N (y_t - \bar{y})(y_{t-1} - \bar{y})}{\sum_{t=1}^N (y_t - \bar{y})^2}$$
 $$N_{\text{eff}} = N \cdot \frac{1 - \rho_1}{1 + \rho_1} \quad \text{(bounded in } [1.0, N]\text{)}$$
 Positive outcome autocorrelation reduces degrees of freedom and effective independent observations.
@@ -158,14 +185,16 @@ Validated Candles (<=15s):  5/5 (100.0%)
 Timing Gates Compliant:     5/5 (100.0%)
 Decisions:                  5 SKIP (100.0%)
 Analytical Skip Reasons:    5 BELOW_FROZEN_THRESHOLD
-Mean Calibrated Prob UP:    0.474999 (0.4589 - 0.4872)
-Directional Confidence:     0.5128 - 0.5411 (max(p, 1-p))
+Signal Coverage Rate:       0.0% (0/5 active signals)
+Abstention Rate:            100.0% (5/5 SKIP)
+Mean Calibrated Prob UP:    0.474999 (0.458875 - 0.487160)
+Directional Confidence:     0.512840 - 0.541125 (max(p, 1-p))
 Decision Threshold:         0.60
 Actual Payout Verified:     False (None)
 Broker Orders Sent:         0
 Execution Authority:        NONE
 Research Disposition:       NO_DEMONSTRATED_EDGE
-Status:                     AWAITING_LABEL_COLLECTION (5 missing outcome boundaries)
+Status:                     AWAITING_LABEL_COLLECTION (5 missing outcome boundaries, 0 matched)
 ```
 
 ### Observation-by-Observation Breakdown
@@ -224,6 +253,6 @@ To evaluate probabilistic forecasting accuracy on subsequent authentic market da
 2. **Execute Offline Evaluation Pipeline**:
    Run `iqresearch timing evaluate-predictions --evidence data/phase34/operator_supervised_live/shadow_1758c4a42993483fa41c48e3cb4ab386.json --storage data/datasets`.
 3. **Inspect Forecasting Metrics**:
-   Review Brier score, log loss, directional accuracy, and Brier skill score relative to the constant base-rate benchmark.
-4. **Target Sample Size**:
-   Maintain the minimum threshold ($N \ge 30$, target $N \ge 100$) before considering any hypothesis testing.
+   Review Brier score, log loss, directional accuracy, and Brier skill score relative to the causal benchmarks (uninformative 50/50, frozen training prior, and walk-forward prior).
+4. **Statistical Power and Sample Size Requirements**:
+   Small sample sizes ($N < 30$) are strictly exploratory. Neither $N=30$ nor $N=100$ establishes statistical significance or demonstrates edge. Formal power calculations show that detecting subtle directional edges in financial series requires thousands of independent observations. Zero broker orders or risk deployment may be contemplated without extensive power-aware validation.

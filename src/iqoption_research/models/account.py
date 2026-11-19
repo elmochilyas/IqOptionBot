@@ -311,6 +311,20 @@ def wallet_decision(
     )
 
 
+def balance_wallet_indicators(
+    balances: tuple[Balance, ...], *, correlated: bool
+) -> tuple[WalletIndicator, ...]:
+    active = WalletSource.LIST_ACTIVE if correlated else WalletSource.PUSH_ACTIVE
+    default = WalletSource.LIST_DEFAULT if correlated else WalletSource.PUSH_DEFAULT
+    indicators = []
+    for balance in balances:
+        if balance.raw_is_active is True:
+            indicators.append(WalletIndicator(active, balance.id))
+        if balance.is_default is True:
+            indicators.append(WalletIndicator(default, balance.id))
+    return tuple(indicators)
+
+
 def profile_wallet_indicators(raw: dict[str, Any]) -> tuple[WalletIndicator, ...]:
     current = raw.get("current_balance")
     values = [raw.get(k) for k in ("balance_id", "balanceId", "active_balance_id")]
@@ -417,7 +431,8 @@ class AccountStatus:
             active_balance=active_balance,
             practice_balance=practice_balance,
             real_balance=real_balance,
-            indicators=profile_wallet_indicators(profile_data),
+            indicators=profile_wallet_indicators(profile_data)
+            + balance_wallet_indicators(tuple(balances), correlated=False),
         )
 
     @property
@@ -433,7 +448,9 @@ class AccountStatus:
         return self.practice_verification().is_verified
 
     def practice_verification(self) -> PracticeVerification:
-        return wallet_decision(self.balances, self.indicators, complete=True)
+        return wallet_decision(
+            self.balances, self.indicators, complete=bool(self.profile.raw or self.profile.user_id)
+        )
 
     def __repr__(self) -> str:
         active = self.active_balance

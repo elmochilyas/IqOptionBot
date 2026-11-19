@@ -52,6 +52,7 @@ from iqoption_research.models.account import (
     Profile,
     WalletIndicator,
     WalletSource,
+    balance_wallet_indicators,
     profile_wallet_indicators,
     wallet_decision,
 )
@@ -250,14 +251,9 @@ class IQOptionWebSocketClient:
     @property
     def wallet_indicators(self) -> tuple[WalletIndicator, ...]:
         indicators = list(profile_wallet_indicators(self._profile.raw)) if self._profile else []
-        correlated = self._list_correlated
-        active = WalletSource.LIST_ACTIVE if correlated else WalletSource.PUSH_ACTIVE
-        default = WalletSource.LIST_DEFAULT if correlated else WalletSource.PUSH_DEFAULT
-        for b in self._listed_balances or ():
-            if b.raw_is_active is True:
-                indicators.append(WalletIndicator(active, b.id))
-            if b.is_default is True:
-                indicators.append(WalletIndicator(default, b.id))
+        indicators.extend(
+            balance_wallet_indicators(self._listed_balances or (), correlated=self._list_correlated)
+        )
         if self._change_indicator:
             indicators.append(self._change_indicator)
         return tuple(indicators)
@@ -278,7 +274,9 @@ class IQOptionWebSocketClient:
         families = {s.value.partition(".")[0] for s in sources}
         distinct = {i.balance_id for i in indicators}
         decision = wallet_decision(
-            balances, indicators, complete=self.is_authenticated and self._profile is not None
+            balances,
+            indicators,
+            complete=self.is_authenticated and bool(self._profile and self._profile.raw),
         )
         return {
             "account_types": sorted({b.type.name for b in balances}),

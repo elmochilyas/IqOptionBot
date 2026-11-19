@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 from iqoption_research.cli.main import app
 from iqoption_research.connectors.iqoption.client import AsyncIQOption, CandleFetchResult
 from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+from iqoption_research.models.account import AccountStatus
 from iqoption_research.security.credentials import Credentials
 from iqoption_research.timing.instrumentation import ClockDiscipline, TimingRecorder
 from iqoption_research.timing.supervised_session import (
@@ -272,3 +273,32 @@ async def test_live_session_console_reporting_distinguishes_stages(
     assert runner.output_destination != dest
     assert runner.output_destination.name.startswith("supervised_timing_evidence_meas_")
     assert runner.output_destination.is_file()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile_wallet", ["demo", "primary"])
+async def test_unscoped_wallet_blocks_before_timing(profile_wallet: str, tmp_path: Path) -> None:
+    client = AsyncMock()
+    client.assert_read_only = MagicMock()
+    client.get_account_status.return_value = AccountStatus.from_raw(
+        {"balance_id": profile_wallet},
+        [{"id": "demo", "type": 4}, {"id": "primary", "type": 1}],
+        active_balance_id=profile_wallet,
+    )
+    runner = SupervisedSessionRunner(
+        SupervisedSessionConfig(
+            live_mode=True,
+            simulation_mode=False,
+            operator_confirmed=True,
+            output_destination=tmp_path / "timing.json",
+        )
+    )
+    with (
+        patch("iqoption_research.timing.supervised_session.AsyncIQOption") as constructor,
+        patch("asyncio.to_thread", side_effect=["synthetic@example.invalid", "synthetic"]),
+    ):
+        constructor.return_value.__aenter__.return_value = client
+        with pytest.raises(RuntimeError, match="ACCOUNT_SELECTION_UNVERIFIED"):
+            await runner.execute()
+    client.get_candles.assert_not_awaited()
+    assert not list(tmp_path.iterdir())

@@ -384,6 +384,7 @@ class ProspectiveEvaluationReport:
     def compute_evidence_hash(self) -> str:
         d = self.to_dict()
         d.pop("evidence_sha256", None)
+        d.pop("evaluated_at_utc", None)
         canonical = json.dumps(d, sort_keys=True, separators=(",", ":"), allow_nan=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -1875,6 +1876,7 @@ def verify_evaluation_report_integrity(report_dict: dict[str, Any]) -> bool:
         return False
     d = dict(report_dict)
     d.pop("evidence_sha256", None)
+    d.pop("evaluated_at_utc", None)
     canonical = json.dumps(d, sort_keys=True, separators=(",", ":"), allow_nan=False)
     computed = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return computed == expected_hash

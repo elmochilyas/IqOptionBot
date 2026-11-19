@@ -993,3 +993,370 @@ def evaluate_predictions_command(
 
     if output is not None:
         console.print(f"[bold green]Evaluation report saved to:[/bold green] {output}")
+
+
+@app.command(
+    "evaluate-cohort",
+    help="Offline prospective cohort research dataset construction and evaluation (Phase 37).",
+)
+def evaluate_cohort_command(
+    evidence: list[Path] = typer.Option(
+        None,
+        "--evidence",
+        "-e",
+        help="Path(s) to shadow evidence JSON file(s) or directory.",
+    ),
+    journal: Path | None = typer.Option(
+        None,
+        "--journal",
+        "-j",
+        help="Path to prospective SQLite journal database (observations.db).",
+    ),
+    storage: Path = typer.Option(
+        Path("data/datasets"),
+        "--storage",
+        "-s",
+        help="Path to historical authentic catalog storage.",
+    ),
+    catalog: Path | None = typer.Option(
+        None,
+        "--catalog",
+        "-c",
+        help="Optional path to SQLite dataset catalog (catalog.db).",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session-id",
+        help="Filter to a specific session ID.",
+    ),
+    output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help="Directory to write research dataset, evaluation report, and manifest.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Explicitly permit overwriting existing published research artifacts.",
+    ),
+    allow_partition: bool = typer.Option(
+        False,
+        "--allow-partition",
+        help="Allow partitioning heterogeneous cohorts rather than failing closed.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
+) -> None:
+    """Offline prospective cohort research dataset builder and evaluator (Phase 37)."""
+    from iqoption_research.research.prospective_cohort import (
+        PILOT_TARGET_NOTICE,
+        WILSON_LIMITATIONS_NOTICE,
+        evaluate_prospective_cohort_offline,
+        publish_research_cohort_bundle,
+    )
+    from iqoption_research.research.prospective_eval import (
+        CONTRACT_PROFITABILITY_DISCLAIMER,
+        ProspectiveEvaluationError,
+    )
+
+    paths = evidence or [Path("data/phase34/operator_supervised_live")]
+    storage_dir = (
+        storage
+        if (isinstance(storage, Path) and storage.is_dir())
+        else (Path("data/datasets") if Path("data/datasets").is_dir() else None)
+    )
+    cat_path = catalog if isinstance(catalog, Path) else None
+    j_path = journal if isinstance(journal, Path) else None
+    sess_id = session_id if isinstance(session_id, str) else None
+
+    try:
+        dataset, report, manifest = evaluate_prospective_cohort_offline(
+            paths,
+            journal_path=j_path,
+            storage_dir=storage_dir,
+            catalog_path=cat_path,
+            session_filter=sess_id,
+            allow_partition=allow_partition,
+        )
+    except ProspectiveEvaluationError as exc:
+        if json_output:
+            typer.echo(json.dumps({"error": str(exc), "status": "FAILED"}, indent=2))
+        else:
+            console.print(f"[bold red]Prospective Cohort Evaluation Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    saved_files: dict[str, Path] = {}
+    if output_dir is not None:
+        try:
+            saved_files = publish_research_cohort_bundle(
+                dataset,
+                report,
+                manifest,
+                output_dir,
+                overwrite=overwrite,
+            )
+        except (FileExistsError, OSError) as exc:
+            if json_output:
+                typer.echo(json.dumps({"error": str(exc), "status": "PUBLISH_FAILED"}, indent=2))
+            else:
+                console.print(f"[bold red]Artifact Publication Error:[/bold red] {exc}")
+            raise typer.Exit(code=1) from exc
+
+    if json_output:
+        combined = {
+            "dataset": dataset.to_dict(),
+            "report": report.to_dict(),
+            "manifest": manifest.to_dict(),
+        }
+        typer.echo(json.dumps(combined, indent=2))
+        return
+
+    # Rich formatted presentation
+    console.print(
+        Panel(
+            "[bold cyan]Prospective Research Dataset & Evaluation (Phase 37)[/bold cyan]\n"
+            "Offline multi-session aggregation, outcome reconciliation, and integrity binding.\n"
+            "[yellow]Authority: NONE | Disposition: NO_DEMONSTRATED_EDGE | Orders: 0[/yellow]",
+            title="Phase 37 Cohort Evaluation Pipeline",
+            border_style="cyan",
+        )
+    )
+
+    # Cohort Overview
+    meta_table = Table(title="Cohort Provenance & Dataset Summary", border_style="blue")
+    meta_table.add_column("Property", style="bold yellow")
+    meta_table.add_column("Value", style="white")
+
+    meta_table.add_row("Sessions Aggregated", ", ".join(dataset.cohort.sessions))
+    meta_table.add_row(
+        "Symbol & Timeframe", f"{dataset.cohort.symbol} ({dataset.cohort.candle_size_seconds}s)"
+    )
+    meta_table.add_row(
+        "Model Manifest Digest", str(dataset.cohort.model_manifest_sha256)[:16] + "..."
+    )
+    meta_table.add_row("Total Registry Observations", str(dataset.total_observations))
+    meta_table.add_row("Included Evaluated Rows", f"[green]{dataset.included_count}[/green]")
+    meta_table.add_row("Excluded Rows", f"[yellow]{dataset.excluded_count}[/yellow]")
+    meta_table.add_row("Dataset Content Hash", f"[dim]{dataset.dataset_content_hash[:16]}...[/dim]")
+    meta_table.add_row("Report Evidence Hash", f"[dim]{report.evidence_sha256[:16]}...[/dim]")
+    meta_table.add_row(
+        "Integrity Manifest Digest", f"[bold green]{manifest.manifest_sha256[:16]}...[/bold green]"
+    )
+    console.print(meta_table)
+
+    # Probabilistic & Directional Metrics
+    prob = report.probabilistic_metrics
+    if prob.get("status") == "COMPLETED":
+        metrics_table = Table(title="Probabilistic Forecasting Quality", border_style="green")
+        metrics_table.add_column("Metric", style="bold green")
+        metrics_table.add_column("Score", justify="right")
+        metrics_table.add_column("Description", style="dim")
+
+        metrics_table.add_row(
+            "Brier Score", f"{prob.get('brier_score', 0.0):.6f}", "Mean squared probability error"
+        )
+        metrics_table.add_row(
+            "Log Loss", f"{prob.get('log_loss', 0.0):.6f}", "Binary cross-entropy loss"
+        )
+        metrics_table.add_row(
+            "Spot Directional Accuracy",
+            f"{prob.get('directional_accuracy_overall', 0.0) * 100:.1f}%",
+            "Overall spot accuracy",
+        )
+        metrics_table.add_row(
+            "Binary Target Accuracy",
+            f"{prob.get('binary_target_accuracy', 0.0) * 100:.1f}%",
+            "Target 1(C > O)",
+        )
+        metrics_table.add_row(
+            "Signal Coverage Rate",
+            f"{report.signal_coverage_rate * 100:.1f}%",
+            "Trade eligibility coverage",
+        )
+        metrics_table.add_row(
+            "Abstention Rate", f"{report.abstention_rate * 100:.1f}%", "Policy abstention rate"
+        )
+        console.print(metrics_table)
+
+    # Uncertainty Panel
+    u = report.uncertainty
+    console.print(
+        Panel(
+            f"[bold]Epistemic Status:[/bold] [yellow]{u.epistemic_status}[/yellow]\n"
+            f"[bold]Interpretation:[/bold] {u.interpretation}\n\n"
+            f"[bold]Pilot Target Notice:[/bold] [dim]{PILOT_TARGET_NOTICE}[/dim]\n"
+            f"[bold]Wilson Interval Limits:[/bold] [dim]{WILSON_LIMITATIONS_NOTICE}[/dim]\n\n"
+            f"[dim]{CONTRACT_PROFITABILITY_DISCLAIMER}[/dim]",
+            title="Statistical Uncertainty & Limitations",
+            border_style="yellow"
+            if u.epistemic_status == "EXPLORATORY_DESCRIPTIVE_ONLY"
+            else "green",
+        )
+    )
+
+    if saved_files:
+        console.print(f"[bold green]Published research artifacts to:[/bold green] {output_dir}")
+        for k, p in saved_files.items():
+            console.print(f"  • {k}: {p.name}")
+
+
+@app.command(
+    "plan-missing-labels",
+    help="Offline bounded recovery plan for missing prospective outcome labels (Phase 37).",
+)
+def plan_missing_labels_command(
+    evidence: list[Path] = typer.Option(
+        None,
+        "--evidence",
+        "-e",
+        help="Path(s) to shadow evidence JSON file(s) or directory.",
+    ),
+    journal: Path | None = typer.Option(
+        None,
+        "--journal",
+        "-j",
+        help="Path to prospective SQLite journal database (observations.db).",
+    ),
+    storage: Path = typer.Option(
+        Path("data/datasets"),
+        "--storage",
+        "-s",
+        help="Path to historical authentic catalog storage.",
+    ),
+    catalog: Path | None = typer.Option(
+        None,
+        "--catalog",
+        "-c",
+        help="Optional path to SQLite dataset catalog (catalog.db).",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session-id",
+        help="Filter to a specific session ID.",
+    ),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Optional path to write the JSON recovery plan.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Permit overwriting existing output recovery plan file.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
+) -> None:
+    """Offline bounded recovery planner grouping truly contiguous missing candle windows."""
+    from iqoption_research.market_data.history_expansion import atomic_json
+    from iqoption_research.research.prospective_cohort import (
+        MISSING_LABEL_PLAN_DISCLAIMER,
+        discover_and_validate_evidence,
+        generate_missing_label_plan,
+    )
+    from iqoption_research.research.prospective_eval import ProspectiveEvaluationError
+
+    paths = evidence or [Path("data/phase34/operator_supervised_live")]
+    storage_dir = (
+        storage
+        if (isinstance(storage, Path) and storage.is_dir())
+        else (Path("data/datasets") if Path("data/datasets").is_dir() else None)
+    )
+    cat_path = catalog if isinstance(catalog, Path) else None
+    j_path = journal if isinstance(journal, Path) else None
+    sess_id = session_id if isinstance(session_id, str) else None
+
+    try:
+        preds, _, _, _ = discover_and_validate_evidence(
+            paths,
+            explicit_journal=j_path,
+            session_filter=sess_id,
+        )
+        plan = generate_missing_label_plan(
+            preds,
+            storage_dir=storage_dir,
+            catalog_path=cat_path,
+        )
+    except ProspectiveEvaluationError as exc:
+        if json_output:
+            typer.echo(json.dumps({"error": str(exc), "status": "FAILED"}, indent=2))
+        else:
+            console.print(f"[bold red]Missing-Label Planning Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if output is not None:
+        out_p = output.resolve()
+        if not overwrite and out_p.is_file():
+            msg = f"Output plan file already exists: {out_p}. Refusing to overwrite."
+            if json_output:
+                typer.echo(json.dumps({"error": msg, "status": "FILE_EXISTS"}, indent=2))
+            else:
+                console.print(f"[bold red]File Exists Error:[/bold red] {msg}")
+            raise typer.Exit(code=1)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(out_p, plan.to_dict())
+
+    if json_output:
+        typer.echo(json.dumps(plan.to_dict(), indent=2))
+        return
+
+    # Rich formatted presentation
+    console.print(
+        Panel(
+            "[bold cyan]Prospective Missing-Label Recovery Plan (Phase 37)[/bold cyan]\n"
+            "Offline contiguous candle window grouping for operator-supervised backfill.\n"
+            "[yellow]Authority: NONE | Disposition: NO_DEMONSTRATED_EDGE | Network: ZERO[/yellow]",
+            title="Missing-Label Planning",
+            border_style="cyan",
+        )
+    )
+
+    overview_table = Table(title="Coverage Overview", border_style="blue")
+    overview_table.add_column("Property", style="bold yellow")
+    overview_table.add_column("Value", style="white")
+
+    overview_table.add_row("Symbol & Timeframe", f"{plan.symbol} ({plan.candle_size_seconds}s)")
+    overview_table.add_row("Total Predictions Examined", str(plan.total_predictions_examined))
+    overview_table.add_row(
+        "Verified Coverage Count", f"[green]{plan.total_verified_coverage}[/green]"
+    )
+    overview_table.add_row("Verified Coverage Rate", f"{plan.verified_coverage_rate * 100:.1f}%")
+    overview_table.add_row(
+        "Missing Outcome Count",
+        f"[bold red]{plan.total_missing_outcomes}[/bold red]"
+        if plan.total_missing_outcomes > 0
+        else "[green]0[/green]",
+    )
+    overview_table.add_row("Contiguous Missing Windows", str(plan.missing_windows_count))
+    console.print(overview_table)
+
+    if plan.windows:
+        win_table = Table(
+            title="Contiguous Missing Windows Requiring Recovery", border_style="yellow"
+        )
+        win_table.add_column("#", justify="center", style="bold")
+        win_table.add_column("Opening UTC", style="cyan")
+        win_table.add_column("Closing UTC", style="cyan")
+        win_table.add_column("Candles", justify="right", style="bold red")
+        win_table.add_column("Suggested Operator Command", style="dim")
+
+        for idx, w in enumerate(plan.windows, 1):
+            win_table.add_row(
+                str(idx),
+                w.from_utc,
+                w.to_utc,
+                str(w.missing_candle_count),
+                w.suggested_command,
+            )
+        console.print(win_table)
+
+    console.print(
+        Panel(
+            f"[dim]{MISSING_LABEL_PLAN_DISCLAIMER}[/dim]",
+            title="Operational Invariants Notice",
+            border_style="dim",
+        )
+    )
+
+    if output is not None:
+        console.print(f"[bold green]Missing label recovery plan written to:[/bold green] {output}")

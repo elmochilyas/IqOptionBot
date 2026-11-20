@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import shlex
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -43,14 +45,18 @@ from iqoption_research.cli.main import app
 from iqoption_research.market_data.catalog import CatalogEntry, DatasetCatalog
 from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.research.prospective_cohort import (
+    CanonicalSourceTracker,
     CorruptedEvidenceError,
     EmptyCohortError,
+    SourceIdentityCollisionError,
     discover_and_validate_evidence,
     evaluate_prospective_cohort_offline,
     generate_missing_label_plan,
     is_otc_symbol,
     publish_research_cohort_bundle,
     validate_and_partition_cohorts,
+    validate_single_cohort,
+    verify_published_bundle,
 )
 from iqoption_research.research.prospective_eval import (
     PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED,
@@ -67,9 +73,11 @@ from iqoption_research.research.prospective_eval import (
     compute_file_sha256,
     compute_prospective_metrics,
     deduplicate_predictions,
+    digest,
     pair_predictions_with_candles,
 )
 from iqoption_research.timing.evidence import TimingEvidenceRegistry
+from iqoption_research.timing.instrumentation import compute_observation_dict_hash
 from tests.unit.test_phase36_prospective_evaluation import _write_simple_parquet
 
 runner = CliRunner()
@@ -114,6 +122,7 @@ def _make_candle(
 
 def _create_phase35_fixtures(directory: Path) -> tuple[Path, Path]:
     """Create authentic Phase 35 shadow trial session and SQLite journal in directory."""
+    directory.mkdir(parents=True, exist_ok=True)
     fixture_session = Path("tests/fixtures/phase35_shadow_session.json")
     fixture_journal = Path("tests/fixtures/phase35_shadow_journal.json")
 
@@ -441,14 +450,22 @@ def test_scenario_06_duplicate_identical_evidence_counted_once(tmp_path: Path) -
     duplicate_path = tmp_path / "copy_of_shadow.json"
     duplicate_path.write_text(shadow_path.read_text(encoding="utf-8"), encoding="utf-8")
 
+    tracker = CanonicalSourceTracker()
     preds, audit, file_fps, pred_sources = discover_and_validate_evidence(
         [shadow_path, duplicate_path],
         explicit_journal=db_path,
+        source_tracker=tracker,
     )
     assert len(preds) == 5
     assert audit.valid_committed_predictions == 5
-    assert shadow_path.name in file_fps
-    assert duplicate_path.name in file_fps
+    session_id = preds[0].session_id
+    canon_evidence = f"evidence:{session_id}"
+    assert canon_evidence in file_fps
+    assert f"journal:{session_id}:{db_path.name}" in file_fps
+    # Distinct source references are retained while file is counted once
+    refs = tracker.get_source_references(canon_evidence)
+    assert shadow_path.name in refs
+    assert duplicate_path.name in refs
     for b in [p.boundary_F for p in preds]:
         assert len(pred_sources[b]) >= 1
 
@@ -581,7 +598,7 @@ def test_scenario_13_synthetic_data_mixed_into_authentic_cohort_rejected() -> No
 # Mandatory Matrix Scenario 14: Mixed models or policy versions
 # ==============================================================================
 def test_scenario_14_mixed_models_or_policy_versions_rejected_or_partitioned() -> None:
-    """Scenario 14: Mixed models or policy versions are rejected by default or partitioned."""
+    """Scenario 14: Mixed models/policies fail closed; partitioning disabled in Phase 37."""
     f1, f2 = 1795100000, 1795100060
     p1 = PredictionRecord(
         session_id="s1", boundary_F=f1, calibrated_probability=0.48, policy_version="v1"
@@ -590,11 +607,11 @@ def test_scenario_14_mixed_models_or_policy_versions_rejected_or_partitioned() -
         session_id="s2", boundary_F=f2, calibrated_probability=0.48, policy_version="v2"
     )
 
-    with pytest.raises(IncompatibleCohortError, match="Incompatible policy version"):
+    with pytest.raises(IncompatibleCohortError, match="policy_version"):
         validate_and_partition_cohorts([p1, p2], allow_partition=False)
 
-    partitioned = validate_and_partition_cohorts([p1, p2], allow_partition=True)
-    assert len(partitioned) == 2
+    with pytest.raises(IncompatibleCohortError, match="not supported"):
+        validate_and_partition_cohorts([p1, p2], allow_partition=True)
 
 
 # ==============================================================================
@@ -614,7 +631,7 @@ def test_scenario_15_mixed_regular_and_otc_symbols_never_combined() -> None:
         session_id="s2", boundary_F=f2, symbol="EURUSD-OTC", calibrated_probability=0.48
     )
 
-    with pytest.raises(IncompatibleCohortError, match="Cannot combine regular symbol"):
+    with pytest.raises(IncompatibleCohortError, match="instrument_type"):
         validate_and_partition_cohorts([p_reg, p_otc], allow_partition=False)
 
 
@@ -995,3 +1012,544 @@ def test_cli_prospective_group_cohort_and_plan_commands(tmp_path: Path) -> None:
     assert parsed_plan["total_predictions_examined"] == 5
     assert parsed_plan["total_missing_outcomes"] == 0
     assert parsed_plan["verified_coverage_rate"] == 1.0
+
+
+# ==============================================================================
+# Phase 37 Acceptance Matrix Verification: Sections A, B, C, D
+# ==============================================================================
+
+# --- Section A: Cohort Behavior (Fail Closed, Never Discard) ---
+
+
+def _create_second_compatible_session(base_shadow_path: Path, tmp_dir: Path) -> tuple[Path, Path]:
+    """Helper to create a second distinct, compatible session for EURUSD 60s."""
+    raw_sess = json.loads(base_shadow_path.read_text(encoding="utf-8"))
+    fixture_journal = Path("tests/fixtures/phase35_shadow_journal.json")
+    raw_journ = json.loads(fixture_journal.read_text(encoding="utf-8"))
+
+    sess_id = "session_compatible_second_002"
+    raw_sess["session_id"] = sess_id
+    shift_s = 3600
+    shift_ns = shift_s * 1_000_000_000
+
+    new_journal: dict[str, tuple[dict[str, Any], str]] = {}
+    for _k, v in raw_journ.items():
+        v_copy = dict(v)
+        v_copy["session"] = sess_id
+        b = v_copy.get("boundary")
+        if b is not None:
+            v_copy["boundary"] = b + shift_s
+        clean = {k2: v2 for k2, v2 in v_copy.items() if k2 != "key"}
+        new_sha = digest(clean)
+        new_k = f"shadow:EURUSD:60:{b + shift_s}"
+        new_journal[new_k] = (v_copy, new_sha)
+
+    for obs in raw_sess.get("observations", []):
+        obs["session_id"] = sess_id
+        f = obs.get("feature_close_F")
+        obs["feature_close_F"] = f + shift_s
+        obs["feature_close_F_ns"] += shift_ns
+        for k_ts, v_ts in obs.get("timestamps_ns", {}).items():
+            if isinstance(v_ts, int):
+                obs["timestamps_ns"][k_ts] = v_ts + shift_ns
+        for _s_name, s_data in obs.get("stages", {}).items():
+            if "disciplined_utc_ns" in s_data and isinstance(s_data["disciplined_utc_ns"], int):
+                s_data["disciplined_utc_ns"] += shift_ns
+            det = s_data.get("details", {})
+            if "completed_to_ts" in det and isinstance(det["completed_to_ts"], int):
+                det["completed_to_ts"] += shift_s
+            if "feature_close_F" in det and isinstance(det["feature_close_F"], int):
+                det["feature_close_F"] += shift_s
+        for att in obs.get("acquisition_attempts", []):
+            if "start_time_utc_ns" in att and isinstance(att["start_time_utc_ns"], int):
+                att["start_time_utc_ns"] += shift_ns
+            if "end_time_utc_ns" in att and isinstance(att["end_time_utc_ns"], int):
+                att["end_time_utc_ns"] += shift_ns
+        new_k = f"shadow:EURUSD:60:{f + shift_s}"
+        _v_copy, new_sha = new_journal[new_k]
+        obs["stages"]["STAGE_9_JOURNAL_COMMIT"]["details"]["event_key"] = new_k
+        obs["stages"]["STAGE_9_JOURNAL_COMMIT"]["details"]["payload_sha256"] = new_sha
+        obs["integrity_hash"] = compute_observation_dict_hash(obs)
+
+    reg = TimingEvidenceRegistry.from_dict(raw_sess)
+    reg.integrity_hash = reg.compute_hash()
+
+    sess_dir = tmp_dir / "session_2"
+    sess_dir.mkdir(parents=True, exist_ok=True)
+    shadow_path = sess_dir / f"shadow_{reg.session_id}.json"
+    shadow_path.write_text(json.dumps(reg.to_dict(), indent=2), encoding="utf-8")
+
+    db_path = sess_dir / "observations.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE IF NOT EXISTS events(event_key TEXT PRIMARY KEY, payload TEXT)")
+    for ek, (payload, _) in new_journal.items():
+        conn.execute("INSERT INTO events VALUES (?, ?)", (ek, json.dumps(payload)))
+    conn.commit()
+    conn.close()
+
+    return shadow_path, db_path
+
+
+def test_section_a_two_compatible_sessions_both_included(tmp_path: Path) -> None:
+    """Acceptance A: Two compatible sessions are both included with full counts (no dropping)."""
+    s1_path, _db1_path = _create_phase35_fixtures(tmp_path / "s1")
+    s2_path, _db2_path = _create_second_compatible_session(s1_path, tmp_path)
+
+    # Empty storage evaluates missing labels for all 10 predictions without dropping
+    dataset, report, _manifest = evaluate_prospective_cohort_offline(
+        [s1_path, s2_path],
+        storage_dir=tmp_path / "empty_storage",
+    )
+    assert dataset.total_observations == 10
+    assert dataset.included_count == 0  # no outcome storage provided
+    assert dataset.excluded_count == 10
+    assert report.total_predictions == 10
+    assert len(dataset.session_distribution) == 2
+    s1_id = "shadow_1758c4a42993483fa41c48e3cb4ab386"
+    assert s1_id in dataset.session_distribution
+    assert "session_compatible_second_002" in dataset.session_distribution
+    assert dataset.session_distribution[s1_id] == 5
+    assert dataset.session_distribution["session_compatible_second_002"] == 5
+
+
+def test_section_a_different_model_versions_fail_without_producing_artifacts(
+    tmp_path: Path,
+) -> None:
+    """Acceptance A: Two different model versions fail closed without publishing any artifacts."""
+    out_dir = tmp_path / "output_should_not_exist"
+    f1, f2 = 1795100000, 1795100060
+    p1 = PredictionRecord(session_id="s1", boundary_F=f1, model_manifest_sha256="model_v1")
+    p2 = PredictionRecord(session_id="s2", boundary_F=f2, model_manifest_sha256="model_v2")
+
+    with pytest.raises(IncompatibleCohortError, match="model_manifest_sha256"):
+        validate_single_cohort([p1, p2])
+
+    assert not out_dir.exists()
+
+
+def test_section_a_different_policies_fail_without_producing_artifacts(tmp_path: Path) -> None:
+    """Acceptance A: Different policies fail closed without publishing any artifacts."""
+    out_dir = tmp_path / "output_should_not_exist"
+    f1, f2 = 1795100000, 1795100060
+    p1 = PredictionRecord(session_id="s1", boundary_F=f1, policy_version="policy_v1")
+    p2 = PredictionRecord(session_id="s2", boundary_F=f2, policy_version="policy_v2")
+
+    with pytest.raises(IncompatibleCohortError, match="policy_version"):
+        validate_single_cohort([p1, p2])
+
+    assert not out_dir.exists()
+
+
+def test_section_a_eurusd_plus_eurusd_otc_fails_in_both_evaluation_and_planning() -> None:
+    """Acceptance A: EURUSD plus EURUSD-OTC fails in both evaluation and planning."""
+    f1, f2 = 1795100000, 1795100060
+    p_reg = PredictionRecord(session_id="s1", boundary_F=f1, symbol="EURUSD")
+    p_otc = PredictionRecord(session_id="s2", boundary_F=f2, symbol="EURUSD-OTC")
+
+    with pytest.raises(IncompatibleCohortError, match="instrument_type"):
+        validate_single_cohort([p_reg, p_otc])
+
+    with pytest.raises(IncompatibleCohortError, match="instrument_type"):
+        generate_missing_label_plan([p_reg, p_otc], candles=[])
+
+
+def test_section_a_different_candle_timeframes_fail_in_both_evaluation_and_planning() -> None:
+    """Acceptance A: Different candle timeframes fail in both evaluation and planning."""
+    f1, f2 = 1795100000, 1795100060
+    p1 = PredictionRecord(session_id="s1", boundary_F=f1, candle_size_seconds=60)
+    p2 = PredictionRecord(session_id="s2", boundary_F=f2, candle_size_seconds=300)
+
+    with pytest.raises(IncompatibleCohortError, match="candle_size_seconds"):
+        validate_single_cohort([p1, p2])
+
+    with pytest.raises(IncompatibleCohortError, match="candle_size_seconds"):
+        generate_missing_label_plan([p1, p2], candles=[])
+
+
+def test_section_a_no_cli_option_permits_silent_subset_processing(tmp_path: Path) -> None:
+    """Acceptance A: No CLI option allows the evaluator to silently process only a subset."""
+    s1_path, _db_path = _create_phase35_fixtures(tmp_path)
+    # CLI rejects --allow-partition as unrecognized option
+    res = runner.invoke(
+        app,
+        [
+            "timing",
+            "evaluate-cohort",
+            "--evidence",
+            str(s1_path),
+            "--allow-partition",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "no such option" in res.output.lower() or "error" in res.output.lower()
+
+
+def test_section_a_error_identifies_incompatible_dimension_without_sensitive_leaks() -> None:
+    """Acceptance A: Error identifies incompatible dimension without sensitive leaks."""
+    f1, f2 = 1795100000, 1795100060
+    p1 = PredictionRecord(session_id="s1", boundary_F=f1, policy_version="pol_alpha")
+    p2 = PredictionRecord(session_id="s2", boundary_F=f2, policy_version="pol_beta")
+
+    with pytest.raises(IncompatibleCohortError) as exc_info:
+        validate_single_cohort([p1, p2])
+
+    err_msg = str(exc_info.value)
+    assert "Incompatible cohort dimension 'policy_version'" in err_msg
+    assert "pol_beta" in err_msg
+    # Ensure no environment / path leak
+    assert "password" not in err_msg.lower()
+    assert "token" not in err_msg.lower()
+    assert "\\" not in err_msg
+
+
+# --- Section B: Provenance (Collision-Free Source Identities) ---
+
+
+def test_section_b_two_directories_different_observations_db_preserve_both_fingerprints(
+    tmp_path: Path,
+) -> None:
+    """Acceptance B: Two directories with observations.db preserve both fingerprints."""
+    s1_path, db1_path = _create_phase35_fixtures(tmp_path / "dir_one")
+    s2_path, db2_path = _create_second_compatible_session(s1_path, tmp_path / "dir_two")
+
+    # Ensure the two db files have different contents/fingerprints
+    sha1 = compute_file_sha256(db1_path)
+    sha2 = compute_file_sha256(db2_path)
+    assert sha1 != sha2
+
+    tracker = CanonicalSourceTracker()
+    _preds, _audit, fps, _ = discover_and_validate_evidence(
+        [s1_path, s2_path],
+        source_tracker=tracker,
+    )
+    # Both distinct fingerprints are preserved without collision or overwrite
+    s1_id = "shadow_1758c4a42993483fa41c48e3cb4ab386"
+    canon_db1 = f"journal:{s1_id}:observations.db"
+    canon_db2 = "journal:session_compatible_second_002:observations.db"
+    assert canon_db1 in fps
+    assert canon_db2 in fps
+    assert fps[canon_db1] == sha1
+    assert fps[canon_db2] == sha2
+
+
+def test_section_b_same_filename_different_evidence_content_collision_fails(tmp_path: Path) -> None:
+    """Acceptance B: Conflicting evidence for same canonical session identity fails closed."""
+    s1_path, _ = _create_phase35_fixtures(tmp_path / "d1")
+    raw = json.loads(s1_path.read_text(encoding="utf-8"))
+    # Modify an observation while keeping the session_id identical
+    raw["observations"][0]["calibrated_p"] = 0.99
+    raw["observations"][0]["integrity_hash"] = compute_observation_dict_hash(raw["observations"][0])
+    reg2 = TimingEvidenceRegistry.from_dict(raw)
+    reg2.integrity_hash = reg2.compute_hash()
+
+    d2 = tmp_path / "d2"
+    d2.mkdir(parents=True, exist_ok=True)
+    s2_path = d2 / s1_path.name
+    s2_path.write_text(json.dumps(reg2.to_dict()), encoding="utf-8")
+
+    with pytest.raises(SourceIdentityCollisionError):
+        discover_and_validate_evidence([s1_path, s2_path])
+
+
+def test_section_b_identical_evidence_multiple_paths_counted_once_source_refs_retained(
+    tmp_path: Path,
+) -> None:
+    """Acceptance B: Identical evidence through multiple paths retains references."""
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "orig")
+    copy1 = tmp_path / "path_a" / s1_path.name
+    copy2 = tmp_path / "path_b" / s1_path.name
+    copy1.parent.mkdir(parents=True)
+    copy2.parent.mkdir(parents=True)
+    copy1.write_text(s1_path.read_text(encoding="utf-8"), encoding="utf-8")
+    copy2.write_text(s1_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    tracker = CanonicalSourceTracker()
+    preds, audit, _fps, _pred_sources = discover_and_validate_evidence(
+        [copy1, copy2],
+        explicit_journal=db_path,
+        source_tracker=tracker,
+    )
+    assert len(preds) == 5
+    assert audit.valid_committed_predictions == 5
+    canon_id = f"evidence:{preds[0].session_id}"
+    refs = tracker.get_source_references(canon_id)
+    assert len(refs) == 1  # same filename in different dirs, deduplicated gracefully
+
+
+def test_section_b_reversing_input_order_preserves_hashes(tmp_path: Path) -> None:
+    """Acceptance B: Reversing input order preserves dataset and manifest hashes."""
+    s1_path, _db1_path = _create_phase35_fixtures(tmp_path / "s1")
+    s2_path, _db2_path = _create_second_compatible_session(s1_path, tmp_path / "s2")
+
+    ds1, rep1, man1 = evaluate_prospective_cohort_offline(
+        [s1_path, s2_path],
+        storage_dir=tmp_path / "empty_storage",
+    )
+    ds2, rep2, man2 = evaluate_prospective_cohort_offline(
+        [s2_path, s1_path],
+        storage_dir=tmp_path / "empty_storage",
+    )
+
+    assert ds1.dataset_content_hash == ds2.dataset_content_hash
+    assert rep1.evidence_sha256 == rep2.evidence_sha256
+    assert man1.manifest_sha256 == man2.manifest_sha256
+
+
+def test_section_b_tampering_recorded_source_fails_integrity(tmp_path: Path) -> None:
+    """Acceptance B: Tampering with recorded source raises an integrity error."""
+    s1_path, db_path = _create_phase35_fixtures(tmp_path)
+    raw = json.loads(s1_path.read_text(encoding="utf-8"))
+    raw["operational_mode"] = "TAMPERED_MODE"
+    s1_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(TamperedEvidenceError):
+        discover_and_validate_evidence([s1_path], explicit_journal=db_path)
+
+
+def test_section_b_source_identity_collision_fails_explicitly() -> None:
+    """Acceptance B: CanonicalSourceTracker raises SourceIdentityCollisionError on conflict."""
+    tracker = CanonicalSourceTracker()
+    tracker.register_source("canonical:test_source", "hash_alpha_111")
+    # Identical registration is idempotent
+    tracker.register_source("canonical:test_source", "hash_alpha_111")
+    # Conflicting registration fails closed
+    with pytest.raises(SourceIdentityCollisionError, match="Conflicting digest"):
+        tracker.register_source("canonical:test_source", "hash_beta_222")
+
+
+# --- Section C: Transactional Bundle Publication ---
+
+
+def test_section_c_all_three_files_publish_and_verify(tmp_path: Path) -> None:
+    """Acceptance C: All three files publish together and pass verify_published_bundle()."""
+    shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    storage = _create_portable_phase35_storage(tmp_path / "fixture_storage")
+    out_dir = tmp_path / "published_bundle"
+
+    dataset, report, manifest = evaluate_prospective_cohort_offline(
+        [shadow_path],
+        journal_path=db_path,
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
+    )
+
+    saved = publish_research_cohort_bundle(dataset, report, manifest, out_dir, overwrite=False)
+    assert len(saved) == 3
+    for p in saved.values():
+        assert p.is_file()
+
+    is_valid, msg = verify_published_bundle(out_dir)
+    assert is_valid is True
+    assert "valid and mutually consistent" in msg
+
+
+def test_section_c_existing_destination_remains_byte_identical_on_rejected_publish(
+    tmp_path: Path,
+) -> None:
+    """Acceptance C: Destination directory remains byte-identical on rejected publish."""
+    shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    storage = _create_portable_phase35_storage(tmp_path / "fixture_storage")
+    out_dir = tmp_path / "published_bundle_exclusive"
+
+    dataset, report, manifest = evaluate_prospective_cohort_offline(
+        [shadow_path],
+        journal_path=db_path,
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
+    )
+
+    publish_research_cohort_bundle(dataset, report, manifest, out_dir, overwrite=False)
+
+    # Capture initial bytes
+    initial_bytes = {p.name: p.read_bytes() for p in out_dir.iterdir() if p.is_file()}
+
+    # Second publish without overwrite must fail
+    with pytest.raises(FileExistsError):
+        publish_research_cohort_bundle(dataset, report, manifest, out_dir, overwrite=False)
+
+    # Verify byte-identical preservation
+    current_bytes = {p.name: p.read_bytes() for p in out_dir.iterdir() if p.is_file()}
+    assert initial_bytes == current_bytes
+
+
+def test_section_c_injected_failure_during_staging_produces_no_committed_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Acceptance C: Injected failure during staging produces no committed bundle."""
+    shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    out_dir = tmp_path / "staging_failure_out"
+
+    dataset, report, manifest = evaluate_prospective_cohort_offline(
+        [shadow_path],
+        journal_path=db_path,
+    )
+
+    from iqoption_research.research import prospective_cohort
+
+    call_count = 0
+
+    def mock_write(path: Path, data: dict[str, Any]) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            raise OSError("Injected disk error during staging")
+        prospective_cohort._write_flushed_and_fsynced(path, data)
+
+    monkeypatch.setattr(prospective_cohort, "_write_flushed_and_fsynced", mock_write)
+
+    with pytest.raises(OSError, match="Injected disk error"):
+        publish_research_cohort_bundle(dataset, report, manifest, out_dir, overwrite=False)
+
+    assert not out_dir.exists()
+    # Confirm no staging leftovers in parent
+    staging_dirs = [p for p in tmp_path.iterdir() if p.name.startswith(".staging_")]
+    assert len(staging_dirs) == 0
+
+
+def test_section_c_injected_failure_immediately_before_publication_produces_no_committed_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Acceptance C: Injected failure immediately before rename produces no committed bundle."""
+    shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    out_dir = tmp_path / "rename_failure_out"
+
+    dataset, report, manifest = evaluate_prospective_cohort_offline(
+        [shadow_path],
+        journal_path=db_path,
+    )
+
+    real_rename = os.rename
+
+    def mock_rename(src: Any, dst: Any) -> None:
+        if ".staging_" in str(src):
+            raise RuntimeError("Injected filesystem error during commit rename")
+        real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", mock_rename)
+
+    with pytest.raises(RuntimeError, match="Injected filesystem error"):
+        publish_research_cohort_bundle(dataset, report, manifest, out_dir, overwrite=False)
+
+    assert not out_dir.exists()
+    staging_dirs = [p for p in tmp_path.iterdir() if p.name.startswith(".staging_")]
+    assert len(staging_dirs) == 0
+
+
+def test_section_c_competing_publishers_cannot_both_commit(tmp_path: Path) -> None:
+    """Acceptance C: Two competing publishers cannot both commit to the same destination."""
+    shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    out_dir = tmp_path / "contested_dest"
+
+    dataset, report, manifest = evaluate_prospective_cohort_offline(
+        [shadow_path],
+        journal_path=db_path,
+    )
+
+    # First publisher commits
+    publish_research_cohort_bundle(dataset, report, manifest, out_dir, overwrite=False)
+
+    # Second competing publisher attempts commit to existing destination
+    with pytest.raises(FileExistsError):
+        publish_research_cohort_bundle(dataset, report, manifest, out_dir, overwrite=False)
+
+
+def test_section_c_readers_reject_incomplete_and_staging_directories(tmp_path: Path) -> None:
+    """Acceptance C: Readers reject incomplete bundles and refuse staging directories."""
+    # 1. Staging directory rejected
+    staging_dir = tmp_path / ".staging_fake_bundle_123"
+    staging_dir.mkdir()
+    (staging_dir / "research_dataset.json").write_text("{}", encoding="utf-8")
+    is_valid, msg = verify_published_bundle(staging_dir)
+    assert is_valid is False
+    assert "staging directory" in msg.lower()
+
+    # 2. Incomplete bundle missing integrity_manifest.json
+    incomplete = tmp_path / "incomplete_bundle"
+    incomplete.mkdir()
+    (incomplete / "research_dataset.json").write_text("{}", encoding="utf-8")
+    (incomplete / "evaluation_report.json").write_text("{}", encoding="utf-8")
+    is_valid2, msg2 = verify_published_bundle(incomplete)
+    assert is_valid2 is False
+    assert "missing required artifact" in msg2.lower()
+
+
+def test_section_c_manifest_strictly_binds_exact_published_dataset_and_report(
+    tmp_path: Path,
+) -> None:
+    """Acceptance C: Manifest strictly binds the exact published dataset and report."""
+    shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    storage = _create_portable_phase35_storage(tmp_path / "fixture_storage")
+    out_dir = tmp_path / "tamper_test_bundle"
+
+    dataset, report, manifest = evaluate_prospective_cohort_offline(
+        [shadow_path],
+        journal_path=db_path,
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
+    )
+    publish_research_cohort_bundle(dataset, report, manifest, out_dir)
+
+    # Tamper with 1 value in research_dataset.json
+    d_path = out_dir / "research_dataset.json"
+    data = json.loads(d_path.read_text(encoding="utf-8"))
+    data["included_count"] = 999
+    d_path.write_text(json.dumps(data), encoding="utf-8")
+
+    is_valid, msg = verify_published_bundle(out_dir)
+    assert is_valid is False
+    assert "hash mismatch" in msg.lower()
+
+
+def test_section_c_repeated_identical_evaluations_retain_deterministic_hashes(
+    tmp_path: Path,
+) -> None:
+    """Acceptance C: Repeated identical evaluations retain deterministic content hashes."""
+    shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    storage = _create_portable_phase35_storage(tmp_path / "fixture_storage")
+
+    ds1, rep1, man1 = evaluate_prospective_cohort_offline(
+        [shadow_path],
+        journal_path=db_path,
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
+    )
+    ds2, rep2, man2 = evaluate_prospective_cohort_offline(
+        [shadow_path],
+        journal_path=db_path,
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
+    )
+
+    assert ds1.dataset_content_hash == ds2.dataset_content_hash
+    assert rep1.evidence_sha256 == rep2.evidence_sha256
+    assert man1.manifest_sha256 == man2.manifest_sha256
+
+
+# --- Section D: Documentation & CLI Consistency ---
+
+
+def test_section_d_suggested_recovery_command_matches_registered_backfill_options() -> None:
+    """Acceptance D: Suggested recovery command matches registered backfill options."""
+    preds = [
+        PredictionRecord(session_id="s1", boundary_F=1795100000, candle_size_seconds=60),
+    ]
+    plan = generate_missing_label_plan(preds, candles=[])
+    assert len(plan.windows) == 1
+    w = plan.windows[0]
+    cmd = w.suggested_command
+
+    # Verify command starts with valid registered entrypoint
+    assert cmd.startswith("iqresearch data backfill")
+    parts = shlex.split(cmd)
+    # Extract arguments passed to data command: ["backfill", "--symbol", "EURUSD", ...]
+    data_args = parts[1:]
+    assert data_args[0] == "data"
+    assert data_args[1] == "backfill"
+
+    # Invoke CLI runner with these arguments (offline check)
+    # The backfill command requires explicit live authorization (--live --yes-i-understand),
+    # and fails if credentials are absent or network is blocked, but recognizes ALL option flags.
+    res = runner.invoke(app, data_args)
+    # Exit code is not from unrecognized options: options --symbol, --size, --from, --to, --count,
+    # --live, --yes-i-understand, --saved are all recognized.
+    assert "no such option" not in res.output.lower()

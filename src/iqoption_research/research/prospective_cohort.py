@@ -11,12 +11,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import shutil
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
-from iqoption_research.market_data.history_expansion import atomic_json
 from iqoption_research.models.market import Candle
 from iqoption_research.research.prospective_eval import (
     UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER,
@@ -63,7 +65,11 @@ MISSING_LABEL_PLAN_DISCLAIMER: Final[str] = (
 )
 
 
-class ConflictingSessionEvidenceError(ProspectiveEvaluationError):
+class SourceIdentityCollisionError(ProspectiveEvaluationError):
+    """Raised when conflicting digests are registered under the same canonical source identity."""
+
+
+class ConflictingSessionEvidenceError(SourceIdentityCollisionError):
     """Raised when duplicate evidence files provide conflicting observations for a session."""
 
 
@@ -77,6 +83,68 @@ class EmptyCohortError(ProspectiveEvaluationError):
 
 class ProspectiveEvidenceNotFoundError(ProspectiveEvaluationError):
     """Raised when a specified evidence path is not found."""
+
+
+class CanonicalSourceTracker:
+    """Manages unambiguous logical source identifiers without machine-specific absolute paths.
+
+    Invariants:
+    - Never keys solely by basename.
+    - Preserves distinct fingerprints for identical basenames across different directories
+      (e.g., multiple 'observations.db' from separate sessions).
+    - Rejects attempts to register conflicting digests under an existing canonical identity.
+    - Deduplicates genuinely identical evidence files while retaining all source references.
+    - Preserves deterministic, canonical ordering across operating systems and input sequences.
+    """
+
+    def __init__(self) -> None:
+        self._fingerprints: dict[str, str] = {}
+        self._source_references: dict[str, list[str]] = {}
+
+    def register_evidence(self, session_id: str, file_path: Path, sha256_hash: str) -> str:
+        """Register an evidence session file under logical identity 'evidence:<session_id>'."""
+        canon_id = f"evidence:{session_id}"
+        self._register(canon_id, sha256_hash, source_ref=file_path.name)
+        return canon_id
+
+    def register_journal(self, session_id: str, db_path: Path, sha256_hash: str) -> str:
+        """Register a journal DB file under identity 'journal:<session_id>:observations.db'."""
+        canon_id = f"journal:{session_id}:{db_path.name}"
+        self._register(canon_id, sha256_hash, source_ref=f"{session_id}/{db_path.name}")
+        return canon_id
+
+    def register_storage(self, dataset_id: str, rel_path: str, sha256_hash: str) -> str:
+        """Register an authentic storage Parquet file under 'storage:<dataset_id>:<rel_path>'."""
+        canon_id = f"storage:{dataset_id}:{rel_path}"
+        self._register(canon_id, sha256_hash, source_ref=rel_path)
+        return canon_id
+
+    def register_source(self, canon_id: str, sha256_hash: str, source_ref: str = "") -> str:
+        """Register an arbitrary source with a pre-formatted canonical identifier."""
+        self._register(canon_id, sha256_hash, source_ref=source_ref or canon_id)
+        return canon_id
+
+    def _register(self, canon_id: str, sha256_hash: str, source_ref: str) -> None:
+        if canon_id in self._fingerprints:
+            existing = self._fingerprints[canon_id]
+            if existing != sha256_hash:
+                raise SourceIdentityCollisionError(
+                    f"Conflicting digest registered for canonical source identity '{canon_id}': "
+                    f"new '{sha256_hash}' vs existing '{existing}'"
+                )
+            if source_ref and source_ref not in self._source_references.get(canon_id, []):
+                self._source_references.setdefault(canon_id, []).append(source_ref)
+            return
+
+        self._fingerprints[canon_id] = sha256_hash
+        self._source_references[canon_id] = [source_ref] if source_ref else []
+
+    def get_source_references(self, canon_id: str) -> list[str]:
+        return list(self._source_references.get(canon_id, []))
+
+    def to_sorted_dict(self) -> dict[str, str]:
+        """Return deterministically sorted dictionary of canonical source fingerprints."""
+        return {k: self._fingerprints[k] for k in sorted(self._fingerprints.keys())}
 
 
 def is_otc_symbol(symbol: str) -> bool:
@@ -296,11 +364,106 @@ class MissingLabelPlan:
         }
 
 
+def validate_single_cohort(predictions: list[PredictionRecord]) -> CohortIdentity:
+    """Validate that all predictions belong to exactly one compatible cohort.
+
+    Fails closed immediately if heterogeneous cohorts are detected across any dimension:
+    - Symbol
+    - Regular Forex vs OTC variant (is_otc_symbol)
+    - Candle timeframe (candle_size_seconds)
+    - Model manifest digest (model_manifest_sha256)
+    - Model name
+    - Policy version
+    - Instrumentation version
+
+    Returns:
+        CohortIdentity representing the unified cohort.
+    Raises:
+        EmptyCohortError: If predictions list is empty.
+        IncompatibleCohortError: If any heterogeneity is detected.
+    """
+    if not predictions:
+        raise EmptyCohortError("No predictions discovered from supplied evidence paths")
+
+    first = predictions[0]
+    first_otc = is_otc_symbol(first.symbol)
+    sessions: set[str] = {first.session_id}
+
+    for p in predictions[1:]:
+        sessions.add(p.session_id)
+        p_otc = is_otc_symbol(p.symbol)
+        if p_otc != first_otc:
+            raise IncompatibleCohortError(
+                f"Incompatible cohort dimension 'instrument_type': cannot combine regular symbol "
+                f"'{first.symbol}' and OTC symbol '{p.symbol}' in session '{p.session_id}'"
+            )
+        if p.symbol != first.symbol:
+            raise IncompatibleCohortError(
+                f"Incompatible cohort dimension 'symbol': mismatched '{p.symbol}' "
+                f"vs '{first.symbol}' in session '{p.session_id}'"
+            )
+        if p.candle_size_seconds != first.candle_size_seconds:
+            raise IncompatibleCohortError(
+                f"Incompatible cohort dimension 'candle_size_seconds': mismatched "
+                f"{p.candle_size_seconds} vs {first.candle_size_seconds} "
+                f"in session '{p.session_id}'"
+            )
+        if (
+            p.model_manifest_sha256 is not None
+            and first.model_manifest_sha256 is not None
+            and p.model_manifest_sha256 != first.model_manifest_sha256
+        ):
+            raise IncompatibleCohortError(
+                f"Incompatible cohort dimension 'model_manifest_sha256': mismatched "
+                f"'{p.model_manifest_sha256}' vs '{first.model_manifest_sha256}' "
+                f"in session '{p.session_id}'"
+            )
+        if (
+            p.model_name is not None
+            and first.model_name is not None
+            and p.model_name != first.model_name
+        ):
+            raise IncompatibleCohortError(
+                f"Incompatible cohort dimension 'model_name': mismatched "
+                f"'{p.model_name}' vs '{first.model_name}' in session '{p.session_id}'"
+            )
+        if (
+            p.policy_version is not None
+            and first.policy_version is not None
+            and p.policy_version != first.policy_version
+        ):
+            raise IncompatibleCohortError(
+                f"Incompatible cohort dimension 'policy_version': mismatched "
+                f"'{p.policy_version}' vs '{first.policy_version}' in session '{p.session_id}'"
+            )
+        if (
+            p.instrumentation_version is not None
+            and first.instrumentation_version is not None
+            and p.instrumentation_version != first.instrumentation_version
+        ):
+            raise IncompatibleCohortError(
+                f"Incompatible cohort dimension 'instrumentation_version': mismatched "
+                f"'{p.instrumentation_version}' vs '{first.instrumentation_version}' "
+                f"in session '{p.session_id}'"
+            )
+
+    return CohortIdentity(
+        sessions=sorted(sessions),
+        model_manifest_sha256=first.model_manifest_sha256,
+        model_name=first.model_name,
+        instrumentation_version=first.instrumentation_version,
+        policy_version=first.policy_version,
+        symbol=first.symbol,
+        candle_size_seconds=first.candle_size_seconds,
+    )
+
+
 def discover_and_validate_evidence(
     evidence_paths: list[Path],
     *,
     explicit_journal: Path | None = None,
     session_filter: str | None = None,
+    source_tracker: CanonicalSourceTracker | None = None,
 ) -> tuple[
     list[PredictionRecord],
     ObservationAuditSummary,
@@ -315,6 +478,7 @@ def discover_and_validate_evidence(
     - Deduplicates identical session evidence, recording provenance.
     - Validates journal commit receipts.
     - Separates uncommitted/rejected/invalid observations.
+    - Canonical logical source identifiers prevent basename collision across directories.
     """
     if explicit_journal is not None:
         explicit_journal = explicit_journal.resolve()
@@ -342,7 +506,7 @@ def discover_and_validate_evidence(
         raise ProspectiveEvidenceNotFoundError("No evidence files supplied")
 
     seen_sessions: dict[str, tuple[Path, TimingEvidenceRegistry, str]] = {}
-    source_file_fingerprints: dict[str, str] = {}
+    tracker = source_tracker if source_tracker is not None else CanonicalSourceTracker()
     all_predictions: list[PredictionRecord] = []
     prediction_sources: dict[int, list[str]] = {}
 
@@ -399,7 +563,7 @@ def discover_and_validate_evidence(
         if session_filter is not None and session_id != session_filter:
             continue
 
-        source_file_fingerprints[file_path.name] = computed_sha
+        tracker.register_evidence(session_id, file_path, computed_sha)
 
         # Check for duplicate session identities across files
         if session_id in seen_sessions:
@@ -430,7 +594,7 @@ def discover_and_validate_evidence(
         if db_path is not None and db_path.is_file():
             has_any_journal = True
             db_sha = compute_file_sha256(db_path)
-            source_file_fingerprints[db_path.name] = db_sha
+            tracker.register_journal(session_id, db_path, db_sha)
 
         preds, audit = extract_predictions_with_audit(reg, db_path)
         all_predictions.extend(preds)
@@ -462,7 +626,7 @@ def discover_and_validate_evidence(
         provenance_level=prov_level,
     )
 
-    return all_predictions, audit_summary, source_file_fingerprints, prediction_sources
+    return all_predictions, audit_summary, tracker.to_sorted_dict(), prediction_sources
 
 
 def validate_and_partition_cohorts(
@@ -470,86 +634,29 @@ def validate_and_partition_cohorts(
     *,
     allow_partition: bool = False,
 ) -> dict[str, list[PredictionRecord]]:
-    """Step B: Validate cohort identity across all dimensions or partition them.
+    """Validate cohort identity across all dimensions or fail closed.
 
-    Dimensions:
-    - Model manifest digest.
-    - Calibration / model version.
-    - Policy version and threshold.
-    - Instrument identity, including regular Forex versus OTC.
-    - Candle timeframe.
-    - Instrumentation version.
-
-    Never silently combines incompatible cohorts.
+    Automatic partitioning is disabled in Phase 37: heterogeneous cohorts fail closed.
     """
     if not predictions:
         return {}
-
-    cohorts: dict[str, list[PredictionRecord]] = {}
-
-    for p in predictions:
-        is_otc = is_otc_symbol(p.symbol)
-        key = (
-            f"model={p.model_manifest_sha256 or 'unknown'}:"
-            f"policy={p.policy_version or 'unknown'}:"
-            f"symbol={p.symbol}:"
-            f"otc={'OTC' if is_otc else 'REGULAR'}:"
-            f"size={p.candle_size_seconds}:"
-            f"inst={p.instrumentation_version or 'unknown'}"
-        )
-        cohorts.setdefault(key, []).append(p)
-
-    if len(cohorts) > 1 and not allow_partition:
-        # Check specific incompatibility reasons to provide explicit diagnostic
-        first = predictions[0]
-        for p in predictions[1:]:
-            if is_otc_symbol(p.symbol) != is_otc_symbol(first.symbol):
-                raise IncompatibleCohortError(
-                    f"Cannot combine regular symbol '{first.symbol}' and OTC symbol '{p.symbol}' "
-                    f"in session {p.session_id}"
-                )
-            if p.symbol != first.symbol:
-                raise IncompatibleCohortError(
-                    f"Mismatched symbol: '{p.symbol}' vs '{first.symbol}' in session {p.session_id}"
-                )
-            if p.candle_size_seconds != first.candle_size_seconds:
-                raise IncompatibleCohortError(
-                    f"Mismatched candle size: {p.candle_size_seconds} vs "
-                    f"{first.candle_size_seconds} in session {p.session_id}"
-                )
-            if (
-                p.model_manifest_sha256 is not None
-                and first.model_manifest_sha256 is not None
-                and p.model_manifest_sha256 != first.model_manifest_sha256
-            ):
-                raise IncompatibleCohortError(
-                    f"Incompatible model manifest: '{p.model_manifest_sha256}' "
-                    f"vs '{first.model_manifest_sha256}' in session {p.session_id}"
-                )
-            if (
-                p.policy_version is not None
-                and first.policy_version is not None
-                and p.policy_version != first.policy_version
-            ):
-                raise IncompatibleCohortError(
-                    f"Incompatible policy version: '{p.policy_version}' "
-                    f"vs '{first.policy_version}' in session {p.session_id}"
-                )
-            if (
-                p.instrumentation_version is not None
-                and first.instrumentation_version is not None
-                and p.instrumentation_version != first.instrumentation_version
-            ):
-                raise IncompatibleCohortError(
-                    f"Incompatible instrumentation version: '{p.instrumentation_version}' "
-                    f"vs '{first.instrumentation_version}' in session {p.session_id}"
-                )
-
+    if allow_partition:
         raise IncompatibleCohortError(
-            f"Multiple incompatible cohorts detected ({len(cohorts)}): {list(cohorts.keys())}"
+            "Automatic cohort partitioning is not supported; "
+            "heterogeneous cohorts must fail closed."
         )
-
-    return cohorts
+    _ = validate_single_cohort(predictions)
+    first = predictions[0]
+    is_otc = is_otc_symbol(first.symbol)
+    key = (
+        f"model={first.model_manifest_sha256 or 'unknown'}:"
+        f"policy={first.policy_version or 'unknown'}:"
+        f"symbol={first.symbol}:"
+        f"otc={'OTC' if is_otc else 'REGULAR'}:"
+        f"size={first.candle_size_seconds}:"
+        f"inst={first.instrumentation_version or 'unknown'}"
+    )
+    return {key: predictions}
 
 
 def deduplicate_predictions_with_sources(
@@ -659,7 +766,8 @@ def build_research_dataset(
                 outcome_content_hash=out.candle_sha256,
                 outcome_dataset_identity=out.source_file,
                 outcome_source_file_fingerprint=(
-                    source_file_fingerprints.get(out.source_file or "")
+                    source_file_fingerprints.get(f"storage:{out.source_file}")
+                    or source_file_fingerprints.get(out.source_file or "")
                     if source_file_fingerprints
                     else None
                 ),
@@ -729,6 +837,12 @@ def build_research_dataset(
             ).isoformat(),
         }
 
+    sorted_fps = (
+        {k: source_file_fingerprints[k] for k in sorted(source_file_fingerprints.keys())}
+        if source_file_fingerprints
+        else {}
+    )
+
     dataset = ResearchDataset(
         cohort=cohort,
         rows=rows,
@@ -737,7 +851,7 @@ def build_research_dataset(
         excluded_count=excluded_count,
         session_distribution=session_dist,
         temporal_coverage=temporal_cov,
-        source_file_fingerprints=dict(source_file_fingerprints or {}),
+        source_file_fingerprints=sorted_fps,
     )
     dataset.seal()
     return dataset
@@ -755,17 +869,28 @@ def build_integrity_manifest(
     r_hash = report.compute_evidence_hash()
     m_sha = model_manifest_sha256 or dataset.cohort.model_manifest_sha256 or "unknown"
 
+    sorted_fps = {k: source_file_fingerprints[k] for k in sorted(source_file_fingerprints.keys())}
+
     manifest = IntegrityManifest(
         manifest_version=MANIFEST_SCHEMA_VERSION,
         algorithm_version=PHASE37_ALGORITHM_VERSION,
         dataset_content_hash=d_hash,
         report_content_hash=r_hash,
         model_manifest_sha256=m_sha,
-        source_file_fingerprints=dict(source_file_fingerprints),
+        source_file_fingerprints=sorted_fps,
         disclaimer=UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER,
     )
     manifest.seal()
     return manifest
+
+
+def _write_flushed_and_fsynced(path: Path, data: dict[str, Any]) -> None:
+    """Write serialized JSON data, flush to disk, and fsync."""
+    content = json.dumps(data, indent=2, sort_keys=True).encode("utf-8")
+    with Path(path).open("wb") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def publish_research_cohort_bundle(
@@ -776,40 +901,199 @@ def publish_research_cohort_bundle(
     *,
     overwrite: bool = False,
 ) -> dict[str, Path]:
-    """Publish research dataset, evaluation report, and integrity manifest atomically.
+    """Publish research dataset, evaluation report, and integrity manifest as an atomic bundle.
 
-    Enforces create-only safety invariant: fails closed with FileExistsError
-    if any destination file already exists unless explicit overwrite is authorized.
+    Enforces transactional publication:
+    1. Serializes and seals all three artifacts before publication.
+    2. Verifies mutual hash consistency between dataset, report, and manifest.
+    3. Stages all outputs in a private temporary directory on the same filesystem.
+    4. Writes, flushes, and fsyncs each staged file.
+    5. Re-verifies written files before committing.
+    6. Commits via atomic directory rename to output_dir.
+    7. Fails closed with FileExistsError if destination exists in create-only mode.
+    8. Cleans up staging directory on any failure without touching destination.
     """
     output_dir = output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir.exists() and not overwrite:
+        raise FileExistsError(
+            f"Destination directory already exists: {output_dir}. "
+            "Refusing to overwrite without explicit authorization."
+        )
 
-    dataset_path = output_dir / "research_dataset.json"
-    report_path = output_dir / "evaluation_report.json"
-    manifest_path = output_dir / "integrity_manifest.json"
-
-    targets = [dataset_path, report_path, manifest_path]
-    if not overwrite:
-        for p in targets:
-            if p.is_file():
-                raise FileExistsError(
-                    f"Research output file already exists: {p}. "
-                    "Refusing to overwrite without explicit authorization."
-                )
-
+    # 1. Seal artifacts
     dataset.seal()
     report.seal()
     manifest.seal()
 
-    atomic_json(dataset_path, dataset.to_dict())
-    atomic_json(report_path, report.to_dict())
-    atomic_json(manifest_path, manifest.to_dict())
+    # 2. Verify mutual hash consistency
+    d_hash = dataset.compute_content_hash()
+    r_hash = report.compute_evidence_hash()
+    if manifest.dataset_content_hash != d_hash:
+        raise ProspectiveEvaluationError(
+            f"Manifest dataset hash mismatch: '{manifest.dataset_content_hash}' != '{d_hash}'"
+        )
+    if manifest.report_content_hash != r_hash:
+        raise ProspectiveEvaluationError(
+            f"Manifest report hash mismatch: '{manifest.report_content_hash}' != '{r_hash}'"
+        )
+
+    # 3. Create unique staging directory on the same filesystem
+    parent_dir = output_dir.parent
+    parent_dir.mkdir(parents=True, exist_ok=True)
+    staging_dir = parent_dir / f".staging_{output_dir.name}_{uuid.uuid4().hex}"
+    staging_dir.mkdir(parents=True, exist_ok=False)
+
+    try:
+        # 4. Write, flush, fsync
+        staged_dataset = staging_dir / "research_dataset.json"
+        staged_report = staging_dir / "evaluation_report.json"
+        staged_manifest = staging_dir / "integrity_manifest.json"
+
+        _write_flushed_and_fsynced(staged_dataset, dataset.to_dict())
+        _write_flushed_and_fsynced(staged_report, report.to_dict())
+        _write_flushed_and_fsynced(staged_manifest, manifest.to_dict())
+
+        # 5. Pre-commit verification of staged files
+        for p in [staged_dataset, staged_report, staged_manifest]:
+            if not p.is_file() or p.stat().st_size == 0:
+                raise ProspectiveEvaluationError(f"Staged artifact is missing or empty: {p}")
+
+        # 6. Commit via atomic directory rename
+        if output_dir.exists():
+            if not overwrite:
+                raise FileExistsError(
+                    f"Destination directory already exists: {output_dir}. "
+                    "Refusing to overwrite without explicit authorization."
+                )
+            # Overwrite authorized: atomic replace via backup
+            backup_dir = parent_dir / f".backup_{output_dir.name}_{uuid.uuid4().hex}"
+            Path(str(output_dir)).rename(str(backup_dir))
+            try:
+                Path(str(staging_dir)).rename(str(output_dir))
+                shutil.rmtree(backup_dir, ignore_errors=True)
+            except Exception:
+                if backup_dir.exists() and not output_dir.exists():
+                    Path(str(backup_dir)).rename(str(output_dir))
+                raise
+        else:
+            Path(str(staging_dir)).rename(str(output_dir))
+
+    except Exception:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
 
     return {
-        "research_dataset": dataset_path,
-        "evaluation_report": report_path,
-        "integrity_manifest": manifest_path,
+        "research_dataset": output_dir / "research_dataset.json",
+        "evaluation_report": output_dir / "evaluation_report.json",
+        "integrity_manifest": output_dir / "integrity_manifest.json",
     }
+
+
+def verify_published_bundle(bundle_dir: Path) -> tuple[bool, str]:
+    """Verify that a published research bundle is complete, consistent, and authentic.
+
+    Rules:
+    - Refuses to validate staging directories (e.g. starting with .staging_).
+    - Requires all three artifacts: research_dataset.json, evaluation_report.json,
+      and integrity_manifest.json.
+    - Validates mutual hash consistency: manifest binds dataset and report content hashes.
+    - Validates self-digest of integrity manifest.
+    - Validates source file fingerprints across dataset, report, and manifest.
+
+    Returns:
+        (True, "Published bundle is valid and mutually consistent") if valid,
+        (False, "<failure reason>") otherwise.
+    """
+    bundle_dir = bundle_dir.resolve()
+    if not bundle_dir.is_dir():
+        return False, f"Published bundle path is not a directory: {bundle_dir}"
+
+    if bundle_dir.name.startswith(".staging_"):
+        return (
+            False,
+            f"Refusing staging directory as published bundle: {bundle_dir.name}",
+        )
+
+    d_path = bundle_dir / "research_dataset.json"
+    r_path = bundle_dir / "evaluation_report.json"
+    m_path = bundle_dir / "integrity_manifest.json"
+
+    for p in [d_path, r_path, m_path]:
+        if not p.is_file():
+            return False, f"Bundle is incomplete: missing required artifact '{p.name}'"
+        if p.stat().st_size == 0:
+            return False, f"Bundle artifact '{p.name}' is empty (0 bytes)"
+
+    try:
+        d_raw = json.loads(d_path.read_text(encoding="utf-8"))
+        r_raw = json.loads(r_path.read_text(encoding="utf-8"))
+        m_raw = json.loads(m_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return False, f"Malformed JSON in bundle artifact: {exc}"
+
+    # Compute and verify dataset content hash
+    d_copy = dict(d_raw)
+    stored_d_hash = d_copy.pop("dataset_content_hash", None)
+    calc_d_hash = hashlib.sha256(
+        json.dumps(d_copy, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
+    if stored_d_hash != calc_d_hash:
+        return (
+            False,
+            f"Dataset content hash mismatch: "
+            f"stored '{stored_d_hash}' != calculated '{calc_d_hash}'",
+        )
+
+    # Compute and verify report evidence hash
+    r_copy = dict(r_raw)
+    stored_r_hash = r_copy.pop("evidence_sha256", None)
+    r_copy.pop("evaluated_at_utc", None)
+    calc_r_hash = hashlib.sha256(
+        json.dumps(r_copy, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
+    if stored_r_hash != calc_r_hash:
+        return (
+            False,
+            f"Report evidence hash mismatch: "
+            f"stored '{stored_r_hash}' != calculated '{calc_r_hash}'",
+        )
+
+    # Verify manifest bindings
+    if m_raw.get("dataset_content_hash") != calc_d_hash:
+        return False, (
+            f"Manifest dataset content hash binding mismatch: "
+            f"'{m_raw.get('dataset_content_hash')}' != '{calc_d_hash}'"
+        )
+    if m_raw.get("report_content_hash") != calc_r_hash:
+        return False, (
+            f"Manifest report content hash binding mismatch: "
+            f"'{m_raw.get('report_content_hash')}' != '{calc_r_hash}'"
+        )
+
+    # Verify manifest self-digest
+    m_copy = dict(m_raw)
+    stored_m_hash = m_copy.pop("manifest_sha256", None)
+    calc_m_hash = hashlib.sha256(
+        json.dumps(m_copy, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
+    if stored_m_hash != calc_m_hash:
+        return (
+            False,
+            f"Manifest self-digest mismatch: "
+            f"stored '{stored_m_hash}' != calculated '{calc_m_hash}'",
+        )
+
+    # Verify source file fingerprints consistency
+    d_fps = d_raw.get("source_file_fingerprints", {})
+    r_fps = r_raw.get("source_file_fingerprints", {})
+    m_fps = m_raw.get("source_file_fingerprints", {})
+    if d_fps != m_fps:
+        return False, "Source file fingerprints mismatch between dataset and integrity manifest"
+    if r_fps != m_fps:
+        return False, "Source file fingerprints mismatch between report and integrity manifest"
+
+    return True, "Published bundle is valid and mutually consistent"
 
 
 def _build_missing_window(
@@ -868,6 +1152,9 @@ def generate_missing_label_plan(
             missing_windows_count=0,
             windows=[],
         )
+
+    # Validate single cohort before any label recovery or window generation
+    _ = validate_single_cohort(predictions)
 
     deduped = deduplicate_predictions(predictions)
     first = deduped[0]
@@ -952,10 +1239,18 @@ def evaluate_prospective_cohort_offline(
     Executes Steps A through E, constructs research dataset, evaluation report,
     and integrity manifest.
     """
+    if allow_partition:
+        raise IncompatibleCohortError(
+            "Automatic cohort partitioning is not supported; "
+            "heterogeneous cohorts must fail closed."
+        )
+
+    tracker = CanonicalSourceTracker()
     preds, audit, file_fps, pred_sources = discover_and_validate_evidence(
         evidence_paths,
         explicit_journal=journal_path,
         session_filter=session_filter,
+        source_tracker=tracker,
     )
 
     if not preds:
@@ -968,23 +1263,9 @@ def evaluate_prospective_cohort_offline(
         empty_manifest = build_integrity_manifest(empty_dataset, empty_rep, file_fps)
         return empty_dataset, empty_rep, empty_manifest
 
-    # Step B: Cohort validation
-    cohorts_dict = validate_and_partition_cohorts(preds, allow_partition=allow_partition)
-    # If partition requested, take primary or first cohort
-    cohort_key = next(iter(cohorts_dict.keys()))
-    cohort_preds = cohorts_dict[cohort_key]
-
-    first = cohort_preds[0]
-    sessions_set = sorted({p.session_id for p in cohort_preds})
-    cohort = CohortIdentity(
-        sessions=sessions_set,
-        model_manifest_sha256=first.model_manifest_sha256,
-        model_name=first.model_name,
-        instrumentation_version=first.instrumentation_version,
-        policy_version=first.policy_version,
-        symbol=first.symbol,
-        candle_size_seconds=first.candle_size_seconds,
-    )
+    # Step B: Strict single-cohort validation (never silently partitions or drops predictions)
+    cohort = validate_single_cohort(preds)
+    cohort_preds = preds
 
     # Step E: Deduplicate predictions
     deduped, sources_map = deduplicate_predictions_with_sources(cohort_preds)
@@ -1008,7 +1289,10 @@ def evaluate_prospective_cohort_offline(
             catalog_path=catalog_path,
         )
         avail_candles = storage_res.candles
-        file_fps.update(storage_res.source_file_fingerprints)
+        for k, v in storage_res.source_file_fingerprints.items():
+            canon_k = k if k.startswith("storage:") else f"storage:{k}"
+            tracker.register_source(canon_k, v, source_ref=k)
+        file_fps = tracker.to_sorted_dict()
         candle_provenances = storage_res.candle_provenances
         candle_sources = storage_res.candle_sources
 

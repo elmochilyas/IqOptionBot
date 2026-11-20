@@ -1040,11 +1040,6 @@ def evaluate_cohort_command(
         "--overwrite",
         help="Explicitly permit overwriting existing published research artifacts.",
     ),
-    allow_partition: bool = typer.Option(
-        False,
-        "--allow-partition",
-        help="Allow partitioning heterogeneous cohorts rather than failing closed.",
-    ),
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
 ) -> None:
     """Offline prospective cohort research dataset builder and evaluator (Phase 37)."""
@@ -1076,7 +1071,6 @@ def evaluate_cohort_command(
             storage_dir=storage_dir,
             catalog_path=cat_path,
             session_filter=sess_id,
-            allow_partition=allow_partition,
         )
     except ProspectiveEvaluationError as exc:
         if json_output:

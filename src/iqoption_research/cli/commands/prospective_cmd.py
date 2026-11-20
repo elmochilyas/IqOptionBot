@@ -175,11 +175,6 @@ def evaluate_cohort_cmd(
         "--overwrite",
         help="Permit overwriting existing published research artifacts.",
     ),
-    allow_partition: bool = typer.Option(
-        False,
-        "--allow-partition",
-        help="Allow partitioning heterogeneous cohorts rather than failing closed.",
-    ),
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
 ) -> None:
     """Offline prospective cohort research dataset builder and evaluator (Phase 37)."""
@@ -193,7 +188,6 @@ def evaluate_cohort_cmd(
         session_id=session_id,
         output_dir=output_dir,
         overwrite=overwrite,
-        allow_partition=allow_partition,
         json_output=json_output,
     )
 

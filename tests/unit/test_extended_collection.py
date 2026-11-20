@@ -202,7 +202,7 @@ def test_corrupt_file_fails_offline_verification(session):
 
 @pytest.mark.parametrize("when", ["2026-11-21T15:00:00+00:00", "2026-11-22T12:00:00+00:00"])
 def test_closed_weekend_market_refused(when):
-    with pytest.raises(ValueError, match="OTC"):
+    with pytest.raises(extended.ScheduledMarketClosure, match="OTC"):
         extended.require_regular_market(datetime.fromisoformat(when))
 
 

@@ -19,7 +19,12 @@ from iqoption_research.desktop.core import (
     slot_used,
 )
 from iqoption_research.desktop.windows import ChildJob
-from iqoption_research.market_data.extended import require_regular_market, validate_duration
+from iqoption_research.market_data.extended import (
+    ScheduledMarketClosure,
+    check_duration_vs_market_close,
+    require_regular_market,
+    validate_duration,
+)
 
 
 def command(root: Path, control: Path, saved: bool, account_id: str | None = None) -> list[str]:
@@ -62,6 +67,7 @@ class SessionProcess:
         self.kind = "idle"
         self.hard_deadline: float | None = None
         self.last_state: dict[str, Any] = {}
+        self._last_duration_warning: str = ""
 
     def start(self, saved: bool, snapshot: dict[str, Any], account_id: str | None = None) -> None:
         if self.child is not None:
@@ -82,7 +88,24 @@ class SessionProcess:
     def start_collection(self, account_id: str, minutes: int) -> None:
         self.require_idle()
         validate_duration(minutes)
-        require_regular_market()
+        from datetime import UTC, datetime
+
+        now_utc = datetime.now(UTC)
+        try:
+            require_regular_market()
+        except ScheduledMarketClosure as exc:
+            raise ScheduledMarketClosure(
+                f"Cannot start collection: {exc}. "
+                "The regular EURUSD market is currently closed. "
+                "Collection will be available again when the market reopens."
+            ) from exc
+        # Advisory: warn if duration extends past the next market close.
+        duration_warning = check_duration_vs_market_close(now_utc, minutes)
+        if duration_warning:
+            # Store warning in a way the caller can surface it; not an error.
+            self._last_duration_warning = duration_warning
+        else:
+            self._last_duration_warning = ""
         if uuid.UUID(hex=account_id).hex != account_id:
             raise ValueError("Select an available saved account")
         control = self.root / CONTROL / "sessions" / uuid.uuid4().hex

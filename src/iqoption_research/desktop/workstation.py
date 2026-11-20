@@ -206,9 +206,13 @@ class WorkstationPanels:
             self.dashboard.process.start_collection(
                 self.selection.selected, int(self.duration.get())
             )
-            self.dashboard.state.configure(
-                text="Extended collection authorized; supervise the console."
-            )
+            warning = getattr(self.dashboard.process, "_last_duration_warning", "")
+            if warning:
+                self.dashboard.state.configure(text=f"Extended collection authorized.\n{warning}")
+            else:
+                self.dashboard.state.configure(
+                    text="Extended collection authorized; supervise the console."
+                )
         except Exception as exc:  # noqa: BLE001 - no credential payloads shown
             self.message = f"Collection launch refused: {type(exc).__name__}"
             self.dashboard.state.configure(text=self.message)
@@ -270,17 +274,29 @@ class WorkstationPanels:
             else "disabled"
         ])
         live = self.dashboard.process.live_state()
-        if (
-            self.dashboard.process.child is None
-            and not self.dashboard.process.last_state
-            and self.rows
-        ):
-            live = {**self.rows[0], "connection": "DISCONNECTED"}
-        connection = live.get("connection", "DISCONNECTED")
-        wallet = live.get("wallet_classification", "UNKNOWN")
+        is_active = self.dashboard.process.child is not None
+
+        # Determine what to display: active live state vs. historical last-session state.
+        # Never blend elapsed/remaining from a completed session with a "live" label.
+        if not is_active and not self.dashboard.process.last_state and self.rows:
+            # No process running and no cached last_state: show most-recent library row
+            # clearly labelled as historical, not as live metrics.
+            historical = {**self.rows[0], "connection": "DISCONNECTED"}
+            display_state = historical
+            session_mode = "historical (last saved)"
+        elif not is_active and self.dashboard.process.last_state:
+            display_state = self.dashboard.process.last_state
+            session_mode = "post-session (final)"
+        else:
+            display_state = live
+            session_mode = "active" if is_active else "idle"
+
+        connection = display_state.get("connection", "DISCONNECTED")
+        wallet = display_state.get("wallet_classification", "UNKNOWN")
         selected = self.selection.accounts.get(self.selection.selected or "", "None selected")
         mode = self.dashboard.process.kind if self.dashboard.process.child else "none"
-        destination = live.get("destination", self.dashboard.root / "data/extended_collection")
+        default_dest = self.dashboard.root / "data/extended_collection"
+        destination = display_state.get("destination", default_dest)
         self.account_status.configure(text=self.message + f"\nSelected: {selected}")
         self.account_connection.configure(text=f"{connection} · Wallet: {wallet}")
         total = sum(row["valid_candles"] for row in self.rows if row.get("integrity") != "FAILED")
@@ -290,20 +306,57 @@ class WorkstationPanels:
                 f"Collection library: {total} candles (separate from Phase 38 predictions)"
             )
         )
+
+        # Format the last verified candle as human-readable UTC ISO string.
+        last_candle_epoch = display_state.get("last_verified_candle")
+        if last_candle_epoch is not None:
+            try:
+                last_candle_str = datetime.fromtimestamp(last_candle_epoch, UTC).strftime(
+                    "%Y-%m-%d %H:%M:%S UTC"
+                )
+            except (OSError, OverflowError, ValueError):
+                last_candle_str = str(last_candle_epoch)
+        else:
+            last_candle_str = "none"
+
+        # Distinguish active elapsed/remaining from historical elapsed (which is final/frozen).
+        termination = display_state.get("termination_reason", "IN_PROGRESS")
+        if is_active:
+            elapsed_label = f"Elapsed: {display_state.get('elapsed_seconds', 0):.0f}s"
+            remaining_label = f"Remaining: {display_state.get('remaining_seconds', 0):.0f}s"
+            ended_label = ""
+        else:
+            actual_elapsed = display_state.get(
+                "actual_elapsed_seconds",
+                display_state.get("elapsed_seconds", 0),
+            )
+            requested = display_state.get(
+                "requested_minutes", display_state.get("authorized_minutes", "?")
+            )
+            ended_at = display_state.get("ended_at_utc", "")
+            elapsed_label = f"Actual elapsed: {actual_elapsed:.0f}s (requested: {requested} min)"
+            remaining_label = ""
+            ended_label = f"Ended: {ended_at}\n" if ended_at else ""
+
+        coverage_note = display_state.get("coverage_note", "")
         self.collector_status.configure(
             text=(
-                f"Selected account: {selected}\nConnection: {connection} · Wallet: {wallet}\n"
-                f"Active mode: {mode}\n"
-                f"Elapsed / remaining: {live.get('elapsed_seconds', 0):.0f}s / "
-                f"{live.get('remaining_seconds', 0):.0f}s\n"
-                f"Valid candles: {live.get('valid_candles', 0)}   "
-                f"Rejected: {live.get('rejected_candles', 0)}"
-                f"   Duplicates: {live.get('duplicate_boundaries', 0)}\n"
-                f"Missing boundaries: {live.get('missing_boundaries', [])}\n"
-                f"Coverage: {live.get('coverage', 0):.1%}   "
-                f"Connection uptime: {live.get('connection_uptime_seconds', 0):.0f}s\n"
-                f"Last verified candle (UTC epoch): {live.get('last_verified_candle', 'none')}\n"
-                f"Storage: {destination}\n"
+                f"Selected account: {selected}\n"
+                f"Connection: {connection} · Wallet: {wallet}\n"
+                f"Active mode: {mode} · Session display: {session_mode}\n"
+                f"Termination: {termination}\n"
+                + ended_label
+                + f"{elapsed_label}"
+                + (f"  /  {remaining_label}" if remaining_label else "")
+                + f"\nValid candles: {display_state.get('valid_candles', 0)}   "
+                f"Rejected: {display_state.get('rejected_candles', 0)}"
+                f"   Duplicates: {display_state.get('duplicate_boundaries', 0)}\n"
+                f"Missing boundaries: {display_state.get('missing_boundaries', [])}\n"
+                f"Coverage: {display_state.get('coverage', 0):.1%}   "
+                f"Connection uptime: {display_state.get('connection_uptime_seconds', 0):.0f}s\n"
+                f"Last verified candle: {last_candle_str}\n"
+                + (f"Coverage note: {coverage_note}\n" if coverage_note else "")
+                + f"Storage: {destination}\n"
                 "Source: IQ Option broker quotes · receipt verification in Data Library\n"
                 f"Last completed operation: {self.dashboard.last_session or 'none'}"
             )
@@ -321,12 +374,23 @@ class WorkstationPanels:
     @staticmethod
     def library_summary(row: dict[str, Any]) -> str:
         boundaries = row.get("boundaries", [])
-        date_range = (
-            f"{datetime.fromtimestamp(boundaries[0], UTC).isoformat()} to "
-            f"{datetime.fromtimestamp(boundaries[-1], UTC).isoformat()}"
-            if boundaries
-            else "No committed candles"
-        )
+        if boundaries:
+            try:
+                first_utc = datetime.fromtimestamp(boundaries[0], UTC).strftime(
+                    "%Y-%m-%d %H:%M:%S UTC"
+                )
+                last_utc = datetime.fromtimestamp(boundaries[-1], UTC).strftime(
+                    "%Y-%m-%d %H:%M:%S UTC"
+                )
+                date_range = f"{first_utc}  to  {last_utc}"
+            except (OSError, OverflowError, ValueError):
+                date_range = f"epochs {boundaries[0]} to {boundaries[-1]}"
+        else:
+            date_range = "No committed candles"
+        termination = row.get("termination_reason", "UNKNOWN")
+        coverage_note = row.get("coverage_note", "")
+        actual_secs = row.get("actual_elapsed_seconds", row.get("elapsed_seconds", "unknown"))
+        req_mins = row.get("requested_minutes", row.get("authorized_minutes", "?"))
         return (
             f"{row['session_id']}  |  {row['integrity']}\n"
             f"  UTC range: {date_range}\n"
@@ -336,7 +400,10 @@ class WorkstationPanels:
             f"Duplicates: {row.get('duplicate_boundaries', 'unknown')}\n"
             f"  Receipt/file groups verified: {len(row.get('receipts', {}))}\n"
             f"  Uncommitted files: {json.dumps(row.get('uncommitted_files', []))}\n"
-            f"  Termination: {row.get('termination_reason', 'UNKNOWN')}\n"
-            f"  Wallet: {row.get('wallet_classification', 'UNKNOWN')}\n"
+            f"  Termination: {termination}\n"
+            + (f"  Coverage note: {coverage_note}\n" if coverage_note else "")
+            + f"  Wallet: {row.get('wallet_classification', 'UNKNOWN')}\n"
+            f"  Ended: {row.get('ended_at_utc', 'unknown')}\n"
+            f"  Actual elapsed: {actual_secs}s  (requested: {req_mins} min)\n"
             f"  Storage: {row['destination']}"
         )

@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -32,14 +32,56 @@ from iqoption_research.timing.supervised_session import supervised_client
 DURATIONS = (15, 30, 60, 120)
 
 
+class ScheduledMarketClosure(Exception):
+    """Raised when regular-market collection ends due to a scheduled market close.
+
+    This is distinct from unexpected failures: it represents a known, calendar-driven
+    event (Friday 22:00 UTC / NY 17:00, weekend, DST transition). Committed records and
+    the final manifest are preserved before this exception propagates.
+    """
+
+
 def validate_duration(minutes: int) -> None:
     if type(minutes) is not int or minutes not in DURATIONS:
         raise ValueError("Collection duration must be 15, 30, 60 or 120 minutes")
 
 
 def require_regular_market(now: datetime | None = None) -> None:
+    """Raise ScheduledMarketClosure if the regular EURUSD market is currently closed."""
     if not get_market_schedule("EURUSD").is_market_open(now or datetime.now(UTC)):
-        raise ValueError("Regular EURUSD market is closed; OTC substitution is forbidden")
+        raise ScheduledMarketClosure(
+            "Regular EURUSD market is closed; OTC substitution is forbidden"
+        )
+
+
+def check_duration_vs_market_close(start: datetime, minutes: int) -> str | None:
+    """Return a warning string if the requested duration extends past the next market close.
+
+    Returns None when the requested session fits entirely within open hours.
+    The check is advisory only — the caller must not block on this.
+    """
+    schedule = get_market_schedule("EURUSD")
+    end = start + timedelta(minutes=minutes)
+    # Walk forward minute by minute within the duration to find any closure transition.
+    # We only need to check the endpoint and a few key transition points.
+    if not schedule.is_market_open(start):
+        return f"Market is currently closed at {start.isoformat()}"
+    if not schedule.is_market_open(end):
+        # Find the approximate closure boundary (binary search would be overkill here).
+        step = timedelta(minutes=1)
+        cursor = start + step
+        while cursor < end:
+            if not schedule.is_market_open(cursor):
+                remaining = int((cursor - start).total_seconds() // 60)
+                return (
+                    f"WARNING: Requested {minutes}-minute collection extends past the scheduled "
+                    f"market close at approximately {cursor.isoformat()}. "
+                    f"Only ~{remaining} minute(s) of open-market time are available. "
+                    "The session will end cleanly at closure; "
+                    "duration will be shorter than requested."
+                )
+            cursor += step
+    return None
 
 
 class CollectionBroker(Protocol):
@@ -202,11 +244,31 @@ class ExtendedCollection:
         self.failures = 0
 
     async def observe(self, client: CollectionBroker) -> None:
+        """Collect candles until the authorized deadline or a scheduled market closure.
+
+        Termination reasons set here:
+        - ``DURATION_LIMIT``: the authorized deadline elapsed normally.
+        - ``SCHEDULED_MARKET_CLOSURE``: the regular market closed on schedule (Friday 22:00 UTC
+          / New York 17:00, weekend, DST). The session ends cleanly; committed records and the
+          manifest are preserved before the exception propagates.
+        - ``BROKER_DISCONNECTED``: the connection dropped unexpectedly.
+        - ``REPEATED_DATA_QUALITY_FAILURE``: three consecutive data-quality rejections.
+        - ``STALE_OR_INVALID_BROKER_CLOCK`` / ``UNVERIFIED_BROKER_CLOCK``: clock integrity lost.
+
+        ``ScheduledMarketClosure`` propagates out of this method so that ``run()`` can record
+        it as a distinct termination reason rather than conflating it with unexpected failures.
+        """
         client.assert_read_only()
         while self.mono() < self.deadline:
             if not client.is_authenticated or client.is_failed:
                 raise ConnectionError("BROKER_DISCONNECTED")
-            require_regular_market(datetime.fromtimestamp(self.wall(), UTC))
+            now_utc = datetime.fromtimestamp(self.wall(), UTC)
+            try:
+                require_regular_market(now_utc)
+            except ScheduledMarketClosure:
+                self.state["termination_reason"] = "SCHEDULED_MARKET_CLOSURE"
+                self.state["scheduled_closure_at_utc"] = now_utc.isoformat()
+                raise
             clock = client.clock_diagnostics
             if not clock.is_fresh or clock.step_detected:
                 raise RuntimeError("STALE_OR_INVALID_BROKER_CLOCK")
@@ -239,9 +301,24 @@ class ExtendedCollection:
 
     def finalize(self) -> None:
         self.state["connection"] = "DISCONNECTED"
-        self.state["ended_at_utc"] = datetime.fromtimestamp(self.wall(), UTC).isoformat()
+        ended_at = datetime.fromtimestamp(self.wall(), UTC)
+        self.state["ended_at_utc"] = ended_at.isoformat()
+        # Record actual elapsed vs authorized duration so the display is unambiguous.
+        actual_elapsed = min(self.minutes * 60, self.wall() - self.started)
+        self.state["actual_elapsed_seconds"] = actual_elapsed
+        self.state["requested_minutes"] = self.minutes
         self.publish_state()
         verified = inspect_session(self.directory)
+        # Coverage is against the actual elapsed window, not the full authorized duration,
+        # when the session ended early (scheduled closure, cancellation, failure).
+        termination = self.state.get("termination_reason", "UNKNOWN")
+        if termination not in ("DURATION_LIMIT",):
+            # Annotate: observed boundary coverage ≠ requested-duration completion.
+            self.state["coverage_note"] = (
+                f"Session ended early ({termination}); coverage reflects observed boundaries "
+                f"within actual elapsed time ({actual_elapsed:.0f}s), not the requested "
+                f"{self.minutes}-minute duration."
+            )
         atomic_json(
             self.directory / "manifest.json",
             sealed({
@@ -260,7 +337,13 @@ class ExtendedCollection:
             return
 
         async def connected() -> None:
-            require_regular_market()
+            start_utc = datetime.fromtimestamp(self.wall(), UTC)
+            try:
+                require_regular_market(start_utc)
+            except ScheduledMarketClosure:
+                self.state["termination_reason"] = "SCHEDULED_MARKET_CLOSURE"
+                self.state["scheduled_closure_at_utc"] = start_utc.isoformat()
+                raise
             self.state["connection"] = "CONNECTING"
             self.publish_state()
             recorder = TimingRecorder(
@@ -295,6 +378,11 @@ class ExtendedCollection:
         except (KeyboardInterrupt, asyncio.CancelledError):
             if self.state["termination_reason"] == "IN_PROGRESS":
                 self.state["termination_reason"] = "OPERATOR_CANCELLED"
+        except ScheduledMarketClosure:
+            # Already recorded as SCHEDULED_MARKET_CLOSURE in observe() / connected().
+            # Committed records and final manifest are preserved in finally; do not re-raise
+            # as a generic failure.
+            pass
         except Exception as exc:  # noqa: BLE001 - sanitize failures before CLI exception reporting
             self.state["termination_reason"] = "FAILED_" + type(exc).__name__
             raise RuntimeError("Collection failed: " + type(exc).__name__) from None

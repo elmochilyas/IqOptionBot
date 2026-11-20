@@ -127,6 +127,72 @@ must reconcile overlaps/conflicts and apply chronological splits and leakage che
 Model Laboratory, model training and cross-session dataset merging are outside this PR.
 SHA-256 provides local tamper evidence, not independent broker attestation/signatures.
 
+## Market lifecycle and scheduled closure
+
+1. **Scheduled market closure vs unexpected errors**: Regular interbank EURUSD follows
+   the standard schedule (Sunday 17:00 to Friday 17:00 America/New_York, accounting
+   for US/European daylight-saving transitions). At Friday 22:00 UTC (NY 17:00 in standard
+   time), the market closes for the weekend. The collector raises a typed
+   `ScheduledMarketClosure` exception rather than a generic `ValueError`.
+2. **Clean session termination**: When scheduled closure is encountered during an active
+   collection, the session terminates cleanly with `SCHEDULED_MARKET_CLOSURE`. Committed
+   Parquet pages, catalog entries, receipts and the final `manifest.json` are preserved.
+   It is never classified as `FAILED_ValueError` or an unexpected exception.
+3. **Pre-flight availability and duration check**: Prior to launching a collection,
+   `check_duration_vs_market_close()` evaluates whether the requested duration (15, 30,
+   60 or 120 minutes) extends beyond the next scheduled market close. An advisory warning
+   is emitted to the operator if the session would be cut short by closure, stating the
+   approximate available open minutes. The session is not silently shortened or blocked;
+   it runs normally and closes cleanly when market hours end.
+4. **Calendar vs broker availability**: Calendar checks establish theoretical regular
+   hours. Broker-side availability remains distinct and verified only by authenticated
+   read-only candle responses. OTC instruments remain strictly forbidden.
+
+## Termination reason taxonomy
+
+Sessions terminate with one of the following explicit, non-overlapping reasons:
+
+- `DURATION_LIMIT`: The requested collection duration elapsed normally.
+- `SCHEDULED_MARKET_CLOSURE`: Regular market closed on schedule; committed data preserved.
+- `OPERATOR_CANCELLED`: Operator requested cancellation or closed the dashboard; partial data preserved.
+- `BROKER_DISCONNECTED`: Broker WebSocket transport disconnected unexpectedly.
+- `REPEATED_DATA_QUALITY_FAILURE`: Three consecutive candle quality rejections occurred.
+- `STALE_OR_INVALID_BROKER_CLOCK` / `UNVERIFIED_BROKER_CLOCK`: Clock freshness/uncertainty checks failed.
+- `BROKER_CLOCK_UNAVAILABLE`: Initial clock synchronization timed out.
+- `FAILED_<ExceptionType>`: Unexpected runtime exception, sanitized of credentials and raw payloads.
+
+## Coverage semantics and desktop display
+
+1. **Observed-boundary coverage vs requested-duration completion**: When a session ends
+   early (due to scheduled close, cancellation or error), its `coverage` metric represents
+   the ratio of valid observed candles to expected 1-minute boundaries within the
+   *actual elapsed* window. A `coverage_note` is recorded in the manifest to make explicit
+   that early termination does not represent requested-duration completion.
+2. **Active vs historical metrics**: The desktop dashboard distinguishes active live
+   sessions from historical/post-session views. When idle or post-session, metrics are
+   explicitly labelled as `historical (last saved)` or `post-session (final)`. Actual
+   elapsed seconds and requested duration are displayed together to prevent ambiguity.
+3. **Human-readable timestamps**: All candle boundaries, last-verified candle markers
+   and library summary date ranges are formatted as human-readable UTC datetime strings
+   (e.g., `YYYY-MM-DD HH:MM:SS UTC`) rather than raw Unix epoch integers.
+
+## Wallet classification and ambiguity resolution
+
+The workstation preserves `CONFLICTING_ACCOUNT_INDICATORS` whenever broker-supplied
+account signals disagree. The classification logic never infers Practice-wallet verification,
+never automatically switches wallets, and never changes broker account state.
+
+To resolve `CONFLICTING_ACCOUNT_INDICATORS` without ambiguity, the following additional
+read-only evidence is required:
+
+1. A `balance-changed` event from the broker confirming the active wallet transition.
+2. A single-balance `get-balance` request confirming the suspected wallet's `active` flag.
+3. A `profile` message with `current_balance.id` matching the suspected wallet and `type`
+   verifying practice (type=4) or real (type=1).
+
+Until all three independent signals agree, the workstation maintains the fail-closed posture
+and displays the ambiguity directly to the operator.
+
 ## Validation and remaining live acceptance
 
 All development tests mock broker/authentication/subprocess boundaries. New tests

@@ -711,6 +711,9 @@ def shadow_trial_command(
     yes_i_understand: bool = typer.Option(False, "--yes-i-understand"),
     duration: int = typer.Option(300, min=1, max=300),
     max_candles: int = typer.Option(5, min=1, max=5),
+    use_saved_credentials: bool = typer.Option(False, "--use-saved-credentials"),
+    study: Path | None = typer.Option(None, "--study"),
+    cancel_file: Path | None = typer.Option(None, "--cancel-file", hidden=True),
 ) -> None:
     """Preflight offline or run one foreground read-only EURUSD shadow trial."""
     import sys
@@ -738,9 +741,45 @@ def shadow_trial_command(
         max_candle_cycles=max_candles,
         project_root=_project_root(),
     )
-    trial = ShadowTrial(config, Path("data/phase34"), MODEL_PATH)
+
+    registered_slot: object = None
+
+    def guard() -> None:
+        nonlocal registered_slot
+        if study is not None:
+            from iqoption_research.desktop.core import require_slot
+
+            current_slot = require_slot(study, duration=duration)
+            if registered_slot is not None and current_slot != registered_slot:
+                raise ValueError("Original sampling slot expired during authentication")
+            registered_slot = current_slot
+        if eligible_model(MODEL_PATH) is None:
+            raise ValueError("Frozen model preflight failed; session refused")
+
+    guard()
+    trial = ShadowTrial(
+        config,
+        Path("data/phase34"),
+        MODEL_PATH,
+        use_saved_credentials=use_saved_credentials,
+        live_guard=guard,
+    )
+
+    async def run() -> TimingEvidenceRegistry:
+        task = asyncio.create_task(trial.run_live())
+        try:
+            while not task.done():
+                if cancel_file is not None and await asyncio.to_thread(cancel_file.exists):
+                    task.cancel()
+                    break
+                await asyncio.sleep(0.2)
+            return await task
+        finally:
+            if not task.done():
+                task.cancel()
+
     try:
-        registry = asyncio.run(trial.run_live())
+        registry = asyncio.run(run())
     finally:
         typer.echo(f"Shadow evidence destination {trial.output}")
     typer.echo(json.dumps(registry.summary, indent=2))

@@ -21,6 +21,8 @@ def main() -> None:
             if time.monotonic() >= deadline or (control / "cancel").exists():
                 raise TimeoutError("Dashboard lifetime guard unavailable")
             time.sleep(0.05)
+        if (control / "cancel").exists():
+            raise KeyboardInterrupt
         from iqoption_research.cli.main import main as cli_main
 
         sys.argv = ["iqresearch", *sys.argv[2:]]

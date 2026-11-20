@@ -19,9 +19,10 @@ from iqoption_research.desktop.core import (
     slot_used,
 )
 from iqoption_research.desktop.windows import ChildJob
+from iqoption_research.market_data.extended import require_regular_market, validate_duration
 
 
-def command(root: Path, control: Path, saved: bool) -> list[str]:
+def command(root: Path, control: Path, saved: bool, account_id: str | None = None) -> list[str]:
     args = [
         str(root / ".venv/Scripts/python.exe"),
         "-m",
@@ -39,9 +40,13 @@ def command(root: Path, control: Path, saved: bool) -> list[str]:
         str(root / STUDY),
         "--cancel-file",
         str(control / "cancel"),
+        "--status-file",
+        str(control / "status.json"),
     ]
     if saved:
         args.append("--use-saved-credentials")
+    if account_id is not None:
+        args.extend(["--account-id", account_id])
     return args
 
 
@@ -54,8 +59,11 @@ class SessionProcess:
         self.job: ChildJob | None = None
         self.control: Path | None = None
         self.stopping_at: float | None = None
+        self.kind = "idle"
+        self.hard_deadline: float | None = None
+        self.last_state: dict[str, Any] = {}
 
-    def start(self, saved: bool, snapshot: dict[str, Any]) -> None:
+    def start(self, saved: bool, snapshot: dict[str, Any], account_id: str | None = None) -> None:
         if self.child is not None:
             raise ValueError("A foreground session is already active")
         slot = require_slot(self.root / STUDY)
@@ -69,6 +77,70 @@ class SessionProcess:
         claim.parent.mkdir(parents=True, exist_ok=True)
         with claim.open("x", encoding="utf-8") as stream:
             json.dump({"slot": slot.key, "control": control.name}, stream)
+        self._launch(command(self.root, control, saved, account_id), control, "shadow")
+
+    def start_collection(self, account_id: str, minutes: int) -> None:
+        self.require_idle()
+        validate_duration(minutes)
+        require_regular_market()
+        if uuid.UUID(hex=account_id).hex != account_id:
+            raise ValueError("Select an available saved account")
+        control = self.root / CONTROL / "sessions" / uuid.uuid4().hex
+        control.mkdir(parents=True)
+        args = [
+            str(self.root / ".venv/Scripts/python.exe"),
+            "-m",
+            "iqoption_research.desktop.foreground",
+            str(control),
+            "workstation",
+            "collect",
+            "--live",
+            "--yes-i-understand",
+            "--minutes",
+            str(minutes),
+            "--account-id",
+            account_id,
+            "--cancel-file",
+            str(control / "cancel"),
+            "--status-file",
+            str(control / "status.json"),
+        ]
+        self._launch(args, control, "collector")
+        self.hard_deadline = time.monotonic() + minutes * 60
+
+    def account_entry(self, account_id: str | None = None) -> None:
+        self.require_idle()
+        control = self.root / CONTROL / "sessions" / uuid.uuid4().hex
+        control.mkdir(parents=True)
+        args = [
+            str(self.root / ".venv/Scripts/python.exe"),
+            "-m",
+            "iqoption_research.desktop.foreground",
+            str(control),
+            "workstation",
+            "account-entry",
+        ]
+        if account_id is not None:
+            args.extend(["--account-id", account_id])
+        self._launch(args, control, "account-entry")
+
+    def require_idle(self) -> None:
+        if self.child is not None:
+            raise ValueError("Account changes and overlapping sessions are prohibited while busy")
+
+    def live_state(self) -> dict[str, Any]:
+        if self.child is None:
+            return {**self.last_state, "connection": "DISCONNECTED"}
+        if self.control is not None:
+            try:
+                return dict(json.loads((self.control / "status.json").read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                pass
+        return {"connection": "STARTING" if self.kind != "account-entry" else "DISCONNECTED"}
+
+    def _launch(self, args: list[str], control: Path, kind: str) -> None:
+        self.require_idle()
+        self.kind = kind
         self.control = control
         self.job = ChildJob()
         try:
@@ -85,7 +157,7 @@ class SessionProcess:
                 }
             }
             self.child = subprocess.Popen(  # noqa: S603
-                command(self.root, control, saved),
+                args,
                 cwd=self.root,
                 env=env,
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
@@ -103,14 +175,16 @@ class SessionProcess:
             self.job = None
             raise
 
-    def stop(self) -> None:
+    def stop(self, *, reason: str = "OPERATOR_CANCELLED") -> None:
         if self.child is not None and self.control is not None and self.stopping_at is None:
-            (self.control / "cancel").touch(exist_ok=True)
+            (self.control / "cancel").write_text(reason, encoding="utf-8")
             self.stopping_at = time.monotonic()
 
     def poll(self) -> tuple[int, str] | None:
         if self.child is None:
             return None
+        if self.hard_deadline is not None and time.monotonic() >= self.hard_deadline:
+            self.stop(reason="DURATION_LIMIT")
         if (
             self.stopping_at is not None
             and time.monotonic() - self.stopping_at > 5
@@ -124,13 +198,20 @@ class SessionProcess:
         if self.stopping_at is not None:
             message = "Operator cancelled; inspect saved evidence (completion is not assumed)"
         if self.control is not None and (self.control / "result.json").exists():
-            result = json.loads((self.control / "result.json").read_text(encoding="utf-8"))
-            message = str(result["message"])
+            try:
+                result = json.loads((self.control / "result.json").read_text(encoding="utf-8"))
+                if not isinstance(result, dict) or not isinstance(result.get("message"), str):
+                    raise ValueError("Invalid foreground result")
+                message = result["message"]
+            except (OSError, ValueError):
+                message = "Foreground result unavailable; inspect saved evidence"
+        self.last_state = {**self.live_state(), "connection": "DISCONNECTED"}
         if self.job is not None:
             self.job.close()
         self.child = None
         self.job = None
         self.stopping_at = None
+        self.hard_deadline = None
         return code, message
 
 

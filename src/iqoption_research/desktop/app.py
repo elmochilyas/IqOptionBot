@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from iqoption_research.desktop.core import STUDY, require_slot, slot_used, slots
 from iqoption_research.desktop.process import SessionProcess, refresh
 from iqoption_research.desktop.windows import DashboardMutex
+from iqoption_research.desktop.workstation import WorkstationPanels
 from iqoption_research.research.prospective_pilot import (
     PilotStudySpecification,
     ProspectivePilotError,
@@ -32,8 +33,8 @@ class Dashboard:
         self.last_session = ""
         self.schedule_text = ""
         self.local_zone = ZoneInfo("Africa/Casablanca")
-        window.title("IQOPTION · Research Control Center")
-        window.geometry("1180x740")
+        window.title("IQOPTION · Research Workstation V2")
+        window.geometry(f"1180x{min(740, window.winfo_screenheight() - 100)}")
         window.minsize(960, 620)
         style = ttk.Style(window)
         style.theme_use("clam")
@@ -46,7 +47,7 @@ class Dashboard:
         style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
         body = ttk.Frame(window, padding=20)
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text="Research Control Center", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(body, text="Research Workstation V2", style="Title.TLabel").pack(anchor="w")
         ttk.Label(body, text="EURUSD / M1 · Frozen Random Forest · Threshold 0.60").pack(anchor="w")
         ttk.Label(
             body,
@@ -55,12 +56,14 @@ class Dashboard:
         ).pack(anchor="w", pady=(10, 12))
         self.clock = ttk.Label(body)
         self.clock.pack(anchor="w")
-        self.identity = ttk.Label(body, text="Verifying immutable study and both anchors…")
+        notebook = ttk.Notebook(body)
+        phase_body = ttk.Frame(notebook, padding=12)
+        self.identity = ttk.Label(phase_body, text="Verifying immutable study and both anchors…")
         self.identity.pack(anchor="w", pady=4)
-        self.next_slot = ttk.Label(body)
+        self.next_slot = ttk.Label(phase_body)
         self.next_slot.pack(anchor="w", pady=4)
         self.market = ttk.Label(
-            body,
+            phase_body,
             text=(
                 "Broker connection: NOT PROBED offline. Regular EURUSD only; no OTC substitution. "
                 "Calendar eligibility does not verify broker availability."
@@ -68,9 +71,11 @@ class Dashboard:
             wraplength=1100,
         )
         self.market.pack(anchor="w", pady=4)
-        self.wallet = ttk.Label(body, text="Wallet: UNKNOWN (no live verification)")
+        self.wallet = ttk.Label(phase_body, text="Wallet: UNKNOWN (no live verification)")
         self.wallet.pack(anchor="w", pady=4)
-        controls = ttk.Frame(body)
+        self.system_status = ttk.Label(body, text="Accounts and collector: loading offline state…")
+        self.system_status.pack(anchor="w", pady=4)
+        controls = ttk.Frame(phase_body)
         controls.pack(fill="x", pady=10)
         self.start_button = ttk.Button(controls, text="Start Observation", command=self.start)
         self.start_button.pack(side="left")
@@ -88,23 +93,26 @@ class Dashboard:
         ).pack(side="left", padx=16)
         self.state = ttk.Label(body, text="Loading offline audit…", wraplength=1100)
         self.state.pack(anchor="w", pady=(0, 8))
-        self.progress = ttk.Progressbar(body, maximum=100)
+        self.progress = ttk.Progressbar(phase_body, maximum=100)
         self.progress.pack(fill="x", pady=(0, 10))
         ttk.Label(
             body,
             text=(
-                "Each Start click authorizes one session (≤5 observations / ≤300 seconds). "
-                "No automatic starts or retries. Stop preserves evidence already saved."
+                "Phase 38: ≤5 observations / ≤300 seconds. Collection: ≤120 minutes. "
+                "One explicit Start per session. No automatic starts or retries."
             ),
             wraplength=1100,
         ).pack(side="bottom", anchor="w", pady=(12, 0))
-        notebook = ttk.Notebook(body)
         notebook.pack(fill="both", expand=True)
         self.overview = self.text_tab(notebook, "Overview")
-        self.audit = self.text_tab(notebook, "Sessions & wallet audit")
-        self.recovery = self.text_tab(notebook, "Missing labels / recovery preview")
-        self.schedule = self.text_tab(notebook, "Registered slots")
-        self.details = self.text_tab(notebook, "Verified offline report")
+        self.workstation = WorkstationPanels(self, notebook)
+        evaluation = ttk.Notebook(phase_body)
+        evaluation.pack(fill="both", expand=True)
+        notebook.add(phase_body, text="Model Evaluation")
+        self.audit = self.text_tab(evaluation, "Sessions & wallet audit")
+        self.recovery = self.text_tab(evaluation, "Missing labels / recovery preview")
+        self.schedule = self.text_tab(evaluation, "Registered slots")
+        self.details = self.text_tab(evaluation, "Verified offline report")
         window.protocol("WM_DELETE_WINDOW", self.close)
         self.refresh()
         self.tick()
@@ -143,6 +151,8 @@ class Dashboard:
             self.refresh_button.state(["disabled"])
 
     def start(self) -> None:
+        if hasattr(self, "workstation") and self.workstation.busy():
+            return
         if self.launch_requested or self.process.child is not None or self.closing:
             return
         self.launch_requested = True
@@ -185,7 +195,8 @@ class Dashboard:
         metrics = status["probabilistic_metrics"]
         self.write(
             self.overview,
-            "\n".join([
+            self.workstation.overview()
+            + "\n".join([
                 "MODEL PREFLIGHT        "
                 + ("READY" if snapshot["model_eligible"] else "FAILED / MISSING"),
                 "CONNECTION             Not probed; connection occurs in the visible session",
@@ -205,6 +216,11 @@ class Dashboard:
                 f"Signal coverage         {status['signal_rate']:.1%}",
                 f"SKIP rate               {status['abstention_rate']:.1%}",
                 f"Brier score             {metrics.get('brier_score', 'N/A — no valid labels')}",
+                f"Log loss                {metrics.get('log_loss', 'N/A')}",
+                f"Directional accuracy    {metrics.get('directional_accuracy_overall', 'N/A')}",
+                "Baseline comparison     "
+                + str(metrics.get("brier_skill_score_against_0_50_baseline", "N/A")),
+                "Small research sample; directional accuracy does not establish profitability.",
                 "",
                 "Wallet classifications are per session; practice verification is not inferred.",
                 *sorted({str(w["classification"]) for w in snapshot["wallets"]}),
@@ -259,7 +275,11 @@ class Dashboard:
                 self.snapshot = self.pending.result()
                 self.render()
                 if self.launch_requested and not self.closing:
-                    self.process.start(self.saved.get(), self.snapshot)
+                    self.process.start(
+                        self.saved.get(),
+                        self.snapshot,
+                        account_id=self.workstation.selection.selected,
+                    )
                     self.state.configure(
                         text="Foreground session active; supervise the visible console."
                     )
@@ -282,6 +302,8 @@ class Dashboard:
             self.last_session = result[1]
             self.state.configure(text=result[1])
             self.refresh()
+            if hasattr(self, "workstation"):
+                self.workstation.finished()
         can_start = False
         if self.snapshot is not None:
             study = PilotStudySpecification.from_dict(self.snapshot["study"])
@@ -328,6 +350,9 @@ class Dashboard:
             except (ValueError, OSError):
                 can_start = False
         busy = self.process.child is not None
+        if hasattr(self, "workstation"):
+            self.workstation.tick()
+            busy = busy or self.workstation.future is not None
         self.start_button.state([
             "!disabled"
             if can_start and not busy and self.pending is None and not self.closing

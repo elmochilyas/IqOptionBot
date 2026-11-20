@@ -91,10 +91,19 @@ def read_snapshot(root: Path) -> dict[str, Any]:
     study = load_and_verify_study_specification(root / STUDY)
     result = reconcile_pilot_sessions(study, [root / EVIDENCE], storage_dir=root / "data/datasets")
     wallets = []
+    seen_sessions: set[str] = set()
     observed_times: list[int] = []
     for path in sorted((root / EVIDENCE).glob("*.json")):
         try:
             registry = TimingEvidenceRegistry.load_from_file(path)
+            observed_times.extend(
+                int(obs["feature_close_F"])
+                for obs in registry.observations
+                if obs.get("feature_close_F") is not None
+            )
+            if registry.session_id in seen_sessions:
+                continue
+            seen_sessions.add(registry.session_id)
             db_path = path.parent / "observations.db"
             journal_verified = 0
             try:
@@ -112,11 +121,6 @@ def read_snapshot(root: Path) -> dict[str, Any]:
                 "journal_verified_predictions": journal_verified,
                 "other_observations": len(registry.observations) - journal_verified,
             })
-            observed_times.extend(
-                int(obs["feature_close_F"])
-                for obs in registry.observations
-                if obs.get("feature_close_F") is not None
-            )
         except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError):
             # The reconciler reports corrupt evidence; never promote its wallet claims.
             continue

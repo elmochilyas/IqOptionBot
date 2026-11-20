@@ -204,6 +204,31 @@ def test_offline_refresh_does_not_authenticate(monkeypatch, tmp_path):
     auth.assert_not_called()
 
 
+def test_duplicate_registry_cannot_inflate_journal_counts(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, "load_and_verify_study_specification", lambda _: study())
+    monkeypatch.setattr(core, "reconcile_pilot_sessions", MagicMock())
+    monkeypatch.setattr(core, "eligible_model", lambda _: None)
+    directory = tmp_path / core.EVIDENCE
+    directory.mkdir(parents=True)
+    (directory / "original.json").touch()
+    (directory / "copy.json").touch()
+    registry = SimpleNamespace(
+        session_id="same-session", summary={}, observations=[{"feature_close_F": 123}]
+    )
+    monkeypatch.setattr(core.TimingEvidenceRegistry, "load_from_file", lambda _: registry)
+    monkeypatch.setattr(
+        core,
+        "extract_predictions_with_audit",
+        lambda *_args: (
+            [SimpleNamespace(journal_verified=True)],
+            None,
+        ),
+    )
+    snapshot = core.read_snapshot(tmp_path)
+    assert len(snapshot["wallets"]) == 1
+    assert sum(w["journal_verified_predictions"] for w in snapshot["wallets"]) == 1
+
+
 async def test_vault_explicit_opt_in_and_default_prompt(monkeypatch):
     vault = MagicMock(return_value=Credentials("test@example.test", "fake-password"))
     monkeypatch.setattr(WindowsCredentialVault, "load_saved_credentials", vault)

@@ -113,7 +113,7 @@ existing Phase 8 secure-authentication suite.
 ## Validation recorded on Windows
 
 - Full offline suite: **2,302 passed**, three existing getpass warnings, 167.74 seconds.
-- Final focused desktop suite after additional lifecycle tests: **33 passed**.
+- Final focused desktop suite after additional lifecycle/duplicate-evidence tests: **34 passed**.
 - Desktop plus existing Phase 8 secure-auth tests: **65 passed**.
 - Ruff lint and formatting: passed; MyPy: 222 source files passed.
 - Application security check: all seven checks passed; `pip check`: passed.
@@ -123,5 +123,5 @@ existing Phase 8 secure-authentication suite.
 - Actual Tkinter overview and registered-slots tabs inspected on Windows; screenshot
   included above. Preview closed after inspection.
 
-The PR's Safe Offline CI run validates the final commit, including the five tests
+The PR's Safe Offline CI run validates the final commit, including the six tests
 added after the initial full-suite run. No IQ Option connection was made.

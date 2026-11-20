@@ -308,6 +308,18 @@ def test_scenario_01_reproduce_phase35_reference_metrics_local_authentic(
             "portable fixture verified separately."
         )
 
+    cat = DatasetCatalog(cat_path)
+    entries = cat.find_datasets(symbol="EURUSD", candle_size_seconds=60)
+    has_phase35_candles = any(
+        1795106520 <= e.from_ts <= 1795106820 and (Path("data/datasets") / e.file_path).is_file()
+        for e in entries
+    )
+    if not has_phase35_candles:
+        pytest.skip(
+            "Local authentic Phase 35 broker parquet files not available in clean CI; "
+            "portable fixture verified separately."
+        )
+
     shadow_path, db_path = _create_phase35_fixtures(tmp_path)
 
     dataset, report, manifest = evaluate_prospective_cohort_offline(

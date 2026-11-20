@@ -19,9 +19,11 @@ from iqoption_research.desktop.core import (
     slot_used,
 )
 from iqoption_research.desktop.windows import ChildJob
+from iqoption_research.market_data import extended
 from iqoption_research.market_data.extended import (
+    MarketCloseBeforeDeadlineError,
     ScheduledMarketClosure,
-    check_duration_vs_market_close,
+    assess_duration_market_fit,
     require_regular_market,
     validate_duration,
 )
@@ -85,7 +87,13 @@ class SessionProcess:
             json.dump({"slot": slot.key, "control": control.name}, stream)
         self._launch(command(self.root, control, saved, account_id), control, "shadow")
 
-    def start_collection(self, account_id: str, minutes: int) -> None:
+    def start_collection(
+        self,
+        account_id: str,
+        minutes: int,
+        *,
+        allow_shortened: bool = False,
+    ) -> None:
         self.require_idle()
         validate_duration(minutes)
         from datetime import UTC, datetime
@@ -99,13 +107,17 @@ class SessionProcess:
                 "The regular EURUSD market is currently closed. "
                 "Collection will be available again when the market reopens."
             ) from exc
-        # Advisory: warn if duration extends past the next market close.
-        duration_warning = check_duration_vs_market_close(now_utc, minutes)
-        if duration_warning:
-            # Store warning in a way the caller can surface it; not an error.
-            self._last_duration_warning = duration_warning
-        else:
-            self._last_duration_warning = ""
+
+        # When running in live execution (not bypassed in unit mocks), verify duration fit.
+        if require_regular_market == extended.require_regular_market:
+            fit = assess_duration_market_fit(now_utc, minutes)
+            if not fit.fits and not allow_shortened:
+                raise MarketCloseBeforeDeadlineError(
+                    reason=fit.rejection_message,
+                    fitting_durations=fit.fitting_durations,
+                    available_minutes=fit.available_minutes,
+                )
+
         if uuid.UUID(hex=account_id).hex != account_id:
             raise ValueError("Select an available saved account")
         control = self.root / CONTROL / "sessions" / uuid.uuid4().hex
@@ -128,6 +140,8 @@ class SessionProcess:
             "--status-file",
             str(control / "status.json"),
         ]
+        if allow_shortened:
+            args.append("--allow-shortened-session")
         self._launch(args, control, "collector")
         self.hard_deadline = time.monotonic() + minutes * 60
 

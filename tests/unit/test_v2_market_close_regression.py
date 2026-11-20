@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -566,3 +567,503 @@ def test_conflicting_account_indicators_documentation():
         "profile.current_balance.id matching suspected wallet with correct type field",
     ]
     assert len(required_evidence) == 3, "Three independent signals required to resolve ambiguity"
+
+
+# ---------------------------------------------------------------------------
+# 13. End-to-End Actual Persisted Termination Reasons
+# ---------------------------------------------------------------------------
+
+
+async def test_actual_persisted_termination_duration_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A collection that elapses normally must persist DURATION_LIMIT in manifest and state."""
+    session = ExtendedCollection(tmp_path, 15, ACCOUNT, wall=lambda: BASE_TS, mono=lambda: 0)
+    monkeypatch.setattr(extended, "require_regular_market", lambda *_args: None)
+    broker = MagicMock()
+    broker.__aenter__ = AsyncMock(return_value=broker)
+    broker.__aexit__ = AsyncMock(return_value=False)
+    broker.wait_for_server_time_sync = AsyncMock(return_value=True)
+    broker.measurement_wallet_status.return_value.name = "UNKNOWN"
+    broker.is_authenticated = True
+    broker.is_failed = False
+    broker.clock_diagnostics = clock_diag(BASE_TS)
+    broker.get_candles = AsyncMock(return_value=fetch_result(BASE_TS))
+
+    # Advance monotonic time past deadline inside observe
+    async def fast_observe(_client: object) -> None:
+        session.mono = lambda: 15 * 60 + 1
+        session.state["termination_reason"] = "DURATION_LIMIT"
+
+    monkeypatch.setattr(session, "observe", fast_observe)
+    monkeypatch.setattr(extended, "supervised_client", AsyncMock(return_value=broker))
+
+    await session.run()
+
+    saved = inspect_session(session.directory)
+    manifest = json.loads((session.directory / "manifest.json").read_text())
+    assert saved["termination_reason"] == "DURATION_LIMIT"
+    assert manifest["final_state"]["termination_reason"] == "DURATION_LIMIT"
+    assert manifest["final_state"]["remaining_seconds"] == 0.0
+    assert "coverage_note" not in manifest["final_state"]
+
+
+async def test_actual_persisted_termination_broker_disconnected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Broker disconnect must persist BROKER_DISCONNECTED, not FAILED_ConnectionError."""
+    session = ExtendedCollection(tmp_path, 15, ACCOUNT, wall=lambda: BASE_TS, mono=lambda: 0)
+    monkeypatch.setattr(extended, "require_regular_market", lambda *_args: None)
+    broker = MagicMock()
+    broker.__aenter__ = AsyncMock(return_value=broker)
+    broker.__aexit__ = AsyncMock(return_value=False)
+    broker.wait_for_server_time_sync = AsyncMock(return_value=True)
+    broker.measurement_wallet_status.return_value.name = "UNKNOWN"
+    broker.is_authenticated = False  # Triggers BrokerDisconnectedError
+    broker.is_failed = True
+    broker.assert_read_only = MagicMock()
+    monkeypatch.setattr(extended, "supervised_client", AsyncMock(return_value=broker))
+
+    with pytest.raises(RuntimeError, match="Collection failed: BROKER_DISCONNECTED"):
+        await session.run()
+
+    saved = inspect_session(session.directory)
+    manifest = json.loads((session.directory / "manifest.json").read_text())
+    assert saved["termination_reason"] == "BROKER_DISCONNECTED"
+    assert manifest["final_state"]["termination_reason"] == "BROKER_DISCONNECTED"
+    assert manifest["final_state"]["remaining_seconds"] == 0.0
+    assert "coverage_note" in manifest["final_state"]
+
+
+async def test_actual_persisted_termination_broker_clock_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Initial clock sync failure must persist BROKER_CLOCK_UNAVAILABLE."""
+    session = ExtendedCollection(tmp_path, 15, ACCOUNT, wall=lambda: BASE_TS, mono=lambda: 0)
+    monkeypatch.setattr(extended, "require_regular_market", lambda *_args: None)
+    broker = MagicMock()
+    broker.__aenter__ = AsyncMock(return_value=broker)
+    broker.__aexit__ = AsyncMock(return_value=False)
+    broker.wait_for_server_time_sync = AsyncMock(return_value=False)  # Clock sync fails
+    broker.measurement_wallet_status.return_value.name = "UNKNOWN"
+    monkeypatch.setattr(extended, "supervised_client", AsyncMock(return_value=broker))
+
+    with pytest.raises(RuntimeError, match="Collection failed: BROKER_CLOCK_UNAVAILABLE"):
+        await session.run()
+
+    saved = inspect_session(session.directory)
+    manifest = json.loads((session.directory / "manifest.json").read_text())
+    assert saved["termination_reason"] == "BROKER_CLOCK_UNAVAILABLE"
+    assert manifest["final_state"]["termination_reason"] == "BROKER_CLOCK_UNAVAILABLE"
+    assert "coverage_note" in manifest["final_state"]
+
+
+async def test_actual_persisted_termination_stale_or_invalid_broker_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stale broker clock during observation must persist STALE_OR_INVALID_BROKER_CLOCK."""
+    session = ExtendedCollection(tmp_path, 15, ACCOUNT, wall=lambda: BASE_TS, mono=lambda: 0)
+    monkeypatch.setattr(extended, "require_regular_market", lambda *_args: None)
+    broker = MagicMock()
+    broker.__aenter__ = AsyncMock(return_value=broker)
+    broker.__aexit__ = AsyncMock(return_value=False)
+    broker.wait_for_server_time_sync = AsyncMock(return_value=True)
+    broker.measurement_wallet_status.return_value.name = "UNKNOWN"
+    broker.is_authenticated = True
+    broker.is_failed = False
+    broker.assert_read_only = MagicMock()
+    broker.clock_diagnostics = replace(clock_diag(BASE_TS), is_fresh=False)
+    monkeypatch.setattr(extended, "supervised_client", AsyncMock(return_value=broker))
+
+    with pytest.raises(RuntimeError, match="Collection failed: STALE_OR_INVALID_BROKER_CLOCK"):
+        await session.run()
+
+    saved = inspect_session(session.directory)
+    manifest = json.loads((session.directory / "manifest.json").read_text())
+    assert saved["termination_reason"] == "STALE_OR_INVALID_BROKER_CLOCK"
+    assert manifest["final_state"]["termination_reason"] == "STALE_OR_INVALID_BROKER_CLOCK"
+
+
+async def test_actual_persisted_termination_unverified_broker_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing broker clock uncertainty/time must persist UNVERIFIED_BROKER_CLOCK."""
+    session = ExtendedCollection(tmp_path, 15, ACCOUNT, wall=lambda: BASE_TS, mono=lambda: 0)
+    monkeypatch.setattr(extended, "require_regular_market", lambda *_args: None)
+    broker = MagicMock()
+    broker.__aenter__ = AsyncMock(return_value=broker)
+    broker.__aexit__ = AsyncMock(return_value=False)
+    broker.wait_for_server_time_sync = AsyncMock(return_value=True)
+    broker.measurement_wallet_status.return_value.name = "UNKNOWN"
+    broker.is_authenticated = True
+    broker.is_failed = False
+    broker.assert_read_only = MagicMock()
+    broker.clock_diagnostics = replace(clock_diag(BASE_TS), server_time_ns=None)
+    monkeypatch.setattr(extended, "supervised_client", AsyncMock(return_value=broker))
+
+    with pytest.raises(RuntimeError, match="Collection failed: UNVERIFIED_BROKER_CLOCK"):
+        await session.run()
+
+    saved = inspect_session(session.directory)
+    manifest = json.loads((session.directory / "manifest.json").read_text())
+    assert saved["termination_reason"] == "UNVERIFIED_BROKER_CLOCK"
+    assert manifest["final_state"]["termination_reason"] == "UNVERIFIED_BROKER_CLOCK"
+
+
+async def test_actual_persisted_termination_repeated_data_quality_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three data quality rejections must persist REPEATED_DATA_QUALITY_FAILURE."""
+    session = ExtendedCollection(tmp_path, 15, ACCOUNT, wall=lambda: BASE_TS, mono=lambda: 0)
+    monkeypatch.setattr(extended, "require_regular_market", lambda *_args: None)
+    broker = MagicMock()
+    broker.__aenter__ = AsyncMock(return_value=broker)
+    broker.__aexit__ = AsyncMock(return_value=False)
+    broker.wait_for_server_time_sync = AsyncMock(return_value=True)
+    broker.measurement_wallet_status.return_value.name = "UNKNOWN"
+    broker.is_authenticated = True
+    broker.is_failed = False
+    broker.assert_read_only = MagicMock()
+    broker.clock_diagnostics = clock_diag(BASE_TS)
+
+    # Return incomplete candle to trigger DataAcquisitionError 3 times
+    bad_result = replace(
+        fetch_result(BASE_TS), candles=(replace(candle(BASE_TS), is_complete=False),)
+    )
+    broker.get_candles = AsyncMock(return_value=bad_result)
+
+    timestamp = [BASE_TS + 60.0]
+    broker.clock_diagnostics = clock_diag(timestamp[0])
+    session.wall = lambda: timestamp[0]
+    session.mono = lambda: timestamp[0] - BASE_TS
+
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(_sec: float) -> None:
+        timestamp[0] += 60
+        broker.clock_diagnostics = clock_diag(timestamp[0])
+        await real_sleep(0)
+
+    monkeypatch.setattr(extended.asyncio, "sleep", fast_sleep)
+    monkeypatch.setattr(extended, "supervised_client", AsyncMock(return_value=broker))
+
+    with pytest.raises(RuntimeError, match="Collection failed: REPEATED_DATA_QUALITY_FAILURE"):
+        await session.run()
+
+    saved = inspect_session(session.directory)
+    manifest = json.loads((session.directory / "manifest.json").read_text())
+    assert saved["termination_reason"] == "REPEATED_DATA_QUALITY_FAILURE"
+    assert manifest["final_state"]["termination_reason"] == "REPEATED_DATA_QUALITY_FAILURE"
+
+
+async def test_actual_persisted_termination_unexpected_exception_sanitized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unexpected exception must persist FAILED_<Type> and sanitize internal payload."""
+    session = ExtendedCollection(tmp_path, 15, ACCOUNT, wall=lambda: BASE_TS, mono=lambda: 0)
+    monkeypatch.setattr(extended, "require_regular_market", lambda *_args: None)
+    broker = MagicMock()
+    broker.__aenter__ = AsyncMock(return_value=broker)
+    broker.__aexit__ = AsyncMock(return_value=False)
+    broker.wait_for_server_time_sync = AsyncMock(return_value=True)
+    broker.measurement_wallet_status.return_value.name = "UNKNOWN"
+    secret_payload = "confidential-broker-session-token-xyz"
+    broker.is_authenticated = True
+    broker.is_failed = False
+    broker.assert_read_only = MagicMock(side_effect=KeyError(secret_payload))
+    monkeypatch.setattr(extended, "supervised_client", AsyncMock(return_value=broker))
+
+    with pytest.raises(RuntimeError, match="Collection failed: KeyError"):
+        await session.run()
+
+    saved = inspect_session(session.directory)
+    manifest = json.loads((session.directory / "manifest.json").read_text())
+    assert saved["termination_reason"] == "FAILED_KeyError"
+    assert manifest["final_state"]["termination_reason"] == "FAILED_KeyError"
+
+    # Verify secret payload never leaked to disk
+    for path in session.directory.rglob("*.json"):
+        assert secret_payload not in path.read_text()
+
+
+# ---------------------------------------------------------------------------
+# 14. Status, State, and Manifest Consistency on Early Termination
+# ---------------------------------------------------------------------------
+
+
+async def test_persisted_status_and_manifest_consistency_on_early_termination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify that state.json, status_path, and manifest.json all contain identical,
+    fully populated final fields (including coverage_note) after early termination.
+    """
+    status_file = tmp_path / "live_status.json"
+    session = ExtendedCollection(
+        tmp_path,
+        60,
+        ACCOUNT,
+        wall=lambda: BASE_TS + 300,
+        mono=lambda: 300,
+        status_path=status_file,
+    )
+    session.started = BASE_TS
+
+    # Simulate early scheduled closure
+    session.state["termination_reason"] = "SCHEDULED_MARKET_CLOSURE"
+    session.state["scheduled_closure_at_utc"] = FRIDAY_CLOSE_UTC.isoformat()
+    session.finalize()
+
+    # Read all three persisted outputs
+    state_data = json.loads((session.directory / "state.json").read_text())
+    manifest_data = json.loads((session.directory / "manifest.json").read_text())
+    status_data = json.loads(status_file.read_text())
+
+    # 1. Coverage note must be present and identical in all three
+    assert "coverage_note" in state_data, "coverage_note missing from state.json"
+    assert "coverage_note" in manifest_data["final_state"], (
+        "coverage_note missing from manifest.json"
+    )
+    assert "coverage_note" in status_data, "coverage_note missing from live status file"
+    assert (
+        state_data["coverage_note"]
+        == manifest_data["final_state"]["coverage_note"]
+        == status_data["coverage_note"]
+    )
+    assert "SCHEDULED_MARKET_CLOSURE" in state_data["coverage_note"]
+
+    # 2. Connection must be DISCONNECTED in all three
+    assert state_data["connection"] == "DISCONNECTED"
+    assert manifest_data["final_state"]["connection"] == "DISCONNECTED"
+    assert status_data["connection"] == "DISCONNECTED"
+
+    # 3. Remaining seconds must be 0.0 in all three (session is ended)
+    assert state_data["remaining_seconds"] == 0.0
+    assert manifest_data["final_state"]["remaining_seconds"] == 0.0
+    assert status_data["remaining_seconds"] == 0.0
+
+    # 4. Actual elapsed seconds and requested minutes must match
+    assert state_data["actual_elapsed_seconds"] == 300
+    assert manifest_data["final_state"]["actual_elapsed_seconds"] == 300
+    assert status_data["actual_elapsed_seconds"] == 300
+    assert state_data["requested_minutes"] == 60
+    assert manifest_data["final_state"]["requested_minutes"] == 60
+    assert status_data["requested_minutes"] == 60
+
+
+# ---------------------------------------------------------------------------
+# 15. Market Fit Preflight & CLI Option Tests
+# ---------------------------------------------------------------------------
+
+
+def test_assess_duration_market_fit_recommends_shorter_durations():
+    """When a 60m session starts 35m before Friday close, 15m and 30m fit."""
+    start = FRIDAY_CLOSE_UTC - timedelta(minutes=35)
+    fit = extended.assess_duration_market_fit(start, 60)
+    assert not fit.fits
+    assert fit.is_open
+    assert fit.available_minutes == 35
+    assert fit.fitting_durations == (15, 30)
+    assert "15m" in fit.rejection_message and "30m" in fit.rejection_message
+    assert "60" in fit.rejection_message
+
+
+def test_assess_duration_market_fit_when_no_duration_fits():
+    """When a 15m session starts 5m before Friday close, no supported duration fits."""
+    start = FRIDAY_CLOSE_UTC - timedelta(minutes=5)
+    fit = extended.assess_duration_market_fit(start, 15)
+    assert not fit.fits
+    assert fit.is_open
+    assert fit.available_minutes == 5
+    assert fit.fitting_durations == ()
+    assert "No supported duration" in fit.rejection_message
+
+
+def test_cli_refuses_shortened_session_without_explicit_flag(monkeypatch: pytest.MonkeyPatch):
+    """CLI collect command must refuse with actionable message when duration crosses close."""
+    from typer.testing import CliRunner
+
+    from iqoption_research.cli.main import app
+
+    runner = CliRunner()
+    monkeypatch.setattr(
+        "iqoption_research.cli.commands.workstation_cmd.require_terminal", lambda: None
+    )
+    # Mock time to 35m before Friday close
+    pre_close = FRIDAY_CLOSE_UTC - timedelta(minutes=35)
+    real_fit = extended.assess_duration_market_fit
+    monkeypatch.setattr(extended, "require_regular_market", lambda *_args: None)
+    monkeypatch.setattr(
+        extended,
+        "assess_duration_market_fit",
+        lambda _now, mins: real_fit(pre_close, mins),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workstation",
+            "collect",
+            "--account-id",
+            ACCOUNT,
+            "--minutes",
+            "60",
+            "--live",
+            "--yes-i-understand",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "extends past scheduled market" in result.output
+    assert "--allow-shortened-session" in result.output
+    assert "15m, 30m" in result.output
+
+
+def test_cli_allows_shortened_session_with_explicit_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """CLI collect command proceeds when --allow-shortened-session is explicitly given."""
+    from typer.testing import CliRunner
+
+    from iqoption_research.cli.main import app
+
+    runner = CliRunner()
+    monkeypatch.setattr(
+        "iqoption_research.cli.commands.workstation_cmd.require_terminal", lambda: None
+    )
+    pre_close = FRIDAY_CLOSE_UTC - timedelta(minutes=35)
+    real_fit = extended.assess_duration_market_fit
+    monkeypatch.setattr(extended, "require_regular_market", lambda *_args: None)
+    monkeypatch.setattr(
+        extended,
+        "assess_duration_market_fit",
+        lambda _now, mins: real_fit(pre_close, mins),
+    )
+
+    # Mock ExtendedCollection.run to avoid real broker connection
+    async def fake_run(_self, _cancel=None):
+        _self.state["termination_reason"] = "SCHEDULED_MARKET_CLOSURE"
+        _self.finalize()
+
+    monkeypatch.setattr(ExtendedCollection, "run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "workstation",
+            "collect",
+            "--account-id",
+            ACCOUNT,
+            "--minutes",
+            "60",
+            "--live",
+            "--yes-i-understand",
+            "--allow-shortened-session",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "EXPLICIT AUTHORIZATION" in result.output
+    assert "SCHEDULED_MARKET_CLOSURE" in result.output
+
+
+# ---------------------------------------------------------------------------
+# 16. Real Dashboard Formatting & Actionable Error Rendering
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_workstation_panel_actionable_error_on_market_close():
+    """WorkstationPanels.start_collection must format a clean, human-readable message on refusal."""
+    from iqoption_research.desktop.workstation import WorkstationPanels
+
+    dashboard = MagicMock()
+    dashboard.process.child = None
+    dashboard.process.kind = "none"
+    dashboard.process.last_state = {}
+    dashboard.process.live_state.return_value = {"connection": "DISCONNECTED"}
+    dashboard.closing = False
+    dashboard.window = MagicMock()
+
+    # Create panel with mock dashboard
+    panel = WorkstationPanels.__new__(WorkstationPanels)
+    panel.dashboard = dashboard
+    panel.selection = MagicMock()
+    panel.selection.selected = ACCOUNT
+    panel.busy = lambda: False
+    panel.duration = MagicMock()
+    panel.duration.get.return_value = "60"
+
+    # Simulate start_collection raising ScheduledMarketClosure
+    dashboard.process.start_collection.side_effect = extended.ScheduledMarketClosure(
+        "Regular EURUSD market is closed; OTC substitution is forbidden"
+    )
+
+    panel.start_collection()
+
+    # The dashboard status must show human-readable text, not just raw "ScheduledMarketClosure"
+    assert panel.message.startswith("Market closed: Regular EURUSD market is closed")
+    dashboard.state.configure.assert_called_with(text=panel.message)
+
+
+def test_dashboard_workstation_panel_tick_executes_real_widget_formatting():
+    """Execute real WorkstationPanels.tick() against mock Tkinter widgets to verify formatting."""
+    from iqoption_research.desktop.workstation import WorkstationPanels
+
+    dashboard = MagicMock()
+    dashboard.process.child = None
+    dashboard.process.kind = "none"
+    dashboard.process.last_state = {
+        "connection": "DISCONNECTED",
+        "wallet_classification": "CONFLICTING_ACCOUNT_INDICATORS",
+        "valid_candles": 8,
+        "rejected_candles": 0,
+        "duplicate_boundaries": 0,
+        "missing_boundaries": [],
+        "coverage": 0.44,
+        "connection_uptime_seconds": 0,
+        "termination_reason": "SCHEDULED_MARKET_CLOSURE",
+        "ended_at_utc": "2026-11-20T22:00:01+00:00",
+        "actual_elapsed_seconds": 300,
+        "requested_minutes": 60,
+        "destination": "/fake/storage",
+        "last_verified_candle": int(FRIDAY_CLOSE_UTC.timestamp()) - 60,
+        "coverage_note": "Session ended early (SCHEDULED_MARKET_CLOSURE)",
+    }
+    dashboard.process.live_state.return_value = dashboard.process.last_state
+    dashboard.closing = False
+    dashboard.last_session = "exit 0"
+    dashboard.root = Path("/fake/root")
+
+    panel = WorkstationPanels.__new__(WorkstationPanels)
+    panel.dashboard = dashboard
+    panel.selection = MagicMock()
+    panel.selection.selected = ACCOUNT
+    panel.selection.accounts = {ACCOUNT: "Primary Account"}
+    panel.busy = lambda: False
+    panel.future = None
+    panel.controls = []
+    panel.remember_button = MagicMock()
+    panel.account_list = MagicMock()
+    panel.duration = MagicMock()
+    panel.start_button = MagicMock()
+    panel.stop_button = MagicMock()
+    panel.account_status = MagicMock()
+    panel.account_connection = MagicMock()
+    panel.collector_status = MagicMock()
+    panel.message = "Vault OK"
+    panel.rows = []
+
+    # Run real tick()
+    panel.tick()
+
+    # Verify collector_status received formatted text
+    status_calls = panel.collector_status.configure.call_args
+    assert status_calls is not None
+    status_text = status_calls.kwargs["text"]
+
+    # Assert real formatting invariants
+    assert "Session display: post-session (final)" in status_text
+    assert "Termination: SCHEDULED_MARKET_CLOSURE" in status_text
+    assert "Actual elapsed: 300s (requested: 60 min)" in status_text
+    assert "UTC" in status_text
+    assert str(int(FRIDAY_CLOSE_UTC.timestamp()) - 60) not in status_text, (
+        "Raw epoch must be formatted as UTC"
+    )
+    assert "Coverage note: Session ended early (SCHEDULED_MARKET_CLOSURE)" in status_text

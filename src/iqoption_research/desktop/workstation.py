@@ -11,7 +11,11 @@ from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Any
 
 from iqoption_research.auth.vault import WindowsCredentialVault
-from iqoption_research.market_data.extended import DURATIONS
+from iqoption_research.market_data.extended import (
+    DURATIONS,
+    MarketCloseBeforeDeadlineError,
+    ScheduledMarketClosure,
+)
 from iqoption_research.market_data.extended_store import library
 
 if TYPE_CHECKING:
@@ -202,19 +206,55 @@ class WorkstationPanels:
     def start_collection(self) -> None:
         if self.busy() or self.selection.selected is None:
             return
+        selected_account = self.selection.selected
+        selected_minutes = int(self.duration.get())
         try:
-            self.dashboard.process.start_collection(
-                self.selection.selected, int(self.duration.get())
+            self.dashboard.process.start_collection(selected_account, selected_minutes)
+            self.dashboard.state.configure(
+                text="Extended collection authorized; supervise the console."
             )
-            warning = getattr(self.dashboard.process, "_last_duration_warning", "")
-            if warning:
-                self.dashboard.state.configure(text=f"Extended collection authorized.\n{warning}")
+        except MarketCloseBeforeDeadlineError as exc:
+            durations_str = ", ".join(f"{d}m" for d in exc.fitting_durations)
+            hint = (
+                f"Shorter supported duration(s) that fit: {durations_str}."
+                if exc.fitting_durations
+                else "No shorter supported duration fits before closure."
+            )
+            confirm_msg = (
+                f"{exc.reason}\n\n"
+                f"{hint}\n\n"
+                "Do you want to explicitly authorize a shortened session anyway?\n"
+                "It will collect until scheduled market close and finalize cleanly."
+            )
+            if messagebox.askyesno(
+                "Authorize Shortened Collection?",
+                confirm_msg,
+                parent=self.dashboard.window,
+            ):
+                try:
+                    self.dashboard.process.start_collection(
+                        selected_account, selected_minutes, allow_shortened=True
+                    )
+                    self.dashboard.state.configure(
+                        text=(
+                            f"Shortened collection explicitly authorized: {selected_minutes}m "
+                            f"(~{exc.available_minutes}m before close); supervise console."
+                        )
+                    )
+                except Exception as inner_exc:  # noqa: BLE001
+                    self.message = f"Collection launch refused: {inner_exc}"
+                    self.dashboard.state.configure(text=self.message)
             else:
-                self.dashboard.state.configure(
-                    text="Extended collection authorized; supervise the console."
-                )
+                self.message = f"Collection cancelled by operator. {hint}"
+                self.dashboard.state.configure(text=self.message)
+        except ScheduledMarketClosure as exc:
+            self.message = f"Market closed: {exc}"
+            self.dashboard.state.configure(text=self.message)
+        except ValueError as exc:
+            self.message = f"Collection launch refused: {exc}"
+            self.dashboard.state.configure(text=self.message)
         except Exception as exc:  # noqa: BLE001 - no credential payloads shown
-            self.message = f"Collection launch refused: {type(exc).__name__}"
+            self.message = f"Collection launch failed: {type(exc).__name__}"
             self.dashboard.state.configure(text=self.message)
 
     def finished(self) -> None:

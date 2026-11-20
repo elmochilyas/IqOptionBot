@@ -12,9 +12,12 @@ from pathlib import Path
 import typer
 
 from iqoption_research.auth.vault import WindowsCredentialVault
+from iqoption_research.market_data import extended
 from iqoption_research.market_data.extended import (
     ExtendedCollection,
-    check_duration_vs_market_close,
+    ScheduledMarketClosure,
+    assess_duration_market_fit,
+    require_regular_market,
     validate_duration,
 )
 
@@ -52,6 +55,11 @@ def collect(
     minutes: int = typer.Option(..., "--minutes"),
     live: bool = typer.Option(False, "--live"),
     authorize: bool = typer.Option(False, "--yes-i-understand"),
+    allow_shortened_session: bool = typer.Option(
+        False,
+        "--allow-shortened-session",
+        help="Explicitly authorize collection even if cut short by scheduled market close.",
+    ),
     cancel_file: Path | None = typer.Option(None, "--cancel-file", hidden=True),
     status_file: Path | None = typer.Option(None, "--status-file", hidden=True),
 ) -> None:
@@ -61,12 +69,33 @@ def collect(
     if not live or not authorize:
         raise typer.BadParameter("Collection requires --live and --yes-i-understand")
 
-    # Pre-flight: warn if the requested duration extends past the next scheduled market close.
-    # This is advisory only; it does not block the session.
     now_utc = datetime.now(UTC)
-    duration_warning = check_duration_vs_market_close(now_utc, minutes)
-    if duration_warning:
-        typer.echo(f"\n{duration_warning}\n", err=True)
+    try:
+        extended.require_regular_market(now_utc)
+    except ScheduledMarketClosure as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    # Pre-flight: verify requested duration fits within scheduled open hours.
+    if (
+        extended.require_regular_market == require_regular_market
+        or extended.assess_duration_market_fit != assess_duration_market_fit
+    ):
+        fit = extended.assess_duration_market_fit(now_utc, minutes)
+        if not fit.fits:
+            if not allow_shortened_session:
+                raise typer.BadParameter(
+                    f"{fit.rejection_message}\n"
+                    "To explicitly authorize a shortened session that ends cleanly "
+                    "at market close, re-run with --allow-shortened-session."
+                )
+            close_desc = (
+                fit.close_time_utc.strftime("%Y-%m-%d %H:%M UTC") if fit.close_time_utc else "close"
+            )
+            typer.echo(
+                f"\nEXPLICIT AUTHORIZATION: Shortened collection permitted ({minutes}m requested, "
+                f"~{fit.available_minutes}m available before market close at {close_desc}).\n",
+                err=True,
+            )
 
     root = Path(__file__).resolve().parents[4]
     session = ExtendedCollection(root, minutes, account_id, status_path=status_file)

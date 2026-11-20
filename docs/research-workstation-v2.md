@@ -138,43 +138,55 @@ SHA-256 provides local tamper evidence, not independent broker attestation/signa
    collection, the session terminates cleanly with `SCHEDULED_MARKET_CLOSURE`. Committed
    Parquet pages, catalog entries, receipts and the final `manifest.json` are preserved.
    It is never classified as `FAILED_ValueError` or an unexpected exception.
-3. **Pre-flight availability and duration check**: Prior to launching a collection,
-   `check_duration_vs_market_close()` evaluates whether the requested duration (15, 30,
-   60 or 120 minutes) extends beyond the next scheduled market close. An advisory warning
-   is emitted to the operator if the session would be cut short by closure, stating the
-   approximate available open minutes. The session is not silently shortened or blocked;
-   it runs normally and closes cleanly when market hours end.
+3. **Pre-flight duration refusal and explicit operator authorization**: Prior to launching
+   a collection, `assess_duration_market_fit()` evaluates whether the requested duration (15, 30,
+   60 or 120 minutes) extends beyond the next scheduled market close. If the requested duration
+   crosses a scheduled market closure, the session is refused with an actionable message identifying
+   the shorter supported durations (e.g. 15m, 30m) that fit before closure. The workstation never
+   silently shortens the requested duration. In the CLI, proceeding with a shortened session requires
+   explicit operator authorization via `--allow-shortened-session`. In the desktop UI, the operator
+   is prompted with a confirmation dialogue explicitly stating the available minutes before market
+   close. If the market is closed, collection is refused unconditionally.
 4. **Calendar vs broker availability**: Calendar checks establish theoretical regular
    hours. Broker-side availability remains distinct and verified only by authenticated
    read-only candle responses. OTC instruments remain strictly forbidden.
 
 ## Termination reason taxonomy
 
-Sessions terminate with one of the following explicit, non-overlapping reasons:
+Sessions terminate with one of the following explicit, typed or explicitly mapped, non-overlapping reasons:
 
 - `DURATION_LIMIT`: The requested collection duration elapsed normally.
 - `SCHEDULED_MARKET_CLOSURE`: Regular market closed on schedule; committed data preserved.
 - `OPERATOR_CANCELLED`: Operator requested cancellation or closed the dashboard; partial data preserved.
 - `BROKER_DISCONNECTED`: Broker WebSocket transport disconnected unexpectedly.
+- `BROKER_CLOCK_UNAVAILABLE`: Initial clock synchronization timed out or failed.
+- `STALE_OR_INVALID_BROKER_CLOCK`: Clock freshness check failed or a clock step was detected.
+- `UNVERIFIED_BROKER_CLOCK`: Server time or uncertainty values were missing.
 - `REPEATED_DATA_QUALITY_FAILURE`: Three consecutive candle quality rejections occurred.
-- `STALE_OR_INVALID_BROKER_CLOCK` / `UNVERIFIED_BROKER_CLOCK`: Clock freshness/uncertainty checks failed.
-- `BROKER_CLOCK_UNAVAILABLE`: Initial clock synchronization timed out.
 - `FAILED_<ExceptionType>`: Unexpected runtime exception, sanitized of credentials and raw payloads.
 
-## Coverage semantics and desktop display
+## Coverage semantics, publication ordering, and desktop display
 
-1. **Observed-boundary coverage vs requested-duration completion**: When a session ends
+1. **Publication ordering and state consistency**: In `ExtendedCollection.finalize()`, every
+   final operational field (`coverage_note`, `remaining_seconds=0.0`, `actual_elapsed_seconds`,
+   `requested_minutes`, `connection="DISCONNECTED"`) is computed *before* publishing to `state.json`
+   and the live status file, followed by writing the immutable `manifest.json`. This guarantees
+   that `state.json`, `status_path`, and `manifest.json` are completely consistent.
+2. **Observed-boundary coverage vs requested-duration completion**: When a session ends
    early (due to scheduled close, cancellation or error), its `coverage` metric represents
    the ratio of valid observed candles to expected 1-minute boundaries within the
-   *actual elapsed* window. A `coverage_note` is recorded in the manifest to make explicit
-   that early termination does not represent requested-duration completion.
-2. **Active vs historical metrics**: The desktop dashboard distinguishes active live
+   *actual elapsed* window. A `coverage_note` is recorded in the manifest, state, and status to make
+   explicit that early termination does not represent requested-duration completion.
+3. **Active vs historical metrics**: The desktop dashboard distinguishes active live
    sessions from historical/post-session views. When idle or post-session, metrics are
    explicitly labelled as `historical (last saved)` or `post-session (final)`. Actual
    elapsed seconds and requested duration are displayed together to prevent ambiguity.
-3. **Human-readable timestamps**: All candle boundaries, last-verified candle markers
+4. **Human-readable timestamps**: All candle boundaries, last-verified candle markers
    and library summary date ranges are formatted as human-readable UTC datetime strings
    (e.g., `YYYY-MM-DD HH:MM:SS UTC`) rather than raw Unix epoch integers.
+5. **Actionable dashboard errors**: Market calendar refusals and operational errors display
+   clean, human-readable explanations instead of raw exception class names, with zero raw
+   exception traceback or credential exposure.
 
 ## Wallet classification and ambiguity resolution
 

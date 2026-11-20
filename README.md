@@ -26,6 +26,11 @@ to inspect the registered Phase 38 study and launch one explicitly authorized,
 bounded foreground observation. See [launch instructions and limitations](docs/research-desktop.md).
 The dashboard starts offline and never launches sessions automatically.
 
+**Research Workstation V2** adds secure multi-account selection, Remember Me,
+15–120 minute operator-authorized market collection and a verified Data Library.
+See [account migration, collection and storage instructions](docs/research-workstation-v2.md).
+Extended collection is separate from the unchanged Phase 38 model evaluation.
+
 | Dimension | Current Verification Status |
 |---|---|
 | **Operating System** | Windows (PowerShell tested; cross-platform compatible) |

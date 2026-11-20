@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from iqoption_research.auth.accounts import AccountStore
 from iqoption_research.security.credentials import Credentials, redact_email
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,12 @@ class WindowsCredentialVault:
                 "Native OS credential storage is unavailable."
             ) from err
 
+    def account_store(self) -> AccountStore:
+        """Return versioned account management only on the verified native vault."""
+        if not self.is_secure_backend():
+            raise InsecureKeyringBackendError("Native Windows credential vault is unavailable")
+        return AccountStore(self._get_backend(), self._service_name)
+
     def is_secure_backend(self) -> bool:
         """Verify that the resolved backend is a genuine OS-backed Windows vault.
 
@@ -119,7 +126,7 @@ class WindowsCredentialVault:
 
             return True
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Backend verification check failed: %s", exc)
+            logger.debug("Backend verification check failed: %s", type(exc).__name__)
             return False
 
     def get_backend_info(self) -> dict[str, str]:
@@ -138,7 +145,7 @@ class WindowsCredentialVault:
                 "class": "None",
                 "module": "unknown",
                 "is_secure": "False",
-                "error": str(exc),
+                "error": type(exc).__name__,
             }
 
     def has_saved_credentials(self) -> bool:
@@ -157,7 +164,7 @@ class WindowsCredentialVault:
             pwd = backend.get_password(self._service_name, active_email)
             return bool(pwd)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to check saved credentials: %s", exc)
+            logger.debug("Failed to check saved credentials: %s", type(exc).__name__)
             return False
 
     def get_saved_identifier(self, *, redact: bool = True) -> str | None:
@@ -175,7 +182,7 @@ class WindowsCredentialVault:
                 return None
             return redact_email(active_email) if redact else active_email
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to get saved identifier: %s", exc)
+            logger.debug("Failed to get saved identifier: %s", type(exc).__name__)
             return None
 
     def save_credentials(
@@ -246,7 +253,7 @@ class WindowsCredentialVault:
         except InsecureKeyringBackendError:
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Error loading credentials from vault: %s", exc)
+            logger.warning("Error loading credentials from vault: %s", type(exc).__name__)
             return None
 
     def delete_saved_credentials(self) -> bool:
@@ -266,15 +273,15 @@ class WindowsCredentialVault:
                     backend.delete_password(self._service_name, active_email)
                     deleted_any = True
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("Failed to delete password entry for %s: %s", active_email, exc)
+                    logger.debug("Failed to delete password entry: %s", type(exc).__name__)
             try:
                 backend.delete_password(self._service_name, ACTIVE_ACCOUNT_KEY)
                 deleted_any = True
             except Exception as exc:  # noqa: BLE001
-                logger.debug("Failed to delete active account key: %s", exc)
+                logger.debug("Failed to delete active account key: %s", type(exc).__name__)
 
             logger.info("Credentials deleted from Windows Credential Vault.")
             return deleted_any
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to delete credentials from vault: %s", exc)
+            logger.warning("Failed to delete credentials from vault: %s", type(exc).__name__)
             return False

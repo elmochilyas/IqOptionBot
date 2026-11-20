@@ -33,6 +33,7 @@ from iqoption_research.cli.commands.simulate import simulate_command
 from iqoption_research.cli.commands.timing_cmd import app as timing_app
 from iqoption_research.cli.commands.validate_data import validate_command
 from iqoption_research.cli.commands.wallet_diagnostic import wallet_diagnostic_command
+from iqoption_research.cli.commands.workstation_cmd import app as workstation_app
 from iqoption_research.security.logging import configure_logging
 
 app = typer.Typer(
@@ -85,6 +86,7 @@ app.add_typer(auth_app, name="auth")
 app.add_typer(data_app, name="data")
 app.add_typer(execution_app, name="execution")
 app.add_typer(timing_app, name="timing")
+app.add_typer(workstation_app, name="workstation")
 
 
 @app.callback()

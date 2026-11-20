@@ -146,6 +146,7 @@ class ShadowTrial:
         *,
         pipeline_reserve_seconds: float = 1.0,
         use_saved_credentials: bool = False,
+        account_id: str | None = None,
         live_guard: Callable[[], None] | None = None,
     ) -> None:
         config.validate()
@@ -153,6 +154,7 @@ class ShadowTrial:
             raise ValueError("Shadow trial requires EURUSD 60-second candles")
         self.config = config
         self.use_saved_credentials = use_saved_credentials
+        self.account_id = account_id
         self.live_guard = live_guard
         self.pipeline_reserve_seconds = float(pipeline_reserve_seconds)
         self.mode = "OPERATOR_SUPERVISED_LIVE" if config.live_mode else "OFFLINE_SIMULATION"
@@ -592,7 +594,9 @@ class ShadowTrial:
             if self.live_guard is not None:
                 self.live_guard()
             client_context = (
-                await supervised_client(self.recorder, use_saved_credentials=True)
+                await supervised_client(self.recorder, account_id=self.account_id)
+                if self.account_id is not None
+                else await supervised_client(self.recorder, use_saved_credentials=True)
                 if self.use_saved_credentials
                 else await supervised_client(self.recorder)
             )

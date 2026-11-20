@@ -1298,6 +1298,7 @@ def test_cli_pilot_init_and_idempotence(tmp_path: Path) -> None:
             str(out_file),
             "--study-id",
             "test-study-001",
+            "--confirm-default-schedule",
             "--json",
         ],
     )
@@ -1320,6 +1321,7 @@ def test_cli_pilot_init_and_idempotence(tmp_path: Path) -> None:
             str(out_file),
             "--study-id",
             "test-study-002",
+            "--confirm-default-schedule",
             "--json",
         ],
     )
@@ -1959,7 +1961,17 @@ def test_section_c_fabricated_empty_manifest_rejected_by_checkpoint_publisher(
 def test_section_d_exact_boundaries_39_40_41_59_60_61(tmp_path: Path) -> None:
     """Test boundary transitions: 0.39 (PUT), 0.40 (PUT), 0.41/0.59 (none), 0.60/0.61 (CALL)."""
     spec_path = tmp_path / "study_spec.json"
-    spec = _init_study(spec_path)
+    spec = _init_study(
+        spec_path,
+        sampling_schedule={
+            "schedule_type": "RECURRING_WEEKDAY_TIME",
+            "days_of_week": [0, 1, 2, 3, 4],
+            "slots": [
+                {"slot_id": "slot_17h", "start_time_utc": "17:00:00", "end_time_utc": "18:00:00"},
+                {"slot_id": "slot_18h", "start_time_utc": "18:00:00", "end_time_utc": "19:00:00"},
+            ],
+        },
+    )
 
     # We create predictions with specific probabilities
     s_path, _db_path = _create_second_shadow_session(
@@ -2550,8 +2562,16 @@ def test_window_compliance_different_input_ordering_identical_substantive_counts
     """Processing evidence in different input order yields identical substantive counts."""
     spec_path1 = tmp_path / "study_spec1.json"
     spec_path2 = tmp_path / "study_spec2.json"
-    spec1 = _init_study(spec_path1)
-    spec2 = _init_study(spec_path2)
+    sched = {
+        "schedule_type": "RECURRING_WEEKDAY_TIME",
+        "days_of_week": [0, 1, 2, 3, 4],
+        "slots": [
+            {"slot_id": "slot_17h", "start_time_utc": "17:00:00", "end_time_utc": "18:00:00"},
+            {"slot_id": "slot_18h", "start_time_utc": "18:00:00", "end_time_utc": "19:00:00"},
+        ],
+    }
+    spec1 = _init_study(spec_path1, sampling_schedule=sched)
+    spec2 = _init_study(spec_path2, sampling_schedule=sched)
 
     s1_path, _ = _create_second_shadow_session(
         tmp_path / "ord_s1", session_id="sess_ord_1", shift_s=3600
@@ -2689,3 +2709,404 @@ def test_window_compliance_zero_live_broker_connections_in_any_test() -> None:
     from iqoption_research.connectors.iqoption.client import AsyncIQOption
 
     assert hasattr(AsyncIQOption, "assert_read_only")
+
+
+# ==============================================================================
+# Final Protocol Enforcement Corrections: Targeted Acceptance Tests
+# ==============================================================================
+
+
+def test_timing_eligibility_missing_journal_decision_timestamp_excluded(tmp_path: Path) -> None:
+    """Prediction with missing journal decision timestamp is excluded from primary population."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_missing_jdt")
+    reg_dict = json.loads(sess_path.read_text(encoding="utf-8"))
+    obs0 = reg_dict["observations"][0]
+    b = obs0["feature_close_F"]
+
+    # In SQLite journal, pop "decision_time" from payload for observation 0
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT event_key, payload FROM events WHERE event_key LIKE ?", (f"%{b}%",)
+        ).fetchone()
+        payload = json.loads(row[1])
+        payload.pop("decision_time", None)
+        clean = {k: v for k, v in payload.items() if k != "key"}
+        new_sha = digest(clean)
+        conn.execute(
+            "UPDATE events SET payload = ? WHERE event_key = ?", (json.dumps(payload), row[0])
+        )
+
+    obs0["stages"]["STAGE_9_JOURNAL_COMMIT"]["details"]["payload_sha256"] = new_sha
+    obs0["integrity_hash"] = compute_observation_dict_hash(obs0)
+    reg = TimingEvidenceRegistry.from_dict(reg_dict)
+    reg.integrity_hash = reg.compute_hash()
+    sess_path.write_text(json.dumps(reg.to_dict(), indent=2), encoding="utf-8")
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    assert rec_res.status.new_unique_committed_predictions == 4
+    audit = rec_res.status.session_audits[0]
+    assert "MISSING_OR_INVALID_JOURNAL_DECISION_TIMESTAMP" in audit.rejection_reasons
+    assert audit.rejection_reasons["MISSING_OR_INVALID_JOURNAL_DECISION_TIMESTAMP"] == 1
+
+
+def test_timing_eligibility_journal_timestamp_mismatch_excluded(tmp_path: Path) -> None:
+    """Prediction where journal decision time does not match registry decision time is excluded."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_mismatch_jdt")
+    reg_dict = json.loads(sess_path.read_text(encoding="utf-8"))
+    obs0 = reg_dict["observations"][0]
+    b = obs0["feature_close_F"]
+    reg_dt_ns = obs0["stages"]["STAGE_POLICY_DECISION"]["disciplined_utc_ns"]
+    diff_dt_ns = reg_dt_ns + 10_000_000  # 10ms difference
+
+    # In SQLite journal, set decision_time to diff_dt_ns
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT event_key, payload FROM events WHERE event_key LIKE ?", (f"%{b}%",)
+        ).fetchone()
+        payload = json.loads(row[1])
+        payload["decision_time"]["disciplined_utc_ns"] = diff_dt_ns
+        clean = {k: v for k, v in payload.items() if k != "key"}
+        new_sha = digest(clean)
+        conn.execute(
+            "UPDATE events SET payload = ? WHERE event_key = ?", (json.dumps(payload), row[0])
+        )
+
+    obs0["stages"]["STAGE_9_JOURNAL_COMMIT"]["details"]["payload_sha256"] = new_sha
+    obs0["integrity_hash"] = compute_observation_dict_hash(obs0)
+    reg = TimingEvidenceRegistry.from_dict(reg_dict)
+    reg.integrity_hash = reg.compute_hash()
+    sess_path.write_text(json.dumps(reg.to_dict(), indent=2), encoding="utf-8")
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    assert rec_res.status.new_unique_committed_predictions == 4
+    audit = rec_res.status.session_audits[0]
+    assert "JOURNAL_DECISION_TIME_MISMATCH" in audit.rejection_reasons
+    assert audit.rejection_reasons["JOURNAL_DECISION_TIME_MISMATCH"] == 1
+
+
+def test_cli_pilot_init_missing_or_malformed_schedule_file_rejected(tmp_path: Path) -> None:
+    """CLI pilot-init rejects missing schedule, malformed schedule, or unconfirmed default."""
+    out_file = tmp_path / "study_spec.json"
+
+    # 1. Missing schedule file
+    res_missing = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-init",
+            "--output",
+            str(out_file),
+            "--schedule-file",
+            str(tmp_path / "nonexistent_schedule.json"),
+        ],
+    )
+    assert res_missing.exit_code == 1
+    assert "Specified schedule file not found" in " ".join(res_missing.output.split())
+
+    # 2. Malformed schedule file (invalid JSON)
+    bad_sched = tmp_path / "bad_sched.json"
+    bad_sched.write_text("{invalid json", encoding="utf-8")
+    res_bad = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-init",
+            "--output",
+            str(out_file),
+            "--schedule-file",
+            str(bad_sched),
+        ],
+    )
+    assert res_bad.exit_code == 1
+    assert "Malformed schedule file" in " ".join(res_bad.output.split())
+
+    # 3. Neither --schedule-file nor --confirm-default-schedule
+    res_no_confirm = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-init",
+            "--output",
+            str(out_file),
+        ],
+    )
+    assert res_no_confirm.exit_code == 1
+    assert "require an operator-selected schedule" in " ".join(res_no_confirm.output.split())
+    assert not out_file.exists()
+
+    # 4. Explicitly confirmed default schedule succeeds and creates registration records
+    res_ok = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-init",
+            "--output",
+            str(out_file),
+            "--confirm-default-schedule",
+            "--json",
+        ],
+    )
+    assert res_ok.exit_code == 0
+    assert out_file.is_file()
+    assert out_file.with_suffix(out_file.suffix + ".registration.json").is_file()
+    assert out_file.with_name(f"{out_file.name}.registered_digest").is_file()
+
+
+def test_cli_workflows_reject_modified_and_rehashed_schedule(tmp_path: Path) -> None:
+    """Normal pilot-status, pilot-checkpoint, and pilot-verify reject modified-and-rehashed
+    schedule."""
+    spec_path = tmp_path / "study_spec.json"
+    res_init = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-init",
+            "--output",
+            str(spec_path),
+            "--confirm-default-schedule",
+        ],
+    )
+    assert res_init.exit_code == 0
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+    storage = _create_portable_phase35_storage(tmp_path / "storage")
+    cp_dir = tmp_path / "checkpoints" / "cp_valid"
+
+    # First verify checkpoint publishing works before tampering
+    res_cp_ok = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-checkpoint",
+            "--study",
+            str(spec_path),
+            "--evidence",
+            str(s1_path),
+            "--journal",
+            str(db_path),
+            "--storage",
+            str(storage),
+            "--catalog",
+            str(storage / "catalog.db"),
+            "--output-dir",
+            str(cp_dir),
+            "--json",
+        ],
+    )
+    assert res_cp_ok.exit_code == 0
+
+    # Tamper with study_spec.json: change schedule and rehash
+    spec_raw = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec_raw["sampling_protocol"]["schedule"]["end_time_utc"] = "22:00:00"
+    spec_altered = PilotStudySpecification.from_dict(spec_raw)
+    spec_altered.seal()
+    spec_path.write_text(json.dumps(spec_altered.to_dict(), indent=2), encoding="utf-8")
+
+    # 1. pilot-status rejects protocol change
+    res_status = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-status",
+            "--study",
+            str(spec_path),
+            "--evidence",
+            str(s1_path),
+            "--journal",
+            str(db_path),
+            "--json",
+        ],
+    )
+    assert res_status.exit_code == 1
+    data_status = json.loads(res_status.output)
+    assert "Protocol alteration detected" in data_status["error"]
+
+    # 2. pilot-checkpoint rejects protocol change
+    res_cp_bad = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-checkpoint",
+            "--study",
+            str(spec_path),
+            "--evidence",
+            str(s1_path),
+            "--journal",
+            str(db_path),
+            "--output-dir",
+            str(tmp_path / "checkpoints" / "cp_bad"),
+            "--json",
+        ],
+    )
+    assert res_cp_bad.exit_code == 1
+    data_cp = json.loads(res_cp_bad.output)
+    assert "Protocol alteration detected" in data_cp["error"]
+
+    # 3. pilot-verify rejects protocol change when passing tampered external --study
+    res_v_bad_study = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-verify",
+            "--checkpoint-dir",
+            str(cp_dir),
+            "--study",
+            str(spec_path),
+            "--json",
+        ],
+    )
+    assert res_v_bad_study.exit_code == 1
+    data_v1 = json.loads(res_v_bad_study.output)
+    assert "Protocol alteration detected" in data_v1["error"]
+
+    # 4. pilot-verify rejects protocol change when internal checkpoint spec has schedule
+    # modified and rehashed
+    cp_spec_file = cp_dir / "pilot_study_spec.json"
+    cp_raw = json.loads(cp_spec_file.read_text(encoding="utf-8"))
+    cp_raw["sampling_protocol"]["schedule"]["end_time_utc"] = "23:00:00"
+    cp_altered = PilotStudySpecification.from_dict(cp_raw)
+    cp_altered.seal()
+    cp_spec_file.write_text(json.dumps(cp_altered.to_dict(), indent=2), encoding="utf-8")
+
+    res_v_internal = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-verify",
+            "--checkpoint-dir",
+            str(cp_dir),
+            "--json",
+        ],
+    )
+    assert res_v_internal.exit_code == 1
+    data_v2 = json.loads(res_v_internal.output)
+    assert "Protocol alteration detected" in data_v2["error"]
+
+
+def test_recurring_slots_two_non_overlapping_sessions_in_same_slot_only_one_contributes(
+    tmp_path: Path,
+) -> None:
+    """Two non-overlapping sessions in the same planned recurring slot: only one contributes."""
+    spec_path = tmp_path / "study_spec.json"
+    sched = {
+        "schedule_type": "RECURRING_WEEKDAY_TIME",
+        "days_of_week": [0, 1, 2, 3, 4],
+        "start_time_utc": "17:00:00",
+        "end_time_utc": "18:00:00",
+    }
+    spec = _init_study(spec_path, sampling_schedule=sched)
+
+    # sess1 at 17:12:00 UTC (shift_s = 1800 from base 16:42)
+    s1_path, _ = _create_second_shadow_session(
+        tmp_path / "s1", session_id="sess_17_12", shift_s=1800
+    )
+    # sess2 at 17:42:00 UTC (shift_s = 3600 from base 16:42)
+    s2_path, _ = _create_second_shadow_session(
+        tmp_path / "s2", session_id="sess_17_42", shift_s=3600
+    )
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path, s2_path])
+    # Only one session contributes (5 observations)
+    assert rec_res.status.new_unique_committed_predictions == 5
+    assert len(rec_res.status.verified_sessions) == 1
+    assert "sess_17_12" in rec_res.status.verified_sessions
+
+    # Second session is audited as duplicate sampling of planned window
+    assert len(rec_res.status.sampling_deviations) == 1
+    dev = rec_res.status.sampling_deviations[0]
+    assert dev["session_id"] == "sess_17_42"
+    assert dev["deviation_reason"] == "DUPLICATE_SAMPLING_OF_PLANNED_WINDOW"
+    assert dev["conformity_result"] == "NON_CONFORMANT"
+
+
+def test_recurring_slots_sessions_in_two_different_registered_slots_both_contribute(
+    tmp_path: Path,
+) -> None:
+    """Sessions in two different explicitly registered slots on the same day both contribute."""
+    spec_path = tmp_path / "study_spec.json"
+    sched = {
+        "schedule_type": "RECURRING_WEEKDAY_TIME",
+        "days_of_week": [0, 1, 2, 3, 4],
+        "slots": [
+            {"slot_id": "slot_17h", "start_time_utc": "17:00:00", "end_time_utc": "18:00:00"},
+            {"slot_id": "slot_18h", "start_time_utc": "18:00:00", "end_time_utc": "19:00:00"},
+        ],
+    }
+    spec = _init_study(spec_path, sampling_schedule=sched)
+
+    # sess1 at 17:42:00 UTC (shift_s = 3600 from base 16:42) -> slot_17h
+    s1_path, _ = _create_second_shadow_session(
+        tmp_path / "s1", session_id="sess_slot_17", shift_s=3600
+    )
+    # sess2 at 18:42:00 UTC (shift_s = 7200 from base 16:42) -> slot_18h
+    s2_path, _ = _create_second_shadow_session(
+        tmp_path / "s2", session_id="sess_slot_18", shift_s=7200
+    )
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path, s2_path])
+    # Both contribute: 5 + 5 = 10 observations
+    assert rec_res.status.new_unique_committed_predictions == 10
+    assert len(rec_res.status.verified_sessions) == 2
+    assert "sess_slot_17" in rec_res.status.verified_sessions
+    assert "sess_slot_18" in rec_res.status.verified_sessions
+    assert len(rec_res.status.sampling_deviations) == 0
+
+
+def test_recurring_slots_reversed_evidence_input_order_deterministic_selection_and_counts(
+    tmp_path: Path,
+) -> None:
+    """Reversing evidence input order produces deterministic session selection and counts."""
+    sched = {
+        "schedule_type": "RECURRING_WEEKDAY_TIME",
+        "days_of_week": [0, 1, 2, 3, 4],
+        "start_time_utc": "17:00:00",
+        "end_time_utc": "18:00:00",
+    }
+    spec1 = _init_study(tmp_path / "study1.json", sampling_schedule=sched)
+    spec2 = _init_study(tmp_path / "study2.json", sampling_schedule=sched)
+
+    s1_path, _ = _create_second_shadow_session(
+        tmp_path / "s1", session_id="sess_earlier", shift_s=1800
+    )
+    s2_path, _ = _create_second_shadow_session(
+        tmp_path / "s2", session_id="sess_later", shift_s=3600
+    )
+
+    # Order 1: [s1, s2]
+    res1 = reconcile_pilot_sessions(spec1, [s1_path, s2_path])
+    # Order 2: [s2, s1] (reversed)
+    res2 = reconcile_pilot_sessions(spec2, [s2_path, s1_path])
+
+    assert res1.status.new_unique_committed_predictions == 5
+    assert res2.status.new_unique_committed_predictions == 5
+    assert res1.status.verified_sessions == res2.status.verified_sessions
+    assert "sess_earlier" in res1.status.verified_sessions
+
+    assert len(res1.status.sampling_deviations) == 1
+    assert len(res2.status.sampling_deviations) == 1
+    assert res1.status.sampling_deviations[0]["session_id"] == "sess_later"
+    assert res2.status.sampling_deviations[0]["session_id"] == "sess_later"
+
+
+def test_recurring_slots_duplicate_boundaries_never_counted_twice(tmp_path: Path) -> None:
+    """Duplicate prediction boundaries are never counted twice in primary population."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    # s1 and s2 have identical boundaries (same shift_s=3600) but different session IDs
+    s1_path, _ = _create_second_shadow_session(
+        tmp_path / "s1", session_id="sess_dup_a", shift_s=3600
+    )
+    s2_path, _ = _create_second_shadow_session(
+        tmp_path / "s2", session_id="sess_dup_b", shift_s=3600
+    )
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path, s2_path])
+    # Predictions deduplicated by boundary: max 5
+    assert rec_res.status.new_unique_committed_predictions == 5
+    assert len(rec_res.eligible_predictions) == 5

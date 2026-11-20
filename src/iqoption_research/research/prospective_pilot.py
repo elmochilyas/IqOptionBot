@@ -593,8 +593,38 @@ def validate_sampling_schedule(schedule: dict[str, Any] | None) -> dict[str, Any
             if not isinstance(d, int) or d < 0 or d > 6:
                 raise ProspectivePilotError(f"Invalid weekday {d}; must be 0 (Mon) to 6 (Sun).")
 
-        start_time = str(schedule.get("start_time_utc", "00:00:00"))
-        end_time = str(schedule.get("end_time_utc", "23:59:59"))
+        raw_slots = schedule.get("slots")
+        if raw_slots is not None:
+            if not isinstance(raw_slots, list) or not raw_slots:
+                raise ProspectivePilotError(
+                    "Registration rejected: 'slots' must be a non-empty list of dicts."
+                )
+            norm_slots: list[dict[str, str]] = []
+            seen_slot_ids: set[str] = set()
+            for idx, s in enumerate(raw_slots):
+                if not isinstance(s, dict):
+                    raise ProspectivePilotError(f"Slot #{idx} must be a dictionary.")
+                sid = str(s.get("slot_id") or f"slot_{idx}")
+                if sid in seen_slot_ids:
+                    raise ProspectivePilotError(f"Duplicate slot_id '{sid}' in recurring schedule.")
+                seen_slot_ids.add(sid)
+                s_start = str(s.get("start_time_utc", "00:00:00"))
+                s_end = str(s.get("end_time_utc", "23:59:59"))
+                norm_slots.append({
+                    "slot_id": sid,
+                    "start_time_utc": s_start,
+                    "end_time_utc": s_end,
+                })
+            normalized["slots"] = norm_slots
+            start_time = norm_slots[0]["start_time_utc"]
+            end_time = norm_slots[-1]["end_time_utc"]
+        else:
+            start_time = str(schedule.get("start_time_utc", "00:00:00"))
+            end_time = str(schedule.get("end_time_utc", "23:59:59"))
+            slot_id = str(schedule.get("slot_id", "daily"))
+            normalized["slots"] = [
+                {"slot_id": slot_id, "start_time_utc": start_time, "end_time_utc": end_time}
+            ]
 
         normalized["days_of_week"] = sorted(days)
         normalized["start_time_utc"] = start_time
@@ -636,14 +666,13 @@ def timing_eligibility_verdict(pred: PredictionRecord) -> tuple[bool, str | None
         return False, f"REJECTION_REASON_{pred.rejection_reason}"
 
     if pred.journal_verified:
-        if pred.journal_boundary is not None and pred.journal_boundary != pred.boundary_F:
+        if pred.journal_boundary is None or pred.journal_boundary != pred.boundary_F:
             return False, "JOURNAL_BOUNDARY_MISMATCH"
-        if pred.journal_decision is not None and pred.journal_decision != pred.decision:
+        if pred.journal_decision is None or pred.journal_decision != pred.decision:
             return False, "JOURNAL_DECISION_MISMATCH"
-        if (
-            pred.journal_decision_time_utc_ns is not None
-            and pred.journal_decision_time_utc_ns != pred.decision_time_utc_ns
-        ):
+        if pred.journal_decision_time_utc_ns is None or pred.journal_decision_time_utc_ns <= 0:
+            return False, "MISSING_OR_INVALID_JOURNAL_DECISION_TIMESTAMP"
+        if pred.journal_decision_time_utc_ns != pred.decision_time_utc_ns:
             return False, "JOURNAL_DECISION_TIME_MISMATCH"
 
     return True, None
@@ -798,12 +827,43 @@ def initialize_pilot_study(
 
     spec.seal()
 
+    reg_record = {
+        "study_id": spec.study_id,
+        "study_specification_sha256": spec.study_specification_sha256,
+        "registered_at_utc": spec.created_at_utc,
+        "study_protocol_version": spec.study_protocol_version,
+        "model_manifest_sha256": spec.model_manifest_sha256,
+        "policy_version": spec.policy_version,
+        "threshold": spec.threshold,
+        "symbol": spec.symbol,
+        "candle_size_seconds": spec.candle_size_seconds,
+        "pilot_target_total": spec.pilot_target_total,
+        "baseline_reference_count": spec.baseline_reference_count,
+        "sampling_protocol": spec.sampling_protocol,
+    }
+    reg_file = out.with_suffix(out.suffix + ".registration.json")
+    digest_file = out.with_name(f"{out.name}.registered_digest")
+    reg_content = json.dumps(reg_record, indent=2, sort_keys=True).encode("utf-8")
+    digest_content = f"{spec.study_specification_sha256}\n".encode()
+
     out.parent.mkdir(parents=True, exist_ok=True)
     content = json.dumps(spec.to_dict(), indent=2, sort_keys=True).encode("utf-8")
     try:
         fd = os.open(out, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         with os.fdopen(fd, "wb") as f:
             f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+
+        fd_reg = os.open(reg_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd_reg, "wb") as f:
+            f.write(reg_content)
+            f.flush()
+            os.fsync(f.fileno())
+
+        fd_dig = os.open(digest_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd_dig, "wb") as f:
+            f.write(digest_content)
             f.flush()
             os.fsync(f.fileno())
     except FileExistsError as exc:
@@ -817,8 +877,15 @@ def initialize_pilot_study(
 def load_and_verify_study_specification(
     path: Path,
     expected_digest: str | None = None,
+    registration_record_path: Path | None = None,
 ) -> PilotStudySpecification:
-    """Load and cryptographically verify an existing study specification."""
+    """Load and cryptographically verify an existing study specification.
+
+    Validates:
+    - Internal content hash integrity (detects unhashed mutations).
+    - Independently preserved registration record/digest (detects altered-and-rehashed protocols).
+    - Non-negotiable frozen Phase 38 model invariants.
+    """
     p = path.resolve()
     if not p.is_file():
         raise ProspectivePilotError(f"Study specification file not found: {path}")
@@ -828,13 +895,6 @@ def load_and_verify_study_specification(
     is_valid, msg = spec.verify_integrity()
     if not is_valid:
         raise StudySpecificationTamperedError(msg)
-
-    if expected_digest is not None and spec.study_specification_sha256 != expected_digest:
-        raise FrozenContractViolationError(
-            "Protocol alteration detected: study specification digest "
-            f"'{spec.study_specification_sha256}' does not match registered identity "
-            f"'{expected_digest}'"
-        )
 
     # Validate non-negotiable frozen Phase 38 invariants
     if spec.model_manifest_sha256 != FROZEN_MODEL_MANIFEST_SHA256:
@@ -873,6 +933,61 @@ def load_and_verify_study_specification(
             f"'{spec.policy_version}' != '{FROZEN_POLICY_VERSION}'"
         )
 
+    # Validate against independently preserved registration record if available
+    reg_target: Path | None = None
+    if registration_record_path is not None:
+        if registration_record_path.is_file():
+            reg_target = registration_record_path
+        else:
+            raise ProspectivePilotError(
+                f"Registration record path not found: {registration_record_path}"
+            )
+    else:
+        candidates = [
+            p.with_suffix(p.suffix + ".registration.json"),
+            p.with_name(f"{p.name}.registration.json"),
+            p.with_name(f"{p.stem}.registration.json"),
+            p.with_name(f"{p.name}.registered_digest"),
+            p.with_name(f"{p.stem}.registered_digest"),
+            p.with_name(f"{p.stem}.registered_sha256"),
+        ]
+        for c in candidates:
+            if c.is_file():
+                reg_target = c
+                break
+
+    if reg_target is not None:
+        if reg_target.name.endswith(".json"):
+            reg_data = json.loads(reg_target.read_text(encoding="utf-8"))
+            reg_sha = reg_data.get("study_specification_sha256")
+            if reg_sha and spec.study_specification_sha256 != reg_sha:
+                raise FrozenContractViolationError(
+                    "Protocol alteration detected: study specification digest "
+                    f"'{spec.study_specification_sha256}' does not match registered identity "
+                    f"'{reg_sha}'"
+                )
+            reg_sched = reg_data.get("sampling_protocol", {}).get("schedule")
+            if reg_sched is not None and spec.sampling_protocol.get("schedule") != reg_sched:
+                raise FrozenContractViolationError(
+                    "Protocol alteration detected: sampling schedule differs from registered "
+                    "protocol"
+                )
+        else:
+            reg_sha = reg_target.read_text(encoding="utf-8").strip()
+            if reg_sha and spec.study_specification_sha256 != reg_sha:
+                raise FrozenContractViolationError(
+                    "Protocol alteration detected: study specification digest "
+                    f"'{spec.study_specification_sha256}' does not match registered identity "
+                    f"'{reg_sha}'"
+                )
+
+    if expected_digest is not None and spec.study_specification_sha256 != expected_digest:
+        raise FrozenContractViolationError(
+            "Protocol alteration detected: study specification digest "
+            f"'{spec.study_specification_sha256}' does not match registered identity "
+            f"'{expected_digest}'"
+        )
+
     return spec
 
 
@@ -904,8 +1019,21 @@ def reconcile_pilot_sessions(
         elif resolved_path.is_dir():
             discovered_files.extend(sorted(resolved_path.glob("*.json")))
 
-    # Deduplicate files by canonical path
-    discovered_files = sorted(set(discovered_files), key=lambda x: str(x))
+    def _file_sort_key(p: Path) -> tuple[int, str]:
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            obs_list = raw.get("observations", [])
+            bounds = [
+                int(o["feature_close_F"]) for o in obs_list if o.get("feature_close_F") is not None
+            ]
+            min_b = min(bounds) if bounds else 0
+            sid = str(raw.get("session_id", p.stem))
+            return (min_b, sid)
+        except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError):
+            return (0, str(p))
+
+    # Deduplicate and sort files deterministically by (earliest_boundary, session_id)
+    discovered_files = sorted(set(discovered_files), key=_file_sort_key)
 
     session_audits: list[SessionAuditRecord] = []
     seen_session_ids: dict[str, tuple[Path, TimingEvidenceRegistry, str]] = {}
@@ -1244,44 +1372,55 @@ def reconcile_pilot_sessions(
                     elif stype == "RECURRING_WEEKDAY_TIME":
                         dt_start = datetime.fromtimestamp(min_b, tz=UTC)
                         dt_end = datetime.fromtimestamp(max_b, tz=UTC)
+                        date_str = dt_start.strftime("%Y-%m-%d")
                         allowed_days = schedule.get("days_of_week", [0, 1, 2, 3, 4])
-                        start_time_str = schedule.get("start_time_utc", "00:00:00")
-                        end_time_str = schedule.get("end_time_utc", "23:59:59")
-
-                        t_start_parts = [int(x) for x in start_time_str.split(":")[:3]]
-                        t_end_parts = [int(x) for x in end_time_str.split(":")[:3]]
-                        while len(t_start_parts) < 3:
-                            t_start_parts.append(0)
-                        while len(t_end_parts) < 3:
-                            t_end_parts.append(0)
-
-                        w_t_start = dt_time(t_start_parts[0], t_start_parts[1], t_start_parts[2])
-                        w_t_end = dt_time(t_end_parts[0], t_end_parts[1], t_end_parts[2])
+                        slots = schedule.get("slots")
+                        if not slots:
+                            slots = [
+                                {
+                                    "slot_id": schedule.get("slot_id", "daily"),
+                                    "start_time_utc": schedule.get("start_time_utc", "00:00:00"),
+                                    "end_time_utc": schedule.get("end_time_utc", "23:59:59"),
+                                }
+                            ]
 
                         session_in_days = (
-                            dt_start.weekday() in allowed_days and dt_end.weekday() in allowed_days
+                            dt_start.date() == dt_end.date()
+                            and dt_start.weekday() in allowed_days
+                            and dt_end.weekday() in allowed_days
                         )
-                        session_in_time = w_t_start <= dt_start.time() and dt_end.time() <= w_t_end
 
-                        if session_in_days and session_in_time:
-                            plan_key = f"rec_{min_b}_{max_b}"
+                        matched_slot: dict[str, Any] | None = None
+                        if session_in_days:
+                            for slot in slots:
+                                t_start_parts = [
+                                    int(x) for x in slot["start_time_utc"].split(":")[:3]
+                                ]
+                                t_end_parts = [int(x) for x in slot["end_time_utc"].split(":")[:3]]
+                                while len(t_start_parts) < 3:
+                                    t_start_parts.append(0)
+                                while len(t_end_parts) < 3:
+                                    t_end_parts.append(0)
+                                w_t_start = dt_time(
+                                    t_start_parts[0], t_start_parts[1], t_start_parts[2]
+                                )
+                                w_t_end = dt_time(t_end_parts[0], t_end_parts[1], t_end_parts[2])
+
+                                if w_t_start <= dt_start.time() and dt_end.time() <= w_t_end:
+                                    matched_slot = slot
+                                    break
+
+                        if session_in_days and matched_slot is not None:
+                            slot_id = matched_slot["slot_id"]
+                            plan_key = f"rec_{date_str}_{slot_id}"
                             intended_window = {
                                 "window_key": plan_key,
-                                "date": dt_start.strftime("%Y-%m-%d"),
-                                "start_time_utc": start_time_str,
-                                "end_time_utc": end_time_str,
+                                "date": date_str,
+                                "slot_id": slot_id,
+                                "start_time_utc": matched_slot["start_time_utc"],
+                                "end_time_utc": matched_slot["end_time_utc"],
                             }
-                            overlapping_session = None
-                            for claimed_key, claimed_sess in claimed_sampling_windows.items():
-                                if claimed_key.startswith("rec_"):
-                                    parts = claimed_key.split("_")
-                                    c_start = int(parts[1])
-                                    c_end = int(parts[2])
-                                    if not (max_b < c_start or min_b > c_end):
-                                        overlapping_session = claimed_sess
-                                        break
-
-                            if overlapping_session is not None:
+                            if plan_key in claimed_sampling_windows:
                                 window_conformity = "NON_CONFORMANT"
                                 deviation_reason = "DUPLICATE_SAMPLING_OF_PLANNED_WINDOW"
                             else:
@@ -1988,6 +2127,21 @@ def publish_pilot_checkpoint(
         _write(staging_dir / "evaluation_report.json", report.to_dict())
         _write(staging_dir / "integrity_manifest.json", manifest.to_dict())
         _write(staging_dir / "pilot_study_spec.json", study.to_dict())
+        reg_record = {
+            "study_id": study.study_id,
+            "study_specification_sha256": study.study_specification_sha256,
+            "registered_at_utc": study.created_at_utc,
+            "study_protocol_version": study.study_protocol_version,
+            "model_manifest_sha256": study.model_manifest_sha256,
+            "policy_version": study.policy_version,
+            "threshold": study.threshold,
+            "symbol": study.symbol,
+            "candle_size_seconds": study.candle_size_seconds,
+            "pilot_target_total": study.pilot_target_total,
+            "baseline_reference_count": study.baseline_reference_count,
+            "sampling_protocol": study.sampling_protocol,
+        }
+        _write(staging_dir / "pilot_study_spec.json.registration.json", reg_record)
 
         # Pre-commit verification of staged files
         for fname in [

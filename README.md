@@ -25,7 +25,7 @@ Quantitative market research, authentic historical data cataloging, causal featu
 |---|---|
 | **Operating System** | Windows (PowerShell tested; cross-platform compatible) |
 | **Python Version** | Python `>= 3.12` (verified on Python 3.12.10) |
-| **Test Suite** | **2,258 passed tests** (`pytest`, 100% pass rate, 0 failures, 0 skips locally; 1 skipped on clean CI runners lacking authentic Parquet files) |
+| **Test Suite** | **2,266 passed tests** (`pytest`, 100% pass rate, 0 failures, 0 skips locally; 1 skipped on clean CI runners lacking authentic Parquet files) |
 | **Type Checking** | **Clean MyPy verification across 351 source files** (`mypy src tests`) |
 | **Linting & Code Style** | **Clean Ruff compliance** with zero linting errors (`ruff check src tests`) |
 | **Security Audit** | **7/7 automated offline security checks passed** (`iqresearch security-check`) |
@@ -64,7 +64,7 @@ mypy src/ tests/
 ```
 
 ### 2.3. Run Automated Offline Test Suite
-All 2,258 automated tests execute 100% offline using deterministic mocks, synthetic fixtures, and offline data loaders:
+All 2,266 automated tests execute 100% offline using deterministic mocks, synthetic fixtures, and offline data loaders:
 ```powershell
 # Run the complete test suite
 pytest -v

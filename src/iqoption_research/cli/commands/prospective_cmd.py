@@ -289,6 +289,11 @@ def pilot_init_cmd(
         "--schedule-file",
         help="Optional path to machine-readable sampling schedule JSON.",
     ),
+    confirm_default_schedule: bool = typer.Option(
+        False,
+        "--confirm-default-schedule",
+        help="Explicitly confirm use of proposed default schedule when --schedule-file is omitted.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
 ) -> None:
     """Initialize an immutable prospective pilot study specification (Phase 38)."""
@@ -303,15 +308,30 @@ def pilot_init_cmd(
 
     console = Console()
     try:
-        if schedule_file is not None and schedule_file.is_file():
-            sched = json.loads(schedule_file.read_text(encoding="utf-8"))
-        else:
+        if schedule_file is not None:
+            if not schedule_file.is_file():
+                raise ProspectivePilotError(
+                    f"Registration rejected: Specified schedule file not found: '{schedule_file}'"
+                )
+            try:
+                sched = json.loads(schedule_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise ProspectivePilotError(
+                    f"Registration rejected: Malformed schedule file '{schedule_file}': {exc}"
+                ) from exc
+        elif confirm_default_schedule:
             sched = {
                 "schedule_type": "RECURRING_WEEKDAY_TIME",
                 "days_of_week": [0, 1, 2, 3, 4],
                 "start_time_utc": "13:00:00",
                 "end_time_utc": "15:00:00",
             }
+        else:
+            raise ProspectivePilotError(
+                "Registration rejected: require an operator-selected schedule via "
+                "--schedule-file, or explicit confirmation of proposed default schedule "
+                "via --confirm-default-schedule."
+            )
         spec = initialize_pilot_study(
             output,
             study_id=study_id,
@@ -768,6 +788,7 @@ def pilot_verify_cmd(
     from rich.panel import Panel
 
     from iqoption_research.research.prospective_pilot import (
+        ProspectivePilotError,
         load_and_verify_study_specification,
         verify_pilot_checkpoint,
     )
@@ -783,7 +804,15 @@ def pilot_verify_cmd(
             else:
                 console.print(f"[bold red]Error:[/bold red] {msg}")
             raise typer.Exit(code=1)
-        expected_spec = load_and_verify_study_specification(sp)
+        try:
+            expected_spec = load_and_verify_study_specification(sp)
+        except ProspectivePilotError as exc:
+            msg = f"Study specification verification failed: {exc}"
+            if json_output:
+                typer.echo(json.dumps({"valid": False, "error": msg}, indent=2))
+            else:
+                console.print(f"[bold red]Error:[/bold red] {msg}")
+            raise typer.Exit(code=1) from exc
 
     is_valid, msg = verify_pilot_checkpoint(
         checkpoint_dir,

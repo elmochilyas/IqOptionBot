@@ -647,8 +647,10 @@ def extract_predictions_with_audit(
             j_decision = ev_p.get("decision")
             raw_jdt = ev_p.get("decision_time")
             if isinstance(raw_jdt, dict):
-                j_dt_ns = raw_jdt.get("disciplined_utc_ns")
-            elif isinstance(raw_jdt, int):
+                inner_dt = raw_jdt.get("disciplined_utc_ns")
+                if isinstance(inner_dt, int) and not isinstance(inner_dt, bool) and inner_dt > 0:
+                    j_dt_ns = inner_dt
+            elif isinstance(raw_jdt, int) and not isinstance(raw_jdt, bool) and raw_jdt > 0:
                 j_dt_ns = raw_jdt
 
         pred = PredictionRecord(

@@ -6,7 +6,7 @@ Executes strictly within operator-supervised foreground boundaries:
 - Read-only broker requests exclusively through verified AsyncIQOption facade
 - Zero real or demo orders (validate_outgoing_frame enforced)
 - Wallet-independent candle acquisition; zero wallet switching
-- Zero saved credentials (runtime interactive prompt only)
+- Interactive credentials by default; shadow sessions may explicitly opt into the Windows vault
 - Zero unattended reconnect loops (fail-closed on socket close)
 - Zero speculative subscriptions
 - Clean cancellation and immediate teardown on SIGINT/Ctrl+C
@@ -372,7 +372,24 @@ class SupervisedSessionRunner:
         return registry
 
 
-async def supervised_client(recorder: TimingRecorder) -> AsyncIQOption:
+async def supervised_client(
+    recorder: TimingRecorder, *, use_saved_credentials: bool = False
+) -> AsyncIQOption:
+    if use_saved_credentials:
+        from iqoption_research.auth.vault import WindowsCredentialVault
+
+        creds = WindowsCredentialVault().load_saved_credentials()
+        if creds is None:
+            print("No saved credentials; falling back to interactive entry.")
+            return await supervised_client(recorder)
+        return AsyncIQOption(
+            credentials=creds,
+            config=ConnectionConfig(
+                request_timeout=15.0, timing_market_data_only=True, max_reconnect_attempts=0
+            ),
+            offline=False,
+            timing_recorder=recorder,
+        )
     # Interactive operator credentials prompt (NO .env or disk storage)
     print("\nEnter IQ Option credentials (interactive prompt only):")
     with warnings.catch_warnings():

@@ -99,7 +99,7 @@ class WindowsCredentialVault:
             # Approved Windows native backends
             is_win_vault = (
                 backend_class_name == "WinVaultKeyring"
-                or "keyring.backends.Windows" in backend_module
+                and backend_module == "keyring.backends.Windows"
             )
             # Explicitly reject insecure or null backends
             is_insecure = (

@@ -28,6 +28,7 @@ import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from datetime import time as dt_time
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
@@ -145,6 +146,7 @@ class SessionLifecycleState(StrEnum):
     REJECTED_COHORT = "REJECTED_COHORT"
     INVALID_OR_UNCOMMITTED_OBSERVATIONS = "INVALID_OR_UNCOMMITTED_OBSERVATIONS"
     NO_VALID_PREDICTIONS = "NO_VALID_PREDICTIONS"
+    NON_CONFORMANT_SAMPLING_WINDOW = "NON_CONFORMANT_SAMPLING_WINDOW"
 
 
 class ProspectivePilotError(ProspectiveEvaluationError):
@@ -346,6 +348,10 @@ class SessionAuditRecord:
     boundaries: list[int]
     rejection_reasons: dict[str, int]
     warnings: list[str]
+    intended_window: dict[str, Any] | None = None
+    observed_window: dict[str, Any] | None = None
+    window_conformity: str = "CONFORMANT"
+    deviation_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -365,6 +371,10 @@ class SessionAuditRecord:
             "boundaries": list(self.boundaries),
             "rejection_reasons": dict(self.rejection_reasons),
             "warnings": list(self.warnings),
+            "intended_window": self.intended_window,
+            "observed_window": self.observed_window,
+            "window_conformity": self.window_conformity,
+            "deviation_reason": self.deviation_reason,
         }
 
 
@@ -427,6 +437,8 @@ class PilotStatusReport:
     total_analytical_signals: int = 0
     final_skips: int = 0
     final_non_skips: int = 0
+    sampling_deviations: list[dict[str, Any]] = field(default_factory=list)
+    missed_windows: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -459,6 +471,8 @@ class PilotStatusReport:
             "total_analytical_signals": self.total_analytical_signals,
             "final_skips": self.final_skips,
             "final_non_skips": self.final_non_skips,
+            "sampling_deviations": list(self.sampling_deviations),
+            "missed_windows": list(self.missed_windows),
         }
 
 
@@ -482,9 +496,187 @@ def valid_probability(p: Any) -> bool:
     return p is not None and isinstance(p, (int, float)) and math.isfinite(p) and 0.0 <= p <= 1.0
 
 
+def is_forex_regular_market_open(dt_or_ts: datetime | int | float) -> bool:
+    """Return whether timestamp falls during regular EURUSD Forex trading hours.
+
+    Regular Forex markets close on weekends (Friday 22:00 UTC through Sunday 21:00 UTC).
+    Saturday is completely closed.
+    """
+    if isinstance(dt_or_ts, (int, float)):
+        dt = datetime.fromtimestamp(dt_or_ts, tz=UTC)
+    else:
+        dt = dt_or_ts.astimezone(UTC) if dt_or_ts.tzinfo else dt_or_ts.replace(tzinfo=UTC)
+
+    weekday = dt.weekday()
+    if weekday == 5:  # Saturday
+        return False
+    if weekday == 6 and dt.hour < 21:  # Sunday before 21:00 UTC
+        return False
+    return not (weekday == 4 and dt.hour >= 22)
+
+
+def validate_sampling_schedule(schedule: dict[str, Any] | None) -> dict[str, Any]:
+    """Validate machine-readable sampling schedule specification.
+
+    Fails closed if schedule is missing, invalid, or during closed weekend market.
+    """
+    if not schedule or not isinstance(schedule, dict):
+        raise ProspectivePilotError(
+            "Registration rejected: A machine-readable sampling schedule must be supplied "
+            "before registering prospective study data. Schedule cannot be None or empty."
+        )
+
+    stype = schedule.get("schedule_type")
+    if stype not in ("EXPLICIT_WINDOWS", "RECURRING_WEEKDAY_TIME"):
+        raise ProspectivePilotError(
+            f"Registration rejected: Invalid schedule_type '{stype}'. "
+            "Must be 'EXPLICIT_WINDOWS' or 'RECURRING_WEEKDAY_TIME'."
+        )
+
+    normalized: dict[str, Any] = {"schedule_type": stype}
+
+    if stype == "EXPLICIT_WINDOWS":
+        windows = schedule.get("windows")
+        if not windows or not isinstance(windows, list):
+            raise ProspectivePilotError(
+                "Registration rejected: 'EXPLICIT_WINDOWS' schedule requires non-empty "
+                "'windows' list."
+            )
+        norm_windows: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for idx, w in enumerate(windows):
+            if not isinstance(w, dict):
+                raise ProspectivePilotError(f"Window #{idx} must be a dictionary.")
+            wid = str(w.get("window_id") or f"win_{idx:03d}")
+            if wid in seen_ids:
+                raise ProspectivePilotError(f"Duplicate window_id '{wid}' in explicit schedule.")
+            seen_ids.add(wid)
+
+            start_ts = w.get("start_ts")
+            start_utc = w.get("start_utc")
+            end_ts = w.get("end_ts")
+            end_utc = w.get("end_utc")
+
+            if start_ts is None and start_utc:
+                start_ts = int(datetime.fromisoformat(start_utc.replace("Z", "+00:00")).timestamp())
+            if end_ts is None and end_utc:
+                end_ts = int(datetime.fromisoformat(end_utc.replace("Z", "+00:00")).timestamp())
+
+            if start_ts is None or end_ts is None:
+                raise ProspectivePilotError(
+                    f"Window '{wid}' missing start_utc/start_ts or end_utc/end_ts."
+                )
+            if end_ts <= start_ts:
+                raise ProspectivePilotError(
+                    f"Window '{wid}' has invalid interval: end_ts ({end_ts}) <= "
+                    f"start_ts ({start_ts})."
+                )
+
+            norm_windows.append({
+                "window_id": wid,
+                "start_ts": int(start_ts),
+                "end_ts": int(end_ts),
+                "start_utc": datetime.fromtimestamp(start_ts, tz=UTC).isoformat(),
+                "end_utc": datetime.fromtimestamp(end_ts, tz=UTC).isoformat(),
+                "market_open": is_forex_regular_market_open(start_ts)
+                and is_forex_regular_market_open(end_ts),
+            })
+
+        norm_windows.sort(key=lambda x: int(x["start_ts"]))
+        normalized["windows"] = norm_windows
+
+    elif stype == "RECURRING_WEEKDAY_TIME":
+        days = schedule.get("days_of_week", [0, 1, 2, 3, 4])
+        if not isinstance(days, list) or not days:
+            raise ProspectivePilotError("days_of_week must be a non-empty list of integers.")
+        for d in days:
+            if not isinstance(d, int) or d < 0 or d > 6:
+                raise ProspectivePilotError(f"Invalid weekday {d}; must be 0 (Mon) to 6 (Sun).")
+
+        start_time = str(schedule.get("start_time_utc", "00:00:00"))
+        end_time = str(schedule.get("end_time_utc", "23:59:59"))
+
+        normalized["days_of_week"] = sorted(days)
+        normalized["start_time_utc"] = start_time
+        normalized["end_time_utc"] = end_time
+
+    return normalized
+
+
+def timing_eligibility_verdict(pred: PredictionRecord) -> tuple[bool, str | None]:
+    """Evaluate whether a prediction satisfies authoritative decision-time contract.
+
+    For candidate primary prediction with boundary F:
+    - Authoritative committed decision timestamp satisfies F <= decision_time <= F + 15 seconds.
+    - Timing gate is PASS and phase30_gate_satisfied is True.
+    - Candle validated within 15s deadline, no rejection reason, and no clock-step detected.
+    - Journal receipt and registry represent the same decision, boundary, and decision time.
+    """
+    if pred.decision_time_utc_ns is None or pred.decision_time_utc_ns <= 0:
+        return False, "MISSING_OR_INVALID_DECISION_TIMESTAMP"
+
+    f_start_ns = pred.boundary_F * 1_000_000_000
+    f_end_ns = (pred.boundary_F + 15) * 1_000_000_000
+
+    if pred.decision_time_utc_ns < f_start_ns:
+        return False, "DECISION_TIME_BEFORE_BOUNDARY_F"
+    if pred.decision_time_utc_ns > f_end_ns:
+        return False, "DECISION_TIME_EXCEEDS_15S_DEADLINE"
+
+    if pred.gate_verdict != "PASS":
+        return False, f"TIMING_GATE_NOT_PASS_{pred.gate_verdict or 'MISSING'}"
+    if not pred.phase30_gate_satisfied:
+        return False, "PHASE30_GATE_NOT_SATISFIED"
+
+    if not pred.candle_validated_within_15s:
+        return False, "CANDLE_VALIDATION_DEADLINE_EXCEEDED"
+    if pred.clock_step_detected:
+        return False, "CLOCK_STEP_DETECTED"
+    if pred.rejection_reason is not None:
+        return False, f"REJECTION_REASON_{pred.rejection_reason}"
+
+    if pred.journal_verified:
+        if pred.journal_boundary is not None and pred.journal_boundary != pred.boundary_F:
+            return False, "JOURNAL_BOUNDARY_MISMATCH"
+        if pred.journal_decision is not None and pred.journal_decision != pred.decision:
+            return False, "JOURNAL_DECISION_MISMATCH"
+        if (
+            pred.journal_decision_time_utc_ns is not None
+            and pred.journal_decision_time_utc_ns != pred.decision_time_utc_ns
+        ):
+            return False, "JOURNAL_DECISION_TIME_MISMATCH"
+
+    return True, None
+
+
 def original_timing_contract_satisfied(pred: PredictionRecord) -> bool:
     """Verify that original timing and causality constraints are met."""
-    return pred.decision_time_utc_ns is not None and pred.decision_time_utc_ns > 0
+    satisfied, _ = timing_eligibility_verdict(pred)
+    return satisfied
+
+
+def verify_study_registration(
+    spec: PilotStudySpecification,
+    registered_study_or_sha: PilotStudySpecification | str,
+) -> None:
+    """Verify study specification against registered study identity or preserved record."""
+    expected_sha = (
+        registered_study_or_sha
+        if isinstance(registered_study_or_sha, str)
+        else registered_study_or_sha.study_specification_sha256
+    )
+    if spec.study_specification_sha256 != expected_sha:
+        raise FrozenContractViolationError(
+            "Protocol alteration detected: study specification digest "
+            f"'{spec.study_specification_sha256}' does not match registered identity "
+            f"'{expected_sha}'"
+        )
+    if isinstance(registered_study_or_sha, PilotStudySpecification) and spec.sampling_protocol.get(
+        "schedule"
+    ) != registered_study_or_sha.sampling_protocol.get("schedule"):
+        raise FrozenContractViolationError(
+            "Protocol alteration detected: sampling schedule differs from registered protocol"
+        )
 
 
 def eligible_for_primary_population(pred: PredictionRecord, study: PilotStudySpecification) -> bool:
@@ -512,6 +704,7 @@ def initialize_pilot_study(
     baseline_reference_count: int = BASELINE_REFERENCE_COUNT_DEFAULT,
     model_path: Path | None = None,
     sampling_rule_description: str | None = None,
+    sampling_schedule: dict[str, Any] | None = None,
 ) -> PilotStudySpecification:
     """Create an immutable prospective pilot study specification.
 
@@ -540,16 +733,6 @@ def initialize_pilot_study(
             f"target_total ({target_total})."
         )
 
-    # Validate actionable sampling protocol
-    if not sampling_rule_description or sampling_rule_description.strip() in (
-        "",
-        "pre_determined_reproducible_window_selection",
-    ):
-        raise ProspectivePilotError(
-            "Registration rejected: A concrete, actionable sampling rule description must be "
-            "provided before registering prospective study data. Placeholder strings are rejected."
-        )
-
     # Validate model manifest if local model path supplied
     manifest_sha = FROZEN_MODEL_MANIFEST_SHA256
     if model_path is not None:
@@ -574,6 +757,23 @@ def initialize_pilot_study(
                 f"expected frozen '{FROZEN_MODEL_MANIFEST_SHA256}'"
             )
 
+    # Validate actionable sampling protocol
+    if not sampling_rule_description or sampling_rule_description.strip() in (
+        "",
+        "pre_determined_reproducible_window_selection",
+    ):
+        raise ProspectivePilotError(
+            "Registration rejected: A concrete, actionable sampling rule description must be "
+            "provided before registering prospective study data. Placeholder strings are rejected."
+        )
+
+    if sampling_schedule is None:
+        raise ProspectivePilotError(
+            "Registration rejected: A machine-readable prospective sampling schedule must be "
+            "supplied before registering prospective study data. Schedule cannot be None or empty."
+        )
+    validated_schedule = validate_sampling_schedule(sampling_schedule)
+
     spec = PilotStudySpecification(
         study_id=study_id,
         schema_version=PILOT_STUDY_SCHEMA_VERSION,
@@ -591,6 +791,7 @@ def initialize_pilot_study(
     )
 
     spec.sampling_protocol["sampling_rule_description"] = sampling_rule_description
+    spec.sampling_protocol["schedule"] = validated_schedule
     spec.sampling_protocol["additional_observations_required"] = max(
         0, target_total - baseline_reference_count
     )
@@ -613,7 +814,10 @@ def initialize_pilot_study(
     return spec
 
 
-def load_and_verify_study_specification(path: Path) -> PilotStudySpecification:
+def load_and_verify_study_specification(
+    path: Path,
+    expected_digest: str | None = None,
+) -> PilotStudySpecification:
     """Load and cryptographically verify an existing study specification."""
     p = path.resolve()
     if not p.is_file():
@@ -624,6 +828,13 @@ def load_and_verify_study_specification(path: Path) -> PilotStudySpecification:
     is_valid, msg = spec.verify_integrity()
     if not is_valid:
         raise StudySpecificationTamperedError(msg)
+
+    if expected_digest is not None and spec.study_specification_sha256 != expected_digest:
+        raise FrozenContractViolationError(
+            "Protocol alteration detected: study specification digest "
+            f"'{spec.study_specification_sha256}' does not match registered identity "
+            f"'{expected_digest}'"
+        )
 
     # Validate non-negotiable frozen Phase 38 invariants
     if spec.model_manifest_sha256 != FROZEN_MODEL_MANIFEST_SHA256:
@@ -711,6 +922,9 @@ def reconcile_pilot_sessions(
     ref_session_id = study.sampling_protocol.get(
         "reference_session_id", REFERENCE_SESSION_ID_DEFAULT
     )
+    claimed_sampling_windows: dict[str, str] = {}
+    sampling_deviations: list[dict[str, Any]] = []
+    observed_timestamps: list[int] = []
 
     # Step 1: Discover, audit, and validate each session
     for file_path in discovered_files:
@@ -953,12 +1167,204 @@ def reconcile_pilot_sessions(
             )
             continue
 
+        schedule = study.sampling_protocol.get("schedule") or {}
+        obs_boundaries: list[int] = [
+            int(obs["feature_close_F"])
+            for obs in reg.observations
+            if obs.get("feature_close_F") is not None
+        ]
+        for b in obs_boundaries:
+            observed_timestamps.append(b)
+
+        intended_window: dict[str, Any] | None = None
+        observed_window: dict[str, Any] | None = None
+        window_conformity = "CONFORMANT"
+        deviation_reason: str | None = None
+
+        if is_ref:
+            window_conformity = "EXEMPT_HISTORICAL"
+            if obs_boundaries:
+                observed_window = {
+                    "session_id": session_id,
+                    "start_boundary": min(obs_boundaries),
+                    "end_boundary": max(obs_boundaries),
+                    "observation_count": len(obs_boundaries),
+                    "historical_exemption": True,
+                }
+        else:
+            if not obs_boundaries:
+                window_conformity = "NON_CONFORMANT"
+                deviation_reason = "NO_OBSERVATIONS_IN_SESSION"
+            else:
+                min_b = min(obs_boundaries)
+                max_b = max(obs_boundaries)
+                observed_window = {
+                    "session_id": session_id,
+                    "start_boundary": min_b,
+                    "end_boundary": max_b,
+                    "start_utc": datetime.fromtimestamp(min_b, tz=UTC).isoformat(),
+                    "end_utc": datetime.fromtimestamp(max_b, tz=UTC).isoformat(),
+                    "observation_count": len(obs_boundaries),
+                }
+
+                market_open = is_forex_regular_market_open(min_b) and is_forex_regular_market_open(
+                    max_b
+                )
+                if not market_open:
+                    window_conformity = "NON_CONFORMANT"
+                    deviation_reason = "MARKET_CLOSED_OR_WEEKEND_WINDOW"
+                else:
+                    stype = schedule.get("schedule_type")
+                    if stype == "EXPLICIT_WINDOWS":
+                        matched_w: dict[str, Any] | None = None
+                        for w in schedule.get("windows", []):
+                            w_start = int(w["start_ts"])
+                            w_end = int(w["end_ts"])
+                            if not (max_b < w_start or min_b > w_end):
+                                matched_w = w
+                                break
+
+                        if matched_w is None:
+                            window_conformity = "NON_CONFORMANT"
+                            deviation_reason = "SESSION_OUTSIDE_PREREGISTERED_WINDOWS"
+                        elif not matched_w.get("market_open", True):
+                            intended_window = matched_w
+                            window_conformity = "NON_CONFORMANT"
+                            deviation_reason = "MARKET_CLOSED_OR_WEEKEND_WINDOW"
+                        else:
+                            wid = matched_w["window_id"]
+                            intended_window = matched_w
+                            if wid in claimed_sampling_windows:
+                                window_conformity = "NON_CONFORMANT"
+                                deviation_reason = "DUPLICATE_SAMPLING_OF_PLANNED_WINDOW"
+                            else:
+                                claimed_sampling_windows[wid] = session_id
+                                window_conformity = "CONFORMANT"
+
+                    elif stype == "RECURRING_WEEKDAY_TIME":
+                        dt_start = datetime.fromtimestamp(min_b, tz=UTC)
+                        dt_end = datetime.fromtimestamp(max_b, tz=UTC)
+                        allowed_days = schedule.get("days_of_week", [0, 1, 2, 3, 4])
+                        start_time_str = schedule.get("start_time_utc", "00:00:00")
+                        end_time_str = schedule.get("end_time_utc", "23:59:59")
+
+                        t_start_parts = [int(x) for x in start_time_str.split(":")[:3]]
+                        t_end_parts = [int(x) for x in end_time_str.split(":")[:3]]
+                        while len(t_start_parts) < 3:
+                            t_start_parts.append(0)
+                        while len(t_end_parts) < 3:
+                            t_end_parts.append(0)
+
+                        w_t_start = dt_time(t_start_parts[0], t_start_parts[1], t_start_parts[2])
+                        w_t_end = dt_time(t_end_parts[0], t_end_parts[1], t_end_parts[2])
+
+                        session_in_days = (
+                            dt_start.weekday() in allowed_days and dt_end.weekday() in allowed_days
+                        )
+                        session_in_time = w_t_start <= dt_start.time() and dt_end.time() <= w_t_end
+
+                        if session_in_days and session_in_time:
+                            plan_key = f"rec_{min_b}_{max_b}"
+                            intended_window = {
+                                "window_key": plan_key,
+                                "date": dt_start.strftime("%Y-%m-%d"),
+                                "start_time_utc": start_time_str,
+                                "end_time_utc": end_time_str,
+                            }
+                            overlapping_session = None
+                            for claimed_key, claimed_sess in claimed_sampling_windows.items():
+                                if claimed_key.startswith("rec_"):
+                                    parts = claimed_key.split("_")
+                                    c_start = int(parts[1])
+                                    c_end = int(parts[2])
+                                    if not (max_b < c_start or min_b > c_end):
+                                        overlapping_session = claimed_sess
+                                        break
+
+                            if overlapping_session is not None:
+                                window_conformity = "NON_CONFORMANT"
+                                deviation_reason = "DUPLICATE_SAMPLING_OF_PLANNED_WINDOW"
+                            else:
+                                claimed_sampling_windows[plan_key] = session_id
+                                window_conformity = "CONFORMANT"
+                        else:
+                            window_conformity = "NON_CONFORMANT"
+                            deviation_reason = "OUTSIDE_SCHEDULED_RECURRING_WINDOW"
+                    else:
+                        window_conformity = "NON_CONFORMANT"
+                        deviation_reason = "UNRECOGNIZED_SAMPLING_SCHEDULE_TYPE"
+
         session_eligible: list[PredictionRecord] = []
         session_rejections: dict[str, int] = dict(audit.rejection_reasons_breakdown)
+
+        if window_conformity not in ("CONFORMANT", "EXEMPT_HISTORICAL"):
+            dev_record = {
+                "session_id": session_id,
+                "file_name": file_path.name,
+                "intended_window": intended_window,
+                "observed_window": observed_window,
+                "conformity_result": window_conformity,
+                "deviation_reason": deviation_reason,
+                "observations_count": len(raw_preds),
+            }
+            sampling_deviations.append(dev_record)
+            rej_key = deviation_reason or "SAMPLING_WINDOW_DEVIATION"
+            session_rejections[rej_key] = len(raw_preds)
+            total_rejected_observations += len(reg.observations)
+            rejected_sessions.append(session_id)
+            session_audits.append(
+                SessionAuditRecord(
+                    session_id=session_id,
+                    file_name=file_path.name,
+                    session_sha256=computed_sha,
+                    lifecycle_state=SessionLifecycleState.NON_CONFORMANT_SAMPLING_WINDOW.value,
+                    cohort_group=group_name,
+                    total_registry_observations=audit.total_registry_observations,
+                    valid_committed_predictions=0,
+                    rejected_observations_count=len(raw_preds),
+                    uncommitted_observations_count=audit.uncommitted_observations_count,
+                    has_journal=has_journal,
+                    journal_verified=False,
+                    labeled_outcomes_count=0,
+                    missing_outcomes_count=0,
+                    boundaries=[],
+                    rejection_reasons=session_rejections,
+                    warnings=[
+                        f"Session deviates from preregistered sampling protocol: {deviation_reason}"
+                    ],
+                    intended_window=intended_window,
+                    observed_window=observed_window,
+                    window_conformity=window_conformity,
+                    deviation_reason=deviation_reason,
+                )
+            )
+            continue
+
         for p in raw_preds:
-            if eligible_for_primary_population(p, study):
-                session_eligible.append(p)
-            else:
+            if (
+                intended_window is not None
+                and "start_ts" in intended_window
+                and "end_ts" in intended_window
+            ):
+                w_start = int(intended_window["start_ts"])
+                w_end = int(intended_window["end_ts"])
+                if not (w_start <= p.boundary_F <= w_end):
+                    session_rejections["OUT_OF_WINDOW_PREDICTION"] = (
+                        session_rejections.get("OUT_OF_WINDOW_PREDICTION", 0) + 1
+                    )
+                    sampling_deviations.append({
+                        "session_id": session_id,
+                        "boundary_F": p.boundary_F,
+                        "intended_window": intended_window,
+                        "deviation_reason": "OUT_OF_WINDOW_PREDICTION",
+                    })
+                    continue
+
+            timing_ok, timing_reason = timing_eligibility_verdict(p)
+            if not timing_ok:
+                rej_key = timing_reason or "TIMING_CONTRACT_VIOLATED"
+                session_rejections[rej_key] = session_rejections.get(rej_key, 0) + 1
+            elif not eligible_for_primary_population(p, study):
                 if not p.journal_verified:
                     session_rejections["UNVERIFIED_JOURNAL_RECEIPT"] = (
                         session_rejections.get("UNVERIFIED_JOURNAL_RECEIPT", 0) + 1
@@ -967,14 +1373,12 @@ def reconcile_pilot_sessions(
                     session_rejections["INVALID_OR_MISSING_PROBABILITY"] = (
                         session_rejections.get("INVALID_OR_MISSING_PROBABILITY", 0) + 1
                     )
-                elif not original_timing_contract_satisfied(p):
-                    session_rejections["TIMING_CONTRACT_VIOLATED"] = (
-                        session_rejections.get("TIMING_CONTRACT_VIOLATED", 0) + 1
-                    )
                 else:
                     session_rejections["INELIGIBLE_PRIMARY_PREDICTION"] = (
                         session_rejections.get("INELIGIBLE_PRIMARY_PREDICTION", 0) + 1
                     )
+            else:
+                session_eligible.append(p)
 
         ineligible_count = len(raw_preds) - len(session_eligible)
         session_rejected_count = audit.rejected_observations_count + ineligible_count
@@ -1010,6 +1414,10 @@ def reconcile_pilot_sessions(
                     boundaries=[],
                     rejection_reasons=session_rejections,
                     warnings=["Zero valid journal-verified predictions in primary population"],
+                    intended_window=intended_window,
+                    observed_window=observed_window,
+                    window_conformity=window_conformity,
+                    deviation_reason=deviation_reason,
                 )
             )
             continue
@@ -1041,6 +1449,10 @@ def reconcile_pilot_sessions(
                 boundaries=session_bounds,
                 rejection_reasons=session_rejections,
                 warnings=[],
+                intended_window=intended_window,
+                observed_window=observed_window,
+                window_conformity=window_conformity,
+                deviation_reason=deviation_reason,
             )
         )
 
@@ -1135,6 +1547,7 @@ def reconcile_pilot_sessions(
             SessionLifecycleState.REJECTED_COHORT.value,
             SessionLifecycleState.NO_VALID_PREDICTIONS.value,
             SessionLifecycleState.INVALID_OR_UNCOMMITTED_OBSERVATIONS.value,
+            SessionLifecycleState.NON_CONFORMANT_SAMPLING_WINDOW.value,
         ):
             updated_audits.append(sa)
             continue
@@ -1173,6 +1586,10 @@ def reconcile_pilot_sessions(
                 boundaries=sa.boundaries,
                 rejection_reasons=sa.rejection_reasons,
                 warnings=sa.warnings,
+                intended_window=sa.intended_window,
+                observed_window=sa.observed_window,
+                window_conformity=sa.window_conformity,
+                deviation_reason=sa.deviation_reason,
             )
         )
 
@@ -1355,6 +1772,20 @@ def reconcile_pilot_sessions(
             "brier_skill_score_uninformative"
         )
 
+    missed_windows: list[dict[str, Any]] = []
+    study_schedule = study.sampling_protocol.get("schedule") or {}
+    if study_schedule.get("schedule_type") == "EXPLICIT_WINDOWS" and observed_timestamps:
+        max_ts = max(observed_timestamps)
+        for w in study_schedule.get("windows", []):
+            wid = w["window_id"]
+            if wid not in claimed_sampling_windows and int(w["end_ts"]) <= max_ts:
+                missed_windows.append({
+                    "window_id": wid,
+                    "start_utc": w.get("start_utc"),
+                    "end_utc": w.get("end_utc"),
+                    "status": "MISSED_WINDOW",
+                })
+
     status_report = PilotStatusReport(
         study_id=study.study_id,
         study_specification_sha256=study.study_specification_sha256,
@@ -1385,6 +1816,8 @@ def reconcile_pilot_sessions(
         total_analytical_signals=total_analytical_signals,
         final_skips=final_skips,
         final_non_skips=final_non_skips,
+        sampling_deviations=sampling_deviations,
+        missed_windows=missed_windows,
     )
 
     prov_level = (

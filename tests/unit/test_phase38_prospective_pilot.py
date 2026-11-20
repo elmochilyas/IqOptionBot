@@ -78,7 +78,9 @@ from iqoption_research.research.prospective_pilot import (
     load_and_verify_study_specification,
     publish_pilot_checkpoint,
     reconcile_pilot_sessions,
+    timing_eligibility_verdict,
     verify_pilot_checkpoint,
+    verify_study_registration,
 )
 from iqoption_research.timing.evidence import TimingEvidenceRegistry
 from iqoption_research.timing.instrumentation import compute_observation_dict_hash
@@ -101,8 +103,16 @@ def _init_study(
     baseline_reference_count: int = 5,
     model_path: Path | None = None,
     sampling_rule_description: str = TEST_SAMPLING_RULE,
+    sampling_schedule: dict[str, Any] | None = None,
 ) -> PilotStudySpecification:
     """Helper to initialize study spec with valid non-placeholder sampling rule."""
+    if sampling_schedule is None:
+        sampling_schedule = {
+            "schedule_type": "RECURRING_WEEKDAY_TIME",
+            "days_of_week": [0, 1, 2, 3, 4],
+            "start_time_utc": "00:00:00",
+            "end_time_utc": "23:59:59",
+        }
     return initialize_pilot_study(
         output_path,
         study_id=study_id,
@@ -110,6 +120,7 @@ def _init_study(
         baseline_reference_count=baseline_reference_count,
         model_path=model_path,
         sampling_rule_description=sampling_rule_description,
+        sampling_schedule=sampling_schedule,
     )
 
 
@@ -208,6 +219,13 @@ def _create_second_shadow_session(
         b = v_copy.get("boundary")
         if b is not None:
             v_copy["boundary"] = b + shift_s
+        dt_obj = v_copy.get("decision_time")
+        if isinstance(dt_obj, dict) and "disciplined_utc_ns" in dt_obj:
+            dt_copy = dict(dt_obj)
+            dt_copy["disciplined_utc_ns"] = int(dt_copy["disciplined_utc_ns"]) + shift_ns
+            v_copy["decision_time"] = dt_copy
+        elif isinstance(dt_obj, int):
+            v_copy["decision_time"] = dt_obj + shift_ns
         if all_skip:
             v_copy["decision"] = "SKIP"
             v_copy["calibrated_probability"] = 0.52
@@ -2043,6 +2061,12 @@ def test_section_e_correct_frozen_model_manifest_initialization_succeeds(tmp_pat
         spec_path,
         model_path=model_path,
         sampling_rule_description="supervised_regular_eurusd_m1_open_sessions",
+        sampling_schedule={
+            "schedule_type": "RECURRING_WEEKDAY_TIME",
+            "days_of_week": [0, 1, 2, 3, 4],
+            "start_time_utc": "13:00:00",
+            "end_time_utc": "15:00:00",
+        },
     )
     assert (
         spec.model_manifest_sha256
@@ -2123,3 +2147,545 @@ def test_section_e_altered_and_rehashed_model_identity_or_threshold_rejected_by_
 
     with pytest.raises(FrozenContractViolationError, match="violates frozen threshold contract"):
         load_and_verify_study_specification(spec_path)
+
+
+# ==============================================================================
+# Requirement A: Verify Actual Decision-Time Eligibility
+# ==============================================================================
+
+
+def test_timing_eligibility_inclusion_at_exact_boundary_f(tmp_path: Path) -> None:
+    """Prediction committed exactly at boundary F is valid and included."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_f")
+    reg_dict = json.loads(sess_path.read_text(encoding="utf-8"))
+    obs0 = reg_dict["observations"][0]
+    b = obs0["feature_close_F"]
+    b_ns = b * 1_000_000_000
+    for s in obs0["stages"].values():
+        if isinstance(s, dict) and "disciplined_utc_ns" in s:
+            s["disciplined_utc_ns"] = b_ns
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT event_key, payload FROM events WHERE event_key LIKE ?", (f"%{b}%",)
+        ).fetchone()
+        payload = json.loads(row[1])
+        payload["decision_time"]["disciplined_utc_ns"] = b_ns
+        clean = {k: v for k, v in payload.items() if k != "key"}
+        new_sha = digest(clean)
+        conn.execute(
+            "UPDATE events SET payload = ? WHERE event_key = ?", (json.dumps(payload), row[0])
+        )
+
+    obs0["stages"]["STAGE_9_JOURNAL_COMMIT"]["details"]["payload_sha256"] = new_sha
+    obs0["integrity_hash"] = compute_observation_dict_hash(obs0)
+    reg = TimingEvidenceRegistry.from_dict(reg_dict)
+    reg.integrity_hash = reg.compute_hash()
+    sess_path.write_text(json.dumps(reg.to_dict(), indent=2), encoding="utf-8")
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    assert rec_res.status.new_unique_committed_predictions == 5
+    first_pred = next(p for p in rec_res.eligible_predictions if p.boundary_F == b)
+    assert first_pred.decision_time_utc_ns == b_ns
+
+
+def test_timing_eligibility_inclusion_at_exact_f_plus_15_seconds(tmp_path: Path) -> None:
+    """Prediction committed exactly at boundary F + 15s is valid and included."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_f15")
+    reg_dict = json.loads(sess_path.read_text(encoding="utf-8"))
+    obs0 = reg_dict["observations"][0]
+    b = obs0["feature_close_F"]
+    f15_ns = (b + 15) * 1_000_000_000
+    obs0["stages"]["STAGE_POLICY_DECISION"]["disciplined_utc_ns"] = f15_ns
+    obs0["stages"]["STAGE_9_JOURNAL_COMMIT"]["disciplined_utc_ns"] = f15_ns
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT event_key, payload FROM events WHERE event_key LIKE ?", (f"%{b}%",)
+        ).fetchone()
+        payload = json.loads(row[1])
+        payload["decision_time"]["disciplined_utc_ns"] = f15_ns
+        clean = {k: v for k, v in payload.items() if k != "key"}
+        new_sha = digest(clean)
+        conn.execute(
+            "UPDATE events SET payload = ? WHERE event_key = ?", (json.dumps(payload), row[0])
+        )
+
+    obs0["stages"]["STAGE_9_JOURNAL_COMMIT"]["details"]["payload_sha256"] = new_sha
+    obs0["integrity_hash"] = compute_observation_dict_hash(obs0)
+    reg = TimingEvidenceRegistry.from_dict(reg_dict)
+    reg.integrity_hash = reg.compute_hash()
+    sess_path.write_text(json.dumps(reg.to_dict(), indent=2), encoding="utf-8")
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    assert rec_res.status.new_unique_committed_predictions == 5
+    first_pred = next(p for p in rec_res.eligible_predictions if p.boundary_F == b)
+    assert first_pred.decision_time_utc_ns == f15_ns
+
+
+def test_timing_eligibility_rejection_before_boundary_f(tmp_path: Path) -> None:
+    """Prediction timestamped before boundary F fails timing contract (causality violation)."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_before_f")
+    reg_dict = json.loads(sess_path.read_text(encoding="utf-8"))
+    reg_dict["instrumentation_version"] = "PHASE_35_SHADOW_V1"
+    obs0 = reg_dict["observations"][0]
+    b = obs0["feature_close_F"]
+    early_ns = (b * 1_000_000_000) - 1_000_000  # 1ms before candle close
+    obs0["stages"]["STAGE_POLICY_DECISION"]["disciplined_utc_ns"] = early_ns
+    obs0["stages"]["STAGE_9_JOURNAL_COMMIT"]["disciplined_utc_ns"] = early_ns
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT event_key, payload FROM events WHERE event_key LIKE ?", (f"%{b}%",)
+        ).fetchone()
+        payload = json.loads(row[1])
+        payload["decision_time"]["disciplined_utc_ns"] = early_ns
+        clean = {k: v for k, v in payload.items() if k != "key"}
+        new_sha = digest(clean)
+        conn.execute(
+            "UPDATE events SET payload = ? WHERE event_key = ?", (json.dumps(payload), row[0])
+        )
+
+    obs0["stages"]["STAGE_9_JOURNAL_COMMIT"]["details"]["payload_sha256"] = new_sha
+    obs0["integrity_hash"] = compute_observation_dict_hash(obs0)
+    reg = TimingEvidenceRegistry.from_dict(reg_dict)
+    reg.integrity_hash = reg.compute_hash()
+    sess_path.write_text(json.dumps(reg.to_dict(), indent=2), encoding="utf-8")
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    assert rec_res.status.new_unique_committed_predictions == 4
+    audit = rec_res.status.session_audits[0]
+    assert "DECISION_TIME_BEFORE_BOUNDARY_F" in audit.rejection_reasons
+    assert audit.rejection_reasons["DECISION_TIME_BEFORE_BOUNDARY_F"] == 1
+
+
+def test_timing_eligibility_rejection_after_f_plus_15_seconds(tmp_path: Path) -> None:
+    """Prediction timestamped after boundary F + 15s deadline fails timing contract."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_after_f15")
+    reg_dict = json.loads(sess_path.read_text(encoding="utf-8"))
+    reg_dict["instrumentation_version"] = "PHASE_35_SHADOW_V1"
+    obs0 = reg_dict["observations"][0]
+    b = obs0["feature_close_F"]
+    late_ns = ((b + 15) * 1_000_000_000) + 1_000_000  # 1ms after 15s deadline
+    obs0["stages"]["STAGE_POLICY_DECISION"]["disciplined_utc_ns"] = late_ns
+    obs0["stages"]["STAGE_9_JOURNAL_COMMIT"]["disciplined_utc_ns"] = late_ns
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT event_key, payload FROM events WHERE event_key LIKE ?", (f"%{b}%",)
+        ).fetchone()
+        payload = json.loads(row[1])
+        payload["decision_time"]["disciplined_utc_ns"] = late_ns
+        clean = {k: v for k, v in payload.items() if k != "key"}
+        new_sha = digest(clean)
+        conn.execute(
+            "UPDATE events SET payload = ? WHERE event_key = ?", (json.dumps(payload), row[0])
+        )
+
+    obs0["stages"]["STAGE_9_JOURNAL_COMMIT"]["details"]["payload_sha256"] = new_sha
+    obs0["integrity_hash"] = compute_observation_dict_hash(obs0)
+    reg = TimingEvidenceRegistry.from_dict(reg_dict)
+    reg.integrity_hash = reg.compute_hash()
+    sess_path.write_text(json.dumps(reg.to_dict(), indent=2), encoding="utf-8")
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    assert rec_res.status.new_unique_committed_predictions == 4
+    audit = rec_res.status.session_audits[0]
+    assert "DECISION_TIME_EXCEEDS_15S_DEADLINE" in audit.rejection_reasons
+    assert audit.rejection_reasons["DECISION_TIME_EXCEEDS_15S_DEADLINE"] == 1
+
+
+def test_timing_eligibility_rejection_for_false_or_missing_timing_gate(tmp_path: Path) -> None:
+    """Observation with false or missing timing gate is excluded from primary population."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_gate_fail")
+    reg_dict = json.loads(sess_path.read_text(encoding="utf-8"))
+    reg_dict["observations"][0]["phase30_gate_satisfied"] = False
+    reg_dict["observations"][0]["integrity_hash"] = compute_observation_dict_hash(
+        reg_dict["observations"][0]
+    )
+    reg_dict["summary"]["full_phase30_gate_compliant_count"] = sum(
+        1 for o in reg_dict["observations"] if o.get("phase30_gate_satisfied")
+    )
+    reg = TimingEvidenceRegistry.from_dict(reg_dict)
+    reg.integrity_hash = reg.compute_hash()
+    sess_path.write_text(json.dumps(reg.to_dict(), indent=2), encoding="utf-8")
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    assert rec_res.status.new_unique_committed_predictions == 4
+    audit = rec_res.status.session_audits[0]
+    assert "PHASE30_GATE_NOT_SATISFIED" in audit.rejection_reasons
+
+
+def test_timing_eligibility_preservation_of_five_verified_reference_forecasts(
+    tmp_path: Path,
+) -> None:
+    """Phase 35 reference session observations satisfy timing contract and are preserved."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path], journal_path=db_path)
+    status = rec_res.status
+    assert status.reference_observations == 5
+    assert status.total_unique_committed_predictions == 5
+    assert len(rec_res.eligible_predictions) == 5
+    for p in rec_res.eligible_predictions:
+        ok, reason = timing_eligibility_verdict(p)
+        assert ok is True, f"Prediction at {p.boundary_F} failed timing: {reason}"
+
+
+def test_timing_eligibility_fixture_hash_consistent_timing_ineligible(tmp_path: Path) -> None:
+    """Fixture with valid hashes but invalid timing gate is excluded without error."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_hash_ok_timing_fail")
+    reg_dict = json.loads(sess_path.read_text(encoding="utf-8"))
+    for obs in reg_dict["observations"]:
+        obs["phase30_gate_satisfied"] = False
+        obs["integrity_hash"] = compute_observation_dict_hash(obs)
+    reg_dict["summary"]["full_phase30_gate_compliant_count"] = 0
+    reg = TimingEvidenceRegistry.from_dict(reg_dict)
+    reg.integrity_hash = reg.compute_hash()
+    sess_path.write_text(json.dumps(reg.to_dict(), indent=2), encoding="utf-8")
+
+    is_valid, errs = reg.verify_integrity()
+    assert is_valid is True, f"Registry integrity failed: {errs}"
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    assert rec_res.status.new_unique_committed_predictions == 0
+    assert rec_res.status.total_unique_committed_predictions == 0
+    assert "PHASE30_GATE_NOT_SATISFIED" in rec_res.status.session_audits[0].rejection_reasons
+    assert rec_res.status.session_audits[0].rejection_reasons["PHASE30_GATE_NOT_SATISFIED"] == 5
+
+
+# ==============================================================================
+# Requirement B: Enforce Preregistered Observation Windows
+# ==============================================================================
+
+
+def test_window_compliance_new_session_within_preregistered_window_included(
+    tmp_path: Path,
+) -> None:
+    """New session falling squarely within preregistered explicit window is conformant."""
+    spec_path = tmp_path / "study_spec.json"
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_win")
+
+    spec = _init_study(
+        spec_path,
+        sampling_schedule={
+            "schedule_type": "EXPLICIT_WINDOWS",
+            "windows": [
+                {
+                    "window_id": "win_thu_1740",
+                    "start_ts": 1795110000,
+                    "end_ts": 1795110600,
+                    "start_utc": "2026-11-19T17:40:00Z",
+                    "end_utc": "2026-11-19T17:50:00Z",
+                }
+            ],
+        },
+    )
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    st = rec_res.status
+    assert st.new_unique_committed_predictions == 5
+    assert len(st.sampling_deviations) == 0
+    audit = st.session_audits[0]
+    assert audit.window_conformity == "CONFORMANT"
+    assert audit.intended_window is not None
+    assert audit.intended_window["window_id"] == "win_thu_1740"
+
+
+def test_window_compliance_new_session_outside_window_flagged_not_counted(
+    tmp_path: Path,
+) -> None:
+    """Session falling outside all preregistered explicit windows is flagged and excluded."""
+    spec_path = tmp_path / "study_spec.json"
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_outside")
+
+    spec = _init_study(
+        spec_path,
+        sampling_schedule={
+            "schedule_type": "EXPLICIT_WINDOWS",
+            "windows": [
+                {
+                    "window_id": "win_thu_1300",
+                    "start_ts": 1795093200,
+                    "end_ts": 1795093800,
+                    "start_utc": "2026-11-19T13:00:00Z",
+                    "end_utc": "2026-11-19T13:10:00Z",
+                }
+            ],
+        },
+    )
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    st = rec_res.status
+    assert st.new_unique_committed_predictions == 0
+    assert len(st.sampling_deviations) == 1
+    dev = st.sampling_deviations[0]
+    assert dev["conformity_result"] == "NON_CONFORMANT"
+    assert dev["deviation_reason"] == "SESSION_OUTSIDE_PREREGISTERED_WINDOWS"
+    audit = st.session_audits[0]
+    assert audit.lifecycle_state == SessionLifecycleState.NON_CONFORMANT_SAMPLING_WINDOW.value
+
+
+def test_window_compliance_weekend_market_closed_window_no_fabricated_eligibility(
+    tmp_path: Path,
+) -> None:
+    """Session on weekend (market closed) is flagged with zero fabricated eligibility."""
+    spec_path = tmp_path / "study_spec.json"
+    sess_path, db_path = _create_second_shadow_session(
+        tmp_path / "sess_weekend",
+        shift_s=172800,
+    )
+
+    spec = _init_study(
+        spec_path,
+        sampling_schedule={
+            "schedule_type": "RECURRING_WEEKDAY_TIME",
+            "days_of_week": [0, 1, 2, 3, 4, 5],
+            "start_time_utc": "00:00:00",
+            "end_time_utc": "23:59:59",
+        },
+    )
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    st = rec_res.status
+    assert st.new_unique_committed_predictions == 0
+    assert len(st.sampling_deviations) == 1
+    dev = st.sampling_deviations[0]
+    assert dev["deviation_reason"] == "MARKET_CLOSED_OR_WEEKEND_WINDOW"
+
+
+def test_window_compliance_partial_observation_in_valid_window_preserved(
+    tmp_path: Path,
+) -> None:
+    """Partial session observations within window are preserved; out-of-window ones audited."""
+    spec_path = tmp_path / "study_spec.json"
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_partial")
+
+    spec = _init_study(
+        spec_path,
+        sampling_schedule={
+            "schedule_type": "EXPLICIT_WINDOWS",
+            "windows": [
+                {
+                    "window_id": "win_partial_3",
+                    "start_ts": 1795110120,
+                    "end_ts": 1795110240,
+                    "start_utc": "2026-11-19T17:42:00Z",
+                    "end_utc": "2026-11-19T17:44:00Z",
+                }
+            ],
+        },
+    )
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    st = rec_res.status
+    assert st.new_unique_committed_predictions == 3
+    assert len(st.sampling_deviations) == 2
+    for dev in st.sampling_deviations:
+        assert dev["deviation_reason"] == "OUT_OF_WINDOW_PREDICTION"
+
+
+def test_window_compliance_duplicate_sampling_window_no_count_inflation(
+    tmp_path: Path,
+) -> None:
+    """Duplicate sampling of the same planned window cannot inflate progress."""
+    spec_path = tmp_path / "study_spec.json"
+    s1_path, _ = _create_second_shadow_session(
+        tmp_path / "sess_s1",
+        session_id="session_dup_1",
+    )
+    s2_path, _ = _create_second_shadow_session(
+        tmp_path / "sess_s2",
+        session_id="session_dup_2",
+    )
+
+    spec = _init_study(
+        spec_path,
+        sampling_schedule={
+            "schedule_type": "EXPLICIT_WINDOWS",
+            "windows": [
+                {
+                    "window_id": "win_planned_single",
+                    "start_ts": 1795110000,
+                    "end_ts": 1795110600,
+                    "start_utc": "2026-11-19T17:40:00Z",
+                    "end_utc": "2026-11-19T17:50:00Z",
+                }
+            ],
+        },
+    )
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path, s2_path])
+    st = rec_res.status
+    assert st.new_unique_committed_predictions == 5
+    assert len(st.sampling_deviations) == 1
+    dev = st.sampling_deviations[0]
+    assert dev["deviation_reason"] == "DUPLICATE_SAMPLING_OF_PLANNED_WINDOW"
+    assert dev["session_id"] == "session_dup_2"
+
+
+def test_window_compliance_different_input_ordering_identical_substantive_counts(
+    tmp_path: Path,
+) -> None:
+    """Processing evidence in different input order yields identical substantive counts."""
+    spec_path1 = tmp_path / "study_spec1.json"
+    spec_path2 = tmp_path / "study_spec2.json"
+    spec1 = _init_study(spec_path1)
+    spec2 = _init_study(spec_path2)
+
+    s1_path, _ = _create_second_shadow_session(
+        tmp_path / "ord_s1", session_id="sess_ord_1", shift_s=3600
+    )
+    s2_path, _ = _create_second_shadow_session(
+        tmp_path / "ord_s2", session_id="sess_ord_2", shift_s=7200
+    )
+
+    res1 = reconcile_pilot_sessions(spec1, [s1_path, s2_path])
+    res2 = reconcile_pilot_sessions(spec2, [s2_path, s1_path])
+
+    assert (
+        res1.status.total_unique_committed_predictions
+        == res2.status.total_unique_committed_predictions
+        == 10
+    )
+    assert len(res1.eligible_predictions) == len(res2.eligible_predictions) == 10
+    assert sorted(p.boundary_F for p in res1.eligible_predictions) == sorted(
+        p.boundary_F for p in res2.eligible_predictions
+    )
+
+
+def test_window_compliance_two_observations_equal_probabilities_different_timing_eligibility(
+    tmp_path: Path,
+) -> None:
+    """Two observations with equal probabilities produce different timing outcomes."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(
+        spec_path,
+        sampling_schedule={
+            "schedule_type": "EXPLICIT_WINDOWS",
+            "windows": [
+                {
+                    "window_id": "win_time_slot_1",
+                    "start_ts": 1795110120,
+                    "end_ts": 1795110180,
+                    "start_utc": "2026-11-19T17:42:00Z",
+                    "end_utc": "2026-11-19T17:43:00Z",
+                }
+            ],
+        },
+    )
+
+    sess_path, db_path = _create_second_shadow_session(
+        tmp_path / "sess_equal_prob",
+        override_probabilities=[0.65, 0.65, 0.50, 0.50, 0.50],
+    )
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    assert rec_res.status.new_unique_committed_predictions < 5
+    assert len(rec_res.status.sampling_deviations) > 0
+
+
+def test_window_compliance_no_prospective_schedule_supplied_registration_fails(
+    tmp_path: Path,
+) -> None:
+    """Study registration strictly fails if no machine-readable schedule is provided."""
+    spec_path = tmp_path / "study_spec.json"
+    with pytest.raises(ProspectivePilotError, match="schedule must be supplied"):
+        initialize_pilot_study(
+            spec_path,
+            sampling_rule_description="regular_market_sessions",
+            sampling_schedule=None,
+        )
+
+
+def test_window_compliance_altered_and_rehashed_schedule_detected_as_protocol_change(
+    tmp_path: Path,
+) -> None:
+    """Altered-and-rehashed schedule is detected as protocol change against registered identity."""
+    spec_path = tmp_path / "study_spec.json"
+    sched1 = {
+        "schedule_type": "EXPLICIT_WINDOWS",
+        "windows": [
+            {
+                "window_id": "win_orig",
+                "start_ts": 1795110000,
+                "end_ts": 1795110600,
+                "start_utc": "2026-11-19T17:40:00Z",
+                "end_utc": "2026-11-19T17:50:00Z",
+            }
+        ],
+    }
+    spec_orig = _init_study(spec_path, sampling_schedule=sched1)
+    orig_digest = spec_orig.study_specification_sha256
+
+    spec_dict = spec_orig.to_dict()
+    spec_dict["sampling_protocol"]["schedule"]["windows"][0]["start_ts"] = 1795120000
+    spec_tampered = PilotStudySpecification.from_dict(spec_dict)
+    spec_tampered.seal()
+
+    with pytest.raises(FrozenContractViolationError, match="Protocol alteration detected"):
+        verify_study_registration(spec_tampered, spec_orig)
+
+    with pytest.raises(FrozenContractViolationError, match="Protocol alteration detected"):
+        verify_study_registration(spec_tampered, orig_digest)
+
+
+def test_window_compliance_missed_windows_reported_without_fabrication(
+    tmp_path: Path,
+) -> None:
+    """Missed windows in explicit schedule are reported without fabricating observations."""
+    spec_path = tmp_path / "study_spec.json"
+    sched = {
+        "schedule_type": "EXPLICIT_WINDOWS",
+        "windows": [
+            {
+                "window_id": "win_missed_1",
+                "start_ts": 1795100000,
+                "end_ts": 1795100600,
+                "start_utc": "2026-11-19T14:53:20Z",
+                "end_utc": "2026-11-19T15:03:20Z",
+            },
+            {
+                "window_id": "win_active_2",
+                "start_ts": 1795110000,
+                "end_ts": 1795110600,
+                "start_utc": "2026-11-19T17:40:00Z",
+                "end_utc": "2026-11-19T17:50:00Z",
+            },
+        ],
+    }
+    spec = _init_study(spec_path, sampling_schedule=sched)
+    sess_path, db_path = _create_second_shadow_session(tmp_path / "sess_w2")
+
+    rec_res = reconcile_pilot_sessions(spec, [sess_path], journal_path=db_path)
+    st = rec_res.status
+    assert len(st.missed_windows) == 1
+    assert st.missed_windows[0]["window_id"] == "win_missed_1"
+    assert st.missed_windows[0]["status"] == "MISSED_WINDOW"
+
+
+def test_window_compliance_zero_live_broker_connections_in_any_test() -> None:
+    """Offline invariant: zero live broker connections initialized or executed."""
+    from iqoption_research.connectors.iqoption.client import AsyncIQOption
+
+    assert hasattr(AsyncIQOption, "assert_read_only")

@@ -284,6 +284,11 @@ def pilot_init_cmd(
         "--sampling-rule",
         help="Pre-determined sampling protocol rule description.",
     ),
+    schedule_file: Path | None = typer.Option(
+        None,
+        "--schedule-file",
+        help="Optional path to machine-readable sampling schedule JSON.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
 ) -> None:
     """Initialize an immutable prospective pilot study specification (Phase 38)."""
@@ -298,6 +303,15 @@ def pilot_init_cmd(
 
     console = Console()
     try:
+        if schedule_file is not None and schedule_file.is_file():
+            sched = json.loads(schedule_file.read_text(encoding="utf-8"))
+        else:
+            sched = {
+                "schedule_type": "RECURRING_WEEKDAY_TIME",
+                "days_of_week": [0, 1, 2, 3, 4],
+                "start_time_utc": "13:00:00",
+                "end_time_utc": "15:00:00",
+            }
         spec = initialize_pilot_study(
             output,
             study_id=study_id,
@@ -305,6 +319,7 @@ def pilot_init_cmd(
             baseline_reference_count=reference_count,
             model_path=model,
             sampling_rule_description=sampling_rule,
+            sampling_schedule=sched,
         )
     except ProspectivePilotError as exc:
         if json_output:

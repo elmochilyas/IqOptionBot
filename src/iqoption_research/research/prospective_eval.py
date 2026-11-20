@@ -165,6 +165,14 @@ class PredictionRecord:
     journal_event_key: str | None = None
     journal_verified: bool = False
     evidence_provenance_level: str = "REGISTRY_ONLY"  # "JOURNAL_VERIFIED" vs "REGISTRY_ONLY"
+    gate_verdict: str | None = None
+    phase30_gate_satisfied: bool = False
+    candle_validated_within_15s: bool = False
+    clock_step_detected: bool = False
+    rejection_reason: str | None = None
+    journal_boundary: int | None = None
+    journal_decision: str | None = None
+    journal_decision_time_utc_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -630,6 +638,19 @@ def extract_predictions_with_audit(
         decision = str(obs.get("decision", "NOT_MEASURED"))
         skip_reason = policy_stg.get("skip_reason") or obs.get("rejection_reason")
 
+        j_boundary: int | None = None
+        j_decision: str | None = None
+        j_dt_ns: int | None = None
+        if has_journal and event_key in journal_events:
+            ev_p = journal_events[event_key]
+            j_boundary = ev_p.get("boundary")
+            j_decision = ev_p.get("decision")
+            raw_jdt = ev_p.get("decision_time")
+            if isinstance(raw_jdt, dict):
+                j_dt_ns = raw_jdt.get("disciplined_utc_ns")
+            elif isinstance(raw_jdt, int):
+                j_dt_ns = raw_jdt
+
         pred = PredictionRecord(
             session_id=registry.session_id,
             boundary_F=boundary,
@@ -652,6 +673,14 @@ def extract_predictions_with_audit(
             journal_event_key=event_key,
             journal_verified=journal_verified,
             evidence_provenance_level="JOURNAL_VERIFIED" if journal_verified else "REGISTRY_ONLY",
+            gate_verdict=obs.get("gate_verdict"),
+            phase30_gate_satisfied=bool(obs.get("phase30_gate_satisfied", False)),
+            candle_validated_within_15s=bool(obs.get("candle_validated_within_15s", False)),
+            clock_step_detected=bool(obs.get("clock_step_detected", False)),
+            rejection_reason=obs.get("rejection_reason"),
+            journal_boundary=j_boundary,
+            journal_decision=j_decision,
+            journal_decision_time_utc_ns=j_dt_ns,
         )
         predictions.append(pred)
 

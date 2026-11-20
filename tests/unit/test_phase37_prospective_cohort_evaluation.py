@@ -40,6 +40,7 @@ import pytest
 from typer.testing import CliRunner
 
 from iqoption_research.cli.main import app
+from iqoption_research.market_data.catalog import CatalogEntry, DatasetCatalog
 from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.research.prospective_cohort import (
     CorruptedEvidenceError,
@@ -63,11 +64,13 @@ from iqoption_research.research.prospective_eval import (
     SyntheticDataRejectedError,
     TamperedEvidenceError,
     UnverifiedOutcomeProvenanceError,
+    compute_file_sha256,
     compute_prospective_metrics,
     deduplicate_predictions,
     pair_predictions_with_candles,
 )
 from iqoption_research.timing.evidence import TimingEvidenceRegistry
+from tests.unit.test_phase36_prospective_evaluation import _write_simple_parquet
 
 runner = CliRunner()
 
@@ -135,20 +138,98 @@ def _create_phase35_fixtures(directory: Path) -> tuple[Path, Path]:
     return shadow_path, db_path
 
 
-# ==============================================================================
-# Mandatory Matrix Scenario 1: Five known Phase 35 forecasts and recovered outcomes
-# ==============================================================================
-def test_scenario_01_reproduce_phase35_reference_metrics(tmp_path: Path) -> None:
-    """Scenario 1: Reproduce exact known Phase 35 regression metrics."""
-    shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+def _create_portable_phase35_storage(storage_dir: Path) -> Path:
+    """Create portable offline storage fixture with valid catalog and parquet files."""
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    cat_file = storage_dir / "catalog.db"
+    cat = DatasetCatalog(cat_file)
 
-    dataset, report, manifest = evaluate_prospective_cohort_offline(
-        [shadow_path],
-        journal_path=db_path,
-        storage_dir=Path("data/datasets"),
-        catalog_path=Path("data/datasets/catalog.db"),
+    c1 = _make_candle(
+        1795106520,
+        1.09789,
+        1.09801,
+        1.098035,
+        1.097875,
+        247.0,
+        source="broker_authentic_collection",
     )
+    c2 = _make_candle(
+        1795106580,
+        1.09801,
+        1.097965,
+        1.098135,
+        1.09796,
+        257.0,
+        source="broker_authentic_collection",
+    )
+    c3 = _make_candle(
+        1795106640,
+        1.097965,
+        1.09797,
+        1.09806,
+        1.09791,
+        181.0,
+        source="broker_authentic_collection",
+    )
+    c4 = _make_candle(
+        1795106700, 1.097965, 1.097965, 1.098, 1.09792, 204.0, source="broker_authentic_collection"
+    )
+    c5 = _make_candle(
+        1795106760, 1.09799, 1.09819, 1.09822, 1.09799, 221.0, source="broker_authentic_collection"
+    )
+    candles = [c1, c2, c3, c4, c5]
 
+    pf = storage_dir / "candles_1795106520_1795106820.parquet"
+    _write_simple_parquet(pf, candles)
+
+    meta_file = pf.with_suffix(".meta.json")
+    meta_data = {
+        "dataset_id": "phase35_reference_fixture",
+        "source": "broker_authentic_collection",
+        "is_synthetic": False,
+        "symbol": "EURUSD",
+        "candle_size_seconds": 60,
+    }
+    meta_file.write_text(json.dumps(meta_data), encoding="utf-8")
+    meta_sha = compute_file_sha256(meta_file)
+    sha = compute_file_sha256(pf)
+
+    entry = CatalogEntry(
+        dataset_id="phase35_reference_fixture",
+        schema_version="2.0",
+        source="broker_authentic_collection",
+        is_synthetic=False,
+        symbol="EURUSD",
+        active_id=1,
+        is_otc=False,
+        candle_size_seconds=60,
+        from_ts=1795106520,
+        to_ts=1795106820,
+        from_utc="2026-11-19T16:42:00+00:00",
+        to_utc="2026-11-19T16:47:00+00:00",
+        candle_count=5,
+        created_at_utc="2026-11-19T16:47:00+00:00",
+        imported_at_utc="2026-11-19T16:47:00+00:00",
+        quality_summary={
+            "missing_intervals": [],
+            "duplicate_intervals": [],
+            "stale_intervals": [],
+            "anomalous_intervals": [],
+        },
+        structural_integrity_passed=True,
+        coverage_completeness_ratio=1.0,
+        research_sufficiency_status="SUFFICIENT",
+        research_sufficiency_policy="STRICT",
+        file_path=str(pf.relative_to(storage_dir).as_posix()),
+        sha256_checksum=sha,
+        metadata_path=str(meta_file.relative_to(storage_dir).as_posix()),
+        metadata_sha256=meta_sha,
+    )
+    cat.register_dataset(entry)
+    return storage_dir
+
+
+def _assert_phase35_reference_metrics(dataset: Any, report: Any, manifest: Any) -> None:
     # 1. Valid committed predictions: 5
     assert dataset.total_observations == 5
     assert dataset.included_count == 5
@@ -198,6 +279,47 @@ def test_scenario_01_reproduce_phase35_reference_metrics(tmp_path: Path) -> None
 
 
 # ==============================================================================
+# Mandatory Matrix Scenario 1: Five known Phase 35 forecasts and recovered outcomes
+# ==============================================================================
+def test_scenario_01_reproduce_phase35_reference_metrics_portable_fixture(
+    tmp_path: Path,
+) -> None:
+    """Scenario 1 (Portable CI Fixture): Reproduce exact known Phase 35 metrics in clean CI."""
+    shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    storage = _create_portable_phase35_storage(tmp_path / "fixture_storage")
+
+    dataset, report, manifest = evaluate_prospective_cohort_offline(
+        [shadow_path],
+        journal_path=db_path,
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
+    )
+    _assert_phase35_reference_metrics(dataset, report, manifest)
+
+
+def test_scenario_01_reproduce_phase35_reference_metrics_local_authentic(
+    tmp_path: Path,
+) -> None:
+    """Scenario 1 (Local Authentic): Reproduce exact metrics against local storage."""
+    cat_path = Path("data/datasets/catalog.db")
+    if not cat_path.is_file():
+        pytest.skip(
+            "Local authentic broker catalog not available in clean CI; "
+            "portable fixture verified separately."
+        )
+
+    shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+
+    dataset, report, manifest = evaluate_prospective_cohort_offline(
+        [shadow_path],
+        journal_path=db_path,
+        storage_dir=Path("data/datasets"),
+        catalog_path=cat_path,
+    )
+    _assert_phase35_reference_metrics(dataset, report, manifest)
+
+
+# ==============================================================================
 # Mandatory Matrix Scenario 2: Five forecasts without any available outcome candles
 # ==============================================================================
 def test_scenario_02_five_forecasts_without_outcomes_handled(tmp_path: Path) -> None:
@@ -234,10 +356,12 @@ def test_scenario_03_all_decisions_skip_preserves_probabilities_and_abstention(
 ) -> None:
     """Scenario 3: All decisions SKIP: probabilities retained, coverage 0%, abstention 100%."""
     shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    storage = _create_portable_phase35_storage(tmp_path / "fixture_storage")
     dataset, report, _ = evaluate_prospective_cohort_offline(
         [shadow_path],
         journal_path=db_path,
-        storage_dir=Path("data/datasets"),
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
     )
 
     assert report.signal_coverage_rate == 0.0
@@ -574,10 +698,12 @@ def test_scenario_18_recovered_labels_update_coverage_without_altering_evidence(
     assert shadow_path.read_text(encoding="utf-8") == content_before
 
     # 2. Second evaluation: recovered outcomes available
+    storage = _create_portable_phase35_storage(tmp_path / "fixture_storage")
     _d2, r2, _ = evaluate_prospective_cohort_offline(
         [shadow_path],
         journal_path=db_path,
-        storage_dir=Path("data/datasets"),
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
     )
     assert r2.aligned_pairs_count == 5
     assert r2.missing_outcomes_count == 0
@@ -670,16 +796,19 @@ def test_scenario_21_corrupted_dataset_files_controlled_integrity_failure(tmp_pa
 def test_scenario_22_repeated_run_deterministic_content_and_metrics(tmp_path: Path) -> None:
     """Scenario 22: Repeated runs over identical inputs yield identical content hashes."""
     shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    storage = _create_portable_phase35_storage(tmp_path / "fixture_storage")
 
     d1, r1, m1 = evaluate_prospective_cohort_offline(
         [shadow_path],
         journal_path=db_path,
-        storage_dir=Path("data/datasets"),
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
     )
     d2, r2, m2 = evaluate_prospective_cohort_offline(
         [shadow_path],
         journal_path=db_path,
-        storage_dir=Path("data/datasets"),
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
     )
 
     assert d1.dataset_content_hash == d2.dataset_content_hash
@@ -695,10 +824,12 @@ def test_scenario_22_repeated_run_deterministic_content_and_metrics(tmp_path: Pa
 def test_scenario_23_output_file_already_exists_no_accidental_overwrite(tmp_path: Path) -> None:
     """Scenario 23: Output file already exists fails closed without accidental overwrite."""
     shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    storage = _create_portable_phase35_storage(tmp_path / "fixture_storage")
     d, r, m = evaluate_prospective_cohort_offline(
         [shadow_path],
         journal_path=db_path,
-        storage_dir=Path("data/datasets"),
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
     )
 
     out_dir = tmp_path / "research_bundle"
@@ -714,6 +845,7 @@ def test_scenario_23_output_file_already_exists_no_accidental_overwrite(tmp_path
 def test_scenario_24_cli_used_without_live_authorization_zero_broker_calls(tmp_path: Path) -> None:
     """Scenario 24: CLI cohort evaluation and missing-label planning use zero broker connections."""
     shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    storage = _create_portable_phase35_storage(tmp_path / "fixture_storage")
     out_dir = tmp_path / "cli_out"
 
     # Evaluate-cohort CLI
@@ -727,7 +859,9 @@ def test_scenario_24_cli_used_without_live_authorization_zero_broker_calls(tmp_p
             "--journal",
             str(db_path),
             "--storage",
-            "data/datasets",
+            str(storage),
+            "--catalog",
+            str(storage / "catalog.db"),
             "--output-dir",
             str(out_dir),
         ],
@@ -750,6 +884,10 @@ def test_scenario_24_cli_used_without_live_authorization_zero_broker_calls(tmp_p
             str(shadow_path),
             "--journal",
             str(db_path),
+            "--storage",
+            str(storage),
+            "--catalog",
+            str(storage / "catalog.db"),
             "--output",
             str(plan_out),
         ],
@@ -794,6 +932,7 @@ def test_missing_label_plan_groups_only_truly_contiguous_windows() -> None:
 def test_cli_prospective_group_cohort_and_plan_commands(tmp_path: Path) -> None:
     """The prospective CLI command group provides evaluate-cohort and plan-missing-labels."""
     shadow_path, db_path = _create_phase35_fixtures(tmp_path)
+    storage = _create_portable_phase35_storage(tmp_path / "fixture_storage")
     out_dir = tmp_path / "prosp_out"
 
     res_cohort = runner.invoke(
@@ -806,7 +945,9 @@ def test_cli_prospective_group_cohort_and_plan_commands(tmp_path: Path) -> None:
             "--journal",
             str(db_path),
             "--storage",
-            "data/datasets",
+            str(storage),
+            "--catalog",
+            str(storage / "catalog.db"),
             "--output-dir",
             str(out_dir),
             "--json",
@@ -831,7 +972,9 @@ def test_cli_prospective_group_cohort_and_plan_commands(tmp_path: Path) -> None:
             "--journal",
             str(db_path),
             "--storage",
-            "data/datasets",
+            str(storage),
+            "--catalog",
+            str(storage / "catalog.db"),
             "--json",
         ],
     )

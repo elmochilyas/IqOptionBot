@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from iqoption_research.cli.main import app
@@ -1529,7 +1530,11 @@ def test_section_c_repeated_identical_evaluations_retain_deterministic_hashes(
 
 
 def test_section_d_suggested_recovery_command_matches_registered_backfill_options() -> None:
-    """Acceptance D: Suggested recovery command matches registered backfill options."""
+    """Acceptance D: Suggested recovery command matches registered backfill options via parser.
+
+    Ensures that argument validation is performed strictly through Click's command parser without
+    invoking the command callback, root command execution, or any broker authentication paths.
+    """
     preds = [
         PredictionRecord(session_id="s1", boundary_F=1795100000, candle_size_seconds=60),
     ]
@@ -1538,18 +1543,125 @@ def test_section_d_suggested_recovery_command_matches_registered_backfill_option
     w = plan.windows[0]
     cmd = w.suggested_command
 
-    # Verify command starts with valid registered entrypoint
+    # 1. Verify suggested command string prefix
     assert cmd.startswith("iqresearch data backfill")
-    parts = shlex.split(cmd)
-    # Extract arguments passed to data command: ["backfill", "--symbol", "EURUSD", ...]
-    data_args = parts[1:]
-    assert data_args[0] == "data"
-    assert data_args[1] == "backfill"
 
-    # Invoke CLI runner with these arguments (offline check)
-    # The backfill command requires explicit live authorization (--live --yes-i-understand),
-    # and fails if credentials are absent or network is blocked, but recognizes ALL option flags.
-    res = runner.invoke(app, data_args)
-    # Exit code is not from unrecognized options: options --symbol, --size, --from, --to, --count,
-    # --live, --yes-i-understand, --saved are all recognized.
-    assert "no such option" not in res.output.lower()
+    # 2. Split command into tokens and verify registered group and subcommand
+    tokens = shlex.split(cmd)
+    assert tokens[0] == "iqresearch"
+    group_name = tokens[1]
+    subcommand_name = tokens[2]
+    backfill_args = tokens[3:]
+
+    # Retrieve registered Click command tree without executing root app or callbacks
+    click_root = typer.main.get_command(app)
+    assert group_name in click_root.commands, f"Group '{group_name}' not registered on root CLI"
+    data_group = click_root.commands[group_name]
+    assert subcommand_name in data_group.commands, (
+        f"Subcommand '{subcommand_name}' not registered in group '{group_name}'"
+    )
+    backfill_cmd = data_group.commands[subcommand_name]
+
+    # 3. Parse arguments using Click command parser without invoking callback or network
+    callback_executed = False
+
+    def guard_callback(*args: Any, **kwargs: Any) -> Any:
+        nonlocal callback_executed
+        callback_executed = True
+        raise AssertionError("Command callback must not be invoked during argument parsing!")
+
+    original_callback = backfill_cmd.callback
+    backfill_cmd.callback = guard_callback
+    try:
+        ctx = backfill_cmd.make_context(subcommand_name, list(backfill_args))
+    finally:
+        backfill_cmd.callback = original_callback
+
+    assert not callback_executed, "Parser-only validation must not invoke command callback"
+
+    # 4. Assert every generated option is recognized and parsed values match requested values
+    parsed = ctx.params
+    assert parsed["instrument"] == "EURUSD"
+    assert parsed["size"] == 60
+    assert parsed["count"] == 1
+    assert parsed["from_date"] == w.from_utc
+    assert parsed["to_date"] == w.to_utc
+
+    # 5. Verify live authorization flags appear only as suggested text, not executed
+    assert "--live" in cmd
+    assert "--yes-i-understand" in cmd
+    assert "--saved" in cmd
+    assert parsed["live"] is True
+    assert parsed["yes_i_understand"] is True
+    assert parsed["saved_credentials"] is True
+
+
+def test_section_d_parser_rejects_invalid_backfill_option() -> None:
+    """Acceptance D: Click parser strictly rejects unrecognized options without callback."""
+    click_root = typer.main.get_command(app)
+    backfill_cmd = click_root.commands["data"].commands["backfill"]
+
+    callback_executed = False
+
+    def guard_callback(*args: Any, **kwargs: Any) -> Any:
+        nonlocal callback_executed
+        callback_executed = True
+        raise AssertionError("Callback must not be invoked on invalid option!")
+
+    original_callback = backfill_cmd.callback
+    backfill_cmd.callback = guard_callback
+    try:
+        with pytest.raises(Exception) as exc_info:
+            backfill_cmd.make_context("backfill", ["--symbol", "EURUSD", "--invalid-bogus-option"])
+    finally:
+        backfill_cmd.callback = original_callback
+
+    assert not callback_executed
+    err_text = str(exc_info.value).lower()
+    assert "no such option" in err_text or "invalid-bogus-option" in err_text
+
+
+def test_section_d_generate_missing_label_plan_never_calls_auth_network_or_broker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Acceptance D: Generating recovery plan never calls auth, network, or broker operations."""
+
+    def forbidden_call(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("Forbidden broker, auth, or network operation invoked during plan generation!")
+
+    # Guard potential broker, auth, and collector entrypoints
+    monkeypatch.setattr(
+        "iqoption_research.cli.commands.backfill_cmd._connect_live_client",
+        forbidden_call,
+    )
+    monkeypatch.setattr(
+        "iqoption_research.auth.manager.AuthenticationManager.login_saved",
+        forbidden_call,
+    )
+    monkeypatch.setattr(
+        "iqoption_research.auth.manager.AuthenticationManager.login_interactive",
+        forbidden_call,
+    )
+    monkeypatch.setattr(
+        "iqoption_research.connectors.iqoption.client.AsyncIQOption.connect",
+        forbidden_call,
+    )
+    monkeypatch.setattr(
+        "iqoption_research.market_data.collector.launch_backfill",
+        forbidden_call,
+    )
+    monkeypatch.setattr(
+        "iqoption_research.market_data.collector.HistoricalDataCollector.__init__",
+        forbidden_call,
+    )
+
+    preds = [
+        PredictionRecord(session_id="s1", boundary_F=1795100000, candle_size_seconds=60),
+        PredictionRecord(session_id="s1", boundary_F=1795100060, candle_size_seconds=60),
+    ]
+
+    # Generating missing label plan with empty candles (missing outcomes) must run 100% locally
+    plan = generate_missing_label_plan(preds, candles=[])
+    assert len(plan.windows) == 1
+    assert plan.total_missing_outcomes == 2
+    assert plan.windows[0].missing_candle_count == 2

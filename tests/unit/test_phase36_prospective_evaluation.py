@@ -847,6 +847,9 @@ def test_cli_evaluate_predictions_human_and_json(tmp_path: Path) -> None:
     shadow_path, db_path = _create_phase35_fixture(tmp_path)
     out_file = tmp_path / "report.json"
 
+    empty_storage = tmp_path / "empty_storage"
+    empty_storage.mkdir()
+
     # Human-formatted execution
     res = runner.invoke(
         app,
@@ -857,6 +860,8 @@ def test_cli_evaluate_predictions_human_and_json(tmp_path: Path) -> None:
             str(shadow_path),
             "--journal",
             str(db_path),
+            "--storage",
+            str(empty_storage),
             "--output",
             str(out_file),
         ],
@@ -884,6 +889,8 @@ def test_cli_evaluate_predictions_human_and_json(tmp_path: Path) -> None:
             str(shadow_path),
             "--journal",
             str(db_path),
+            "--storage",
+            str(empty_storage),
             "--json",
         ],
     )

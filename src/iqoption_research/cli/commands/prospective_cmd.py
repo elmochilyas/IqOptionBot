@@ -131,3 +131,121 @@ def evaluate_predictions_cmd(
         output=output,
         json_output=json_output,
     )
+
+
+@app.command("evaluate-cohort")
+def evaluate_cohort_cmd(
+    evidence: list[Path] = typer.Option(
+        None,
+        "--evidence",
+        "-e",
+        help="Path(s) to shadow evidence JSON file(s) or directory.",
+    ),
+    journal: Path | None = typer.Option(
+        None,
+        "--journal",
+        "-j",
+        help="Path to prospective SQLite journal database (observations.db).",
+    ),
+    storage: Path = typer.Option(
+        Path("data/datasets"),
+        "--storage",
+        "-s",
+        help="Path to historical authentic catalog storage.",
+    ),
+    catalog: Path | None = typer.Option(
+        None,
+        "--catalog",
+        "-c",
+        help="Optional path to SQLite dataset catalog (catalog.db).",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session-id",
+        help="Filter to a specific session ID.",
+    ),
+    output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help="Directory to write research dataset, evaluation report, and manifest.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Permit overwriting existing published research artifacts.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
+) -> None:
+    """Offline prospective cohort research dataset builder and evaluator (Phase 37)."""
+    from iqoption_research.cli.commands.timing_cmd import evaluate_cohort_command
+
+    evaluate_cohort_command(
+        evidence=evidence,
+        journal=journal,
+        storage=storage,
+        catalog=catalog,
+        session_id=session_id,
+        output_dir=output_dir,
+        overwrite=overwrite,
+        json_output=json_output,
+    )
+
+
+@app.command("plan-missing-labels")
+def plan_missing_labels_cmd(
+    evidence: list[Path] = typer.Option(
+        None,
+        "--evidence",
+        "-e",
+        help="Path(s) to shadow evidence JSON file(s) or directory.",
+    ),
+    journal: Path | None = typer.Option(
+        None,
+        "--journal",
+        "-j",
+        help="Path to prospective SQLite journal database (observations.db).",
+    ),
+    storage: Path = typer.Option(
+        Path("data/datasets"),
+        "--storage",
+        "-s",
+        help="Path to historical authentic catalog storage.",
+    ),
+    catalog: Path | None = typer.Option(
+        None,
+        "--catalog",
+        "-c",
+        help="Optional path to SQLite dataset catalog (catalog.db).",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session-id",
+        help="Filter to a specific session ID.",
+    ),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Optional path to write the JSON recovery plan.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Permit overwriting existing output recovery plan file.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
+) -> None:
+    """Offline bounded recovery planner grouping truly contiguous missing candle windows."""
+    from iqoption_research.cli.commands.timing_cmd import plan_missing_labels_command
+
+    plan_missing_labels_command(
+        evidence=evidence,
+        journal=journal,
+        storage=storage,
+        catalog=catalog,
+        session_id=session_id,
+        output=output,
+        overwrite=overwrite,
+        json_output=json_output,
+    )

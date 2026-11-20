@@ -54,20 +54,29 @@ from iqoption_research.cli.main import app
 from iqoption_research.market_data.catalog import CatalogEntry, DatasetCatalog
 from iqoption_research.research.prospective import digest
 from iqoption_research.research.prospective_cohort import (
+    build_integrity_manifest,
+    build_research_dataset,
     generate_missing_label_plan,
 )
 from iqoption_research.research.prospective_eval import (
+    CohortIdentity,
     DuplicateOutcomeConflictError,
     PredictionRecord,
     ProspectiveEvaluationError,
     compute_file_sha256,
+    compute_prospective_metrics,
 )
 from iqoption_research.research.prospective_pilot import (
+    FrozenContractViolationError,
     PilotStatusKind,
+    PilotStudySpecification,
+    ProspectivePilotError,
     SessionLifecycleState,
+    StudySpecificationExistsError,
     StudySpecificationTamperedError,
     initialize_pilot_study,
     load_and_verify_study_specification,
+    publish_pilot_checkpoint,
     reconcile_pilot_sessions,
     verify_pilot_checkpoint,
 )
@@ -81,6 +90,84 @@ from tests.unit.test_phase37_prospective_cohort_evaluation import (
 )
 
 runner = CliRunner()
+TEST_SAMPLING_RULE = "daily_regular_market_open_1300_to_1500_utc_5_candles_per_session"
+
+
+def _init_study(
+    output_path: Path,
+    *,
+    study_id: str = "pilot-eurusd-m1-rf-001",
+    target_total: int = 100,
+    baseline_reference_count: int = 5,
+    model_path: Path | None = None,
+    sampling_rule_description: str = TEST_SAMPLING_RULE,
+) -> PilotStudySpecification:
+    """Helper to initialize study spec with valid non-placeholder sampling rule."""
+    return initialize_pilot_study(
+        output_path,
+        study_id=study_id,
+        target_total=target_total,
+        baseline_reference_count=baseline_reference_count,
+        model_path=model_path,
+        sampling_rule_description=sampling_rule_description,
+    )
+
+
+def _create_catalog_storage(
+    storage_dir: Path,
+    candles: list[Any],
+    dataset_id: str = "fixture_dataset",
+) -> Path:
+    """Create authentic broker catalog parquet storage for given candles."""
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    cat_file = storage_dir / "catalog.db"
+    cat = DatasetCatalog(cat_file)
+    pf = storage_dir / f"candles_{candles[0].from_ts}_{candles[-1].to_ts}.parquet"
+    _write_simple_parquet(pf, candles)
+    meta_file = pf.with_suffix(".meta.json")
+    meta_data = {
+        "dataset_id": dataset_id,
+        "source": "broker_authentic_collection",
+        "is_synthetic": False,
+        "symbol": "EURUSD",
+        "candle_size_seconds": 60,
+    }
+    meta_file.write_text(json.dumps(meta_data), encoding="utf-8")
+    meta_sha = compute_file_sha256(meta_file)
+    sha = compute_file_sha256(pf)
+    entry = CatalogEntry(
+        dataset_id=dataset_id,
+        schema_version="2.0",
+        source="broker_authentic_collection",
+        is_synthetic=False,
+        symbol="EURUSD",
+        active_id=1,
+        is_otc=False,
+        candle_size_seconds=60,
+        from_ts=candles[0].from_ts,
+        to_ts=candles[-1].to_ts,
+        from_utc="2026-11-19T16:42:00+00:00",
+        to_utc="2026-11-19T17:42:00+00:00",
+        candle_count=len(candles),
+        created_at_utc="2026-11-19T16:47:00+00:00",
+        imported_at_utc="2026-11-19T16:47:00+00:00",
+        quality_summary={
+            "missing_intervals": [],
+            "duplicate_intervals": [],
+            "stale_intervals": [],
+            "anomalous_intervals": [],
+        },
+        structural_integrity_passed=True,
+        coverage_completeness_ratio=1.0,
+        research_sufficiency_status="SUFFICIENT",
+        research_sufficiency_policy="STRICT",
+        file_path=str(pf.relative_to(storage_dir).as_posix()),
+        sha256_checksum=sha,
+        metadata_path=str(meta_file.relative_to(storage_dir).as_posix()),
+        metadata_sha256=meta_sha,
+    )
+    cat.register_dataset(entry)
+    return storage_dir
 
 
 def _create_second_shadow_session(
@@ -233,7 +320,7 @@ def _create_second_shadow_session(
 def test_scenario_01_existing_five_reference_observations_count_five_once(tmp_path: Path) -> None:
     """Scenario 1: Existing five reference observations counted exactly once."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     shadow_path, db_path = _create_phase35_fixtures(tmp_path / "ref_sess")
     storage = _create_portable_phase35_storage(tmp_path / "storage")
@@ -260,7 +347,7 @@ def test_scenario_02_additional_compatible_five_observation_session_total_ten(
 ) -> None:
     """Scenario 2: One additional compatible five-observation session brings total to 10."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, _db1_path = _create_phase35_fixtures(tmp_path / "sess1")
     s2_path, _db2_path = _create_second_shadow_session(tmp_path / "sess2", shift_s=3600)
@@ -283,7 +370,7 @@ def test_scenario_02_additional_compatible_five_observation_session_total_ten(
 def test_scenario_03_same_session_imported_twice_no_count_inflation(tmp_path: Path) -> None:
     """Scenario 3: Same session imported twice results in zero count inflation."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, db1_path = _create_phase35_fixtures(tmp_path / "sess1")
     # Duplicate same file into another directory
@@ -308,7 +395,7 @@ def test_scenario_04_same_prediction_boundary_in_multiple_sessions_no_double_cou
 ) -> None:
     """Scenario 4: Same boundary in multiple sessions deduplicated without count inflation."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, _db1_path = _create_phase35_fixtures(tmp_path / "sess1")
     # Session 2 has shift_s=0 so it shares boundaries with session 1, but with distinct session_id
@@ -330,7 +417,7 @@ def test_scenario_04_same_prediction_boundary_in_multiple_sessions_no_double_cou
 def test_scenario_05_different_model_manifest_rejects_incompatible_session(tmp_path: Path) -> None:
     """Scenario 5: Different model manifest rejects incompatible session into REJECTED_COHORT."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, _ = _create_phase35_fixtures(tmp_path / "sess1")
     bad_sess, _ = _create_second_shadow_session(
@@ -358,7 +445,7 @@ def test_scenario_06_different_policy_or_threshold_rejects_incompatible_session(
 ) -> None:
     """Scenario 6: Different policy version rejects incompatible session."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, _ = _create_phase35_fixtures(tmp_path / "sess1")
     bad_sess, _ = _create_second_shadow_session(
@@ -379,7 +466,7 @@ def test_scenario_06_different_policy_or_threshold_rejects_incompatible_session(
 def test_scenario_07_otc_session_mixed_with_regular_eurusd_rejected(tmp_path: Path) -> None:
     """Scenario 7: OTC session mixed with regular EURUSD is strictly rejected."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, _ = _create_phase35_fixtures(tmp_path / "sess1")
     otc_sess, _ = _create_second_shadow_session(
@@ -402,7 +489,7 @@ def test_scenario_08_no_journal_or_invalid_receipt_not_eligible_for_primary_veri
 ) -> None:
     """Scenario 8: Missing journal causes session observations to lack verified receipts."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_dir = tmp_path / "sess_no_journal"
     s1_path, db_path = _create_phase35_fixtures(s1_dir)
@@ -425,7 +512,7 @@ def test_scenario_09_all_five_decisions_skip_retained_as_probabilistic_predictio
 ) -> None:
     """Scenario 9: All decisions SKIP are retained; coverage 0%, abstention 100%."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     skip_sess, db_path = _create_second_shadow_session(
         tmp_path / "skip_sess",
@@ -448,7 +535,7 @@ def test_scenario_09_all_five_decisions_skip_retained_as_probabilistic_predictio
 def test_scenario_10_session_stops_after_two_candles_preserved_honestly(tmp_path: Path) -> None:
     """Scenario 10: Session that stops after two candles preserves partial observations honestly."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     partial_sess, db_path = _create_second_shadow_session(
         tmp_path / "partial_sess",
@@ -471,7 +558,7 @@ def test_scenario_11_session_ends_before_valid_prediction_zero_sample_contributi
 ) -> None:
     """Scenario 11: Session ending before valid prediction gives zero sample contribution."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     empty_sess, db_path = _create_second_shadow_session(
         tmp_path / "empty_sess",
@@ -493,7 +580,7 @@ def test_scenario_11_session_ends_before_valid_prediction_zero_sample_contributi
 def test_scenario_12_historical_outcomes_available_for_three_of_five(tmp_path: Path) -> None:
     """Scenario 12: Historical outcomes available for 3 of 5 predictions -> 3 labeled, 2 missing."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
     # Storage with only 3 candles (1795106520, 1795106580, 1795106640)
@@ -572,7 +659,7 @@ def test_scenario_13_missing_historical_availability_timestamps_no_invented_caus
 ) -> None:
     """Scenario 13: Missing historical timestamp does not invent causal availability."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
     storage = _create_portable_phase35_storage(tmp_path / "storage")
@@ -596,7 +683,7 @@ def test_scenario_14_two_different_candles_for_one_boundary_reject_conflict(
 ) -> None:
     """Scenario 14: Conflicting OHLC in storage raises DuplicateOutcomeConflictError."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
     storage_dir = tmp_path / "conflict_storage"
@@ -717,7 +804,7 @@ def test_scenario_15_corrupted_catalog_metadata_fails_provenance_verification(
 ) -> None:
     """Scenario 15: Corrupted catalog metadata fails provenance verification."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
     storage = _create_portable_phase35_storage(tmp_path / "storage")
@@ -742,7 +829,7 @@ def test_scenario_16_duplicate_source_filenames_independent_sessions_preserved(
 ) -> None:
     """Scenario 16: Duplicate filenames from independent sessions preserve distinct sources."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     # Session 1 in dir A named shadow.json
     dir_a = tmp_path / "dir_a"
@@ -752,11 +839,12 @@ def test_scenario_16_duplicate_source_filenames_independent_sessions_preserved(
 
     # Session 2 in dir B also named shadow.json
     dir_b = tmp_path / "dir_b"
-    s2_orig, _db2 = _create_second_shadow_session(
+    s2_orig, db2 = _create_second_shadow_session(
         dir_b, session_id="session_distinct_b", shift_s=3600
     )
     s2_renamed = dir_b / "shadow.json"
     s2_orig.rename(s2_renamed)
+    db2.rename(dir_b / "observations.db")
 
     status, _preds, _pairs = reconcile_pilot_sessions(
         spec,
@@ -776,7 +864,7 @@ def test_scenario_17_same_study_processed_different_order_identical_results(
 ) -> None:
     """Scenario 17: Processing in different order produces identical substantive results."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, _db1_path = _create_phase35_fixtures(tmp_path / "sess1")
     s2_path, _db2_path = _create_second_shadow_session(tmp_path / "sess2", shift_s=3600)
@@ -803,7 +891,7 @@ def test_scenario_17_same_study_processed_different_order_identical_results(
 def test_scenario_18_repeated_reconciliation_idempotent_no_changes(tmp_path: Path) -> None:
     """Scenario 18: Repeated reconciliation is idempotent and does not modify evidence."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
     content_before = s1_path.read_text(encoding="utf-8")
@@ -820,7 +908,7 @@ def test_scenario_19_new_historical_labels_new_snapshot_earlier_checkpoint_uncha
 ) -> None:
     """Scenario 19: New labels produce new snapshot while earlier checkpoint is unchanged."""
     spec_path = tmp_path / "study_spec.json"
-    initialize_pilot_study(spec_path)
+    _init_study(spec_path)
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
 
     # Checkpoint 1: without outcomes (storage empty)
@@ -879,7 +967,7 @@ def test_scenario_19_new_historical_labels_new_snapshot_earlier_checkpoint_uncha
 def test_scenario_20_existing_checkpoint_output_path_fails_create_only(tmp_path: Path) -> None:
     """Scenario 20: Existing checkpoint output path fails closed in create-only mode."""
     spec_path = tmp_path / "study_spec.json"
-    initialize_pilot_study(spec_path)
+    _init_study(spec_path)
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
 
     cp_dir = tmp_path / "existing_cp"
@@ -911,7 +999,7 @@ def test_scenario_21_exception_halfway_publication_no_valid_partial_checkpoint(
 ) -> None:
     """Scenario 21: Exception during publication leaves no partial checkpoint at output path."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
     _s1_path, _db_path = _create_phase35_fixtures(tmp_path / "sess1")
 
     cp_dir = tmp_path / "aborted_cp"
@@ -948,7 +1036,7 @@ def test_scenario_23_changed_study_specification_after_registration_fails_verifi
 ) -> None:
     """Scenario 23: Mutating a study specification after registration fails hash verification."""
     spec_path = tmp_path / "study_spec.json"
-    initialize_pilot_study(spec_path)
+    _init_study(spec_path)
 
     # Tamper with threshold in file without updating hash
     raw = json.loads(spec_path.read_text(encoding="utf-8"))
@@ -992,7 +1080,7 @@ def test_scenario_25_saved_credentials_exist_during_automated_tests_zero_network
 ) -> None:
     """Scenario 25: Valid saved credentials produce zero network access or authentication calls."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
 
     # Set dummy credentials in environment
@@ -1045,12 +1133,13 @@ def test_scenario_26_suggested_command_includes_live_parser_validation_only() ->
 def test_scenario_27_pilot_reaches_100_committed_80_labeled_target_reached(tmp_path: Path) -> None:
     """Scenario 27: Pilot reaches 100 committed predictions with 80 labeled -> TARGET_REACHED."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path, target_total=10)  # scale target for testing
+    spec = _init_study(spec_path, target_total=10)  # scale target for testing
 
     s1_path, _db1_path = _create_phase35_fixtures(tmp_path / "sess1")
     s2_path, _db2_path = _create_second_shadow_session(tmp_path / "sess2", shift_s=3600)
 
-    # Provide candles for 8 of the 10 boundaries
+    # Provide authentic broker catalog Parquet candles for 8 of the 10 boundaries
+    # (5 from sess1, 3 from sess2)
     b1 = [1795106520, 1795106580, 1795106640, 1795106700, 1795106760]
     b2 = [f + 3600 for f in b1]
     all_b = b1 + b2
@@ -1059,11 +1148,15 @@ def test_scenario_27_pilot_reaches_100_committed_80_labeled_target_reached(tmp_p
     candles = [
         _make_candle(b, 1.0980, 1.0981, source="broker_authentic_collection") for b in labeled_b
     ]
+    storage = _create_catalog_storage(
+        tmp_path / "storage", candles, dataset_id="scenario_27_storage"
+    )
 
     status, _preds, _pairs = reconcile_pilot_sessions(
         spec,
         [s1_path, s2_path],
-        candles=candles,
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
     )
 
     assert status.total_unique_committed_predictions == 10
@@ -1076,7 +1169,7 @@ def test_scenario_27_pilot_reaches_100_committed_80_labeled_target_reached(tmp_p
 def test_scenario_28_invalid_probability_rejected_or_excluded(tmp_path: Path) -> None:
     """Scenario 28: Invalid or nonfinite probabilities excluded with audit reason."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     sess_path, db_path = _create_second_shadow_session(
         tmp_path / "sess_invalid_prob",
@@ -1099,7 +1192,7 @@ def test_scenario_28_invalid_probability_rejected_or_excluded(tmp_path: Path) ->
 def test_scenario_29_empty_study_controlled_zero_sample_report(tmp_path: Path) -> None:
     """Scenario 29: Empty study produces a controlled zero-sample report."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     status, _preds, _pairs = reconcile_pilot_sessions(spec, [])
 
@@ -1113,7 +1206,7 @@ def test_scenario_29_empty_study_controlled_zero_sample_report(tmp_path: Path) -
 def test_scenario_30_duplicate_overlapping_session_windows_deduplicated(tmp_path: Path) -> None:
     """Scenario 30: Overlapping session windows deduplicate identical predictions."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, _db1_path = _create_phase35_fixtures(tmp_path / "sess1")
     s2_path, _db2_path = _create_second_shadow_session(
@@ -1130,7 +1223,7 @@ def test_scenario_31_operator_cancellation_preserves_valid_partial_evidence(
 ) -> None:
     """Scenario 31: Operator cancellation preserves partial evidence (STOPPED_BY_OPERATOR)."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
 
     status, _preds, _pairs = reconcile_pilot_sessions(
@@ -1150,7 +1243,7 @@ def test_scenario_32_model_performance_favorable_at_n20_no_automatic_trading(
 ) -> None:
     """Scenario 32: Favorable metrics at small sample never promote trading authority."""
     spec_path = tmp_path / "study_spec.json"
-    spec = initialize_pilot_study(spec_path)
+    spec = _init_study(spec_path)
 
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
     storage = _create_portable_phase35_storage(tmp_path / "storage")
@@ -1174,7 +1267,7 @@ def test_scenario_32_model_performance_favorable_at_n20_no_automatic_trading(
 
 
 def test_cli_pilot_init_and_idempotence(tmp_path: Path) -> None:
-    """CLI: prospective pilot-init creates immutable study specification."""
+    """CLI: prospective pilot-init creates immutable study specification in create-only mode."""
     out_file = tmp_path / "pilot_study.json"
 
     # 1. Initialize
@@ -1199,7 +1292,7 @@ def test_cli_pilot_init_and_idempotence(tmp_path: Path) -> None:
     assert spec["baseline_reference_count"] == 5
     assert spec["study_specification_sha256"]
 
-    # 2. Refuses overwrite without --overwrite
+    # 2. Refuses second initialization attempt (strictly create-only)
     res_err = runner.invoke(
         app,
         [
@@ -1208,35 +1301,18 @@ def test_cli_pilot_init_and_idempotence(tmp_path: Path) -> None:
             "--output",
             str(out_file),
             "--study-id",
-            "test-study-001",
+            "test-study-002",
             "--json",
         ],
     )
     assert res_err.exit_code != 0
-
-    # 3. Allows overwrite with --overwrite
-    res_ov = runner.invoke(
-        app,
-        [
-            "prospective",
-            "pilot-init",
-            "--output",
-            str(out_file),
-            "--study-id",
-            "test-study-002",
-            "--overwrite",
-            "--json",
-        ],
-    )
-    assert res_ov.exit_code == 0
-    spec2 = json.loads(res_ov.output)
-    assert spec2["study_id"] == "test-study-002"
+    assert "already exists" in res_err.output or "FAILED" in res_err.output
 
 
 def test_cli_pilot_status_outputs_all_required_keys(tmp_path: Path) -> None:
     """CLI: prospective pilot-status provides all required fields in human and JSON modes."""
     spec_path = tmp_path / "study_spec.json"
-    initialize_pilot_study(spec_path)
+    _init_study(spec_path)
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
     storage = _create_portable_phase35_storage(tmp_path / "storage")
 
@@ -1280,6 +1356,11 @@ def test_cli_pilot_status_outputs_all_required_keys(tmp_path: Path) -> None:
         "remaining_to_target",
         "missing_label_windows",
         "data_quality_warnings",
+        "call_analytical_signals",
+        "put_analytical_signals",
+        "total_analytical_signals",
+        "final_skips",
+        "final_non_skips",
     ]
     for rk in required_keys:
         assert rk in d, f"Missing required pilot-status key: {rk}"
@@ -1288,6 +1369,11 @@ def test_cli_pilot_status_outputs_all_required_keys(tmp_path: Path) -> None:
     assert d["new_unique_committed_predictions"] == 0
     assert d["total_unique_committed_predictions"] == 5
     assert d["remaining_to_target"] == 95
+    assert d["final_skips"] == 5
+    assert d["final_non_skips"] == 0
+    assert d["call_analytical_signals"] == 0
+    assert d["put_analytical_signals"] == 0
+    assert d["total_analytical_signals"] == 0
 
     # Human-readable mode
     res_human = runner.invoke(
@@ -1315,7 +1401,7 @@ def test_cli_pilot_status_outputs_all_required_keys(tmp_path: Path) -> None:
 def test_cli_pilot_checkpoint_and_verify_lifecycle(tmp_path: Path) -> None:
     """CLI: prospective pilot-checkpoint creates verifiable bundle; pilot-verify validates it."""
     spec_path = tmp_path / "study_spec.json"
-    initialize_pilot_study(spec_path)
+    _init_study(spec_path)
     s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
     storage = _create_portable_phase35_storage(tmp_path / "storage")
 
@@ -1387,3 +1473,653 @@ def test_cli_pilot_checkpoint_and_verify_lifecycle(tmp_path: Path) -> None:
     assert res_tamper.exit_code != 0
     t_info = json.loads(res_tamper.output)
     assert t_info["valid"] is False
+
+
+# ==============================================================================
+# Acceptance Defect A: Verified Population Integrity
+# ==============================================================================
+
+
+def test_section_a_five_valid_registry_predictions_no_journal_primary_count_zero(
+    tmp_path: Path,
+) -> None:
+    """Five valid registry predictions with no journal produce primary count 0."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    sess_dir = tmp_path / "sess_no_journal"
+    s1_path, db_path = _create_phase35_fixtures(sess_dir)
+    # Remove journal DB
+    db_path.unlink()
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path])
+    status = rec_res.status
+    assert status.total_unique_committed_predictions == 0
+    assert status.reference_observations == 0
+    assert status.new_unique_committed_predictions == 0
+    assert len(rec_res.eligible_predictions) == 0
+    assert status.verified_sessions == []
+    assert status.rejected_sessions == ["shadow_1758c4a42993483fa41c48e3cb4ab386"]
+    assert status.session_audits[0].rejection_reasons.get("UNVERIFIED_JOURNAL_RECEIPT") == 5
+
+
+def test_section_a_five_predictions_with_verified_journal_primary_count_five(
+    tmp_path: Path,
+) -> None:
+    """Five predictions with verified journal produce primary count 5."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess_verified")
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path], journal_path=db_path)
+    assert rec_res.status.total_unique_committed_predictions == 5
+    assert len(rec_res.eligible_predictions) == 5
+    assert rec_res.status.verified_sessions == ["shadow_1758c4a42993483fa41c48e3cb4ab386"]
+    assert rec_res.status.rejected_sessions == []
+
+
+def test_section_a_four_verified_and_one_unverified_only_four_eligible_fifth_audited(
+    tmp_path: Path,
+) -> None:
+    """Four verified and one unverified: only 4 eligible, with 5th explicitly audited."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_second_shadow_session(
+        tmp_path / "sess_partial",
+        override_probabilities=[0.52, 0.52, 0.52, 0.52, -0.1],
+    )
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path], journal_path=db_path)
+    assert rec_res.status.total_unique_committed_predictions == 4
+    assert len(rec_res.eligible_predictions) == 4
+    audit = rec_res.status.session_audits[0]
+    assert audit.valid_committed_predictions == 4
+    assert audit.uncommitted_observations_count == 1
+    assert audit.rejection_reasons.get("INVALID_OR_MISSING_PROBABILITY") == 1
+
+
+def test_section_a_invalid_journal_digest_rejects_affected_evidence(tmp_path: Path) -> None:
+    """Corrupted journal database fails closed with REJECTED_INTEGRITY."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess_corrupt_db")
+    db_path.write_bytes(b"CORRUPT_NOT_A_SQLITE_DATABASE_HEADER_DATA_1234567890")
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path], journal_path=db_path)
+    assert rec_res.status.total_unique_committed_predictions == 0
+    assert rec_res.status.rejected_sessions == ["shadow_1758c4a42993483fa41c48e3cb4ab386"]
+    assert (
+        rec_res.status.session_audits[0].lifecycle_state
+        == SessionLifecycleState.REJECTED_INTEGRITY.value
+    )
+
+
+def test_section_a_registry_only_observations_cannot_trigger_target_reached(
+    tmp_path: Path,
+) -> None:
+    """Registry-only observations without verified journals cannot trigger TARGET_REACHED."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path, target_total=5)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+    db_path.unlink()
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path])
+    assert rec_res.status.total_unique_committed_predictions == 0
+    assert rec_res.status.pilot_status == PilotStatusKind.INSUFFICIENT_EVIDENCE.value
+    assert rec_res.status.readiness_assessment["is_pilot_target_reached"] is False
+
+
+def test_section_a_published_checkpoint_accurately_reflects_verified_vs_rejected(
+    tmp_path: Path,
+) -> None:
+    """Published checkpoint accurately reflects verified vs rejected observations."""
+    spec_path = tmp_path / "study_spec.json"
+    _init_study(spec_path)
+    s1_path, _db1_path = _create_phase35_fixtures(tmp_path / "sess1")
+    s2_path, db2_path = _create_second_shadow_session(tmp_path / "sess2", shift_s=3600)
+    db2_path.unlink()  # sess2 unverified
+
+    storage = _create_portable_phase35_storage(tmp_path / "storage")
+    cp_dir = tmp_path / "cp_audit_verified"
+
+    res = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-checkpoint",
+            "--study",
+            str(spec_path),
+            "--evidence",
+            str(s1_path),
+            "--evidence",
+            str(s2_path),
+            "--storage",
+            str(storage),
+            "--catalog",
+            str(storage / "catalog.db"),
+            "--output-dir",
+            str(cp_dir),
+            "--json",
+        ],
+    )
+    assert res.exit_code == 0
+    cp_data = json.loads((cp_dir / "pilot_checkpoint.json").read_text(encoding="utf-8"))
+    assert cp_data["total_unique_committed_predictions"] == 5
+    assert cp_data["reference_observations_count"] == 5
+    assert cp_data["new_unique_committed_predictions"] == 0
+    assert cp_data["rejected_observations_count"] == 5
+
+
+# ==============================================================================
+# Acceptance Defect B: Outcome Provenance: Remove Authentication by Assertion
+# ==============================================================================
+
+
+def test_section_b_arbitrary_direct_candle_never_broker_verified(tmp_path: Path) -> None:
+    """Arbitrary direct candle is PROVENANCE_UNVERIFIED and fails closed in authentic scoring."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+
+    from iqoption_research.research.prospective_eval import UnverifiedOutcomeProvenanceError
+
+    direct_candle = _make_candle(1795106520, 1.0980, 1.0981)
+    with pytest.raises(UnverifiedOutcomeProvenanceError):
+        reconcile_pilot_sessions(spec, [s1_path], journal_path=db_path, candles=[direct_candle])
+
+
+def test_section_b_forged_raw_source_never_broker_verified(tmp_path: Path) -> None:
+    """Forged source='broker_authentic_collection' on direct candle fails closed."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+
+    from iqoption_research.research.prospective_eval import UnverifiedOutcomeProvenanceError
+
+    forged_candle = _make_candle(1795106520, 1.0980, 1.0981, source="broker_authentic_collection")
+    with pytest.raises(UnverifiedOutcomeProvenanceError):
+        reconcile_pilot_sessions(spec, [s1_path], journal_path=db_path, candles=[forged_candle])
+
+
+def test_section_b_synthetic_candle_rejected_from_production_scoring(tmp_path: Path) -> None:
+    """Synthetic candle is rejected from production scoring."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+
+    storage_dir = tmp_path / "storage_syn"
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    c1 = _make_candle(1795106520, 1.0980, 1.0981, source="synthetic")
+    pf = storage_dir / "candles.parquet"
+    _write_simple_parquet(pf, [c1])
+    meta_file = pf.with_suffix(".meta.json")
+    meta_file.write_text(
+        json.dumps({
+            "dataset_id": "syn",
+            "source": "synthetic",
+            "is_synthetic": True,
+            "symbol": "EURUSD",
+            "candle_size_seconds": 60,
+        }),
+        encoding="utf-8",
+    )
+    cat = DatasetCatalog(storage_dir / "catalog.db")
+    entry = CatalogEntry(
+        dataset_id="syn",
+        schema_version="2.0",
+        source="synthetic",
+        is_synthetic=True,
+        symbol="EURUSD",
+        active_id=1,
+        is_otc=False,
+        candle_size_seconds=60,
+        from_ts=1795106520,
+        to_ts=1795106580,
+        from_utc="2026-11-19T16:42:00+00:00",
+        to_utc="2026-11-19T16:43:00+00:00",
+        candle_count=1,
+        created_at_utc="2026-11-19T16:47:00+00:00",
+        imported_at_utc="2026-11-19T16:47:00+00:00",
+        quality_summary={
+            "missing_intervals": [],
+            "duplicate_intervals": [],
+            "stale_intervals": [],
+            "anomalous_intervals": [],
+        },
+        structural_integrity_passed=True,
+        coverage_completeness_ratio=1.0,
+        research_sufficiency_status="SUFFICIENT",
+        research_sufficiency_policy="STRICT",
+        file_path=str(pf.relative_to(storage_dir).as_posix()),
+        sha256_checksum=compute_file_sha256(pf),
+        metadata_path=str(meta_file.relative_to(storage_dir).as_posix()),
+        metadata_sha256=compute_file_sha256(meta_file),
+    )
+    cat.register_dataset(entry)
+
+    from iqoption_research.research.prospective_eval import (
+        SyntheticDataRejectedError,
+        UnverifiedOutcomeProvenanceError,
+    )
+
+    with pytest.raises((SyntheticDataRejectedError, UnverifiedOutcomeProvenanceError)):
+        reconcile_pilot_sessions(
+            spec,
+            [s1_path],
+            journal_path=db_path,
+            storage_dir=storage_dir,
+            catalog_path=storage_dir / "catalog.db",
+        )
+
+
+def test_section_b_missing_catalog_record_rejected_from_authentic_scoring(tmp_path: Path) -> None:
+    """Parquet file missing catalog entry is rejected from authentic scoring."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+
+    storage_dir = tmp_path / "storage_unregistered"
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    c1 = _make_candle(1795106520, 1.0980, 1.0981)
+    _write_simple_parquet(storage_dir / "candles.parquet", [c1])
+    # Empty catalog
+    DatasetCatalog(storage_dir / "catalog.db")
+
+    from iqoption_research.research.prospective_eval import UnverifiedOutcomeProvenanceError
+
+    with pytest.raises(UnverifiedOutcomeProvenanceError):
+        reconcile_pilot_sessions(
+            spec,
+            [s1_path],
+            journal_path=db_path,
+            storage_dir=storage_dir,
+            catalog_path=storage_dir / "catalog.db",
+        )
+
+
+def test_section_b_valid_catalog_metadata_and_checksum_lineage_eligible_for_authentic_scoring(
+    tmp_path: Path,
+) -> None:
+    """Valid catalog, metadata, and checksum lineage is eligible for authentic scoring."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+    storage = _create_portable_phase35_storage(tmp_path / "storage")
+
+    rec_res = reconcile_pilot_sessions(
+        spec,
+        [s1_path],
+        journal_path=db_path,
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
+    )
+    assert rec_res.status.verified_labeled_predictions == 5
+
+
+def test_section_b_synthetic_fixture_test_mode_metrics_calculated_authenticity_synthetic(
+    tmp_path: Path,
+) -> None:
+    """Synthetic fixture test mode computes metrics but keeps verified_labeled_predictions=0."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+    direct_candles = [_make_candle(1795106520, 1.0980, 1.0981)]
+
+    rec_res = reconcile_pilot_sessions(
+        spec,
+        [s1_path],
+        journal_path=db_path,
+        candles=direct_candles,
+        test_allow_synthetic_fixtures=True,
+    )
+    # Pairs are aligned and metrics calculated
+    assert any(p.status == "ALIGNED" for p in rec_res.pairs)
+    # But authentic production count remains 0!
+    assert rec_res.status.verified_labeled_predictions == 0
+
+
+# ==============================================================================
+# Acceptance Defect C: End-to-End Checkpoint Source Lineage
+# ==============================================================================
+
+
+def test_section_c_real_reference_preds_produce_non_empty_fingerprints(
+    tmp_path: Path,
+) -> None:
+    """Five real reference predictions produce non-empty evidence and journal fingerprints."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path], journal_path=db_path)
+    fps = rec_res.source_fingerprints
+    assert "evidence:shadow_1758c4a42993483fa41c48e3cb4ab386" in fps
+    assert "journal:shadow_1758c4a42993483fa41c48e3cb4ab386:observations.db" in fps
+    for v in fps.values():
+        assert len(v) == 64 and all(c in "0123456789abcdef" for c in v.lower())
+
+
+def test_section_c_two_different_session_journals_both_appear_in_manifest_fingerprints(
+    tmp_path: Path,
+) -> None:
+    """Two different session journals both appear in manifest fingerprints."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, _db1 = _create_phase35_fixtures(tmp_path / "sess1")
+    s2_path, _db2 = _create_second_shadow_session(tmp_path / "sess2", shift_s=3600)
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path, s2_path])
+    fps = rec_res.source_fingerprints
+    assert "journal:shadow_1758c4a42993483fa41c48e3cb4ab386:observations.db" in fps
+    assert "journal:session_compatible_second_002:observations.db" in fps
+
+
+def test_section_c_verified_outcome_includes_storage_source_fingerprint(tmp_path: Path) -> None:
+    """Verified outcome includes its storage source fingerprint."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+    storage = _create_portable_phase35_storage(tmp_path / "storage")
+
+    rec_res = reconcile_pilot_sessions(
+        spec,
+        [s1_path],
+        journal_path=db_path,
+        storage_dir=storage,
+        catalog_path=storage / "catalog.db",
+    )
+    fps = rec_res.source_fingerprints
+    storage_fps = [k for k in fps if k.startswith("storage:")]
+    assert len(storage_fps) > 0
+
+
+def test_section_c_dataset_report_and_manifest_agree_on_canonical_source_identities(
+    tmp_path: Path,
+) -> None:
+    """Dataset, report, and manifest agree on canonical source identities."""
+    spec_path = tmp_path / "study_spec.json"
+    _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+    storage = _create_portable_phase35_storage(tmp_path / "storage")
+    cp_dir = tmp_path / "cp_lineage"
+
+    res = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-checkpoint",
+            "--study",
+            str(spec_path),
+            "--evidence",
+            str(s1_path),
+            "--journal",
+            str(db_path),
+            "--storage",
+            str(storage),
+            "--catalog",
+            str(storage / "catalog.db"),
+            "--output-dir",
+            str(cp_dir),
+            "--json",
+        ],
+    )
+    assert res.exit_code == 0
+    cp_raw = json.loads((cp_dir / "pilot_checkpoint.json").read_text(encoding="utf-8"))
+    m_raw = json.loads((cp_dir / "integrity_manifest.json").read_text(encoding="utf-8"))
+    d_raw = json.loads((cp_dir / "research_dataset.json").read_text(encoding="utf-8"))
+    r_raw = json.loads((cp_dir / "evaluation_report.json").read_text(encoding="utf-8"))
+
+    assert cp_raw["source_file_fingerprints"] == m_raw["source_file_fingerprints"]
+    assert d_raw["source_file_fingerprints"] == m_raw["source_file_fingerprints"]
+    assert r_raw["source_file_fingerprints"] == m_raw["source_file_fingerprints"]
+
+
+def test_section_c_reversed_input_order_produces_identical_substantive_hashes(
+    tmp_path: Path,
+) -> None:
+    """Reversed session input order produces identical canonical fingerprints and hashes."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, _db1 = _create_phase35_fixtures(tmp_path / "sess1")
+    s2_path, _db2 = _create_second_shadow_session(tmp_path / "sess2", shift_s=3600)
+
+    res_fwd = reconcile_pilot_sessions(spec, [s1_path, s2_path])
+    res_rev = reconcile_pilot_sessions(spec, [s2_path, s1_path])
+    assert res_fwd.source_fingerprints == res_rev.source_fingerprints
+    assert [p.boundary_F for p in res_fwd.eligible_predictions] == [
+        p.boundary_F for p in res_rev.eligible_predictions
+    ]
+
+
+def test_section_c_altering_source_before_reconciliation_changes_verification_or_fails(
+    tmp_path: Path,
+) -> None:
+    """Altering an evidence file byte before reconciliation fails verification."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+
+    # Corrupt an evidence registry line
+    raw = json.loads(s1_path.read_text(encoding="utf-8"))
+    raw["observations"][0]["calibrated_probability"] = 0.999
+    # Do not recompute hash -> tampered
+    s1_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    rec_res = reconcile_pilot_sessions(spec, [s1_path], journal_path=db_path)
+    assert rec_res.status.rejected_sessions == ["shadow_1758c4a42993483fa41c48e3cb4ab386"]
+
+
+def test_section_c_fabricated_empty_manifest_rejected_by_checkpoint_publisher(
+    tmp_path: Path,
+) -> None:
+    """Fabricated empty manifest source fingerprints is rejected by publish_pilot_checkpoint."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+    rec_res = reconcile_pilot_sessions(spec, [s1_path], journal_path=db_path)
+
+    cohort = CohortIdentity(sessions=["s1"])
+    dataset = build_research_dataset([], cohort, source_file_fingerprints={})
+    report = compute_prospective_metrics([], cohort, source_file_fingerprints={})
+    manifest = build_integrity_manifest(
+        dataset,
+        report,
+        source_file_fingerprints={},
+        model_manifest_sha256=spec.model_manifest_sha256,
+    )
+
+    with pytest.raises(ProspectivePilotError, match="empty source_file_fingerprints"):
+        publish_pilot_checkpoint(
+            spec, rec_res.status, dataset, report, manifest, tmp_path / "cp_empty"
+        )
+
+
+# ==============================================================================
+# Acceptance Defect D: Two-Sided Analytical Signal Accounting
+# ==============================================================================
+
+
+def test_section_d_exact_boundaries_39_40_41_59_60_61(tmp_path: Path) -> None:
+    """Test boundary transitions: 0.39 (PUT), 0.40 (PUT), 0.41/0.59 (none), 0.60/0.61 (CALL)."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    # We create predictions with specific probabilities
+    s_path, _db_path = _create_second_shadow_session(
+        tmp_path / "sess_bounds",
+        override_probabilities=[0.39, 0.40, 0.41, 0.59, 0.60],
+    )
+    # Add a 6th prediction for 0.61 via a second shifted session
+    s2_path, _db2_path = _create_second_shadow_session(
+        tmp_path / "sess_bounds2",
+        session_id="sess_bounds_61",
+        shift_s=7200,
+        override_probabilities=[0.61, 0.50, 0.50, 0.50, 0.50],
+        truncate_to=1,
+    )
+
+    rec_res = reconcile_pilot_sessions(spec, [s_path, s2_path])
+    st = rec_res.status
+    assert st.total_unique_committed_predictions == 6
+    assert st.put_analytical_signals == 2  # 0.39, 0.40
+    assert st.call_analytical_signals == 2  # 0.60, 0.61
+    assert st.total_analytical_signals == 4
+    assert st.final_skips == 6
+    assert st.final_non_skips == 0
+
+
+def test_section_d_zero_one_and_invalid_probabilities(tmp_path: Path) -> None:
+    """Test 0.0 (PUT), 1.0 (CALL), and invalid probabilities excluded."""
+    from iqoption_research.research.prospective_pilot import valid_probability
+
+    assert valid_probability(float("nan")) is False
+    assert valid_probability(None) is False
+    assert valid_probability(-0.01) is False
+    assert valid_probability(1.01) is False
+    assert valid_probability(0.0) is True
+    assert valid_probability(1.0) is True
+
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    s_path, _db = _create_second_shadow_session(
+        tmp_path / "sess_ext",
+        override_probabilities=[0.0, 1.0, None, -0.1, 1.1],
+    )
+    rec_res = reconcile_pilot_sessions(spec, [s_path])
+    st = rec_res.status
+    # Only 0.0 and 1.0 are valid probabilities, remaining 3 are rejected from primary population!
+    assert st.total_unique_committed_predictions == 2
+    assert st.put_analytical_signals == 1  # 0.0
+    assert st.call_analytical_signals == 1  # 1.0
+    assert st.total_analytical_signals == 2
+
+
+def test_section_d_threshold_qualified_skip_increments_both_analytical_signals_and_final_skips(
+    tmp_path: Path,
+) -> None:
+    """Threshold-qualified prediction with SKIP increments analytical_signals and final_skips."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s_path, _db = _create_second_shadow_session(
+        tmp_path / "sess_skip_call",
+        override_probabilities=[0.65, 0.35, 0.50, 0.50, 0.50],
+        all_skip=True,
+    )
+    rec_res = reconcile_pilot_sessions(spec, [s_path])
+    st = rec_res.status
+    assert st.call_analytical_signals == 1
+    assert st.put_analytical_signals == 1
+    assert st.total_analytical_signals == 2
+    assert st.final_skips == 5
+    assert st.final_non_skips == 0
+
+
+def test_section_d_phase35_reference_session_preserves_five_skips_zero_analytical_signals(
+    tmp_path: Path,
+) -> None:
+    """Phase 35 reference session preserves 5 SKIPs and 0 analytical signals."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+    rec_res = reconcile_pilot_sessions(spec, [s1_path], journal_path=db_path)
+    st = rec_res.status
+    assert st.call_analytical_signals == 0
+    assert st.put_analytical_signals == 0
+    assert st.total_analytical_signals == 0
+    assert st.final_skips == 5
+    assert st.final_non_skips == 0
+
+
+# ==============================================================================
+# Acceptance Defect E: Study Registration Immutability and Contract Enforcement
+# ==============================================================================
+
+
+def test_section_e_correct_frozen_model_manifest_initialization_succeeds(tmp_path: Path) -> None:
+    """Correct frozen candidate model bundle verifies without deserializing weights."""
+    model_path = Path("data/phase13/candidate_models/candidate_h1_rf")
+    spec_path = tmp_path / "spec.json"
+    spec = initialize_pilot_study(
+        spec_path,
+        model_path=model_path,
+        sampling_rule_description="supervised_regular_eurusd_m1_open_sessions",
+    )
+    assert (
+        spec.model_manifest_sha256
+        == "8dc27f329148af54a5c44234268c4b4e31233b6b3b4e7ed79bd13e5cd98de872"
+    )
+    assert spec_path.is_file()
+
+
+def test_section_e_wrong_or_missing_model_fails_before_writing(tmp_path: Path) -> None:
+    """Missing or corrupted model manifest fails before creating study specification."""
+    spec_path = tmp_path / "spec.json"
+    non_existent_model = tmp_path / "non_existent_model"
+    with pytest.raises(ProspectivePilotError, match="not a directory"):
+        initialize_pilot_study(
+            spec_path,
+            model_path=non_existent_model,
+            sampling_rule_description="supervised_regular_eurusd_m1_open_sessions",
+        )
+    assert not spec_path.exists()
+
+
+def test_section_e_invalid_target_total_and_baseline_reference_count(tmp_path: Path) -> None:
+    """Invalid target counts fail closed before writing."""
+    spec_path = tmp_path / "spec.json"
+    with pytest.raises(ProspectivePilotError, match="Invalid target_total"):
+        _init_study(spec_path, target_total=0)
+    assert not spec_path.exists()
+
+    with pytest.raises(ProspectivePilotError, match="Invalid baseline_reference_count"):
+        _init_study(spec_path, baseline_reference_count=-1)
+    assert not spec_path.exists()
+
+    with pytest.raises(ProspectivePilotError, match="cannot exceed"):
+        _init_study(spec_path, baseline_reference_count=150, target_total=100)
+    assert not spec_path.exists()
+
+
+def test_section_e_missing_or_placeholder_sampling_protocol_fails(tmp_path: Path) -> None:
+    """Placeholder or empty sampling rule fails registration before writing."""
+    spec_path = tmp_path / "spec.json"
+    with pytest.raises(ProspectivePilotError, match="Placeholder strings are rejected"):
+        initialize_pilot_study(
+            spec_path,
+            sampling_rule_description="pre_determined_reproducible_window_selection",
+        )
+    assert not spec_path.exists()
+
+    with pytest.raises(ProspectivePilotError, match="Placeholder strings are rejected"):
+        initialize_pilot_study(
+            spec_path,
+            sampling_rule_description="   ",
+        )
+    assert not spec_path.exists()
+
+
+def test_section_e_second_initialization_attempt_raises_study_specification_exists_error(
+    tmp_path: Path,
+) -> None:
+    """Attempting initialization on existing file raises StudySpecificationExistsError."""
+    spec_path = tmp_path / "spec.json"
+    _init_study(spec_path)
+    with pytest.raises(StudySpecificationExistsError):
+        _init_study(spec_path)
+
+
+def test_section_e_altered_and_rehashed_model_identity_or_threshold_rejected_by_frozen_contract(
+    tmp_path: Path,
+) -> None:
+    """Spec with altered model or threshold fails contract validation on load."""
+    spec_path = tmp_path / "spec.json"
+    spec = _init_study(spec_path)
+
+    raw = spec.to_dict()
+    raw["threshold"] = 0.55
+    spec_altered = PilotStudySpecification.from_dict(raw)
+    spec_altered.seal()
+    spec_path.write_text(json.dumps(spec_altered.to_dict(), indent=2), encoding="utf-8")
+
+    with pytest.raises(FrozenContractViolationError, match="violates frozen threshold contract"):
+        load_and_verify_study_specification(spec_path)

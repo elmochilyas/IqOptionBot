@@ -23,13 +23,16 @@ import json
 import math
 import os
 import shutil
+import sqlite3
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
 
+from iqoption_research.ml.tracking.artifacts import verify_manifest
 from iqoption_research.models.market import Candle
 from iqoption_research.research.prospective_cohort import (
     PILOT_TARGET_NOTICE,
@@ -44,9 +47,12 @@ from iqoption_research.research.prospective_cohort import (
 from iqoption_research.research.prospective_eval import (
     CONTRACT_PROFITABILITY_DISCLAIMER,
     EXPLORATORY_SAMPLE_DISCLAIMER,
+    PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED,
+    PROVENANCE_UNVERIFIED,
     UNKEYED_HASH_TAMPER_EVIDENCE_DISCLAIMER,
     CohortIdentity,
     DuplicatePredictionError,
+    ObservationAuditSummary,
     PairedEvaluationSample,
     PredictionRecord,
     ProspectiveEvaluationError,
@@ -151,6 +157,10 @@ class StudySpecificationExistsError(ProspectivePilotError, FileExistsError):
 
 class StudySpecificationTamperedError(ProspectivePilotError):
     """Raised when a study specification fails cryptographic integrity verification."""
+
+
+class FrozenContractViolationError(ProspectivePilotError):
+    """Raised when a study specification violates frozen model/threshold contracts."""
 
 
 class CheckpointVerificationError(ProspectivePilotError):
@@ -412,6 +422,11 @@ class PilotStatusReport:
     probabilistic_metrics: dict[str, Any]
     group_breakdowns: dict[str, Any]
     readiness_assessment: dict[str, Any]
+    call_analytical_signals: int = 0
+    put_analytical_signals: int = 0
+    total_analytical_signals: int = 0
+    final_skips: int = 0
+    final_non_skips: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -439,7 +454,54 @@ class PilotStatusReport:
             "probabilistic_metrics": dict(self.probabilistic_metrics),
             "group_breakdowns": dict(self.group_breakdowns),
             "readiness_assessment": dict(self.readiness_assessment),
+            "call_analytical_signals": self.call_analytical_signals,
+            "put_analytical_signals": self.put_analytical_signals,
+            "total_analytical_signals": self.total_analytical_signals,
+            "final_skips": self.final_skips,
+            "final_non_skips": self.final_non_skips,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PilotReconciliationResult:
+    """Typed result object for pilot session reconciliation."""
+
+    status: PilotStatusReport
+    eligible_predictions: list[PredictionRecord]
+    pairs: list[PairedEvaluationSample]
+    source_fingerprints: dict[str, str]
+    evidence_audit: ObservationAuditSummary
+
+    def __iter__(self) -> Iterator[Any]:
+        """Enable backward-compatible 3-tuple unpacking: status, preds, pairs = res."""
+        return iter((self.status, self.eligible_predictions, self.pairs))
+
+
+def valid_probability(p: Any) -> bool:
+    """Return whether a probability is a finite float in [0.0, 1.0]."""
+    return p is not None and isinstance(p, (int, float)) and math.isfinite(p) and 0.0 <= p <= 1.0
+
+
+def original_timing_contract_satisfied(pred: PredictionRecord) -> bool:
+    """Verify that original timing and causality constraints are met."""
+    return pred.decision_time_utc_ns is not None and pred.decision_time_utc_ns > 0
+
+
+def eligible_for_primary_population(pred: PredictionRecord, study: PilotStudySpecification) -> bool:
+    """Explicit inclusion predicate for primary committed prediction population (Population 2).
+
+    Only predictions satisfying this predicate contribute to the 100-observation pilot target.
+    """
+    return (
+        pred.journal_verified is True
+        and pred.evidence_provenance_level == "JOURNAL_VERIFIED"
+        and pred.model_manifest_sha256 == study.model_manifest_sha256
+        and pred.policy_version == study.policy_version
+        and pred.symbol == study.symbol
+        and pred.candle_size_seconds == study.candle_size_seconds
+        and valid_probability(pred.calibrated_probability)
+        and original_timing_contract_satisfied(pred)
+    )
 
 
 def initialize_pilot_study(
@@ -450,28 +512,67 @@ def initialize_pilot_study(
     baseline_reference_count: int = BASELINE_REFERENCE_COUNT_DEFAULT,
     model_path: Path | None = None,
     sampling_rule_description: str | None = None,
-    overwrite: bool = False,
 ) -> PilotStudySpecification:
     """Create an immutable prospective pilot study specification.
 
-    Fails closed if the output file exists in create-only mode.
+    Fails closed if the output file exists (strictly create-only; no overwrite permitted).
+    Validates model bundle manifest integrity, target counts, and sampling protocol.
     """
     out = output_path.resolve()
-    if out.exists() and not overwrite:
+    if out.exists():
         raise StudySpecificationExistsError(
             f"Study specification already exists at '{out}'. "
-            "Refusing to overwrite an immutable study specification without explicit authorization."
+            "Study specifications are immutable and create-only. "
+            "Any modification requires a new study version and unique output path."
         )
 
-    # Validate model manifest if local model path exists
+    if target_total <= 0:
+        raise ProspectivePilotError(
+            f"Invalid target_total: {target_total}. Must be a positive integer."
+        )
+    if baseline_reference_count < 0:
+        raise ProspectivePilotError(
+            f"Invalid baseline_reference_count: {baseline_reference_count}. Must be non-negative."
+        )
+    if baseline_reference_count > target_total:
+        raise ProspectivePilotError(
+            f"baseline_reference_count ({baseline_reference_count}) cannot exceed "
+            f"target_total ({target_total})."
+        )
+
+    # Validate actionable sampling protocol
+    if not sampling_rule_description or sampling_rule_description.strip() in (
+        "",
+        "pre_determined_reproducible_window_selection",
+    ):
+        raise ProspectivePilotError(
+            "Registration rejected: A concrete, actionable sampling rule description must be "
+            "provided before registering prospective study data. Placeholder strings are rejected."
+        )
+
+    # Validate model manifest if local model path supplied
     manifest_sha = FROZEN_MODEL_MANIFEST_SHA256
     if model_path is not None:
-        p = model_path.resolve()
-        if p.is_dir():
-            mf = p / "artifact_manifest.json"
-            if mf.is_file():
-                # We do not override the frozen invariant, but verify compatibility
-                pass
+        mp = model_path.resolve()
+        if not mp.is_dir():
+            raise ProspectivePilotError(f"Supplied model path is not a directory: {model_path}")
+        mf = mp / "artifact_manifest.json"
+        if not mf.is_file():
+            raise ProspectivePilotError(
+                f"Model directory missing artifact_manifest.json: {model_path}"
+            )
+        try:
+            verified_mf = verify_manifest(mp)
+        except Exception as exc:
+            raise ProspectivePilotError(
+                f"Model artifact manifest verification failed for '{model_path}': {exc}"
+            ) from exc
+        computed_mf_sha = verified_mf.digest()
+        if computed_mf_sha != FROZEN_MODEL_MANIFEST_SHA256:
+            raise ProspectivePilotError(
+                f"Model manifest SHA-256 mismatch: computed '{computed_mf_sha}' != "
+                f"expected frozen '{FROZEN_MODEL_MANIFEST_SHA256}'"
+            )
 
     spec = PilotStudySpecification(
         study_id=study_id,
@@ -489,23 +590,26 @@ def initialize_pilot_study(
         baseline_reference_count=baseline_reference_count,
     )
 
-    if sampling_rule_description:
-        spec.sampling_protocol["sampling_rule_description"] = sampling_rule_description
-        spec.sampling_protocol["additional_observations_required"] = max(
-            0, target_total - baseline_reference_count
-        )
+    spec.sampling_protocol["sampling_rule_description"] = sampling_rule_description
+    spec.sampling_protocol["additional_observations_required"] = max(
+        0, target_total - baseline_reference_count
+    )
 
     spec.seal()
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = out.parent / f".tmp_{out.name}_{uuid.uuid4().hex}"
     content = json.dumps(spec.to_dict(), indent=2, sort_keys=True).encode("utf-8")
-    with temp_path.open("wb") as f:
-        f.write(content)
-        f.flush()
-        os.fsync(f.fileno())
+    try:
+        fd = os.open(out, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+    except FileExistsError as exc:
+        raise StudySpecificationExistsError(
+            f"Simultaneous creation conflict: study specification already exists at '{out}'"
+        ) from exc
 
-    temp_path.replace(out)
     return spec
 
 
@@ -520,6 +624,44 @@ def load_and_verify_study_specification(path: Path) -> PilotStudySpecification:
     is_valid, msg = spec.verify_integrity()
     if not is_valid:
         raise StudySpecificationTamperedError(msg)
+
+    # Validate non-negotiable frozen Phase 38 invariants
+    if spec.model_manifest_sha256 != FROZEN_MODEL_MANIFEST_SHA256:
+        raise FrozenContractViolationError(
+            f"Study specification violates frozen model contract: '{spec.model_manifest_sha256}' "
+            f"!= '{FROZEN_MODEL_MANIFEST_SHA256}'"
+        )
+    if not math.isclose(spec.threshold, FROZEN_THRESHOLD, abs_tol=1e-8):
+        raise FrozenContractViolationError(
+            f"Study specification violates frozen threshold contract: {spec.threshold} "
+            f"!= {FROZEN_THRESHOLD}"
+        )
+    if spec.symbol != FROZEN_SYMBOL:
+        raise FrozenContractViolationError(
+            f"Study specification violates frozen symbol contract: '{spec.symbol}' "
+            f"!= '{FROZEN_SYMBOL}'"
+        )
+    if spec.instrument_type != FROZEN_INSTRUMENT_TYPE:
+        raise FrozenContractViolationError(
+            f"Study specification violates frozen instrument contract: '{spec.instrument_type}' "
+            f"!= '{FROZEN_INSTRUMENT_TYPE}'"
+        )
+    if spec.candle_size_seconds != FROZEN_CANDLE_SIZE_SECONDS:
+        raise FrozenContractViolationError(
+            f"Study specification violates frozen candle size contract: "
+            f"{spec.candle_size_seconds} != {FROZEN_CANDLE_SIZE_SECONDS}"
+        )
+    if spec.calibration_identity != FROZEN_CALIBRATION_IDENTITY:
+        raise FrozenContractViolationError(
+            f"Study specification violates frozen calibration contract: "
+            f"'{spec.calibration_identity}' != '{FROZEN_CALIBRATION_IDENTITY}'"
+        )
+    if spec.policy_version != FROZEN_POLICY_VERSION:
+        raise FrozenContractViolationError(
+            f"Study specification violates frozen policy version contract: "
+            f"'{spec.policy_version}' != '{FROZEN_POLICY_VERSION}'"
+        )
+
     return spec
 
 
@@ -532,7 +674,8 @@ def reconcile_pilot_sessions(
     catalog_path: Path | None = None,
     candles: list[Candle] | None = None,
     stop_reason: str | None = None,
-) -> tuple[PilotStatusReport, list[PredictionRecord], list[PairedEvaluationSample]]:
+    test_allow_synthetic_fixtures: bool = False,
+) -> PilotReconciliationResult:
     """Reconcile all discovered sessions against the immutable study specification."""
     # Verify study integrity
     is_valid, msg = study.verify_integrity()
@@ -754,18 +897,95 @@ def reconcile_pilot_sessions(
         )
         has_journal = bool(db_path and db_path.is_file())
         if has_journal and db_path is not None:
-            db_sha = compute_file_sha256(db_path)
-            tracker.register_journal(session_id, db_path, db_sha)
+            try:
+                db_sha = compute_file_sha256(db_path)
+                with sqlite3.connect(str(db_path)) as conn:
+                    conn.execute("SELECT 1 FROM events LIMIT 1")
+                tracker.register_journal(session_id, db_path, db_sha)
+            except (sqlite3.Error, OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
+                # Corrupt journal fails closed
+                rejected_sessions.append(session_id)
+                session_audits.append(
+                    SessionAuditRecord(
+                        session_id=session_id,
+                        file_name=file_path.name,
+                        session_sha256=computed_sha,
+                        lifecycle_state=SessionLifecycleState.REJECTED_INTEGRITY.value,
+                        cohort_group=group_name,
+                        total_registry_observations=len(reg.observations),
+                        valid_committed_predictions=0,
+                        rejected_observations_count=len(reg.observations),
+                        uncommitted_observations_count=0,
+                        has_journal=True,
+                        journal_verified=False,
+                        labeled_outcomes_count=0,
+                        missing_outcomes_count=0,
+                        boundaries=[],
+                        rejection_reasons={"CORRUPTED_JOURNAL": len(reg.observations)},
+                        warnings=[f"Journal database corrupt or invalid: {exc}"],
+                    )
+                )
+                continue
 
-        preds, audit = extract_predictions_with_audit(reg, db_path if has_journal else None)
+        try:
+            raw_preds, audit = extract_predictions_with_audit(reg, db_path if has_journal else None)
+        except (ProspectiveEvaluationError, OSError, ValueError, KeyError, TypeError) as exc:
+            rejected_sessions.append(session_id)
+            session_audits.append(
+                SessionAuditRecord(
+                    session_id=session_id,
+                    file_name=file_path.name,
+                    session_sha256=computed_sha,
+                    lifecycle_state=SessionLifecycleState.REJECTED_INTEGRITY.value,
+                    cohort_group=group_name,
+                    total_registry_observations=len(reg.observations),
+                    valid_committed_predictions=0,
+                    rejected_observations_count=len(reg.observations),
+                    uncommitted_observations_count=0,
+                    has_journal=has_journal,
+                    journal_verified=False,
+                    labeled_outcomes_count=0,
+                    missing_outcomes_count=0,
+                    boundaries=[],
+                    rejection_reasons={"INTEGRITY_VERIFICATION_FAILED": len(reg.observations)},
+                    warnings=[f"Evidence extraction failed: {exc}"],
+                )
+            )
+            continue
+
+        session_eligible: list[PredictionRecord] = []
+        session_rejections: dict[str, int] = dict(audit.rejection_reasons_breakdown)
+        for p in raw_preds:
+            if eligible_for_primary_population(p, study):
+                session_eligible.append(p)
+            else:
+                if not p.journal_verified:
+                    session_rejections["UNVERIFIED_JOURNAL_RECEIPT"] = (
+                        session_rejections.get("UNVERIFIED_JOURNAL_RECEIPT", 0) + 1
+                    )
+                elif not valid_probability(p.calibrated_probability):
+                    session_rejections["INVALID_OR_MISSING_PROBABILITY"] = (
+                        session_rejections.get("INVALID_OR_MISSING_PROBABILITY", 0) + 1
+                    )
+                elif not original_timing_contract_satisfied(p):
+                    session_rejections["TIMING_CONTRACT_VIOLATED"] = (
+                        session_rejections.get("TIMING_CONTRACT_VIOLATED", 0) + 1
+                    )
+                else:
+                    session_rejections["INELIGIBLE_PRIMARY_PREDICTION"] = (
+                        session_rejections.get("INELIGIBLE_PRIMARY_PREDICTION", 0) + 1
+                    )
+
+        ineligible_count = len(raw_preds) - len(session_eligible)
+        session_rejected_count = audit.rejected_observations_count + ineligible_count
         total_rejected_observations += (
-            audit.rejected_observations_count
+            session_rejected_count
             + audit.invalid_probability_count
             + audit.uncommitted_observations_count
         )
 
-        # Check if session produced valid committed predictions
-        if len(preds) == 0:
+        # Check if session produced valid committed predictions in primary population
+        if len(session_eligible) == 0:
             st = (
                 SessionLifecycleState.NO_VALID_PREDICTIONS.value
                 if len(reg.observations) == 0
@@ -781,27 +1001,28 @@ def reconcile_pilot_sessions(
                     cohort_group=group_name,
                     total_registry_observations=audit.total_registry_observations,
                     valid_committed_predictions=0,
-                    rejected_observations_count=audit.rejected_observations_count,
-                    uncommitted_observations_count=audit.uncommitted_observations_count,
+                    rejected_observations_count=session_rejected_count,
+                    uncommitted_observations_count=len(reg.observations),
                     has_journal=has_journal,
                     journal_verified=False,
                     labeled_outcomes_count=0,
                     missing_outcomes_count=0,
                     boundaries=[],
-                    rejection_reasons=dict(audit.rejection_reasons_breakdown),
-                    warnings=["Zero valid committed predictions extracted from session"],
+                    rejection_reasons=session_rejections,
+                    warnings=["Zero valid journal-verified predictions in primary population"],
                 )
             )
             continue
 
         # Session has valid predictions
         verified_sessions.append(session_id)
-        session_bounds = [p.boundary_F for p in preds]
-        for p in preds:
+        session_bounds = [p.boundary_F for p in session_eligible]
+        for p in session_eligible:
             eligible_predictions.append(p)
             prediction_source_sessions.setdefault(p.boundary_F, []).append(session_id)
             prediction_evidence_hashes[p.boundary_F] = computed_sha
 
+        session_uncommitted = len(reg.observations) - len(session_eligible)
         session_audits.append(
             SessionAuditRecord(
                 session_id=session_id,
@@ -810,15 +1031,15 @@ def reconcile_pilot_sessions(
                 lifecycle_state=SessionLifecycleState.PREDICTIONS_EXTRACTED.value,
                 cohort_group=group_name,
                 total_registry_observations=audit.total_registry_observations,
-                valid_committed_predictions=len(preds),
-                rejected_observations_count=audit.rejected_observations_count,
-                uncommitted_observations_count=audit.uncommitted_observations_count,
+                valid_committed_predictions=len(session_eligible),
+                rejected_observations_count=session_rejected_count,
+                uncommitted_observations_count=session_uncommitted,
                 has_journal=has_journal,
-                journal_verified=all(p.journal_verified for p in preds),
+                journal_verified=all(p.journal_verified for p in session_eligible),
                 labeled_outcomes_count=0,
-                missing_outcomes_count=len(preds),
+                missing_outcomes_count=len(session_eligible),
                 boundaries=session_bounds,
-                rejection_reasons=dict(audit.rejection_reasons_breakdown),
+                rejection_reasons=session_rejections,
                 warnings=[],
             )
         )
@@ -864,8 +1085,12 @@ def reconcile_pilot_sessions(
     if candles is not None:
         avail_candles = list(candles)
         for c in avail_candles:
-            candle_provenances[c.from_ts, c.symbol] = "LOCAL_BROKER_COLLECTION_VERIFIED"
-            candle_sources[c.from_ts, c.symbol] = "direct_candles"
+            if test_allow_synthetic_fixtures:
+                candle_provenances[c.from_ts, c.symbol] = "SYNTHETIC_FIXTURE"
+                candle_sources[c.from_ts, c.symbol] = "synthetic_fixture"
+            else:
+                candle_provenances[c.from_ts, c.symbol] = PROVENANCE_UNVERIFIED
+                candle_sources[c.from_ts, c.symbol] = "direct_candles"
     elif storage_dir is not None and storage_dir.is_dir():
         target_bounds = {p.boundary_F for p in deduped_predictions}
         storage_res = load_candles_from_storage(
@@ -887,11 +1112,20 @@ def reconcile_pilot_sessions(
         avail_candles,
         candle_provenances=candle_provenances,
         candle_sources=candle_sources,
-        allow_synthetic=False,
-        reject_synthetic=True,
+        allow_synthetic=test_allow_synthetic_fixtures,
+        reject_synthetic=not test_allow_synthetic_fixtures,
+        reject_unverified=not test_allow_synthetic_fixtures,
     )
 
-    labeled_boundaries = {pair.prediction.boundary_F for pair in pairs if pair.status == "ALIGNED"}
+    # Authentic broker-verified outcomes only for Population 3
+    authentic_labeled_boundaries = {
+        pair.prediction.boundary_F
+        for pair in pairs
+        if pair.status == "ALIGNED"
+        and pair.outcome is not None
+        and pair.outcome.source_provenance == PROVENANCE_LOCAL_BROKER_COLLECTION_VERIFIED
+    }
+    labeled_boundaries = authentic_labeled_boundaries
 
     # Update session lifecycle states based on outcome coverage
     updated_audits: list[SessionAuditRecord] = []
@@ -964,6 +1198,9 @@ def reconcile_pilot_sessions(
         deduped_predictions,
         candles=avail_candles,
         candle_provenances=candle_provenances,
+        allow_synthetic=test_allow_synthetic_fixtures,
+        reject_synthetic=not test_allow_synthetic_fixtures,
+        reject_unverified=not test_allow_synthetic_fixtures,
     )
     missing_windows = [w.to_dict() for w in plan.windows]
 
@@ -985,14 +1222,28 @@ def reconcile_pilot_sessions(
     unlabeled_count = total_committed - labeled_count
 
     # Actionable signal population
-    signal_count = sum(
-        1
-        for p in deduped_predictions
-        if p.calibrated_probability is not None and p.calibrated_probability >= study.threshold
+    # Two-sided analytical signals under frozen threshold 0.60
+    call_signals = 0
+    put_signals = 0
+    call_threshold = study.threshold
+    put_threshold = round(1.0 - study.threshold, 8)
+
+    for p in deduped_predictions:
+        prob = p.calibrated_probability
+        if prob is not None and not math.isnan(prob) and 0.0 <= prob <= 1.0:
+            if prob >= call_threshold:
+                call_signals += 1
+            elif prob <= put_threshold or math.isclose(prob, put_threshold, abs_tol=1e-8):
+                put_signals += 1
+
+    total_analytical_signals = call_signals + put_signals
+    final_skips = sum(1 for p in deduped_predictions if p.decision == "SKIP")
+    final_non_skips = total_committed - final_skips
+
+    coverage_rate = (
+        (total_analytical_signals / float(total_committed)) if total_committed > 0 else 0.0
     )
-    skip_count = sum(1 for p in deduped_predictions if p.decision == "SKIP")
-    coverage_rate = (signal_count / float(total_committed)) if total_committed > 0 else 0.0
-    abstention_rate = (skip_count / float(total_committed)) if total_committed > 0 else 1.0
+    abstention_rate = (final_skips / float(total_committed)) if total_committed > 0 else 1.0
     signal_rate = coverage_rate
 
     remaining_to_target = max(0, study.pilot_target_total - total_committed)
@@ -1086,9 +1337,9 @@ def reconcile_pilot_sessions(
     prob_summary: dict[str, Any] = {"status": "NO_LABELED_PREDICTIONS"}
     aligned_pairs = [pair for pair in pairs if pair.status == "ALIGNED"]
     if aligned_pairs:
-        all_active_sessions = sorted(
-            {sess_id for s_list in prediction_source_sessions.values() for sess_id in s_list}
-        )
+        all_active_sessions = sorted({
+            sess_id for s_list in prediction_source_sessions.values() for sess_id in s_list
+        })
         cohort = CohortIdentity(
             sessions=all_active_sessions,
             model_manifest_sha256=study.model_manifest_sha256,
@@ -1129,9 +1380,50 @@ def reconcile_pilot_sessions(
         probabilistic_metrics=prob_summary,
         group_breakdowns=group_breakdowns,
         readiness_assessment=readiness,
+        call_analytical_signals=call_signals,
+        put_analytical_signals=put_signals,
+        total_analytical_signals=total_analytical_signals,
+        final_skips=final_skips,
+        final_non_skips=final_non_skips,
     )
 
-    return status_report, deduped_predictions, pairs
+    prov_level = (
+        "JOURNAL_VERIFIED"
+        if (
+            deduped_predictions
+            and all(
+                p.journal_verified and p.evidence_provenance_level == "JOURNAL_VERIFIED"
+                for p in deduped_predictions
+            )
+        )
+        else "REGISTRY_ONLY"
+    )
+
+    total_reg_obs = sum(sa.total_registry_observations for sa in session_audits)
+    total_uncommitted = sum(sa.uncommitted_observations_count for sa in session_audits)
+
+    all_rejections: dict[str, int] = {}
+    for sa in session_audits:
+        for rk, rv in sa.rejection_reasons.items():
+            all_rejections[rk] = all_rejections.get(rk, 0) + rv
+
+    evidence_audit = ObservationAuditSummary(
+        total_registry_observations=total_reg_obs,
+        valid_committed_predictions=total_committed,
+        rejected_observations_count=total_rejected_observations,
+        uncommitted_observations_count=total_uncommitted,
+        invalid_probability_count=all_rejections.get("INVALID_OR_MISSING_PROBABILITY", 0),
+        rejection_reasons_breakdown=all_rejections,
+        provenance_level=prov_level,
+    )
+
+    return PilotReconciliationResult(
+        status=status_report,
+        eligible_predictions=deduped_predictions,
+        pairs=pairs,
+        source_fingerprints=tracker.to_sorted_dict(),
+        evidence_audit=evidence_audit,
+    )
 
 
 def publish_pilot_checkpoint(
@@ -1143,7 +1435,6 @@ def publish_pilot_checkpoint(
     output_dir: Path,
     *,
     checkpoint_id: str | None = None,
-    overwrite: bool = False,
 ) -> dict[str, Path]:
     """Publish atomic, immutable pilot checkpoint snapshot (Phase 38).
 
@@ -1155,18 +1446,50 @@ def publish_pilot_checkpoint(
     - Fails closed in create-only mode if output_dir already exists.
     """
     out = output_dir.resolve()
-    if out.exists() and not overwrite:
+    if out.exists():
         raise FileExistsError(
             f"Checkpoint directory already exists: '{out}'. "
             "Refusing to overwrite an immutable checkpoint in create-only mode."
         )
 
-    # 1. Seal dataset, report, manifest
+    # 1. Validate manifest source lineage before sealing
+    if not manifest.source_file_fingerprints:
+        raise ProspectivePilotError(
+            "Manifest has empty source_file_fingerprints. "
+            "Refusing to publish unverified checkpoint."
+        )
+
+    for k, v in manifest.source_file_fingerprints.items():
+        if len(v) != 64 or not all(c in "0123456789abcdef" for c in v.lower()):
+            raise ProspectivePilotError(f"Invalid SHA-256 fingerprint for source '{k}': '{v}'")
+
+    # Validate row traceability: all rows must trace to evidence and journal sources
+    for row in dataset.rows:
+        ev_key = f"evidence:{row.session_id}"
+        j_key = f"journal:{row.session_id}:observations.db"
+        if ev_key not in manifest.source_file_fingerprints:
+            raise ProspectivePilotError(
+                f"Dataset row from session '{row.session_id}' lacks evidence fingerprint '{ev_key}'"
+            )
+        if j_key not in manifest.source_file_fingerprints:
+            raise ProspectivePilotError(
+                f"Dataset row from session '{row.session_id}' lacks journal fingerprint '{j_key}'"
+            )
+
+    if dataset.included_count > 0:
+        has_storage = any(k.startswith("storage:") for k in manifest.source_file_fingerprints)
+        if not has_storage:
+            raise ProspectivePilotError(
+                f"Dataset has {dataset.included_count} included labeled rows but manifest "
+                "lacks verified storage source fingerprints."
+            )
+
+    # 2. Seal dataset, report, manifest
     dataset.seal()
     report.seal()
     manifest.seal()
 
-    # 2. Construct checkpoint metadata binding all artifacts
+    # 3. Construct checkpoint metadata binding all artifacts
     cid = (
         checkpoint_id
         or f"checkpoint_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -1212,7 +1535,7 @@ def publish_pilot_checkpoint(
     cp_hash = hashlib.sha256(canonical_cp.encode("utf-8")).hexdigest()
     cp_dict["checkpoint_sha256"] = cp_hash
 
-    # 3. Create staging directory on same parent filesystem
+    # 4. Create staging directory on same parent filesystem
     parent_dir = out.parent
     parent_dir.mkdir(parents=True, exist_ok=True)
     staging_dir = parent_dir / f".staging_{out.name}_{uuid.uuid4().hex}"
@@ -1247,21 +1570,8 @@ def publish_pilot_checkpoint(
                     f"Staged checkpoint artifact is missing or empty: {fname}"
                 )
 
-        # Atomic rename commit
-        if out.exists():
-            if not overwrite:
-                raise FileExistsError(f"Destination already exists: {out}")
-            backup = parent_dir / f".backup_{out.name}_{uuid.uuid4().hex}"
-            out.rename(backup)
-            try:
-                staging_dir.rename(out)
-                shutil.rmtree(backup, ignore_errors=True)
-            except Exception:
-                if backup.exists() and not out.exists():
-                    backup.rename(out)
-                raise
-        else:
-            staging_dir.rename(out)
+        # Atomic rename commit in strictly create-only mode
+        staging_dir.rename(out)
 
     except Exception:
         if staging_dir.exists():
@@ -1293,6 +1603,8 @@ def verify_pilot_checkpoint(
     - Cross-artifact bindings (manifest binds dataset and report; checkpoint binds
       manifest, study spec, dataset, report).
     - Study specification identity and content integrity.
+    - Valid SHA-256 digests on all source file fingerprints.
+    - Row traceability to source file fingerprints.
     """
     cp_dir = checkpoint_dir.resolve()
     if not cp_dir.is_dir():
@@ -1393,5 +1705,40 @@ def verify_pilot_checkpoint(
 
     if cp_raw.get("manifest_sha256") != m_raw.get("manifest_sha256"):
         return False, "Checkpoint manifest_sha256 mismatch with integrity_manifest.json"
+
+    # Verify manifest source fingerprints are present, valid hex, and match checkpoint metadata
+    m_fps = m_raw.get("source_file_fingerprints", {})
+    if not m_fps:
+        return False, "Checkpoint manifest has empty source_file_fingerprints"
+    for k, v in m_fps.items():
+        if len(v) != 64 or not all(c in "0123456789abcdef" for c in v.lower()):
+            return False, f"Invalid SHA-256 fingerprint in manifest for '{k}': '{v}'"
+
+    # Checkpoint metadata must record identical source file fingerprints
+    cp_fps = cp_raw.get("source_file_fingerprints", {})
+    if cp_fps != m_fps:
+        return (
+            False,
+            "Checkpoint metadata source_file_fingerprints mismatch with integrity_manifest.json",
+        )
+
+    # Cross-verify dataset rows against manifest source fingerprints
+    d_rows = d_raw.get("rows", [])
+    for row in d_rows:
+        sid = row.get("session_id")
+        if not sid:
+            continue
+        ev_key = f"evidence:{sid}"
+        j_key = f"journal:{sid}:observations.db"
+        if ev_key not in m_fps:
+            return (
+                False,
+                f"Dataset row session '{sid}' missing from manifest fingerprints ({ev_key})",
+            )
+        if j_key not in m_fps:
+            return (
+                False,
+                f"Dataset row session '{sid}' missing from manifest fingerprints ({j_key})",
+            )
 
     return True, "Published pilot checkpoint is authentic, complete, and mutually consistent"

@@ -279,15 +279,10 @@ def pilot_init_cmd(
         "--model",
         help="Path to frozen candidate model bundle.",
     ),
-    sampling_rule: str | None = typer.Option(
-        None,
+    sampling_rule: str = typer.Option(
+        "daily_regular_market_open_1300_to_1500_utc_5_candles_per_session",
         "--sampling-rule",
         help="Pre-determined sampling protocol rule description.",
-    ),
-    overwrite: bool = typer.Option(
-        False,
-        "--overwrite",
-        help="Permit overwriting an existing study specification file.",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
 ) -> None:
@@ -310,7 +305,6 @@ def pilot_init_cmd(
             baseline_reference_count=reference_count,
             model_path=model,
             sampling_rule_description=sampling_rule,
-            overwrite=overwrite,
         )
     except ProspectivePilotError as exc:
         if json_output:
@@ -608,11 +602,6 @@ def pilot_checkpoint_cmd(
         "--stop-reason",
         help="Record explicit operator cancellation or stop reason.",
     ),
-    overwrite: bool = typer.Option(
-        False,
-        "--overwrite",
-        help="Permit overwriting existing checkpoint directory (defaults to False, create-only).",
-    ),
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON only to stdout."),
 ) -> None:
     """Create an immutable, reproducible pilot checkpoint snapshot (Phase 38)."""
@@ -620,13 +609,11 @@ def pilot_checkpoint_cmd(
     from rich.panel import Panel
 
     from iqoption_research.research.prospective_cohort import (
-        CanonicalSourceTracker,
         build_integrity_manifest,
         build_research_dataset,
     )
     from iqoption_research.research.prospective_eval import (
         CohortIdentity,
-        ObservationAuditSummary,
         compute_prospective_metrics,
     )
     from iqoption_research.research.prospective_pilot import (
@@ -657,7 +644,7 @@ def pilot_checkpoint_cmd(
         cat_path = catalog if isinstance(catalog, Path) else None
         j_path = journal if isinstance(journal, Path) else None
 
-        status_rep, deduped_preds, pairs = reconcile_pilot_sessions(
+        recon_res = reconcile_pilot_sessions(
             spec,
             paths,
             journal_path=j_path,
@@ -665,6 +652,11 @@ def pilot_checkpoint_cmd(
             catalog_path=cat_path,
             stop_reason=stop_reason,
         )
+
+        status_rep = recon_res.status
+        pairs = recon_res.pairs
+        source_fingerprints = recon_res.source_fingerprints
+        audit = recon_res.evidence_audit
 
         cohort = CohortIdentity(
             sessions=list(status_rep.verified_sessions),
@@ -674,38 +666,23 @@ def pilot_checkpoint_cmd(
             candle_size_seconds=spec.candle_size_seconds,
         )
 
-        tracker = CanonicalSourceTracker()
-        audit = ObservationAuditSummary(
-            total_registry_observations=sum(
-                s.total_registry_observations for s in status_rep.session_audits
-            ),
-            valid_committed_predictions=len(deduped_preds),
-            rejected_observations_count=status_rep.rejected_observations,
-            uncommitted_observations_count=sum(
-                s.uncommitted_observations_count for s in status_rep.session_audits
-            ),
-            invalid_probability_count=0,
-            rejection_reasons_breakdown={},
-            provenance_level="JOURNAL_VERIFIED",
-        )
-
         report = compute_prospective_metrics(
             pairs,
             cohort,
             audit_summary=audit,
-            source_file_fingerprints=tracker.to_sorted_dict(),
+            source_file_fingerprints=source_fingerprints,
         )
 
         dataset = build_research_dataset(
             pairs,
             cohort,
-            source_file_fingerprints=tracker.to_sorted_dict(),
+            source_file_fingerprints=source_fingerprints,
         )
 
         manifest = build_integrity_manifest(
             dataset,
             report,
-            tracker.to_sorted_dict(),
+            source_fingerprints,
             model_manifest_sha256=spec.model_manifest_sha256,
         )
 
@@ -717,7 +694,6 @@ def pilot_checkpoint_cmd(
             manifest,
             output_dir,
             checkpoint_id=checkpoint_id,
-            overwrite=overwrite,
         )
     except (ProspectivePilotError, FileExistsError) as exc:
         if json_output:

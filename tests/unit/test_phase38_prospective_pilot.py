@@ -41,6 +41,7 @@ adversarial test matrix:
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import sqlite3
 from pathlib import Path
@@ -3110,3 +3111,370 @@ def test_recurring_slots_duplicate_boundaries_never_counted_twice(tmp_path: Path
     # Predictions deduplicated by boundary: max 5
     assert rec_res.status.new_unique_committed_predictions == 5
     assert len(rec_res.eligible_predictions) == 5
+
+
+# ==============================================================================
+# Mandatory Dual-Registration Anchor Verification (PR #49 Fail-Open Closure)
+# ==============================================================================
+
+
+def test_registration_anchors_both_present_and_consistent_accepted(tmp_path: Path) -> None:
+    """Both registration anchors present, non-empty, and consistent are accepted."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    reg_json = spec_path.with_name(f"{spec_path.name}.registration.json")
+    reg_digest = spec_path.with_name(f"{spec_path.name}.registered_digest")
+
+    assert reg_json.is_file() and reg_json.stat().st_size > 0
+    assert reg_digest.is_file() and reg_digest.stat().st_size > 0
+
+    loaded = load_and_verify_study_specification(spec_path)
+    assert loaded.study_specification_sha256 == spec.study_specification_sha256
+
+    res = runner.invoke(
+        app,
+        ["prospective", "pilot-status", "--study", str(spec_path), "--json"],
+    )
+    assert res.exit_code == 0
+
+
+def test_registration_anchors_either_anchor_missing_fails_closed(tmp_path: Path) -> None:
+    """Missing either anchor (<spec>.registration.json or <spec>.registered_digest) fails closed."""
+    # Case A: Missing registration JSON anchor
+    spec_path_a = tmp_path / "spec_a" / "study_spec.json"
+    _init_study(spec_path_a)
+    reg_json_a = spec_path_a.with_name(f"{spec_path_a.name}.registration.json")
+    reg_json_a.unlink()
+
+    with pytest.raises(FrozenContractViolationError, match="missing required registration JSON"):
+        load_and_verify_study_specification(spec_path_a)
+
+    res_a = runner.invoke(
+        app,
+        ["prospective", "pilot-status", "--study", str(spec_path_a), "--json"],
+    )
+    assert res_a.exit_code == 1
+    data_a = json.loads(res_a.output)
+    assert "missing required registration JSON" in data_a["error"]
+
+    # Case B: Missing registered digest anchor
+    spec_path_b = tmp_path / "spec_b" / "study_spec.json"
+    _init_study(spec_path_b)
+    reg_digest_b = spec_path_b.with_name(f"{spec_path_b.name}.registered_digest")
+    reg_digest_b.unlink()
+
+    with pytest.raises(FrozenContractViolationError, match="missing required registered digest"):
+        load_and_verify_study_specification(spec_path_b)
+
+    res_b = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-checkpoint",
+            "--study",
+            str(spec_path_b),
+            "--output-dir",
+            str(tmp_path / "cp_b"),
+            "--json",
+        ],
+    )
+    assert res_b.exit_code == 1
+    data_b = json.loads(res_b.output)
+    assert "missing required registered digest" in data_b["error"]
+
+
+def test_registration_anchors_either_anchor_empty_or_malformed_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """Empty (0-byte) or malformed registration anchors fail closed immediately."""
+    # 1. registration JSON empty
+    spec_1 = tmp_path / "s1" / "study_spec.json"
+    _init_study(spec_1)
+    spec_1.with_name(f"{spec_1.name}.registration.json").write_bytes(b"")
+    with pytest.raises(FrozenContractViolationError, match=r"registration JSON anchor.*empty"):
+        load_and_verify_study_specification(spec_1)
+
+    # 2. registration JSON malformed (invalid JSON)
+    spec_2 = tmp_path / "s2" / "study_spec.json"
+    _init_study(spec_2)
+    spec_2.with_name(f"{spec_2.name}.registration.json").write_text("{bad json", encoding="utf-8")
+    with pytest.raises(FrozenContractViolationError, match=r"registration JSON anchor.*malformed"):
+        load_and_verify_study_specification(spec_2)
+
+    # 3. registration JSON missing valid 64-hex SHA
+    spec_3 = tmp_path / "s3" / "study_spec.json"
+    _init_study(spec_3)
+    spec_3.with_name(f"{spec_3.name}.registration.json").write_text(
+        json.dumps({"study_specification_sha256": "not-a-64-hex-digest"}), encoding="utf-8"
+    )
+    with pytest.raises(
+        FrozenContractViolationError, match="missing or malformed study_specification_sha256"
+    ):
+        load_and_verify_study_specification(spec_3)
+
+    # 4. registered digest empty (0 bytes)
+    spec_4 = tmp_path / "s4" / "study_spec.json"
+    _init_study(spec_4)
+    spec_4.with_name(f"{spec_4.name}.registered_digest").write_bytes(b"")
+    with pytest.raises(FrozenContractViolationError, match=r"registered digest anchor.*empty"):
+        load_and_verify_study_specification(spec_4)
+
+    # 5. registered digest malformed (invalid hex / wrong length)
+    spec_5 = tmp_path / "s5" / "study_spec.json"
+    _init_study(spec_5)
+    spec_5.with_name(f"{spec_5.name}.registered_digest").write_text(
+        "invalid_hex_content_not_64_chars\n", encoding="utf-8"
+    )
+    with pytest.raises(FrozenContractViolationError, match=r"registered digest anchor.*malformed"):
+        load_and_verify_study_specification(spec_5)
+
+
+def test_registration_anchors_study_modified_and_rehashed_without_updating_anchors_rejected(
+    tmp_path: Path,
+) -> None:
+    """Study spec modified and rehashed while anchors remain original is rejected."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    raw = spec.to_dict()
+    raw["sampling_protocol"]["schedule"]["end_time_utc"] = "22:00:00"
+    spec_altered = PilotStudySpecification.from_dict(raw)
+    spec_altered.seal()
+    spec_path.write_text(json.dumps(spec_altered.to_dict(), indent=2), encoding="utf-8")
+
+    with pytest.raises(FrozenContractViolationError, match="Protocol alteration detected"):
+        load_and_verify_study_specification(spec_path)
+
+    res = runner.invoke(
+        app,
+        ["prospective", "pilot-status", "--study", str(spec_path), "--json"],
+    )
+    assert res.exit_code == 1
+    data = json.loads(res.output)
+    assert "Protocol alteration detected" in data["error"]
+
+
+def test_registration_anchors_study_and_registration_json_modified_together_digest_remains_rejected(
+    tmp_path: Path,
+) -> None:
+    """Study spec and registration JSON modified together while digest remains original
+    is rejected."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    raw = spec.to_dict()
+    raw["sampling_protocol"]["schedule"]["end_time_utc"] = "22:30:00"
+    spec_altered = PilotStudySpecification.from_dict(raw)
+    spec_altered.seal()
+    spec_path.write_text(json.dumps(spec_altered.to_dict(), indent=2), encoding="utf-8")
+
+    # Update registration JSON to match altered spec
+    reg_json = spec_path.with_name(f"{spec_path.name}.registration.json")
+    reg_data = json.loads(reg_json.read_text(encoding="utf-8"))
+    reg_data["study_specification_sha256"] = spec_altered.study_specification_sha256
+    reg_data["sampling_protocol"] = spec_altered.sampling_protocol
+    reg_json.write_text(json.dumps(reg_data, indent=2), encoding="utf-8")
+
+    # registered_digest left untouched with original digest
+    with pytest.raises(FrozenContractViolationError, match="does not match registered digest file"):
+        load_and_verify_study_specification(spec_path)
+
+    res = runner.invoke(
+        app,
+        ["prospective", "pilot-status", "--study", str(spec_path), "--json"],
+    )
+    assert res.exit_code == 1
+    data = json.loads(res.output)
+    assert "does not match registered digest file" in data["error"]
+
+
+def test_registration_anchors_study_and_digest_modified_together_registration_json_remains_rejected(
+    tmp_path: Path,
+) -> None:
+    """Study spec and digest file modified together while registration JSON remains
+    original is rejected."""
+    spec_path = tmp_path / "study_spec.json"
+    spec = _init_study(spec_path)
+
+    raw = spec.to_dict()
+    raw["sampling_protocol"]["schedule"]["end_time_utc"] = "22:45:00"
+    spec_altered = PilotStudySpecification.from_dict(raw)
+    spec_altered.seal()
+    spec_path.write_text(json.dumps(spec_altered.to_dict(), indent=2), encoding="utf-8")
+
+    # Update registered digest file to match altered spec
+    reg_digest = spec_path.with_name(f"{spec_path.name}.registered_digest")
+    reg_digest.write_text(f"{spec_altered.study_specification_sha256}\n", encoding="utf-8")
+
+    # registration JSON left untouched with original digest
+    with pytest.raises(
+        FrozenContractViolationError, match="does not match registered JSON identity"
+    ):
+        load_and_verify_study_specification(spec_path)
+
+    res = runner.invoke(
+        app,
+        ["prospective", "pilot-status", "--study", str(spec_path), "--json"],
+    )
+    assert res.exit_code == 1
+    data = json.loads(res.output)
+    assert "does not match registered JSON identity" in data["error"]
+
+
+def test_registration_anchors_checkpoint_verification_enforces_both_bundled_anchors(
+    tmp_path: Path,
+) -> None:
+    """Checkpoint verification requires both bundled registration anchors to be present
+    and consistent."""
+    spec_path = tmp_path / "study_spec.json"
+    _init_study(spec_path)
+    s1_path, db_path = _create_phase35_fixtures(tmp_path / "sess1")
+    storage = _create_portable_phase35_storage(tmp_path / "storage")
+
+    cp_dir = tmp_path / "checkpoints" / "cp_valid"
+    res_cp = runner.invoke(
+        app,
+        [
+            "prospective",
+            "pilot-checkpoint",
+            "--study",
+            str(spec_path),
+            "--evidence",
+            str(s1_path),
+            "--journal",
+            str(db_path),
+            "--storage",
+            str(storage),
+            "--catalog",
+            str(storage / "catalog.db"),
+            "--output-dir",
+            str(cp_dir),
+            "--json",
+        ],
+    )
+    assert res_cp.exit_code == 0
+
+    # Verify both anchors exist in published checkpoint
+    cp_reg_json = cp_dir / "pilot_study_spec.json.registration.json"
+    cp_reg_digest = cp_dir / "pilot_study_spec.json.registered_digest"
+    assert cp_reg_json.is_file() and cp_reg_json.stat().st_size > 0
+    assert cp_reg_digest.is_file() and cp_reg_digest.stat().st_size > 0
+
+    # Normal verification succeeds
+    ok, _ = verify_pilot_checkpoint(cp_dir)
+    assert ok is True
+
+    # Subcase A: delete bundled registered_digest -> fails verification
+    cp_reg_digest.unlink()
+    ok_no_dig, msg_no_dig = verify_pilot_checkpoint(cp_dir)
+    assert ok_no_dig is False
+    assert "pilot_study_spec.json.registered_digest" in msg_no_dig
+
+    res_v_no_dig = runner.invoke(
+        app,
+        ["prospective", "pilot-verify", "--checkpoint-dir", str(cp_dir), "--json"],
+    )
+    assert res_v_no_dig.exit_code == 1
+
+    # Restore valid digest file
+    spec_orig = load_and_verify_study_specification(spec_path)
+    cp_reg_digest.write_text(f"{spec_orig.study_specification_sha256}\n", encoding="utf-8")
+
+    # Subcase B: delete bundled registration JSON -> fails verification
+    cp_reg_json.unlink()
+    ok_no_json, msg_no_json = verify_pilot_checkpoint(cp_dir)
+    assert ok_no_json is False
+    assert "pilot_study_spec.json.registration.json" in msg_no_json
+
+    res_v_no_json = runner.invoke(
+        app,
+        ["prospective", "pilot-verify", "--checkpoint-dir", str(cp_dir), "--json"],
+    )
+    assert res_v_no_json.exit_code == 1
+
+    # Restore valid registration JSON
+    cp_reg_json.write_text(
+        spec_path.with_name(f"{spec_path.name}.registration.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    ok_restored, _ = verify_pilot_checkpoint(cp_dir)
+    assert ok_restored is True
+
+    # Subcase C: tamper bundled study_spec and registration JSON while digest remains
+    cp_spec_file = cp_dir / "pilot_study_spec.json"
+    raw_cp_spec = json.loads(cp_spec_file.read_text(encoding="utf-8"))
+    raw_cp_spec["sampling_protocol"]["schedule"]["end_time_utc"] = "23:55:00"
+    spec_cp_altered = PilotStudySpecification.from_dict(raw_cp_spec)
+    spec_cp_altered.seal()
+    cp_spec_file.write_text(json.dumps(spec_cp_altered.to_dict(), indent=2), encoding="utf-8")
+
+    raw_cp_reg = json.loads(cp_reg_json.read_text(encoding="utf-8"))
+    raw_cp_reg["study_specification_sha256"] = spec_cp_altered.study_specification_sha256
+    raw_cp_reg["sampling_protocol"] = spec_cp_altered.sampling_protocol
+    cp_reg_json.write_text(json.dumps(raw_cp_reg, indent=2), encoding="utf-8")
+
+    ok_mismatch, msg_mismatch = verify_pilot_checkpoint(cp_dir)
+    assert ok_mismatch is False
+    assert (
+        "registered digest file" in msg_mismatch or "Protocol alteration detected" in msg_mismatch
+    )
+
+
+def test_registration_anchors_interrupted_registration_never_appears_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interrupted registration never leaves a partially created study appearing valid."""
+    # 1. Simulate process kill after only study_spec.json was written
+    spec_only = tmp_path / "spec_only" / "study_spec.json"
+    spec_only.parent.mkdir(parents=True, exist_ok=True)
+    spec_obj = _init_study(tmp_path / "temp_spec" / "study_spec.json")
+    spec_only.write_text(json.dumps(spec_obj.to_dict(), indent=2), encoding="utf-8")
+
+    with pytest.raises(FrozenContractViolationError, match="missing required registration JSON"):
+        load_and_verify_study_specification(spec_only)
+
+    # 2. Simulate process kill after study_spec.json and registration JSON written, but no digest
+    spec_partial = tmp_path / "spec_partial" / "study_spec.json"
+    spec_partial.parent.mkdir(parents=True, exist_ok=True)
+    spec_partial.write_text(json.dumps(spec_obj.to_dict(), indent=2), encoding="utf-8")
+    reg_json_partial = spec_partial.with_name(f"{spec_partial.name}.registration.json")
+    reg_json_partial.write_text(
+        (tmp_path / "temp_spec" / "study_spec.json.registration.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FrozenContractViolationError, match="missing required registered digest"):
+        load_and_verify_study_specification(spec_partial)
+
+    # 3. Simulate failure during initialize_pilot_study unlinks partial files
+    target_failed = tmp_path / "failed_dir" / "study_spec.json"
+    orig_fdopen = os.fdopen
+    call_count = 0
+
+    def mock_fdopen(fd: int, *args: Any, **kwargs: Any) -> Any:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 3:  # Fail on third file (digest file)
+            os.close(fd)
+            raise OSError("Simulated disk full during digest registration")
+        return orig_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", mock_fdopen)
+
+    with pytest.raises(OSError, match="Simulated disk full"):
+        initialize_pilot_study(
+            target_failed,
+            sampling_rule_description=TEST_SAMPLING_RULE,
+            sampling_schedule={
+                "schedule_type": "RECURRING_WEEKDAY_TIME",
+                "days_of_week": [0, 1, 2, 3, 4],
+                "start_time_utc": "13:00:00",
+                "end_time_utc": "15:00:00",
+            },
+        )
+
+    # Verify no partial files were left behind
+    assert not target_failed.exists()
+    assert not target_failed.with_name(f"{target_failed.name}.registration.json").exists()
+    assert not target_failed.with_name(f"{target_failed.name}.registered_digest").exists()

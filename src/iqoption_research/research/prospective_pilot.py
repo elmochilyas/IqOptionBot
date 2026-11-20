@@ -841,27 +841,31 @@ def initialize_pilot_study(
         "baseline_reference_count": spec.baseline_reference_count,
         "sampling_protocol": spec.sampling_protocol,
     }
-    reg_file = out.with_suffix(out.suffix + ".registration.json")
+    reg_file = out.with_name(f"{out.name}.registration.json")
     digest_file = out.with_name(f"{out.name}.registered_digest")
     reg_content = json.dumps(reg_record, indent=2, sort_keys=True).encode("utf-8")
     digest_content = f"{spec.study_specification_sha256}\n".encode()
 
     out.parent.mkdir(parents=True, exist_ok=True)
     content = json.dumps(spec.to_dict(), indent=2, sort_keys=True).encode("utf-8")
+    created_paths: list[Path] = []
     try:
         fd = os.open(out, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        created_paths.append(out)
         with os.fdopen(fd, "wb") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
 
         fd_reg = os.open(reg_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        created_paths.append(reg_file)
         with os.fdopen(fd_reg, "wb") as f:
             f.write(reg_content)
             f.flush()
             os.fsync(f.fileno())
 
         fd_dig = os.open(digest_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        created_paths.append(digest_file)
         with os.fdopen(fd_dig, "wb") as f:
             f.write(digest_content)
             f.flush()
@@ -870,6 +874,14 @@ def initialize_pilot_study(
         raise StudySpecificationExistsError(
             f"Simultaneous creation conflict: study specification already exists at '{out}'"
         ) from exc
+    except Exception:
+        for p_created in created_paths:
+            try:
+                if p_created.is_file():
+                    p_created.unlink()
+            except OSError:
+                pass
+        raise
 
     return spec
 
@@ -878,13 +890,17 @@ def load_and_verify_study_specification(
     path: Path,
     expected_digest: str | None = None,
     registration_record_path: Path | None = None,
+    registered_digest_path: Path | None = None,
 ) -> PilotStudySpecification:
     """Load and cryptographically verify an existing study specification.
 
     Validates:
     - Internal content hash integrity (detects unhashed mutations).
-    - Independently preserved registration record/digest (detects altered-and-rehashed protocols).
     - Non-negotiable frozen Phase 38 model invariants.
+    - Mandatory presence, integrity, and cross-consistency of BOTH registration anchors:
+      1. <spec>.registration.json
+      2. <spec>.registered_digest
+    - Neither anchor may be missing, empty, malformed, or contradictory.
     """
     p = path.resolve()
     if not p.is_file():
@@ -933,54 +949,159 @@ def load_and_verify_study_specification(
             f"'{spec.policy_version}' != '{FROZEN_POLICY_VERSION}'"
         )
 
-    # Validate against independently preserved registration record if available
-    reg_target: Path | None = None
+    # Both registration anchors created during initialization are strictly mandatory:
+    # 1. <spec>.registration.json (complete registration metadata record)
+    # 2. <spec>.registered_digest (cryptographic SHA-256 digest anchor)
+    # Validate both independently against the study specification and against each other.
+
+    # 1. Locate and validate Registration JSON Anchor
+    reg_json_file: Path | None = None
     if registration_record_path is not None:
-        if registration_record_path.is_file():
-            reg_target = registration_record_path
+        cand_reg = registration_record_path.resolve()
+        if cand_reg.is_file():
+            reg_json_file = cand_reg
         else:
-            raise ProspectivePilotError(
-                f"Registration record path not found: {registration_record_path}"
+            raise FrozenContractViolationError(
+                f"Registration integrity check failed: specified registration JSON record not "
+                f"found: '{registration_record_path}'"
             )
     else:
-        candidates = [
-            p.with_suffix(p.suffix + ".registration.json"),
+        candidates_json = [
             p.with_name(f"{p.name}.registration.json"),
+            p.with_suffix(p.suffix + ".registration.json"),
             p.with_name(f"{p.stem}.registration.json"),
+        ]
+        for c in candidates_json:
+            if c.is_file():
+                reg_json_file = c
+                break
+
+    if reg_json_file is None:
+        raise FrozenContractViolationError(
+            f"Registration integrity check failed: missing required registration JSON anchor for "
+            f"'{p.name}' (expected '{p.name}.registration.json')"
+        )
+
+    if reg_json_file.stat().st_size == 0:
+        raise FrozenContractViolationError(
+            f"Registration integrity check failed: registration JSON anchor '{reg_json_file.name}' "
+            "is empty (0 bytes)"
+        )
+
+    try:
+        reg_data = json.loads(reg_json_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise FrozenContractViolationError(
+            f"Registration integrity check failed: registration JSON anchor '{reg_json_file.name}' "
+            f"is malformed: {exc}"
+        ) from exc
+
+    if not isinstance(reg_data, dict):
+        raise FrozenContractViolationError(
+            f"Registration integrity check failed: registration JSON anchor '{reg_json_file.name}' "
+            "must be a JSON object"
+        )
+
+    raw_reg_sha = reg_data.get("study_specification_sha256")
+    if (
+        not isinstance(raw_reg_sha, str)
+        or len(raw_reg_sha.strip()) != 64
+        or not all(c in "0123456789abcdefABCDEF" for c in raw_reg_sha.strip())
+    ):
+        raise FrozenContractViolationError(
+            f"Registration integrity check failed: registration JSON anchor '{reg_json_file.name}' "
+            "contains missing or malformed study_specification_sha256 (expected 64 hex characters)"
+        )
+    reg_sha = raw_reg_sha.strip().lower()
+
+    # 2. Locate and validate Registered Digest Anchor
+    reg_digest_file: Path | None = None
+    if registered_digest_path is not None:
+        cand_dig = registered_digest_path.resolve()
+        if cand_dig.is_file():
+            reg_digest_file = cand_dig
+        else:
+            raise FrozenContractViolationError(
+                f"Registration integrity check failed: specified registered digest file not "
+                f"found: '{registered_digest_path}'"
+            )
+    else:
+        candidates_digest = [
             p.with_name(f"{p.name}.registered_digest"),
             p.with_name(f"{p.stem}.registered_digest"),
             p.with_name(f"{p.stem}.registered_sha256"),
         ]
-        for c in candidates:
+        for c in candidates_digest:
             if c.is_file():
-                reg_target = c
+                reg_digest_file = c
                 break
 
-    if reg_target is not None:
-        if reg_target.name.endswith(".json"):
-            reg_data = json.loads(reg_target.read_text(encoding="utf-8"))
-            reg_sha = reg_data.get("study_specification_sha256")
-            if reg_sha and spec.study_specification_sha256 != reg_sha:
-                raise FrozenContractViolationError(
-                    "Protocol alteration detected: study specification digest "
-                    f"'{spec.study_specification_sha256}' does not match registered identity "
-                    f"'{reg_sha}'"
-                )
-            reg_sched = reg_data.get("sampling_protocol", {}).get("schedule")
-            if reg_sched is not None and spec.sampling_protocol.get("schedule") != reg_sched:
-                raise FrozenContractViolationError(
-                    "Protocol alteration detected: sampling schedule differs from registered "
-                    "protocol"
-                )
-        else:
-            reg_sha = reg_target.read_text(encoding="utf-8").strip()
-            if reg_sha and spec.study_specification_sha256 != reg_sha:
-                raise FrozenContractViolationError(
-                    "Protocol alteration detected: study specification digest "
-                    f"'{spec.study_specification_sha256}' does not match registered identity "
-                    f"'{reg_sha}'"
-                )
+    if reg_digest_file is None:
+        raise FrozenContractViolationError(
+            f"Registration integrity check failed: missing required registered digest anchor for "
+            f"'{p.name}' (expected '{p.name}.registered_digest')"
+        )
 
+    if reg_digest_file.stat().st_size == 0:
+        raise FrozenContractViolationError(
+            "Registration integrity check failed: registered digest anchor "
+            f"'{reg_digest_file.name}' is empty (0 bytes)"
+        )
+
+    try:
+        raw_digest_str = reg_digest_file.read_text(encoding="utf-8").strip()
+    except Exception as exc:
+        raise FrozenContractViolationError(
+            "Registration integrity check failed: registered digest anchor "
+            f"'{reg_digest_file.name}' could not be read: {exc}"
+        ) from exc
+
+    if (
+        not raw_digest_str
+        or len(raw_digest_str) != 64
+        or not all(c in "0123456789abcdefABCDEF" for c in raw_digest_str)
+    ):
+        raise FrozenContractViolationError(
+            "Registration integrity check failed: registered digest anchor "
+            f"'{reg_digest_file.name}' is malformed (expected 64 hex characters)"
+        )
+    digest_raw = raw_digest_str.lower()
+
+    # 3. Validate Anchor 1 against study specification
+    if spec.study_specification_sha256 != reg_sha:
+        raise FrozenContractViolationError(
+            "Protocol alteration detected: study specification digest "
+            f"'{spec.study_specification_sha256}' does not match registered JSON identity "
+            f"'{reg_sha}'"
+        )
+    reg_sched = reg_data.get("sampling_protocol", {}).get("schedule")
+    if reg_sched is not None and spec.sampling_protocol.get("schedule") != reg_sched:
+        raise FrozenContractViolationError(
+            "Protocol alteration detected: sampling schedule differs from registered protocol"
+        )
+    reg_study_id = reg_data.get("study_id")
+    if reg_study_id is not None and spec.study_id != reg_study_id:
+        raise FrozenContractViolationError(
+            f"Protocol alteration detected: study_id '{spec.study_id}' differs from registered "
+            f"study_id '{reg_study_id}'"
+        )
+
+    # 4. Validate Anchor 2 against study specification
+    if spec.study_specification_sha256 != digest_raw:
+        raise FrozenContractViolationError(
+            "Protocol alteration detected: study specification digest "
+            f"'{spec.study_specification_sha256}' does not match registered digest file "
+            f"'{digest_raw}'"
+        )
+
+    # 5. Cross-validate Anchor 1 and Anchor 2 against each other
+    if reg_sha != digest_raw:
+        raise FrozenContractViolationError(
+            "Protocol alteration detected: registration JSON digest "
+            f"'{reg_sha}' does not match registered digest file '{digest_raw}'"
+        )
+
+    # 6. Validate expected_digest if provided
     if expected_digest is not None and spec.study_specification_sha256 != expected_digest:
         raise FrozenContractViolationError(
             "Protocol alteration detected: study specification digest "
@@ -2142,6 +2263,11 @@ def publish_pilot_checkpoint(
             "sampling_protocol": study.sampling_protocol,
         }
         _write(staging_dir / "pilot_study_spec.json.registration.json", reg_record)
+        dig_file = staging_dir / "pilot_study_spec.json.registered_digest"
+        with dig_file.open("wb") as f:
+            f.write(f"{study.study_specification_sha256}\n".encode())
+            f.flush()
+            os.fsync(f.fileno())
 
         # Pre-commit verification of staged files
         for fname in [
@@ -2150,6 +2276,8 @@ def publish_pilot_checkpoint(
             "evaluation_report.json",
             "integrity_manifest.json",
             "pilot_study_spec.json",
+            "pilot_study_spec.json.registration.json",
+            "pilot_study_spec.json.registered_digest",
         ]:
             staged_file = staging_dir / fname
             if not staged_file.is_file() or staged_file.stat().st_size == 0:
@@ -2171,6 +2299,8 @@ def publish_pilot_checkpoint(
         "evaluation_report": out / "evaluation_report.json",
         "integrity_manifest": out / "integrity_manifest.json",
         "pilot_study_spec": out / "pilot_study_spec.json",
+        "pilot_study_spec_registration": out / "pilot_study_spec.json.registration.json",
+        "pilot_study_spec_digest": out / "pilot_study_spec.json.registered_digest",
     }
 
 
@@ -2190,6 +2320,7 @@ def verify_pilot_checkpoint(
     - Cross-artifact bindings (manifest binds dataset and report; checkpoint binds
       manifest, study spec, dataset, report).
     - Study specification identity and content integrity.
+    - Mandatory presence, integrity, and cross-consistency of both bundled registration anchors.
     - Valid SHA-256 digests on all source file fingerprints.
     - Row traceability to source file fingerprints.
     """
@@ -2206,6 +2337,8 @@ def verify_pilot_checkpoint(
         "evaluation_report.json",
         "integrity_manifest.json",
         "pilot_study_spec.json",
+        "pilot_study_spec.json.registration.json",
+        "pilot_study_spec.json.registered_digest",
     ]
     for fname in req_files:
         p = cp_dir / fname

@@ -21,6 +21,11 @@ Quantitative market research, authentic historical data cataloging, causal featu
 
 ## 1. System Baseline & Verification Status
 
+**Windows Research Control Center:** double-click `Start-ResearchDashboard.cmd`
+to inspect the registered Phase 38 study and launch one explicitly authorized,
+bounded foreground observation. See [launch instructions and limitations](docs/research-desktop.md).
+The dashboard starts offline and never launches sessions automatically.
+
 | Dimension | Current Verification Status |
 |---|---|
 | **Operating System** | Windows (PowerShell tested; cross-platform compatible) |

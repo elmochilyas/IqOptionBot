@@ -8,6 +8,7 @@ import math
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -144,11 +145,15 @@ class ShadowTrial:
         model_path: Path,
         *,
         pipeline_reserve_seconds: float = 1.0,
+        use_saved_credentials: bool = False,
+        live_guard: Callable[[], None] | None = None,
     ) -> None:
         config.validate()
         if config.symbol != "EURUSD" or config.candle_size_seconds != 60:
             raise ValueError("Shadow trial requires EURUSD 60-second candles")
         self.config = config
+        self.use_saved_credentials = use_saved_credentials
+        self.live_guard = live_guard
         self.pipeline_reserve_seconds = float(pipeline_reserve_seconds)
         self.mode = "OPERATOR_SUPERVISED_LIVE" if config.live_mode else "OFFLINE_SIMULATION"
         self.session = f"shadow_{uuid.uuid4().hex}"
@@ -584,7 +589,16 @@ class ShadowTrial:
         if not self.config.live_mode or self.config.simulation_mode:
             raise ValueError("Live mode and operator acknowledgement required")
         try:
-            async with await supervised_client(self.recorder) as client:
+            if self.live_guard is not None:
+                self.live_guard()
+            client_context = (
+                await supervised_client(self.recorder, use_saved_credentials=True)
+                if self.use_saved_credentials
+                else await supervised_client(self.recorder)
+            )
+            async with client_context as client:
+                if self.live_guard is not None:
+                    self.live_guard()
                 await self.observe(client)
         except (KeyboardInterrupt, asyncio.CancelledError):
             self.metadata["stop_reason"] = "OPERATOR_CANCELLED"

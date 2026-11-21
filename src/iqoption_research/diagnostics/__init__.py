@@ -1,5 +1,11 @@
 """Model Failure Intelligence and Controlled Research Diagnostics (Phase 41)."""
 
+from iqoption_research.diagnostics.alignment import (
+    AlignedObservation,
+    AlignedPredictionDataset,
+    AlignmentRejectionReport,
+    align_predictions_to_market_data,
+)
 from iqoption_research.diagnostics.experiments import (
     ControlledExperimentTrialResult,
     ResearchExperimentSpec,
@@ -36,6 +42,9 @@ from iqoption_research.diagnostics.targets import (
 )
 
 __all__ = [
+    "AlignedObservation",
+    "AlignedPredictionDataset",
+    "AlignmentRejectionReport",
     "CalibrationBin",
     "ConfidenceThresholdPoint",
     "ConfusionMatrixAudit",
@@ -50,6 +59,7 @@ __all__ = [
     "SerialDependenceAudit",
     "SubgroupMetric",
     "TargetAuditResult",
+    "align_predictions_to_market_data",
     "audit_target_distribution",
     "calculate_payout_sensitivity_table",
     "generate_failure_intelligence_report",

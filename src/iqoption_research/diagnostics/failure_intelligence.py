@@ -23,9 +23,17 @@ from typing import Any
 
 import numpy as np
 
+from iqoption_research.diagnostics.alignment import (
+    AlignedPredictionDataset,
+    align_predictions_to_market_data,
+)
 from iqoption_research.diagnostics.microstructure import calculate_payout_sensitivity_table
 from iqoption_research.diagnostics.targets import TargetAuditResult, audit_target_distribution
 from iqoption_research.ml.authentic_training import compute_wilson_score_interval
+from iqoption_research.ml.decision.policy import (
+    classify_directional_decisions_vectorized,
+)
+from iqoption_research.ml.targets.dataset import MLDataset
 from iqoption_research.ml.targets.specs import TargetSpec, TargetType
 from iqoption_research.models.market import Candle
 
@@ -172,17 +180,36 @@ class FailureIntelligenceReport:
         up_pct = self.prediction_asymmetry.get("pred_up_pct", 0.0)
         down_pct = self.prediction_asymmetry.get("pred_down_pct", 0.0)
 
+        rec_pct = (ta.valid_samples / max(1, ta.total_pairs)) * 100.0
+        quar_pct = (ta.quarantined_samples / max(1, ta.total_pairs)) * 100.0
         lines = [
             "# Model Failure Intelligence & Error Analysis",
             f"**Dataset**: `{self.dataset_id}` | **Evaluated Samples**: {self.evaluated_samples:,}",
             "**Scientific Disposition**: `NO_DEMONSTRATED_EDGE` (Fail-Closed Default)",
             "",
             "## 1. Executive Failure Summary",
-            f"- **Exact Ties**: {ta.tie_count:,} ({ta.tie_pct:.2f}% of all observations).",
             (
-                f"- **Legacy Distortion**: Ties inflated DOWN to {ta.legacy_target_0_pct:.2f}% "
-                f"(vs {ta.strict_down_pct:.2f}% strict)."
+                f"- **Source Reconciliation**: {ta.total_pairs:,} candidate pairs -> "
+                f"{ta.valid_samples:,} valid ({rec_pct:.2f}%)."
             ),
+            (
+                f"  Quarantined: {ta.quarantined_samples:,} ({quar_pct:.2f}%: "
+                f"{ta.weekend_exclusions} weekend closures, {ta.intraday_gap_exclusions} gaps)."
+            ),
+            (
+                f"- **Outcome Counts**: UP: {ta.up_count:,} ({ta.up_pct:.2f}%), "
+                f"DOWN: {ta.down_count:,} ({ta.down_pct:.2f}%), "
+                f"TIE: {ta.tie_count:,} ({ta.tie_pct:.2f}%)."
+            ),
+            (
+                f"- **Imbalance Attribution**: True market imbalance (DOWN - UP) is "
+                f"{ta.strict_down_pct - ta.strict_up_pct:+.2f}%."
+            ),
+            (
+                "  Legacy binary 5.82% DOWN skew was an artifact of "
+                "collapsing exact ties into DOWN."
+            ),
+            f"- **Exact Ties**: {ta.tie_count:,} ({ta.tie_pct:.2f}% of all observations).",
             f"- **Prediction Skew**: Model predicts UP {up_pct:.2f}% vs DOWN {down_pct:.2f}%.",
             (
                 f"- **Expected Calibration Error (ECE)**: {self.expected_calibration_error:.4f} | "
@@ -304,8 +331,8 @@ class FailureIntelligenceReport:
 
 def generate_failure_intelligence_report(
     candles: Sequence[Candle],
-    y_true_directional: np.ndarray,
-    predicted_probabilities: np.ndarray,
+    y_true_directional: np.ndarray | MLDataset | AlignedPredictionDataset,
+    predicted_probabilities: np.ndarray | None = None,
     *,
     decision_threshold: float = 0.50,
     dataset_id: str = "authentic_eurusd_m1",
@@ -327,39 +354,65 @@ def generate_failure_intelligence_report(
     Returns:
         FailureIntelligenceReport with complete diagnostics.
     """
-    m = len(y_true_directional)
-    if m == 0 or len(candles) < m:
-        raise ValueError("Candles and ground truth arrays must have valid matching lengths")
-
     target_spec = spec or TargetSpec(target_type=TargetType.DIRECTION_BINARY, horizon_bars=1)
     target_audit = audit_target_distribution(candles, target_spec, enforce_temporal_continuity=True)
 
-    probs = np.asarray(predicted_probabilities, dtype=np.float64)
-    if probs.ndim == 2:
-        probs = probs[:, 1] if probs.shape[1] > 1 else probs[:, 0]
+    aligned: AlignedPredictionDataset | None = None
+    if isinstance(y_true_directional, AlignedPredictionDataset):
+        aligned = y_true_directional
+    elif isinstance(y_true_directional, MLDataset):
+        if predicted_probabilities is None:
+            raise ValueError("predicted_probabilities required when MLDataset is provided")
+        aligned = align_predictions_to_market_data(
+            candles,
+            y_true_directional,
+            predicted_probabilities,
+            decision_threshold=decision_threshold,
+        )
 
-    # Map ground truth to strict directional (+1 = UP, -1 = DOWN, 0 = TIE)
-    h = target_spec.horizon_bars
-    threshold = target_spec.threshold_price
-    closes = np.array([c.close for c in candles[: m + h]], dtype=np.float64)
+    if aligned is not None:
+        m = aligned.aligned_rows
+        probs = aligned.predicted_probabilities
+        diffs = aligned.price_diffs
+        true_up = aligned.is_true_up_mask
+        true_down = aligned.is_true_down_mask
+        true_tie = aligned.is_true_tie_mask
+        candle_dts = [
+            datetime.fromtimestamp(o.feature_timestamp, tz=UTC)
+            for o in aligned.observations
+        ]
+        closes = np.array([o.source_close for o in aligned.observations], dtype=np.float64)
+    else:
+        y_arr = np.asarray(y_true_directional)
+        m = len(y_arr)
+        if m == 0 or len(candles) < m:
+            raise ValueError("Candles and ground truth arrays must have valid matching lengths")
+        if predicted_probabilities is None:
+            raise ValueError("predicted_probabilities required")
+        probs = np.asarray(predicted_probabilities, dtype=np.float64)
+        if probs.ndim == 2:
+            probs = probs[:, 1] if probs.shape[1] > 1 else probs[:, 0]
 
-    # 1. Reconstruct true price diffs for exact tie detection
-    diffs = np.zeros(m, dtype=np.float64)
-    for i in range(m):
-        fut_i = i + h
-        if fut_i < len(closes):
-            diffs[i] = closes[fut_i] - closes[i]
+        h = target_spec.horizon_bars
+        threshold = target_spec.threshold_price
+        closes = np.array([c.close for c in candles[: m + h]], dtype=np.float64)
 
-    true_up = diffs > threshold
-    true_down = diffs < -threshold
-    true_tie = np.abs(diffs) <= threshold
+        # 1. Reconstruct true price diffs for exact tie detection
+        diffs = np.zeros(m, dtype=np.float64)
+        for i in range(m):
+            fut_i = i + h
+            if fut_i < len(closes):
+                diffs[i] = closes[fut_i] - closes[i]
 
-    # 2. Derive model decisions
-    pred_up = probs >= decision_threshold
-    pred_down = (
-        probs < (1.0 - (decision_threshold - 0.50)) if decision_threshold > 0.50 else (probs < 0.50)
+        true_up = diffs > threshold
+        true_down = diffs < -threshold
+        true_tie = np.abs(diffs) <= threshold
+        candle_dts = [datetime.fromtimestamp(c.to_ts, tz=UTC) for c in candles[:m]]
+
+    # 2. Derive model decisions using shared, mutually exclusive decision policy
+    pred_up, pred_down, abstained = classify_directional_decisions_vectorized(
+        probs, decision_threshold
     )
-    abstained = ~(pred_up | pred_down)
 
     # Confusion matrix
     tp_up = int(np.sum(pred_up & true_up))
@@ -594,14 +647,27 @@ def generate_failure_intelligence_report(
     overall_target_bin = np.where(true_up, 1.0, 0.0)
     overall_brier = float(np.mean((probs - overall_target_bin) ** 2))
 
-    # Confidence curve & selective coverage
+    # Confidence curve & selective coverage using consistent decision policy
     conf_curve: list[ConfidenceThresholdPoint] = []
     for th in [0.50, 0.52, 0.55, 0.60, 0.65]:
-        th_pred_up = probs >= th
-        th_pred_down = probs < (1.0 - (th - 0.50)) if th > 0.50 else (probs < 0.50)
+        th_pred_up, th_pred_down, _th_skip = classify_directional_decisions_vectorized(
+            probs, th
+        )
         th_decisive = th_pred_up | th_pred_down
         th_cnt = int(np.sum(th_decisive))
         if th_cnt == 0:
+            conf_curve.append(
+                ConfidenceThresholdPoint(
+                    confidence_threshold=th,
+                    qualifying_samples=0,
+                    coverage_pct=0.0,
+                    accuracy=0.0,
+                    error_rate=0.0,
+                    win_rate=0.0,
+                    ci_lower_95=0.0,
+                    ci_upper_95=0.0,
+                )
+            )
             continue
         th_wins = (th_pred_up & true_up) | (th_pred_down & true_down)
         th_acc = float(np.sum(th_wins) / th_cnt)

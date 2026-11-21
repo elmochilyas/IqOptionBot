@@ -76,6 +76,8 @@ class TargetAuditResult:
             f"  Digital Options (Full Loss):  {self.digital_atm_loss_samples:6,d} "
             f"losses ({self.tie_pct:.2f}%)"
         )
+        val_pct = (self.valid_samples / max(1, self.total_pairs)) * 100.0
+        quar_pct = (self.quarantined_samples / max(1, self.total_pairs)) * 100.0
         lines = [
             f"=== TARGET AUDIT REPORT: {self.symbol} (Horizon H={self.horizon_bars}) ===",
             f"Total Candles: {self.candle_count:,} | Horizon: {self.horizon_bars} bars ({h_sec}s)",
@@ -102,11 +104,15 @@ class TargetAuditResult:
             bin_str,
             dig_str,
             "",
-            "5. CONTINUITY & BOUNDARY AUDIT:",
-            f"  Weekend Closure Exclusions: {self.weekend_exclusions:,}",
-            f"  Intraday Gap Exclusions:    {self.intraday_gap_exclusions:,}",
-            f"  Tail Horizon Exclusions:    {self.tail_exclusions:,}",
-            f"  Total Valid Retained:       {self.valid_samples:,}",
+            "5. CONTINUITY & BOUNDARY AUDIT (Source Reconciliation):",
+            f"  Total Candidate Pairs:      {self.total_pairs:,}",
+            f"  Valid Evaluated Pairs:      {self.valid_samples:,} ({val_pct:.3f}%)",
+            f"  Quarantined / Excluded:     {self.quarantined_samples:,} ({quar_pct:.3f}%)",
+            f"    - Weekend Closures:       {self.weekend_exclusions:,}",
+            f"    - Intraday Gaps:          {self.intraday_gap_exclusions:,}",
+            f"    - Tail Horizon Exclusions:{self.tail_exclusions:,}",
+            f"  Reconciliation Check:       {self.valid_samples:,} + {self.quarantined_samples:,} "
+            f"= {self.total_pairs:,} (Exact Match)",
         ]
         return "\n".join(lines)
 

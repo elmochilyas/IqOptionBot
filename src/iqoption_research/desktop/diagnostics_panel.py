@@ -301,11 +301,17 @@ class ModelDiagnosticsPanel:
         model.fit(scaled_train.X, scaled_train.y)
         val_probs = model.predict_proba(scaled_val.X)[:, 1]
 
-        val_candles = [candles[i] for i in val_idx]
+        from iqoption_research.diagnostics.alignment import align_predictions_to_market_data
+
+        aligned = align_predictions_to_market_data(
+            candles=candles,
+            ml_dataset=ds_val,
+            predicted_probabilities=val_probs,
+            decision_threshold=0.50,
+        )
         return generate_failure_intelligence_report(
-            val_candles,
-            scaled_val.y,
-            val_probs,
+            candles,
+            aligned,
             decision_threshold=0.50,
             dataset_id=snapshot_id,
             spec=spec,
@@ -437,11 +443,19 @@ class ModelDiagnosticsPanel:
                     r.experiment_id,
                     r.area,
                     r.hypothesis,
-                    f"{r.val_accuracy * 100:.2f}%",
+                    f"{r.val_accuracy * 100:.2f}%" if r.val_accuracy is not None else "N/A",
                     f"{r.val_brier_score:.4f}",
                     f"{r.val_coverage * 100:.1f}%",
-                    f"{r.delta_vs_majority * 100:+.2f}%",
-                    f"{r.break_even_gap * 100:+.2f}%",
+                    (
+                        f"{r.delta_vs_majority * 100:+.2f}%"
+                        if r.delta_vs_majority is not None
+                        else "N/A"
+                    ),
+                    (
+                        f"{r.break_even_gap * 100:+.2f}%"
+                        if r.break_even_gap is not None
+                        else "N/A"
+                    ),
                     r.verdict,
                 ),
             )

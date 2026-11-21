@@ -146,16 +146,24 @@ def experiment_matrix_cmd(
         typer.secho("Error: No research dataset snapshots found.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    candles = snapshots[-1].load_candles()
+    snap = snapshots[-1]
+    snap_id = snap.manifest.snapshot_id
+    source_hash = getattr(snap.manifest, "sha256", None) or snap.manifest.snapshot_id
+    candles = snap.load_candles()
     if sample_limit > 0 and len(candles) > sample_limit:
         candles = candles[-sample_limit:]
 
     typer.echo(f"Executing controlled research experiment matrix on {len(candles):,} candles...")
     matrix = get_predefined_experiment_matrix()
-    results = run_controlled_experiment_suite(candles, matrix)
+    results = run_controlled_experiment_suite(
+        candles,
+        matrix,
+        snapshot_id=snap_id,
+        source_hash=source_hash,
+    )
     typer.echo(render_experiment_matrix_table(results))
 
-    out_file = output_path or Path("data/experiments/phase41_experiment_ledger.json")
+    out_file = output_path or Path("data/experiments/phase41_experiment_ledger_v2.json")
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(json.dumps([r.to_dict() for r in results], indent=2), encoding="utf-8")
     typer.secho(f"Trial ledger recorded to {out_file}", fg=typer.colors.GREEN)
@@ -238,19 +246,25 @@ def report_cmd(
     model.fit(scaled_train.X, scaled_train.y)
     val_probs = model.predict_proba(scaled_val.X)[:, 1]
 
-    # Map val candles
-    val_candles = [candles[i] for i in val_idx]
+    # Align predictions to market data using verified timestamps
+    from iqoption_research.diagnostics.alignment import align_predictions_to_market_data
+
+    aligned = align_predictions_to_market_data(
+        candles=candles,
+        ml_dataset=ds_val,
+        predicted_probabilities=val_probs,
+        decision_threshold=0.50,
+    )
     report = generate_failure_intelligence_report(
-        val_candles,
-        scaled_val.y,
-        val_probs,
+        candles,
+        aligned,
         decision_threshold=0.50,
         dataset_id=snap.manifest.snapshot_id,
         spec=spec,
     )
 
     md = report.render_markdown()
-    out_file = output_path or Path("reports/model_failure_intelligence.md")
+    out_file = output_path or Path("reports/model_failure_intelligence_v2.md")
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(md, encoding="utf-8")
     typer.secho(f"Failure Intelligence report written to {out_file}", fg=typer.colors.GREEN)

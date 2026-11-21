@@ -13,11 +13,14 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import StrEnum
 from typing import Any
 
 import numpy as np
 
+from iqoption_research.ml.decision.policy import (
+    DecisionAction,
+    classify_directional_decision,
+)
 from iqoption_research.models.market import Candle
 from iqoption_research.research.features.pipeline import CausalFeaturePipeline
 from iqoption_research.shadow.registry import (
@@ -26,14 +29,6 @@ from iqoption_research.shadow.registry import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class DecisionAction(StrEnum):
-    """Directional decision produced by shadow inference."""
-
-    UP = "UP"
-    DOWN = "DOWN"
-    SKIP = "SKIP"
 
 
 class EngineError(Exception):
@@ -262,12 +257,7 @@ class ShadowPredictionEngine:
 
         # 5. Apply Frozen Decision Rule
         tau = self.record.confidence_threshold
-        if p_up >= tau:
-            decision = DecisionAction.UP
-        elif p_down >= tau or p_up <= (1.0 - tau):
-            decision = DecisionAction.DOWN
-        else:
-            decision = DecisionAction.SKIP
+        decision = classify_directional_decision(p_up, tau)
 
         t_end = time.perf_counter()
         duration_ms = (t_end - t_start) * 1000.0

@@ -18,12 +18,20 @@ While existing AI and shadow-evaluation infrastructure functions reliably, no tr
 
 ### Root Cause 1: Target Downward Bias Caused by Exact Ties (Confirmed)
 - **Investigation**: Audited 66,463 consecutive authentic EURUSD M1 candles at horizon $H=1$.
-- **Finding**:
-  - UP bars ($C_{t+1} > C_t$): 31,292 (47.091%)
-  - DOWN bars ($C_{t+1} < C_t$): 31,727 (47.746%)
-  - EXACT TIE bars ($C_{t+1} == C_t$): 3,431 (5.163%)
-- **Mechanism**: The legacy `DIRECTION_BINARY` target generation evaluated `targets = (diffs > threshold).astype(np.int64)`. When threshold was 0.0, all 3,431 exact ties were encoded as `0` (DOWN).
-- **Impact**: Class 0 was artificially inflated to 52.909% while Class 1 was 47.091% (a +5.818% artifact imbalance). Models trained on legacy binary targets learned to overpredict DOWN (55.4% DOWN vs 44.6% UP on logistic regression).
+- **Source Count Reconciliation**:
+  - Total candidate 1-step pairs: 66,463
+  - Quarantined / Excluded pairs: 13 (0.020%)
+    - Scheduled weekend closures: 11
+    - Intraday missing candle gaps: 2
+  - Evaluated pairs: 66,450 (99.980%)
+    - UP bars ($C_{t+1} > C_t$): 31,292 (47.091% of evaluated)
+    - DOWN bars ($C_{t+1} < C_t$): 31,727 (47.746% of evaluated)
+    - EXACT TIE bars ($C_{t+1} == C_t$): 3,431 (5.163% of evaluated)
+- **Mechanism & Imbalance Attribution**:
+  - In raw market movements, true directional imbalance (DOWN vs UP, excluding ties) is only **0.690%** (31,727 DOWN [50.345%] vs 31,292 UP [49.655%]).
+  - The legacy `DIRECTION_BINARY` target generation evaluated `targets = (diffs > threshold).astype(np.int64)`. When threshold was 0.0, all 3,431 exact ties were encoded as `0` (DOWN).
+  - This artificially inflated Class 0 to 52.909% while Class 1 was 47.091%, inducing a **+5.818% artifact imbalance**.
+  - Models trained on legacy binary targets learned to overpredict DOWN as an artifact of tie collapsing.
 - **Correction**: Introduced `TiePolicy` (`LEGACY_DOWN`, `EXCLUDE`, `SEPARATE_CLASS`, `EXPIRY_ATM_REFUND`, `EXPIRY_ATM_LOSS`). Under `TiePolicy.EXCLUDE`, exact ties have `valid_mask=False` and are purged from training sets, ensuring directional training is strictly balanced.
 
 ### Root Cause 2: Settlement Contract Mismatch (Confirmed)
@@ -48,16 +56,20 @@ While existing AI and shadow-evaluation infrastructure functions reliably, no tr
 
 ## 3. Architecture & New Diagnostic Modules
 
-The Phase 41 diagnostic suite resides in `src/iqoption_research/diagnostics/`:
+The Phase 41 diagnostic suite resides in `src/iqoption_research/diagnostics/` and `src/iqoption_research/ml/decision/`:
 
 ```
-src/iqoption_research/diagnostics/
-├── __init__.py               # Public exports
-├── targets.py                # Target distribution audit & tie quantification
-├── parity.py                 # Prefix invariance & feature parity verifier
-├── microstructure.py         # Formal contract specifications & payout economics
-├── failure_intelligence.py   # Complete error analysis & regime decomposition
-└── experiments.py            # Bounded research experiment matrix (Areas A-F)
+src/iqoption_research/
+├── diagnostics/
+│   ├── __init__.py               # Public exports
+│   ├── alignment.py              # Timestamp-verified market-data and prediction alignment
+│   ├── targets.py                # Target distribution audit & tie quantification
+│   ├── parity.py                 # Prefix invariance & feature parity verifier
+│   ├── microstructure.py         # Formal contract specifications & payout economics
+│   ├── failure_intelligence.py   # Complete error analysis & regime decomposition
+│   └── experiments.py            # Bounded research experiment matrix (Areas A-F)
+└── ml/decision/
+    └── policy.py                 # Shared, mutually exclusive directional decision policy
 ```
 
 ### Component Flow
@@ -66,44 +78,47 @@ src/iqoption_research/diagnostics/
         │
         ├──> [audit_target_distribution]  ──> Exact Ties, UP/DOWN/TIE Counts, Class Bias
         │
+        ├──> [align_predictions_to_data]  ──> Verified Point-in-Time Timestamps, Gap Rejection
+        │
         ├──> [verify_prefix_invariance]   ──> Future Mutation Rejection, Parity Proof
         │
         ├──> [generate_failure_intelligence_report] ──> Confusion Matrix, ECE, Brier,
         │                                              Hourly Breakdown, Autocorrelation
         │
         └──> [run_controlled_experiment_suite]     ──> 14 Predefined Trials (Areas A-F),
-                                                       Purging & Embargo, Negative BE Gap
+                                                       Out-of-Fold Calibration, 3 Folds,
+                                                       Protected Holdouts (0 test scored)
 ```
 
 ---
 
-## 4. Controlled Research Experiment Matrix (Areas A–F)
+## 4. Controlled Research Experiment Matrix (Areas A–F, Remediation V2)
 
-Fourteen trials were executed across a predefined, bounded matrix on development data using strictly chronological walk-forward splits with purging ($H=1$) and embargo (5 bars):
+Fourteen trials were executed across a predefined, bounded matrix on development data using strictly chronological walk-forward splits across 3 expanding development folds with purging ($H=1$) and embargo (5 bars). The historical test holdout was strictly protected and not scored ($N_{\text{test}} = 0$).
 
 | Trial ID | Area | Focus | Val Acc | Brier | Cov% | Delta Maj | BE Gap (85%) | Verdict |
 | :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| `exp_A1_legacy_target_lr` | A | Legacy Binary Target | 46.99% | 0.2520 | 100.0% | -5.74% | -7.06% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_A2_tie_aware_target_lr` | A | Strict Tie Exclusion | 49.49% | 0.2514 | 100.0% | -0.58% | -4.56% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_B1_legacy_dynamic_schema` | B | Dynamic Volume Scan | 49.49% | 0.2514 | 100.0% | -0.58% | -4.56% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_B2_static_schema_parity` | B | Static Schema Parity | 49.49% | 0.2514 | 100.0% | -0.58% | -4.56% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_C1_redundant_full_rf` | C | 17 Redundant Features | 50.82% | 0.2536 | 100.0% | +0.75% | -3.23% | MARGINAL_DEV_SIGNAL_NEEDS_PROSPECTIVE |
-| `exp_C2_compact_nonredundant_rf` | C | 8 Compact Stationary | 50.85% | 0.2541 | 100.0% | +0.78% | -3.20% | MARGINAL_DEV_SIGNAL_NEEDS_PROSPECTIVE |
-| `exp_D1_calib_none_rf` | D | Uncalibrated RF | 50.85% | 0.2541 | 100.0% | +0.78% | -3.20% | MARGINAL_DEV_SIGNAL_NEEDS_PROSPECTIVE |
-| `exp_D2_calib_sigmoid_rf` | D | Sigmoid Calibration | 50.85% | 0.2500 | 100.0% | +0.78% | -3.20% | MARGINAL_DEV_SIGNAL_NEEDS_PROSPECTIVE |
-| `exp_D3_calib_isotonic_rf` | D | Isotonic Calibration | 50.85% | 0.2501 | 100.0% | +0.78% | -3.20% | MARGINAL_DEV_SIGNAL_NEEDS_PROSPECTIVE |
-| `exp_E1_price_only_lr` | E | Price-Only Features | 49.52% | 0.2515 | 100.0% | -0.55% | -4.53% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_E2_market_time_context_lr` | E | Causal Cyclical Time | 49.54% | 0.2513 | 100.0% | -0.53% | -4.51% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_F1_threshold_50_decisive` | F | Threshold 0.50 | 50.75% | 0.2500 | 100.0% | +0.68% | -3.30% | MARGINAL_DEV_SIGNAL_NEEDS_PROSPECTIVE |
-| `exp_F2_threshold_55_selective` | F | Threshold 0.55 (SKIP) | 51.91% | 0.2500 | 4.2% | +1.84% | -2.14% | MARGINAL_DEV_SIGNAL_NEEDS_PROSPECTIVE |
-| `exp_F3_threshold_60_conservative` | F | Threshold 0.60 (SKIP) | 50.00% | 0.2500 | 0.0% | 0.00% | -4.05% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_A1_legacy_target_lr` | A | Legacy Binary Target | 50.06% | 0.2501 | 100.0% | -2.30% | -4.00% | FAIL_TO_BEAT_MAJORITY_BASELINE |
+| `exp_A2_tie_aware_target_lr` | A | Strict Tie Exclusion | 50.64% | 0.2501 | 100.0% | +0.55% | -3.41% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_B1_legacy_dynamic_schema` | B | Dynamic Volume Scan | 50.64% | 0.2501 | 100.0% | +0.55% | -3.41% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_B2_static_schema_parity` | B | Static Schema Parity | 50.64% | 0.2501 | 100.0% | +0.55% | -3.41% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_C1_redundant_full_rf` | C | 17 Redundant Features | 50.47% | 0.2504 | 100.0% | +0.39% | -3.58% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_C2_compact_nonredundant_rf` | C | 8 Compact Stationary | 51.01% | 0.2499 | 100.0% | +0.92% | -3.05% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_D1_calib_none_rf` | D | Uncalibrated RF | 51.01% | 0.2499 | 100.0% | +0.92% | -3.05% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_D2_calib_sigmoid_rf` | D | Sigmoid (Out-of-Fold) | 50.32% | 0.2501 | 100.0% | +0.23% | -3.73% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_D3_calib_isotonic_rf` | D | Isotonic (Out-of-Fold)| 50.63% | 0.2502 | 100.0% | +0.54% | -3.43% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_E1_price_only_lr` | E | Price-Only Features | 50.78% | 0.2500 | 100.0% | +0.70% | -3.27% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_E2_market_time_context_lr` | E | Causal Cyclical Time | 50.80% | 0.2500 | 100.0% | +0.71% | -3.25% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_F1_threshold_50_decisive` | F | Threshold 0.50 (No SKIP)| 50.12% | 0.2501 | 100.0% | +0.03% | -3.93% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| `exp_F2_threshold_55_selective` | F | Threshold 0.55 (SKIP) | 42.86% | 0.2501 | 0.0% | -7.23% | -11.20% | FAIL_TO_BEAT_MAJORITY_BASELINE |
+| `exp_F3_threshold_60_conservative` | F | Threshold 0.60 (SKIP) | N/A | 0.2501 | 0.0% | N/A | N/A | ZERO_COVERAGE_NO_PREDICTIONS |
 
-### Key Matrix Insights
-1. **Target Correction**: Excluding ties improved directional validation accuracy from 46.99% to 49.49% on logistic regression by eliminating the false downward artifact.
-2. **Feature Pruning**: Compacting 17 features to 8 stationary return/ratio features preserved predictive accuracy while eliminating non-stationary price-level drifting SMAs.
-3. **Probability Calibration**: Sigmoid (Platt) calibration on validation data reduced Brier score from 0.2541 to 0.2500, aligning probabilities with empirical win frequencies.
-4. **Selective Abstention**: Requiring confidence $\ge 0.55$ elevated decisive win rate to 51.91% at the expense of trading only 4.2% of candles. However, it still falls short of the 54.05% break-even hurdle ($W - W_{\text{be}} = -2.14\%$).
-5. **Universal Economic Invariant**: Across all 14 trials, the break-even gap remained strictly negative ($< 0$). No configuration demonstrated profitability.
+### Key Matrix Insights & Remediation Impact
+1. **Threshold Bug Remediation**: Corrected the DOWN classification rule from `p_up < 1.0 - (th - 0.50)` to `p_up <= round(1.0 - th, 9)`. At threshold 0.55 and 0.60, models no longer select 100% of observations. At threshold 0.60, exactly 0 samples qualify (0.0% coverage), correctly reported as `ZERO_COVERAGE_NO_PREDICTIONS` with accuracy and expectancy marked N/A.
+2. **Out-of-Fold Calibration Integrity**: In-sample validation calibration evaluation was eliminated. Calibrators are fitted strictly on the chronological calibration-fit partition and scored out-of-fold on unseen evaluation partitions. Platt sigmoid (0.2501) and isotonic regression (0.2502) show no generalization gain over raw uncalibrated probabilities (0.2499) on out-of-fold data.
+3. **Holdout Protection**: The test partition was completely quarantined and excluded from all development trials ($N_{\text{test}} = 0$).
+4. **Target Correction**: Excluding ties restored class balance (eliminating the legacy -2.30% delta vs majority baseline) and improved out-of-fold accuracy to 50.64%.
+5. **Universal Economic Invariant**: Every evaluated candidate configuration falls short of the 54.05% break-even hurdle ($W - W_{\text{be}} < 0$). Scientific disposition strictly preserved: `NO_DEMONSTRATED_EDGE`.
 
 ---
 

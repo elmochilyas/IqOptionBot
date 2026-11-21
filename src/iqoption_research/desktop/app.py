@@ -12,6 +12,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from iqoption_research.desktop.core import STUDY, require_slot, slot_used, slots
+from iqoption_research.desktop.diagnostics_panel import ModelDiagnosticsPanel
 from iqoption_research.desktop.laboratory_panel import ModelLaboratoryPanel
 from iqoption_research.desktop.process import SessionProcess, refresh
 from iqoption_research.desktop.shadow_panel import ShadowEvaluationPanel
@@ -110,6 +111,7 @@ class Dashboard:
         self.workstation = WorkstationPanels(self, notebook)
         self.laboratory = ModelLaboratoryPanel(self, notebook)
         self.shadow_evaluation = ShadowEvaluationPanel(self, notebook)
+        self.model_diagnostics = ModelDiagnosticsPanel(self, notebook)
         evaluation = ttk.Notebook(phase_body)
         evaluation.pack(fill="both", expand=True)
         notebook.add(phase_body, text="Model Evaluation")
@@ -363,6 +365,9 @@ class Dashboard:
         if hasattr(self, "shadow_evaluation"):
             self.shadow_evaluation.tick()
             busy = busy or self.shadow_evaluation.busy()
+        if hasattr(self, "model_diagnostics"):
+            self.model_diagnostics.tick()
+            busy = busy or self.model_diagnostics.busy()
         self.start_button.state([
             "!disabled"
             if can_start and not busy and self.pending is None and not self.closing

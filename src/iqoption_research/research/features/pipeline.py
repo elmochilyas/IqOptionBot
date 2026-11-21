@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Final
 
 from iqoption_research.models.market import Candle
@@ -69,6 +70,26 @@ VOLUME_FEATURE_SPECS: Final[tuple[FeatureSpec, ...]] = (
 QUOTE_FEATURE_SPECS: Final[tuple[FeatureSpec, ...]] = (
     FeatureSpec("spread_pips", "Bid-ask spread in pips ((ask - bid) * 10000)", 1, "quote"),
     FeatureSpec("spread_ratio", "Bid-ask spread relative to midpoint", 1, "quote"),
+)
+
+MARKET_TIME_FEATURE_SPECS: Final[tuple[FeatureSpec, ...]] = (
+    FeatureSpec("sin_hour", "Causal sine of UTC hour and minute (period 24h)", 1, "market_time"),
+    FeatureSpec("cos_hour", "Causal cosine of UTC hour and minute (period 24h)", 1, "market_time"),
+    FeatureSpec("sin_dow", "Causal sine of day of week (period 7d)", 1, "market_time"),
+    FeatureSpec("cos_dow", "Causal cosine of day of week (period 7d)", 1, "market_time"),
+)
+
+COMPACT_FEATURE_SPECS: Final[tuple[FeatureSpec, ...]] = (
+    FeatureSpec(
+        "return_1", "1-bar simple percentage return (close_t / close_{t-1} - 1)", 2, "return"
+    ),
+    FeatureSpec("intrabar_return", "Bar return (close_t / open_t - 1)", 1, "return"),
+    FeatureSpec("sma_ratio_5", "Close price relative to 5-bar SMA", 5, "moving_average"),
+    FeatureSpec("sma_ratio_20", "Close price relative to 20-bar SMA", 20, "moving_average"),
+    FeatureSpec("volatility_10", "10-bar rolling return std", 11, "volatility"),
+    FeatureSpec("candle_range", "Total candle range ((high - low) / open)", 1, "bar_shape"),
+    FeatureSpec("body_to_range", "Ratio of body to full range", 1, "bar_shape"),
+    FeatureSpec("upper_shadow_ratio", "Upper shadow length relative to range", 1, "bar_shape"),
 )
 
 
@@ -138,24 +159,30 @@ class CausalFeaturePipeline:
         *,
         include_volume: bool = True,
         include_quotes: bool = False,
+        include_market_time: bool = False,
         drop_warmup: bool = False,
         custom_specs: list[FeatureSpec] | None = None,
         impute_missing_quotes: bool = False,
         default_spread_pips: float = 1.0,
         enforce_temporal_continuity: bool = False,
+        static_schema: bool = False,
     ) -> None:
         self.drop_warmup = drop_warmup
         self.enforce_temporal_continuity = enforce_temporal_continuity
         specs: list[FeatureSpec] = list(custom_specs or DEFAULT_FEATURE_SPECS)
         self.include_volume = include_volume
         self.include_quotes = include_quotes
+        self.include_market_time = include_market_time
         self.impute_missing_quotes = impute_missing_quotes
         self.default_spread_pips = default_spread_pips
+        self.static_schema = static_schema
 
         if include_volume:
             specs.extend(VOLUME_FEATURE_SPECS)
         if include_quotes:
             specs.extend(QUOTE_FEATURE_SPECS)
+        if include_market_time:
+            specs.extend(MARKET_TIME_FEATURE_SPECS)
 
         self.feature_specs: tuple[FeatureSpec, ...] = tuple(specs)
         self.max_lookback: int = max((s.lookback_periods for s in self.feature_specs), default=1)
@@ -185,18 +212,28 @@ class CausalFeaturePipeline:
         size_seconds = candles[0].size.value
 
         # Check volume and quote data availability
-        can_use_volume = self.include_volume and has_genuine_volume(candles)
-        has_real_quotes = has_verified_quotes(candles)
-        can_use_quotes = self.include_quotes and (has_real_quotes or self.impute_missing_quotes)
+        if self.static_schema:
+            can_use_volume = self.include_volume
+            can_use_quotes = self.include_quotes
+            can_use_market_time = self.include_market_time
+            has_real_quotes = has_verified_quotes(candles)
+            active_specs: list[FeatureSpec] = list(self.feature_specs)
+        else:
+            can_use_volume = self.include_volume and has_genuine_volume(candles)
+            has_real_quotes = has_verified_quotes(candles)
+            can_use_quotes = self.include_quotes and (has_real_quotes or self.impute_missing_quotes)
+            can_use_market_time = self.include_market_time
 
-        # Active feature specs excluding unverified fields
-        active_specs: list[FeatureSpec] = []
-        for s in self.feature_specs:
-            if s.category == "volume" and not can_use_volume:
-                continue
-            if s.category == "quote" and not can_use_quotes:
-                continue
-            active_specs.append(s)
+            # Active feature specs excluding unverified fields
+            active_specs = []
+            for s in self.feature_specs:
+                if s.category == "volume" and not can_use_volume:
+                    continue
+                if s.category == "quote" and not can_use_quotes:
+                    continue
+                if s.category == "market_time" and not can_use_market_time:
+                    continue
+                active_specs.append(s)
 
         max_lookback = max((s.lookback_periods for s in active_specs), default=1)
 
@@ -311,6 +348,16 @@ class CausalFeaturePipeline:
                     spread_val = self.default_spread_pips * 0.0001
                     feats["spread_pips"] = float(self.default_spread_pips)
                     feats["spread_ratio"] = spread_val / max(cl, 1e-8)
+
+            # Market time features if requested (causal sine/cosine of UTC time)
+            if can_use_market_time:
+                dt = datetime.fromtimestamp(curr.to_ts, tz=UTC)
+                hr_float = dt.hour + dt.minute / 60.0
+                feats["sin_hour"] = math.sin(2.0 * math.pi * hr_float / 24.0)
+                feats["cos_hour"] = math.cos(2.0 * math.pi * hr_float / 24.0)
+                dow_float = float(dt.weekday())
+                feats["sin_dow"] = math.sin(2.0 * math.pi * dow_float / 7.0)
+                feats["cos_dow"] = math.cos(2.0 * math.pi * dow_float / 7.0)
 
             row = FeatureRow(
                 index=t,

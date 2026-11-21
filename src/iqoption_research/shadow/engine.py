@@ -139,12 +139,19 @@ class ShadowPredictionEngine:
         self.calibrator = bundle_dict.get("calibrator")
         self.feature_names = tuple(bundle_dict.get("feature_names", self.record.feature_names))
 
-        # Setup causal feature pipeline
+        # Setup causal feature pipeline with static schema matching model registration
+        has_volume = any("volume" in f for f in self.feature_names)
+        has_quotes = any("spread" in f for f in self.feature_names)
+        has_market_time = any(
+            f in ("sin_hour", "cos_hour", "sin_dow", "cos_dow") for f in self.feature_names
+        )
         self.feature_pipeline = CausalFeaturePipeline(
             drop_warmup=False,
-            include_volume=True,
-            include_quotes=False,
+            include_volume=has_volume,
+            include_quotes=has_quotes,
+            include_market_time=has_market_time,
             enforce_temporal_continuity=True,
+            static_schema=True,
         )
 
     def predict(

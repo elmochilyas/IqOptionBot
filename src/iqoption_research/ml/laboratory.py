@@ -123,6 +123,7 @@ class ExperimentConfig:
     embargo_bars: int = 5
     confidence_threshold: float = 0.60
     min_confidence: float | None = None
+    min_qualifying_trades: int = 100
     calibration_method: str = "isotonic"  # "isotonic" | "sigmoid" | "none"
     calibrate: bool | None = None
     assumed_payout: float = 0.85
@@ -201,6 +202,11 @@ class BaselineComparisonResult:
     test_balanced_accuracy: float
     test_brier_score: float
     delta_accuracy: float
+    delta_brier: float = 0.0
+    selected_test_directional_accuracy: float | None = None
+    selected_test_brier_score: float | None = None
+    selected_delta_accuracy: float | None = None
+    selected_delta_brier: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -230,6 +236,7 @@ class ExperimentResult:
     is_synthetic: bool = False
     provenance_class: str = "AUTHENTIC_RESEARCH_SNAPSHOT"
     baseline_superiority_met: bool = False
+    wallet_classification: str = "UNKNOWN_WALLET_EVIDENCE"
     target_contract: dict[str, Any] = field(default_factory=dict)
     continuity_report: dict[str, Any] | None = None
     scientific_limitations: dict[str, str] = field(default_factory=dict)
@@ -268,6 +275,7 @@ class ExperimentResult:
             "is_synthetic": self.is_synthetic,
             "provenance_class": self.provenance_class,
             "baseline_superiority_met": self.baseline_superiority_met,
+            "wallet_classification": self.wallet_classification,
             "target_contract": self.target_contract,
             "continuity_report": self.continuity_report,
             "scientific_limitations": self.scientific_limitations,
@@ -331,6 +339,9 @@ class ModelLaboratory:
             is_synthetic = False
             provenance_class = "AUTHENTIC_RESEARCH_SNAPSHOT"
             content_hash = candles_or_snapshot.manifest.sha256_checksum
+            wallet_classification = getattr(
+                candles_or_snapshot.manifest, "wallet_classification", "UNKNOWN_WALLET_EVIDENCE"
+            )
         elif candles_or_snapshot is None:
             if not config.snapshot_id:
                 raise LaboratoryError(
@@ -353,12 +364,16 @@ class ModelLaboratory:
             is_synthetic = False
             provenance_class = "AUTHENTIC_RESEARCH_SNAPSHOT"
             content_hash = matched.manifest.sha256_checksum
+            wallet_classification = getattr(
+                matched.manifest, "wallet_classification", "UNKNOWN_WALLET_EVIDENCE"
+            )
         else:
             candles = list(candles_or_snapshot)
             # Ad-hoc candle sequences are strictly classified as synthetic / unverified
             is_synthetic = True
             provenance_class = "SYNTHETIC_OR_UNVERIFIED_AD_HOC"
             snapshot_id = "ad_hoc_synthetic_sequence"
+            wallet_classification = "UNKNOWN_WALLET_EVIDENCE"
             h_content = hashlib.sha256()
             for c in candles:
                 h_content.update(
@@ -501,8 +516,18 @@ class ModelLaboratory:
             config.assumed_payout,
         )
 
-        # 9. Simple Baseline Comparisons
+        # 9. Simple Baseline Comparisons (Full Holdout & Matched Selective Population)
         update(90, "Computing reference baseline comparisons on holdout...")
+        raw_test_probs = model.predict_proba(ds_test_scaled.X)
+        test_probs = (
+            calibrator.calibrate(raw_test_probs) if calibrator is not None else raw_test_probs
+        )
+        p_up_test = test_probs[:, 1]
+        threshold = config.confidence_threshold
+        trade_mask = (p_up_test >= threshold) | (p_up_test <= (1.0 - threshold))
+        trade_count = int(np.sum(trade_mask))
+        is_selective = test_metrics.coverage < 1.0
+
         baseline_comparisons: list[BaselineComparisonResult] = []
         for b_name, b_cls in (
             ("majority_class", MajorityClassModel),
@@ -515,32 +540,78 @@ class ModelLaboratory:
             b_acc = float(accuracy_score(ds_test_scaled.y, b_preds))
             b_bal = float(balanced_accuracy_score(ds_test_scaled.y, b_preds))
             b_brier = float(brier_score_loss(ds_test_scaled.y, b_probs[:, 1]))
+            delta_acc = test_metrics.directional_accuracy - b_acc
+            delta_brier = b_brier - test_metrics.brier_score
+
+            if is_selective and trade_count > 0:
+                b_sel_acc = float(accuracy_score(ds_test_scaled.y[trade_mask], b_preds[trade_mask]))
+                b_sel_brier = float(
+                    brier_score_loss(ds_test_scaled.y[trade_mask], b_probs[trade_mask, 1])
+                )
+                cand_sel_brier = float(
+                    brier_score_loss(ds_test_scaled.y[trade_mask], p_up_test[trade_mask])
+                )
+                sel_delta_acc = test_metrics.win_rate - b_sel_acc
+                sel_delta_brier = b_sel_brier - cand_sel_brier
+            else:
+                b_sel_acc = None
+                b_sel_brier = None
+                sel_delta_acc = None
+                sel_delta_brier = None
+
             baseline_comparisons.append(
                 BaselineComparisonResult(
                     baseline_name=b_name,
                     test_directional_accuracy=b_acc,
                     test_balanced_accuracy=b_bal,
                     test_brier_score=b_brier,
-                    delta_accuracy=test_metrics.directional_accuracy - b_acc,
+                    delta_accuracy=delta_acc,
+                    delta_brier=delta_brier,
+                    selected_test_directional_accuracy=b_sel_acc,
+                    selected_test_brier_score=b_sel_brier,
+                    selected_delta_accuracy=sel_delta_acc,
+                    selected_delta_brier=sel_delta_brier,
                 )
             )
 
+        # Baseline Superiority: strict improvement on accuracy AND Brier score
+        def _check_baseline_superiority(b: BaselineComparisonResult) -> bool:
+            full_superior = b.delta_accuracy > 0.0 and b.delta_brier > 0.0
+            if not is_selective or trade_count == 0:
+                return full_superior
+            sel_superior = (
+                b.selected_delta_accuracy is not None
+                and b.selected_delta_accuracy > 0.0
+                and b.selected_delta_brier is not None
+                and b.selected_delta_brier > 0.0
+            )
+            return full_superior and sel_superior
+
+        outperforms_baselines = len(baseline_comparisons) > 0 and all(
+            _check_baseline_superiority(b) for b in baseline_comparisons
+        )
+
         # 10. Statistical Edge Assessment (Strict Scientific Standard)
         break_even = 1.0 / (1.0 + config.assumed_payout)
-        has_min_trades = test_metrics.trade_count >= 30
+        has_min_trades = test_metrics.trade_count >= config.min_qualifying_trades
         exceeds_break_even_ci = test_metrics.ci_lower_95 > break_even
-        outperforms_baselines = all(b.delta_accuracy > 0.0 for b in baseline_comparisons)
 
-        has_edge = has_min_trades and exceeds_break_even_ci and outperforms_baselines
-
-        if not has_min_trades:
+        # Synthetic Data Quarantine: synthetic/unverified runs can NEVER claim an authentic edge
+        if is_synthetic or provenance_class != "AUTHENTIC_RESEARCH_SNAPSHOT":
+            verdict = "SYNTHETIC_DATA_STUDY_ONLY"
+            has_edge = False
+        elif not has_min_trades:
             verdict = "INSUFFICIENT_SAMPLE_SIZE_NO_EDGE"
+            has_edge = False
         elif not exceeds_break_even_ci:
             verdict = "NO_RELIABLE_EDGE_DETECTED"
+            has_edge = False
         elif not outperforms_baselines:
             verdict = "BASELINE_SUPERIORITY_NOT_MET_NO_EDGE"
+            has_edge = False
         else:
             verdict = "CANDIDATE_EDGE_REQUIRES_REPLICATION"
+            has_edge = True
 
         # 11. Target Contract Specification (Generic Directional Research, Not Phase 38)
         target_contract = {
@@ -635,9 +706,7 @@ class ModelLaboratory:
                 "is_synthetic": is_synthetic,
                 "provenance_class": provenance_class,
                 "dataset_content_sha256": content_hash,
-                "wallet_classification": (
-                    "CONFLICTING_ACCOUNT_INDICATORS (UNVERIFIED_PRACTICE_INDEPENDENT)"
-                ),
+                "wallet_classification": wallet_classification,
                 "model_family": config.model_family,
                 "feature_names": list(ml_data.feature_names),
                 "horizon_bars": config.horizon_bars,
@@ -730,6 +799,7 @@ class ModelLaboratory:
             is_synthetic=is_synthetic,
             provenance_class=provenance_class,
             baseline_superiority_met=outperforms_baselines,
+            wallet_classification=wallet_classification,
             target_contract=target_contract,
             continuity_report=(
                 ml_data.continuity_report.to_dict() if ml_data.continuity_report else None
@@ -853,11 +923,24 @@ class ModelLaboratory:
 
     def load_candidate_bundle(self, model_id_or_path: str | Path) -> dict[str, Any]:
         """Safely load and verify a candidate model bundle within cryptographic trust boundaries."""
+        target_dir = (self.root / DEFAULT_CANDIDATE_MODELS_DIR).resolve()
         if isinstance(model_id_or_path, Path):
             m_path = model_id_or_path.resolve()
+            try:
+                rel = m_path.relative_to(target_dir)
+                if len(rel.parts) != 1:
+                    raise LaboratoryError(
+                        f"Unauthorized model path structure: {model_id_or_path}. "
+                        f"Candidate models must reside directly within {target_dir}"
+                    )
+            except ValueError as exc:
+                raise LaboratoryError(
+                    f"Unauthorized external model path: {model_id_or_path}. "
+                    f"Candidate models must reside within {target_dir}"
+                ) from exc
+            safe_id = validate_storage_identifier(m_path.name)
         else:
             safe_id = validate_storage_identifier(model_id_or_path)
-            target_dir = (self.root / DEFAULT_CANDIDATE_MODELS_DIR).resolve()
             m_path = (target_dir / safe_id).resolve()
             try:
                 m_path.relative_to(target_dir)

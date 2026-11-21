@@ -101,23 +101,35 @@ The Dataset Manager provides an automated, immutable dataset preparation pipelin
 - Binary options pay out less than 100% on winning trades (typically 80% to 90%). At a standard 85% payout ($b = 0.85$):
   $$\text{Break-even Win Rate} = \frac{1}{1 + 0.85} \approx 54.054\%$$
 - To ensure scientific robustness against sample noise and selective abstention, candidate models must satisfy:
-  1. **Minimum Sample Size**: Test partition must contain $\ge 100$ trades. Failing this yields `INSUFFICIENT_SAMPLE_SIZE_NO_EDGE`.
+  1. **Minimum Sample Size**: Test partition must contain $\ge 100$ qualifying trades (`min_qualifying_trades = 100`). Failing this strictly yields `INSUFFICIENT_SAMPLE_SIZE_NO_EDGE`.
   2. **Statistical Significance**: The Wilson 95% score lower bound must strictly exceed the break-even threshold:
      $$\text{Wilson Lower Bound}_{95\%} > \text{Break-even Win Rate}$$
      Where:
      $$w = \hat{p}, \quad z = 1.95996$$
      $$\text{CI}_{\text{lower}} = \frac{w + \frac{z^2}{2n} - z \sqrt{\frac{w(1-w)}{n} + \frac{z^2}{4n^2}}}{1 + \frac{z^2}{n}}$$
-  3. **Strict Baseline Superiority**: Candidate model must strictly outperform all relevant baselines:
+  3. **Strict Baseline Superiority**: Candidate model must strictly outperform all reference baselines (`majority_class`, `rule_momentum`) on BOTH directional accuracy and probability calibration (Brier score):
      $$\Delta \text{Accuracy} = \text{Accuracy}_{\text{candidate}} - \text{Accuracy}_{\text{baseline}} > 0$$
      $$\Delta \text{Brier} = \text{Brier}_{\text{baseline}} - \text{Brier}_{\text{candidate}} > 0$$
-     If a candidate fails to strictly beat both `majority_class` and `rule_momentum`, it receives:
-     `BASELINE_SUPERIORITY_NOT_MET_NO_EDGE`.
-  4. **Synthetic Data Quarantine**: If evaluated on synthetic or unverified sequences, edge claims are strictly quarantined as `SYNTHETIC_DATA_STUDY_ONLY`.
+     For selective predictions (`coverage < 1.0`), candidate performance is compared against baselines on the **exact same selected observation population** (`trade_mask`) as well as the full partition, preventing population mismatch:
+     $$\Delta \text{Accuracy}_{\text{selected}} = \text{Win Rate}_{\text{candidate}} - \text{Accuracy}_{\text{baseline, selected}} > 0$$
+     $$\Delta \text{Brier}_{\text{selected}} = \text{Brier}_{\text{baseline, selected}} - \text{Brier}_{\text{candidate, selected}} > 0$$
+     If a candidate fails to strictly beat all baselines on both metrics, it receives `BASELINE_SUPERIORITY_NOT_MET_NO_EDGE`.
+  4. **Synthetic Data Quarantine**: Any evaluation against synthetic or unverified sequences (`is_synthetic=True` or `provenance_class != "AUTHENTIC_RESEARCH_SNAPSHOT"`) is strictly quarantined as `SYNTHETIC_DATA_STUDY_ONLY` with `has_statistical_edge = False`, regardless of simulated accuracy or baseline outperformance.
 
 ### F. Provenance Enforcement & Authentic Data Binding
 - Caller-supplied in-memory sequences default to `is_synthetic=True` with provenance `SYNTHETIC_OR_UNVERIFIED_AD_HOC`.
 - Dataset fingerprints are cryptographically bound to actual candle content bytes (SHA-256 of all normalized OHLCV arrays), ensuring that changing even one price or volume alters the fingerprint.
-- Practice-wallet classification ambiguity is explicitly preserved independently (`CONFLICTING_ACCOUNT_INDICATORS (UNVERIFIED_PRACTICE_INDEPENDENT)`).
+- **Faithful Wallet Provenance**: Contributing source wallet classifications are accurately aggregated without hardcoding conflicting indicators:
+  - Practice-only contributing sources $\to$ `PRACTICE`.
+  - Real-only contributing sources $\to$ `REAL`.
+  - Mixed practice and real sources $\to$ `MIXED_WALLET_EVIDENCE: ['PRACTICE', 'REAL']`.
+  - Unclassified or unknown sources $\to$ `UNKNOWN_WALLET_EVIDENCE`.
+  Recorded faithfully in both `manifest.json` and candidate model artifacts.
+- **Strict Caller-Supplied V2 Source Validation**: Caller-supplied V2 sessions are verified against actual on-disk storage contracts:
+  - Session integrity must be `VERIFIED` or `VERIFIED_PARTIAL`.
+  - Valid candle count must be $> 0$.
+  - Symbol must strictly match `EURUSD` on timeframe `M1`.
+  - Explicitly rejects OTC (`is_otc=True`), synthetic instruments, uncommitted files, forged candle counts, checksum mismatches, or forged wallet metadata with `DatasetIntegrityError`.
 
 ### G. Target Contract Distinction from Phase 38
 - Target is formally designated `GENERIC_CLOSE_TO_CLOSE_DIRECTION` ($y = 1$ if $Close_{t+H} > Close_t$ else $0$).
@@ -131,11 +143,11 @@ The Dataset Manager provides an automated, immutable dataset preparation pipelin
 - Candidate model bundles are saved in `data/candidate_models/<model_id>/`:
   - `bundle.joblib`: Contains model, calibrator, scaler, feature list, and hyperparameters.
   - `manifest.json`: Full evaluation results, SHA-256 hashes, test metrics, scientific limitations, and disclaimers.
-- Integrity guarantees:
+- Integrity & Deserialization Boundaries:
   - Atomic publication via `.tmp_<model_id>_<uuid>` directory staging and rename.
   - Cryptographic self-digest `manifest_sha256` matching clean manifest content.
-  - Bundle checksum verification preventing tampered model loading (`load_candidate_bundle`).
-  - Strict path traversal protection for model and snapshot identifiers.
+  - Bundle checksum verification preventing tampered model loading.
+  - **Restricted Model Deserialization**: `load_candidate_bundle()` restricts loading strictly to validated model identifiers residing directly within the authorized candidate models directory. Resolving arbitrary external paths, nested directories, path traversal, or unvetted joblib files is strictly blocked with `LaboratoryError` before any deserialization occurs.
 
 ---
 

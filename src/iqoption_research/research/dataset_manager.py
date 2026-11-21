@@ -169,6 +169,7 @@ class ResearchDatasetManifest:
     source_files: list[dict[str, Any]]
     eligibility_rules: list[str]
     sha256_checksum: str
+    wallet_classification: str = "UNKNOWN_WALLET_EVIDENCE"
 
     @property
     def total_candles(self) -> int:
@@ -457,14 +458,26 @@ class ResearchDatasetManager:
                 if not s.path.exists():
                     raise DatasetIntegrityError(f"Source path does not exist: {s.path}")
                 if s.source_type == "EXTENDED_SESSION":
-                    info = inspect_session(s.path)
-                    if not info.get("is_valid_format"):
+                    try:
+                        info = inspect_session(s.path)
+                    except Exception as exc:
                         raise DatasetIntegrityError(
-                            f"Extended session source {s.source_id} failed format verification"
+                            f"Extended session source {s.source_id} failed inspection: {exc}"
+                        ) from exc
+
+                    integrity = info.get("integrity")
+                    if integrity not in (
+                        "VERIFIED",
+                        "VERIFIED_PARTIAL",
+                        "VERIFIED_PARTIAL / INTERRUPTED_OR_ACTIVE",
+                    ):
+                        raise DatasetIntegrityError(
+                            f"Extended session source {s.source_id} integrity invalid: {integrity}"
                         )
-                    if info.get("candle_count", 0) <= 0:
+                    valid_candles = info.get("valid_candles", 0)
+                    if valid_candles <= 0:
                         raise DatasetIntegrityError(
-                            f"Extended session source {s.source_id} contains zero candles"
+                            f"Extended session source {s.source_id} contains zero valid candles"
                         )
                     if info.get("symbol") != "EURUSD":
                         sym = info.get("symbol")
@@ -475,6 +488,61 @@ class ResearchDatasetManager:
                         raise DatasetIntegrityError(
                             f"Extended session {s.source_id} has is_otc=True (OTC prohibited)"
                         )
+                    if info.get("is_synthetic"):
+                        raise DatasetIntegrityError(
+                            f"Extended session {s.source_id} has is_synthetic=True "
+                            "(synthetic prohibited)"
+                        )
+                    if info.get("uncommitted_files"):
+                        raise DatasetIntegrityError(
+                            f"Extended session {s.source_id} contains uncommitted files: "
+                            f"{info.get('uncommitted_files')}"
+                        )
+                    if s.candle_count != valid_candles:
+                        raise DatasetIntegrityError(
+                            f"Extended session source {s.source_id} candle count mismatch: "
+                            f"caller claimed {s.candle_count}, inspected {valid_candles}"
+                        )
+                    # Check checksum
+                    manifest_p = s.path / "manifest.json"
+                    session_p = s.path / "session.json"
+                    actual_sha = hashlib.sha256(
+                        manifest_p.read_bytes() if manifest_p.is_file() else session_p.read_bytes()
+                    ).hexdigest()
+                    if s.sha256_checksum and s.sha256_checksum != actual_sha:
+                        raise DatasetIntegrityError(
+                            f"Extended session source {s.source_id} checksum mismatch: "
+                            f"caller claimed {s.sha256_checksum}, inspected {actual_sha}"
+                        )
+                    inspected_wallet = info.get("wallet_classification", "UNKNOWN")
+                    if s.wallet_classification and s.wallet_classification != inspected_wallet:
+                        raise DatasetIntegrityError(
+                            f"Extended session source {s.source_id} wallet mismatch: "
+                            f"caller={s.wallet_classification}, inspected={inspected_wallet}"
+                        )
+                elif s.source_type == "CATALOG_PARQUET":
+                    if not s.path.is_file():
+                        raise DatasetIntegrityError(f"Catalog file missing: {s.path}")
+                    actual_sha = hashlib.sha256(s.path.read_bytes()).hexdigest()
+                    if s.sha256_checksum and s.sha256_checksum != actual_sha:
+                        raise DatasetIntegrityError(
+                            f"Catalog parquet source {s.source_id} checksum mismatch: "
+                            f"caller claimed {s.sha256_checksum}, actual {actual_sha}"
+                        )
+                    try:
+                        pq_file = pq.ParquetFile(s.path)
+                        if pq_file.metadata.num_rows != s.candle_count:
+                            raise DatasetIntegrityError(
+                                f"Catalog parquet source {s.source_id} row count mismatch: "
+                                f"caller claimed {s.candle_count}, "
+                                f"file has {pq_file.metadata.num_rows}"
+                            )
+                    except Exception as exc:
+                        if isinstance(exc, DatasetIntegrityError):
+                            raise
+                        raise DatasetIntegrityError(
+                            f"Catalog parquet source {s.source_id} corrupt: {exc}"
+                        ) from exc
 
         if not sources:
             raise DatasetManagerError("No eligible authentic datasets available for preparation")
@@ -706,6 +774,27 @@ class ResearchDatasetManager:
             pq.write_table(table, parquet_path, compression="snappy")
             parquet_sha = hashlib.sha256(parquet_path.read_bytes()).hexdigest()
 
+            # Aggregate Wallet Classification
+            wallet_vals = {s.wallet_classification for s in sources if s.wallet_classification}
+            if not wallet_vals or wallet_vals == {"UNKNOWN"}:
+                agg_wallet = "UNKNOWN_WALLET_EVIDENCE"
+            elif wallet_vals == {"PRACTICE"}:
+                agg_wallet = "PRACTICE"
+            elif wallet_vals == {"REAL"}:
+                agg_wallet = "REAL"
+            elif wallet_vals.issubset({"PRACTICE", "REAL"}):
+                agg_wallet = f"MIXED_WALLET_EVIDENCE: {sorted(wallet_vals)}"
+            else:
+                known = [w for w in wallet_vals if w != "UNKNOWN"]
+                if not known:
+                    agg_wallet = "UNKNOWN_WALLET_EVIDENCE"
+                elif set(known) == {"PRACTICE"}:
+                    agg_wallet = "PRACTICE"
+                elif set(known) == {"REAL"}:
+                    agg_wallet = "REAL"
+                else:
+                    agg_wallet = f"MIXED_WALLET_EVIDENCE: {sorted(wallet_vals)}"
+
             # Build Manifest
             manifest = ResearchDatasetManifest(
                 snapshot_id=snapshot_id,
@@ -730,6 +819,7 @@ class ResearchDatasetManager:
                 source_files=source_manifest_records,
                 eligibility_rules=self.ELIGIBILITY_RULES,
                 sha256_checksum=parquet_sha,
+                wallet_classification=agg_wallet,
             )
 
             manifest_dict = manifest.to_dict()
@@ -811,6 +901,9 @@ class ResearchDatasetManager:
                     source_files=data["source_files"],
                     eligibility_rules=data.get("eligibility_rules", []),
                     sha256_checksum=data["sha256_checksum"],
+                    wallet_classification=data.get(
+                        "wallet_classification", "UNKNOWN_WALLET_EVIDENCE"
+                    ),
                 )
                 snapshots.append(
                     ResearchDatasetSnapshot(

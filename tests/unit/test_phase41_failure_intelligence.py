@@ -479,8 +479,12 @@ def test_render_experiment_matrix_table() -> None:
 
 def test_model_diagnostics_panel_init_and_tabs(tmp_path: Path) -> None:
     """Verify ModelDiagnosticsPanel initializes notebook tabs safely."""
-    root = tk.Tk()
-    root.withdraw()
+    try:
+        root = tk.Tk()
+        root.withdraw()
+    except (tk.TclError, RuntimeError, OSError) as exc:
+        pytest.skip(f"Tkinter/Tcl not available in test environment: {exc}")
+
     try:
         mock_dashboard = MagicMock()
         mock_dashboard.root = tmp_path

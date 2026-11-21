@@ -281,6 +281,88 @@ def test_timestamp_alignment_rejects_gap_and_closure_outcomes() -> None:
         )
 
 
+def test_alignment_rejection_of_excluded_tie_initializes_expected_y() -> None:
+    """Verify that rejection of an excluded tie cannot reference an uninitialized expected_y."""
+    base_ts = 1700000000
+    c0 = _make_candle(0, from_ts=base_ts, close=1.0800)
+    c1 = _make_candle(1, from_ts=base_ts + 60, close=1.0800)  # Exact flat tie
+    candles = [c0, c1]
+
+    spec = TargetSpec(
+        target_type=TargetType.DIRECTION_BINARY,
+        horizon_bars=1,
+        tie_policy=TiePolicy.EXCLUDE,
+    )
+    ml_ds = MLDataset(
+        symbol="EURUSD",
+        feature_names=("feat_1",),
+        X=np.zeros((1, 1), dtype=np.float64),
+        y=np.array([0], dtype=np.int64),
+        timestamps=np.array([c0.to_ts], dtype=np.int64),
+        target_spec=spec,
+    )
+
+    # 1. With raise_on_mismatch=False: must NOT raise UnboundLocalError!
+    aligned = align_predictions_to_market_data(
+        candles=candles,
+        ml_dataset=ml_ds,
+        predicted_probabilities=np.array([0.50]),
+        raise_on_mismatch=False,
+    )
+    assert aligned.aligned_rows == 0
+    assert aligned.rejection_report.label_direction_contradiction == 1
+    assert "expected=EXCLUDED_TIE" in aligned.rejection_report.rejection_reasons[0]
+
+    # 2. With raise_on_mismatch=True: must raise AlignmentError with clean message
+    with pytest.raises(AlignmentError, match=r"expected=EXCLUDED_TIE"):
+        align_predictions_to_market_data(
+            candles=candles,
+            ml_dataset=ml_ds,
+            predicted_probabilities=np.array([0.50]),
+            raise_on_mismatch=True,
+        )
+
+
+def test_evaluation_opportunity_population_and_matched_baselines() -> None:
+    """Verify opportunity population retains timestamps and matches baselines."""
+    base_ts = 1700000000
+    # Series with UP, DOWN, and EXACT TIE outcomes
+    closes = [
+        1.0800 + (0.0001 if i % 4 == 0 else (-0.0001 if i % 4 == 1 else 0.0)) for i in range(200)
+    ]
+    candles = [_make_candle(i, from_ts=base_ts + i * 60, close=closes[i]) for i in range(200)]
+
+    spec_exclude = ResearchExperimentSpec(
+        experiment_id="test_opportunity_exclude",
+        area="A",
+        area_name="Target Formulation",
+        hypothesis="Evaluation opportunity test with TiePolicy.EXCLUDE training",
+        model_family="logistic_regression",
+        tie_policy=TiePolicy.EXCLUDE,
+        feature_set="compact",
+        static_schema=True,
+        calibration_method="none",
+        confidence_threshold=0.50,
+    )
+
+    res = run_controlled_experiment(candles, spec_exclude)
+    assert res.trial_status == "COMPLETED"
+    assert res.val_samples > 0
+    # Every evaluated opportunity is accounted for
+    resolved_decisive = (
+        res.up_wins_count
+        + res.down_wins_count
+        + res.directional_losses_count
+        + res.exact_ties_count
+    )
+    assert resolved_decisive == res.selected_samples_count
+    assert res.selected_samples_count + res.skips_count == res.val_samples
+    assert res.val_coverage == 1.0  # At th=0.50, 100% coverage
+    assert res.majority_val_acc is not None
+    assert res.delta_vs_majority is not None
+    assert abs((res.val_accuracy or 0.0) - res.majority_val_acc - res.delta_vs_majority) < 1e-9
+
+
 # =========================================================================
 # 3. Historical Holdout Protection Tests
 # =========================================================================
@@ -414,7 +496,7 @@ def test_source_count_reconciliation_on_authentic_snapshot() -> None:
     # Artifact imbalance when collapsing ties into DOWN (legacy binary):
     legacy_0 = 31727 + 3431  # 35,158
     legacy_0_pct = legacy_0 / 66450 * 100.0  # 52.909%
-    legacy_1_pct = 31292 / 66450 * 100.0   # 47.091%
+    legacy_1_pct = 31292 / 66450 * 100.0  # 47.091%
     artifact_imbalance = legacy_0_pct - legacy_1_pct  # 5.818%
     assert abs((res.legacy_target_0_pct - res.legacy_target_1_pct) - artifact_imbalance) < 1e-4
     assert artifact_imbalance > 5.0

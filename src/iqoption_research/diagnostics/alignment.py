@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 import numpy as np
@@ -28,6 +29,17 @@ from iqoption_research.models.market import Candle
 
 class AlignmentError(ValueError):
     """Raised when timestamp or label integrity checks fail during alignment."""
+
+
+class DecisionResolution(StrEnum):
+    """Point-in-time outcome resolution for an eligible decision timestamp."""
+
+    UP_WIN = "up_win"
+    DOWN_WIN = "down_win"
+    DIRECTIONAL_LOSS = "directional_loss"
+    EXACT_TIE = "exact_tie"
+    SKIP = "skip"
+    INVALID_SETTLEMENT = "invalid_settlement"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +61,27 @@ class AlignedObservation:
     is_true_down: bool
     is_true_tie: bool
     is_correct: bool | None  # None for abstentions (SKIP) or unrewarded ties
+
+    @property
+    def resolution(self) -> DecisionResolution:
+        """Resolve decision against verified forward settlement outcome."""
+        if self.decision == DecisionAction.SKIP:
+            return DecisionResolution.SKIP
+        if self.is_true_tie:
+            return DecisionResolution.EXACT_TIE
+        if self.decision == DecisionAction.UP:
+            return (
+                DecisionResolution.UP_WIN
+                if self.is_true_up
+                else DecisionResolution.DIRECTIONAL_LOSS
+            )
+        if self.decision == DecisionAction.DOWN:
+            return (
+                DecisionResolution.DOWN_WIN
+                if self.is_true_down
+                else DecisionResolution.DIRECTIONAL_LOSS
+            )
+        return DecisionResolution.SKIP
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,8 +267,10 @@ def align_predictions_to_market_data(
 
         # Label consistency verification
         contra = False
+        expected_y: int | None = None
         if tie_policy == TiePolicy.EXCLUDE and is_true_tie:
             contra = True
+            expected_y = None
         elif tie_policy in (TiePolicy.LEGACY_DOWN, TiePolicy.EXCLUDE):
             expected_y = 1 if is_true_up else 0
             if y != expected_y:
@@ -244,9 +279,10 @@ def align_predictions_to_market_data(
         if contra:
             label_contra += 1
             rejected_idx.append(i)
+            exp_str = str(expected_y) if expected_y is not None else "EXCLUDED_TIE"
             msg = (
                 f"Row {i}: label contradiction at ts={ts}: diff={diff:.6f}, "
-                f"expected={expected_y}, actual_y={y}"
+                f"expected={exp_str}, actual_y={y}"
             )
             rejected_reasons.append(msg)
             if raise_on_mismatch:

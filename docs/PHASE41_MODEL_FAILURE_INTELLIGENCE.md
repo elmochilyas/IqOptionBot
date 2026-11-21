@@ -92,33 +92,35 @@ src/iqoption_research/
 
 ---
 
-## 4. Controlled Research Experiment Matrix (Areas A–F, Remediation V2)
+## 4. Controlled Research Experiment Matrix (Areas A–F, Remediation V3)
 
-Fourteen trials were executed across a predefined, bounded matrix on development data using strictly chronological walk-forward splits across 3 expanding development folds with purging ($H=1$) and embargo (5 bars). The historical test holdout was strictly protected and not scored ($N_{\text{test}} = 0$).
+Fourteen trials were executed across a predefined, bounded matrix on development data using strictly chronological walk-forward splits across 3 expanding development folds with purging (=1$) and embargo (5 bars). The historical test holdout was strictly protected and not scored ({\\text{test}} = 0$).
 
-| Trial ID | Area | Focus | Val Acc | Brier | Cov% | Delta Maj | BE Gap (85%) | Verdict |
-| :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| `exp_A1_legacy_target_lr` | A | Legacy Binary Target | 50.06% | 0.2501 | 100.0% | -2.30% | -4.00% | FAIL_TO_BEAT_MAJORITY_BASELINE |
-| `exp_A2_tie_aware_target_lr` | A | Strict Tie Exclusion | 50.64% | 0.2501 | 100.0% | +0.55% | -3.41% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_B1_legacy_dynamic_schema` | B | Dynamic Volume Scan | 50.64% | 0.2501 | 100.0% | +0.55% | -3.41% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_B2_static_schema_parity` | B | Static Schema Parity | 50.64% | 0.2501 | 100.0% | +0.55% | -3.41% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_C1_redundant_full_rf` | C | 17 Redundant Features | 50.47% | 0.2504 | 100.0% | +0.39% | -3.58% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_C2_compact_nonredundant_rf` | C | 8 Compact Stationary | 51.01% | 0.2499 | 100.0% | +0.92% | -3.05% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_D1_calib_none_rf` | D | Uncalibrated RF | 51.01% | 0.2499 | 100.0% | +0.92% | -3.05% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_D2_calib_sigmoid_rf` | D | Sigmoid (Out-of-Fold) | 50.32% | 0.2501 | 100.0% | +0.23% | -3.73% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_D3_calib_isotonic_rf` | D | Isotonic (Out-of-Fold)| 50.63% | 0.2502 | 100.0% | +0.54% | -3.43% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_E1_price_only_lr` | E | Price-Only Features | 50.78% | 0.2500 | 100.0% | +0.70% | -3.27% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_E2_market_time_context_lr` | E | Causal Cyclical Time | 50.80% | 0.2500 | 100.0% | +0.71% | -3.25% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_F1_threshold_50_decisive` | F | Threshold 0.50 (No SKIP)| 50.12% | 0.2501 | 100.0% | +0.03% | -3.93% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
-| `exp_F2_threshold_55_selective` | F | Threshold 0.55 (SKIP) | 42.86% | 0.2501 | 0.0% | -7.23% | -11.20% | FAIL_TO_BEAT_MAJORITY_BASELINE |
-| `exp_F3_threshold_60_conservative` | F | Threshold 0.60 (SKIP) | N/A | 0.2501 | 0.0% | N/A | N/A | ZERO_COVERAGE_NO_PREDICTIONS |
+Crucially, in V3, the evaluation opportunity population includes all eligible decision timestamps (including exact ties), completely eliminating hindsight filtering. For selective models, candidate accuracy is compared against majority and momentum baselines evaluated on that exact same selected mask.
+
+| Trial ID | Area | Focus | Val Acc | Brier | Cov% | Sel / Opp | Delta Maj | BE Gap (85%) | Verdict |
+| :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| exp_A1_legacy_target_lr | A | Legacy Binary Target | 47.75% | 0.2501 | 100.00% | 25,328 / 25,328 | -0.01% | -3.82% | FAIL_TO_BEAT_MAJORITY_BASELINE |
+| exp_A2_tie_aware_target_lr | A | Strict Tie Exclusion (Train)| 48.27% | 0.2504 | 100.00% | 25,328 / 25,328 | +0.51% | -3.30% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| exp_B1_legacy_dynamic_schema | B | Dynamic Volume Scan | 48.27% | 0.2504 | 100.00% | 25,328 / 25,328 | +0.51% | -3.30% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| exp_B2_static_schema_parity | B | Static Schema Parity | 48.27% | 0.2504 | 100.00% | 25,328 / 25,328 | +0.51% | -3.30% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| exp_C1_redundant_full_rf | C | 17 Redundant Features | 48.30% | 0.2509 | 100.00% | 25,328 / 25,328 | +0.54% | -3.27% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| exp_C2_compact_nonredundant_rf | C | 8 Compact Stationary | 48.43% | 0.2499 | 100.00% | 25,332 / 25,332 | +0.67% | -3.14% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| exp_D1_calib_none_rf | D | Uncalibrated RF | 48.43% | 0.2499 | 100.00% | 25,332 / 25,332 | +0.67% | -3.14% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| exp_D2_calib_sigmoid_rf | D | Sigmoid (Out-of-Fold) | 48.08% | 0.2521 | 100.00% | 25,332 / 25,332 | +0.31% | -3.49% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| exp_D3_calib_isotonic_rf | D | Isotonic (Out-of-Fold)| 48.06% | 0.2502 | 100.00% | 25,332 / 25,332 | +0.30% | -3.51% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| exp_E1_price_only_lr | E | Price-Only Features | 48.50% | 0.2504 | 100.00% | 25,328 / 25,328 | +0.73% | -3.07% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| exp_E2_market_time_context_lr | E | Causal Cyclical Time | 48.65% | 0.2500 | 100.00% | 25,332 / 25,332 | +0.88% | -2.92% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| exp_F1_threshold_50_decisive | F | Threshold 0.50 (No SKIP)| 47.98% | 0.2500 | 100.00% | 25,332 / 25,332 | +0.22% | -3.59% | NO_STATISTICAL_EDGE_BELOW_BREAK_EVEN |
+| exp_F2_threshold_55_selective | F | Threshold 0.55 (SKIP) | 25.00% | 0.2500 |   0.02% | 4 / 25,332 | +0.00% | -29.05% | FAIL_TO_BEAT_MAJORITY_BASELINE |
+| exp_F3_threshold_60_conservative | F | Threshold 0.60 (SKIP) | N/A | 0.2500 |   0.00% | 0 / 25,332 | N/A | N/A | ZERO_COVERAGE_NO_PREDICTIONS |
 
 ### Key Matrix Insights & Remediation Impact
-1. **Threshold Bug Remediation**: Corrected the DOWN classification rule from `p_up < 1.0 - (th - 0.50)` to `p_up <= round(1.0 - th, 9)`. At threshold 0.55 and 0.60, models no longer select 100% of observations. At threshold 0.60, exactly 0 samples qualify (0.0% coverage), correctly reported as `ZERO_COVERAGE_NO_PREDICTIONS` with accuracy and expectancy marked N/A.
-2. **Out-of-Fold Calibration Integrity**: In-sample validation calibration evaluation was eliminated. Calibrators are fitted strictly on the chronological calibration-fit partition and scored out-of-fold on unseen evaluation partitions. Platt sigmoid (0.2501) and isotonic regression (0.2502) show no generalization gain over raw uncalibrated probabilities (0.2499) on out-of-fold data.
-3. **Holdout Protection**: The test partition was completely quarantined and excluded from all development trials ($N_{\text{test}} = 0$).
-4. **Target Correction**: Excluding ties restored class balance (eliminating the legacy -2.30% delta vs majority baseline) and improved out-of-fold accuracy to 50.64%.
-5. **Universal Economic Invariant**: Every evaluated candidate configuration falls short of the 54.05% break-even hurdle ($W - W_{\text{be}} < 0$). Scientific disposition strictly preserved: `NO_DEMONSTRATED_EDGE`.
+1. **Unbiased Opportunity Evaluation**: All eligible decision timestamps are evaluated without inspecting future outcomes. Ties are resolved explicitly. On the opportunity set with ties (which account for 5.16% of observations and cannot be won by predicting UP or DOWN), full-window directional accuracy ranges between 47.75% and 48.65%.
+2. **Selective Thresholds & Matched Baselines**: At threshold 0.55, exactly 4 observations qualify out of 25,332 opportunities (0.02% coverage). On those exact 4 observations, candidate win rate is 25.00%, matching the majority baseline on those identical timestamps ($\\Delta = +0.00\%$) and falling -29.05% short of break-even. At threshold 0.60, zero observations qualify (0.00% coverage), cleanly marked ZERO_COVERAGE_NO_PREDICTIONS with accuracy and expectancy marked N/A.
+3. **Out-of-Fold Calibration Integrity**: Sigmoid (0.2521) and isotonic (0.2502) calibration show no out-of-fold generalization gain over raw uncalibrated probabilities (0.2499).
+4. **Holdout Protection**: The test partition was completely quarantined and excluded from all development trials ({\\text{test}} = 0$).
+5. **Universal Economic Invariant**: Every evaluated candidate configuration falls short of the break-even hurdle ( - W_{\\text{be}} < 0$). Scientific disposition strictly preserved: NO_DEMONSTRATED_EDGE.
 
 ---
 

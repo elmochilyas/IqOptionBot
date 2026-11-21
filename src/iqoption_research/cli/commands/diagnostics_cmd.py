@@ -148,7 +148,7 @@ def experiment_matrix_cmd(
 
     snap = snapshots[-1]
     snap_id = snap.manifest.snapshot_id
-    source_hash = getattr(snap.manifest, "sha256", None) or snap.manifest.snapshot_id
+    source_hash = snap.manifest.sha256_checksum
     candles = snap.load_candles()
     if sample_limit > 0 and len(candles) > sample_limit:
         candles = candles[-sample_limit:]
@@ -163,7 +163,7 @@ def experiment_matrix_cmd(
     )
     typer.echo(render_experiment_matrix_table(results))
 
-    out_file = output_path or Path("data/experiments/phase41_experiment_ledger_v2.json")
+    out_file = output_path or Path("data/experiments/phase41_experiment_ledger_v3.json")
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(json.dumps([r.to_dict() for r in results], indent=2), encoding="utf-8")
     typer.secho(f"Trial ledger recorded to {out_file}", fg=typer.colors.GREEN)
@@ -261,10 +261,11 @@ def report_cmd(
         decision_threshold=0.50,
         dataset_id=snap.manifest.snapshot_id,
         spec=spec,
+        source_hash=snap.manifest.sha256_checksum,
     )
 
     md = report.render_markdown()
-    out_file = output_path or Path("reports/model_failure_intelligence_v2.md")
+    out_file = output_path or Path("reports/model_failure_intelligence_v3.md")
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(md, encoding="utf-8")
     typer.secho(f"Failure Intelligence report written to {out_file}", fg=typer.colors.GREEN)

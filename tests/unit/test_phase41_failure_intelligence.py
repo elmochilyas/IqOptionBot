@@ -183,12 +183,8 @@ def test_build_ml_dataset_excludes_ties_cleanly() -> None:
         tie_policy=TiePolicy.EXCLUDE,
     )
 
-    ds_legacy = build_ml_dataset(
-        candles, features, spec_legacy, enforce_temporal_continuity=True
-    )
-    ds_exclude = build_ml_dataset(
-        candles, features, spec_exclude, enforce_temporal_continuity=True
-    )
+    ds_legacy = build_ml_dataset(candles, features, spec_legacy, enforce_temporal_continuity=True)
+    ds_exclude = build_ml_dataset(candles, features, spec_exclude, enforce_temporal_continuity=True)
 
     rep_legacy = ds_legacy.continuity_report
     rep_exclude = ds_exclude.continuity_report
@@ -477,8 +473,7 @@ def test_model_diagnostics_panel_init_and_tabs(tmp_path: Path) -> None:
         assert panel.sub_notebook is not None
         # Verify 4 tabs
         tab_names = [
-            panel.sub_notebook.tab(i, "text")
-            for i in range(panel.sub_notebook.index("end"))
+            panel.sub_notebook.tab(i, "text") for i in range(panel.sub_notebook.index("end"))
         ]
         assert "Failure Intelligence" in tab_names
         assert "Regimes & Temporal" in tab_names

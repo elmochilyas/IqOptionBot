@@ -451,11 +451,7 @@ class ModelDiagnosticsPanel:
                         if r.delta_vs_majority is not None
                         else "N/A"
                     ),
-                    (
-                        f"{r.break_even_gap * 100:+.2f}%"
-                        if r.break_even_gap is not None
-                        else "N/A"
-                    ),
+                    (f"{r.break_even_gap * 100:+.2f}%" if r.break_even_gap is not None else "N/A"),
                     r.verdict,
                 ),
             )

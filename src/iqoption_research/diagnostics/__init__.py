@@ -4,6 +4,7 @@ from iqoption_research.diagnostics.alignment import (
     AlignedObservation,
     AlignedPredictionDataset,
     AlignmentRejectionReport,
+    DecisionResolution,
     align_predictions_to_market_data,
 )
 from iqoption_research.diagnostics.experiments import (
@@ -51,6 +52,7 @@ __all__ = [
     "ContractFamily",
     "ContractSpecification",
     "ControlledExperimentTrialResult",
+    "DecisionResolution",
     "FailureIntelligenceReport",
     "PayoutSensitivityPoint",
     "PipelineParityAudit",

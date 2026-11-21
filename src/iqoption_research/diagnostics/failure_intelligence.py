@@ -148,11 +148,13 @@ class FailureIntelligenceReport:
     baseline_deltas: dict[str, float]
     payout_sensitivity: list[dict[str, Any]]
     methodological_disclaimers: list[str] = field(default_factory=list)
+    source_hash: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "report_title": self.report_title,
             "dataset_id": self.dataset_id,
+            "source_hash": self.source_hash,
             "evaluated_samples": self.evaluated_samples,
             "target_audit": self.target_audit.to_dict(),
             "confusion_matrix": self.confusion_matrix.to_dict(),
@@ -185,6 +187,7 @@ class FailureIntelligenceReport:
         lines = [
             "# Model Failure Intelligence & Error Analysis",
             f"**Dataset**: `{self.dataset_id}` | **Evaluated Samples**: {self.evaluated_samples:,}",
+            f"**Snapshot SHA-256**: `{self.source_hash or 'UNVERIFIED'}`",
             "**Scientific Disposition**: `NO_DEMONSTRATED_EDGE` (Fail-Closed Default)",
             "",
             "## 1. Executive Failure Summary",
@@ -205,10 +208,7 @@ class FailureIntelligenceReport:
                 f"- **Imbalance Attribution**: True market imbalance (DOWN - UP) is "
                 f"{ta.strict_down_pct - ta.strict_up_pct:+.2f}%."
             ),
-            (
-                "  Legacy binary 5.82% DOWN skew was an artifact of "
-                "collapsing exact ties into DOWN."
-            ),
+            ("  Legacy binary 5.82% DOWN skew was an artifact of collapsing exact ties into DOWN."),
             f"- **Exact Ties**: {ta.tie_count:,} ({ta.tie_pct:.2f}% of all observations).",
             f"- **Prediction Skew**: Model predicts UP {up_pct:.2f}% vs DOWN {down_pct:.2f}%.",
             (
@@ -292,11 +292,18 @@ class FailureIntelligenceReport:
             "| :---: | :---: | :---: | :---: | :---: | :---: |",
         ])
         for c in self.confidence_curve:
-            ci_str = f"[{c.ci_lower_95 * 100:.2f}%, {c.ci_upper_95 * 100:.2f}%]"
+            if c.qualifying_samples > 0:
+                ci_str = f"[{c.ci_lower_95 * 100:.2f}%, {c.ci_upper_95 * 100:.2f}%]"
+                acc_str = f"{c.accuracy * 100:5.2f}%"
+                err_str = f"{c.error_rate * 100:5.2f}%"
+            else:
+                ci_str = "    N/A    "
+                acc_str = "  N/A  "
+                err_str = "  N/A  "
             lines.append(
                 f"| >= {c.confidence_threshold:.2f} | {c.qualifying_samples:,} | "
-                f"{c.coverage_pct:5.2f}% | {c.accuracy * 100:5.2f}% | "
-                f"{c.error_rate * 100:5.2f}% | {ci_str} |"
+                f"{c.coverage_pct:5.2f}% | {acc_str} | "
+                f"{err_str} | {ci_str} |"
             )
 
         lines.extend([
@@ -338,6 +345,7 @@ def generate_failure_intelligence_report(
     dataset_id: str = "authentic_eurusd_m1",
     spec: TargetSpec | None = None,
     baseline_predictions: dict[str, np.ndarray] | None = None,
+    source_hash: str | None = None,
 ) -> FailureIntelligenceReport:
     """Compute complete failure intelligence metrics from predictions and ground-truth candles.
 
@@ -378,8 +386,7 @@ def generate_failure_intelligence_report(
         true_down = aligned.is_true_down_mask
         true_tie = aligned.is_true_tie_mask
         candle_dts = [
-            datetime.fromtimestamp(o.feature_timestamp, tz=UTC)
-            for o in aligned.observations
+            datetime.fromtimestamp(o.feature_timestamp, tz=UTC) for o in aligned.observations
         ]
         closes = np.array([o.source_close for o in aligned.observations], dtype=np.float64)
     else:
@@ -650,9 +657,7 @@ def generate_failure_intelligence_report(
     # Confidence curve & selective coverage using consistent decision policy
     conf_curve: list[ConfidenceThresholdPoint] = []
     for th in [0.50, 0.52, 0.55, 0.60, 0.65]:
-        th_pred_up, th_pred_down, _th_skip = classify_directional_decisions_vectorized(
-            probs, th
-        )
+        th_pred_up, th_pred_down, _th_skip = classify_directional_decisions_vectorized(probs, th)
         th_decisive = th_pred_up | th_pred_down
         th_cnt = int(np.sum(th_decisive))
         if th_cnt == 0:
@@ -754,6 +759,7 @@ def generate_failure_intelligence_report(
     return FailureIntelligenceReport(
         report_title=f"Model Failure Intelligence: {dataset_id}",
         dataset_id=dataset_id,
+        source_hash=source_hash,
         evaluated_samples=m,
         target_audit=target_audit,
         confusion_matrix=confusion_matrix,

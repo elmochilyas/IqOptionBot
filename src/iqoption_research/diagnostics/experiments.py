@@ -101,8 +101,8 @@ class ControlledExperimentTrialResult:
     test_accuracy: float | None = None  # Untested/Protected
     test_brier_score: float | None = None
     test_win_rate: float | None = None
-    majority_val_acc: float = 0.50
-    momentum_val_acc: float = 0.50
+    majority_val_acc: float | None = None
+    momentum_val_acc: float | None = None
     constant_prob_brier: float = 0.25
     delta_vs_majority: float | None = None
     delta_vs_momentum: float | None = None
@@ -117,6 +117,16 @@ class ControlledExperimentTrialResult:
     source_snapshot_id: str | None = None
     source_hash: str | None = None
     calib_fit_samples: int = 0
+    full_window_majority_acc: float = 0.50
+    full_window_momentum_acc: float = 0.50
+    up_wins_count: int = 0
+    down_wins_count: int = 0
+    directional_losses_count: int = 0
+    exact_ties_count: int = 0
+    skips_count: int = 0
+    net_expectancy_binary: float | None = None
+    net_expectancy_digital: float | None = None
+    net_expectancy_generic: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -411,24 +421,48 @@ def run_controlled_experiment(
         )
         feat_ds = feat_pipe.transform(list(candles))
 
-        # 2. Target specification
-        target_spec = TargetSpec(
+        # 2. Build full opportunity population dataset
+        # Retains all continuous non-warmup bars with valid C_{t+H} without hindsight tie filtering.
+        opp_spec = TargetSpec(
             target_type=TargetType.DIRECTION_BINARY,
             horizon_bars=1,
             flat_threshold_pips=0.0,
-            tie_policy=spec.tie_policy,
+            tie_policy=TiePolicy.LEGACY_DOWN,
         )
-        ml_data: MLDataset = build_ml_dataset(
-            candles, feat_ds, target_spec, enforce_temporal_continuity=True
+        opp_data: MLDataset = build_ml_dataset(
+            candles, feat_ds, opp_spec, enforce_temporal_continuity=True
         )
 
-        h = target_spec.horizon_bars
+        h = opp_spec.horizon_bars
         purge = h + embargo_bars
+        th_price = opp_spec.threshold_price
+
+        # Authoritative lookup of true forward settlement price outcomes for all opportunity rows
+        candle_by_to_ts = {c.to_ts: c for c in candles}
+        n_opp = opp_data.row_count
+        opp_is_true_up = np.zeros(n_opp, dtype=bool)
+        opp_is_true_down = np.zeros(n_opp, dtype=bool)
+        opp_is_true_tie = np.zeros(n_opp, dtype=bool)
+
+        for i in range(n_opp):
+            ts = int(opp_data.timestamps[i])
+            c_src = candle_by_to_ts[ts]
+            c_out = candle_by_to_ts[ts + 60]  # Exact forward horizon
+            diff = float(c_out.close - c_src.close)
+            if diff > th_price:
+                opp_is_true_up[i] = True
+            elif diff < -th_price:
+                opp_is_true_down[i] = True
+            else:
+                opp_is_true_tie[i] = True
 
         # 3. Protect historical holdout: isolate development partition strictly
         dev_ratio = 1.0 - split_ratios[2]
-        dev_end = int(ml_data.row_count * dev_ratio)
-        dev_data = ml_data.slice(0, dev_end)
+        dev_end = int(n_opp * dev_ratio)
+        dev_data = opp_data.slice(0, dev_end)
+        dev_true_up = opp_is_true_up[:dev_end]
+        dev_true_down = opp_is_true_down[:dev_end]
+        dev_true_tie = opp_is_true_tie[:dev_end]
         m_dev = dev_data.row_count
 
         # 4. Chronological development walk-forward folds
@@ -444,7 +478,6 @@ def run_controlled_experiment(
             fold_definitions.append((t_start, t_end, c_start, c_end, e_start, e_end))
         else:
             # 3 expanding window chronological development folds
-            # Fold 0: Train 0.00-0.40, Calib 0.40-0.55, Eval 0.55-0.70
             fold_definitions.append((
                 0,
                 int(m_dev * 0.40),
@@ -453,7 +486,6 @@ def run_controlled_experiment(
                 int(m_dev * 0.55),
                 int(m_dev * 0.70),
             ))
-            # Fold 1: Train 0.00-0.55, Calib 0.55-0.70, Eval 0.70-0.85
             fold_definitions.append((
                 0,
                 int(m_dev * 0.55),
@@ -462,7 +494,6 @@ def run_controlled_experiment(
                 int(m_dev * 0.70),
                 int(m_dev * 0.85),
             ))
-            # Fold 2: Train 0.00-0.70, Calib 0.70-0.85, Eval 0.85-1.00
             fold_definitions.append((
                 0,
                 int(m_dev * 0.70),
@@ -472,26 +503,50 @@ def run_controlled_experiment(
                 m_dev,
             ))
 
-        all_eval_y: list[np.ndarray] = []
-        all_eval_p_up: list[np.ndarray] = []
-        all_decisive_preds: list[np.ndarray] = []
-        all_decisive_y: list[np.ndarray] = []
-        all_maj_preds: list[np.ndarray] = []
-        all_mom_preds: list[np.ndarray] = []
+        fold_eval_decisive: list[np.ndarray] = []
+        fold_eval_is_win: list[np.ndarray] = []
+        fold_maj_is_win: list[np.ndarray] = []
+        fold_mom_is_win: list[np.ndarray] = []
+        fold_eval_p_up: list[np.ndarray] = []
+        fold_eval_true_up: list[np.ndarray] = []
 
         total_train_samples = 0
         total_calib_samples = 0
         total_eval_samples = 0
         total_decisive_samples = 0
+        total_up_wins = 0
+        total_down_wins = 0
+        total_losses = 0
+        total_ties = 0
+        total_skips = 0
 
         for t_s, t_e, c_s, c_e, e_s, e_e in fold_definitions:
             # Apply purge before calibration and evaluation boundaries
             t_e_purged = max(t_s + 10, t_e - purge)
             c_e_purged = max(c_s + 10, c_e - purge)
 
-            ds_train = dev_data.slice(t_s, t_e_purged)
-            ds_calib = dev_data.slice(c_s, c_e_purged)
+            ds_train_full = dev_data.slice(t_s, t_e_purged)
+            train_tie = dev_true_tie[t_s:t_e_purged]
+            if spec.tie_policy == TiePolicy.EXCLUDE:
+                # Versioned training policy: train strictly on genuine directional movements
+                train_mask = ~train_tie
+                ds_train = ds_train_full[train_mask]
+            else:
+                ds_train = ds_train_full
+
+            ds_calib_full = dev_data.slice(c_s, c_e_purged)
+            calib_tie = dev_true_tie[c_s:c_e_purged]
+            if spec.tie_policy == TiePolicy.EXCLUDE:
+                calib_mask = ~calib_tie
+                ds_calib = ds_calib_full[calib_mask]
+            else:
+                ds_calib = ds_calib_full
+
+            # Full evaluation opportunity slice (ALL eligible decision timestamps, including ties)
             ds_eval = dev_data.slice(e_s, e_e)
+            eval_true_up = dev_true_up[e_s:e_e]
+            eval_true_down = dev_true_down[e_s:e_e]
+            eval_true_tie = dev_true_tie[e_s:e_e]
 
             total_train_samples += ds_train.row_count
             total_calib_samples += ds_calib.row_count
@@ -522,79 +577,112 @@ def run_controlled_experiment(
 
             # Out-of-fold predictions on unseen Evaluation slice
             raw_eval_probs = model.predict_proba(scaled_eval.X)
-            cal_eval_probs = (
-                calibrator.calibrate(raw_eval_probs) if calibrator else raw_eval_probs
-            )
+            cal_eval_probs = calibrator.calibrate(raw_eval_probs) if calibrator else raw_eval_probs
             eval_p_up = (
-                cal_eval_probs[:, 1]
-                if cal_eval_probs.shape[1] > 1
-                else cal_eval_probs[:, 0]
+                cal_eval_probs[:, 1] if cal_eval_probs.shape[1] > 1 else cal_eval_probs[:, 0]
             )
 
-            # Baselines evaluated on matched evaluation observations
+            # Decision classification using shared policy
+            th = spec.confidence_threshold
+            is_up, is_down, is_skip = classify_directional_decisions_vectorized(eval_p_up, th)
+            is_decisive = is_up | is_down
+
+            # Point-in-time outcome resolution
+            is_up_win = is_up & eval_true_up
+            is_down_win = is_down & eval_true_down
+            is_dir_loss = (is_up & eval_true_down) | (is_down & eval_true_up)
+            is_exact_tie = is_decisive & eval_true_tie
+            is_win = is_up_win | is_down_win
+
+            total_decisive_samples += int(np.sum(is_decisive))
+            total_up_wins += int(np.sum(is_up_win))
+            total_down_wins += int(np.sum(is_down_win))
+            total_losses += int(np.sum(is_dir_loss))
+            total_ties += int(np.sum(is_exact_tie))
+            total_skips += int(np.sum(is_skip))
+
+            # Baselines fitted on Train and evaluated on identical Evaluation observations
             maj_model = MajorityClassModel()
             maj_model.fit(scaled_train.X, scaled_train.y)
             maj_preds = maj_model.predict(scaled_eval.X)
+            maj_is_win = ((maj_preds == 1) & eval_true_up) | ((maj_preds == 0) & eval_true_down)
 
             mom_model = RuleBasedMomentumModel()
             mom_model.fit(scaled_train.X, scaled_train.y)
             mom_preds = mom_model.predict(scaled_eval.X)
+            mom_is_win = ((mom_preds == 1) & eval_true_up) | ((mom_preds == 0) & eval_true_down)
 
-            # Decision classification using shared policy
-            th = spec.confidence_threshold
-            is_up, is_down, _is_skip = classify_directional_decisions_vectorized(eval_p_up, th)
-            is_decisive = is_up | is_down
-            dec_cnt = int(np.sum(is_decisive))
-            total_decisive_samples += dec_cnt
-
-            if dec_cnt > 0:
-                dec_preds = np.where(is_up[is_decisive], 1, 0)
-                dec_y = scaled_eval.y[is_decisive]
-                all_decisive_preds.append(dec_preds)
-                all_decisive_y.append(dec_y)
-
-            all_eval_y.append(scaled_eval.y)
-            all_eval_p_up.append(eval_p_up)
-            all_maj_preds.append(maj_preds)
-            all_mom_preds.append(mom_preds)
+            fold_eval_decisive.append(is_decisive)
+            fold_eval_is_win.append(is_win)
+            fold_maj_is_win.append(maj_is_win)
+            fold_mom_is_win.append(mom_is_win)
+            fold_eval_p_up.append(eval_p_up)
+            fold_eval_true_up.append(eval_true_up)
 
         # 5. Aggregate metrics across all chronological folds
-        concat_eval_y = np.concatenate(all_eval_y)
-        concat_p_up = np.concatenate(all_eval_p_up)
-        concat_maj = np.concatenate(all_maj_preds)
-        concat_mom = np.concatenate(all_mom_preds)
+        concat_decisive = np.concatenate(fold_eval_decisive)
+        concat_maj_wins = np.concatenate(fold_maj_is_win)
+        concat_mom_wins = np.concatenate(fold_mom_is_win)
+        concat_p_up = np.concatenate(fold_eval_p_up)
+        concat_true_up = np.concatenate(fold_eval_true_up)
 
-        # Calibration metrics strictly evaluated out-of-fold
-        cal_metrics = evaluate_calibration(concat_eval_y, concat_p_up)
+        # Out-of-fold probability calibration metrics
+        cal_metrics = evaluate_calibration(concat_true_up.astype(int), concat_p_up)
         val_brier = float(cal_metrics.brier_score)
         val_ece = float(cal_metrics.ece)
         val_log_loss = float(cal_metrics.log_loss)
+        const_brier = float(np.mean((0.50 - concat_true_up.astype(int)) ** 2))
 
-        # Baseline performance on matched evaluation samples
-        majority_val_acc = float(np.mean(concat_maj == concat_eval_y))
-        momentum_val_acc = float(np.mean(concat_mom == concat_eval_y))
-        const_brier = float(np.mean((0.50 - concat_eval_y) ** 2))
-
+        # Coverage calculated strictly against the full eligible opportunity population
         val_coverage = (
             float(total_decisive_samples / total_eval_samples) if total_eval_samples > 0 else 0.0
         )
-        be_win_rate = 1.0 / (1.0 + assumed_payout)
+
+        # Full-window baseline context
+        full_window_maj_acc = float(np.mean(concat_maj_wins)) if len(concat_maj_wins) > 0 else 0.50
+        full_window_mom_acc = float(np.mean(concat_mom_wins)) if len(concat_mom_wins) > 0 else 0.50
+
+        total_wins = total_up_wins + total_down_wins
 
         if total_decisive_samples > 0:
-            concat_dec_preds = np.concatenate(all_decisive_preds)
-            concat_dec_y = np.concatenate(all_decisive_y)
-            wins = int(np.sum(concat_dec_preds == concat_dec_y))
-            acc_val = float(wins / total_decisive_samples)
+            acc_val = float(total_wins / total_decisive_samples)
             val_acc: float | None = acc_val
             val_win_rate: float | None = acc_val
-            ci_low, ci_high = compute_wilson_score_interval(wins, total_decisive_samples)
+
+            # Matched baseline comparisons on the selected-opportunity mask
+            maj_acc_sel = float(np.mean(concat_maj_wins[concat_decisive]))
+            mom_acc_sel = float(np.mean(concat_mom_wins[concat_decisive]))
+            majority_val_acc: float | None = maj_acc_sel
+            momentum_val_acc: float | None = mom_acc_sel
+            d_maj = acc_val - maj_acc_sel
+            d_mom = acc_val - mom_acc_sel
+            delta_maj: float | None = d_maj
+            delta_mom: float | None = d_mom
+
+            ci_low, ci_high = compute_wilson_score_interval(total_wins, total_decisive_samples)
+            val_ci_95: tuple[float | None, float | None] = (ci_low, ci_high)
+
+            # Contract-specific economic calculations
+            # 1. Binary Option: ATM refund on ties (return multiplier 0.0)
+            net_exp_bin: float | None = float(
+                (assumed_payout * total_wins - 1.0 * total_losses) / total_decisive_samples
+            )
+            be_win_rate = float(
+                (1.0 / (1.0 + assumed_payout)) * (1.0 - (total_ties / total_decisive_samples))
+            )
             gap_be = acc_val - be_win_rate
             be_gap: float | None = gap_be
-            d_maj = acc_val - majority_val_acc
-            delta_maj: float | None = d_maj
-            d_mom = acc_val - momentum_val_acc
-            delta_mom: float | None = d_mom
-            val_ci_95: tuple[float | None, float | None] = (ci_low, ci_high)
+
+            # 2. Digital Option: ATM loss on ties (return multiplier -1.0)
+            net_exp_dig: float | None = float(
+                (assumed_payout * total_wins - 1.0 * (total_losses + total_ties))
+                / total_decisive_samples
+            )
+
+            # 3. Generic Close-to-Close (1:1 payout, tie has 0 net return)
+            net_exp_gen: float | None = float(
+                (1.0 * total_wins - 1.0 * total_losses) / total_decisive_samples
+            )
 
             if gap_be > 0 and d_maj > 0:
                 verdict = "MARGINAL_DEVELOPMENT_SIGNAL_NEEDS_PROSPECTIVE_TEST"
@@ -606,9 +694,15 @@ def run_controlled_experiment(
             val_acc = None
             val_win_rate = None
             val_ci_95 = (None, None)
-            be_gap = None
+            majority_val_acc = None
+            momentum_val_acc = None
             delta_maj = None
             delta_mom = None
+            be_win_rate = float(1.0 / (1.0 + assumed_payout))
+            be_gap = None
+            net_exp_bin = None
+            net_exp_dig = None
+            net_exp_gen = None
             verdict = "ZERO_COVERAGE_NO_PREDICTIONS"
 
         return ControlledExperimentTrialResult(
@@ -651,6 +745,16 @@ def run_controlled_experiment(
             source_snapshot_id=snapshot_id,
             source_hash=source_hash,
             calib_fit_samples=total_calib_samples,
+            full_window_majority_acc=full_window_maj_acc,
+            full_window_momentum_acc=full_window_mom_acc,
+            up_wins_count=total_up_wins,
+            down_wins_count=total_down_wins,
+            directional_losses_count=total_losses,
+            exact_ties_count=total_ties,
+            skips_count=total_skips,
+            net_expectancy_binary=net_exp_bin,
+            net_expectancy_digital=net_exp_dig,
+            net_expectancy_generic=net_exp_gen,
         )
 
     except Exception as exc:  # noqa: BLE001 - Research failure tracking
@@ -714,8 +818,8 @@ def run_controlled_experiment_suite(
 
 def render_experiment_matrix_table(results: list[ControlledExperimentTrialResult]) -> str:
     """Render a clean summary table of controlled research experiment outcomes."""
-    sep = "=" * 90
-    subsep = "-" * 90
+    sep = "=" * 92
+    subsep = "-" * 92
 
     def row(
         tid: str,
@@ -728,8 +832,8 @@ def render_experiment_matrix_table(results: list[ControlledExperimentTrialResult
         verdict: str,
     ) -> str:
         return (
-            f"{tid:<22} | {area:<4} | {acc:<7} | {brier:<6} | {cov:<5} | "
-            f"{d_maj:<6} | {be:<6} | {verdict:<14}"
+            f"{tid:<22} | {area:<4} | {acc:<7} | {brier:<6} | {cov:<7} | "
+            f"{d_maj:<7} | {be:<7} | {verdict:<14}"
         )
 
     lines = [
@@ -743,9 +847,7 @@ def render_experiment_matrix_table(results: list[ControlledExperimentTrialResult
         status_str = r.verdict if r.trial_status == "COMPLETED" else f"ERR: {r.error_message}"
         acc_str = f"{r.val_accuracy * 100:5.2f}%" if r.val_accuracy is not None else "  N/A  "
         d_maj_str = (
-            f"{r.delta_vs_majority * 100:+5.2f}%"
-            if r.delta_vs_majority is not None
-            else "  N/A "
+            f"{r.delta_vs_majority * 100:+5.2f}%" if r.delta_vs_majority is not None else "  N/A "
         )
         be_str = f"{r.break_even_gap * 100:+5.2f}%" if r.break_even_gap is not None else "  N/A "
         lines.append(
@@ -754,7 +856,7 @@ def render_experiment_matrix_table(results: list[ControlledExperimentTrialResult
                 r.area,
                 acc_str,
                 f"{r.val_brier_score:6.4f}",
-                f"{r.val_coverage * 100:4.1f}%",
+                f"{r.val_coverage * 100:6.2f}%",
                 d_maj_str,
                 be_str,
                 status_str[:14],

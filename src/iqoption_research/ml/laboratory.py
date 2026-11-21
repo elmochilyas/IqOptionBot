@@ -63,6 +63,8 @@ from iqoption_research.ml.targets.specs import TargetSpec, TargetType
 from iqoption_research.ml.tracking.tracker import ExperimentRecord, ExperimentTracker
 from iqoption_research.models.market import Candle
 from iqoption_research.research.dataset_manager import (
+    DatasetIntegrityError,
+    ResearchDatasetManager,
     ResearchDatasetSnapshot,
 )
 from iqoption_research.research.datasets.splitter import (
@@ -86,6 +88,17 @@ SCIENTIFIC_DISCLAIMER: Final[str] = (
     "NO DEMONSTRATED EDGE. ASSUMED BROKER PAYOUTS DO NOT CONSTITUTE "
     "PROOF OF PROSPECTIVE PROFITABILITY. PHASE 38 MODEL REMAINS FROZEN."
 )
+
+
+def validate_storage_identifier(identifier: str) -> str:
+    """Validate that an identifier contains only safe characters and cannot traverse directories."""
+    if not identifier or not isinstance(identifier, str):
+        raise LaboratoryError("Identifier must be a non-empty string")
+    if ".." in identifier or "/" in identifier or "\\" in identifier:
+        raise LaboratoryError(f"Directory traversal detected in identifier: {identifier!r}")
+    if not all(c.isalnum() or c in ("_", "-") for c in identifier):
+        raise LaboratoryError(f"Invalid characters in identifier: {identifier!r}")
+    return identifier
 
 
 class LaboratoryError(Exception):
@@ -214,6 +227,12 @@ class ExperimentResult:
     disclaimer: str
     artifact_dir: str
     artifact_manifest_sha256: str
+    is_synthetic: bool = False
+    provenance_class: str = "AUTHENTIC_RESEARCH_SNAPSHOT"
+    baseline_superiority_met: bool = False
+    target_contract: dict[str, Any] = field(default_factory=dict)
+    continuity_report: dict[str, Any] | None = None
+    scientific_limitations: dict[str, str] = field(default_factory=dict)
 
     @property
     def metrics(self) -> dict[str, dict[str, Any]]:
@@ -246,6 +265,12 @@ class ExperimentResult:
             "disclaimer": self.disclaimer,
             "artifact_dir": self.artifact_dir,
             "artifact_manifest_sha256": self.artifact_manifest_sha256,
+            "is_synthetic": self.is_synthetic,
+            "provenance_class": self.provenance_class,
+            "baseline_superiority_met": self.baseline_superiority_met,
+            "target_contract": self.target_contract,
+            "continuity_report": self.continuity_report,
+            "scientific_limitations": self.scientific_limitations,
         }
 
 
@@ -281,19 +306,6 @@ class ModelLaboratory:
 
         Returns an immutable ExperimentResult and persists the candidate bundle.
         """
-        if candles_or_snapshot is None:
-            if not config.snapshot_id:
-                raise ValueError("Must provide candles_or_snapshot or specify config.snapshot_id")
-            from iqoption_research.research.dataset_manager import ResearchDatasetManager
-
-            mgr = ResearchDatasetManager(self.root)
-            snapshots = mgr.list_snapshots()
-            snap = next(
-                (s for s in snapshots if s.manifest.snapshot_id == config.snapshot_id), None
-            )
-            if snap is None:
-                raise ValueError(f"Snapshot ID not found: {config.snapshot_id}")
-            candles_or_snapshot = snap
 
         def update(pct: int, msg: str) -> None:
             self._check_cancellation(cancel_token)
@@ -303,12 +315,56 @@ class ModelLaboratory:
         # 1. Unpack candles and provenance metadata
         update(5, "Verifying input research dataset...")
         candles: list[Candle]
-        snapshot_id = "ad_hoc_candle_sequence"
+        snapshot_id: str
+        is_synthetic: bool
+        provenance_class: str
+        content_hash: str
+
         if isinstance(candles_or_snapshot, ResearchDatasetSnapshot):
+            if not candles_or_snapshot.verify_integrity():
+                raise DatasetIntegrityError(
+                    f"Research dataset snapshot '{candles_or_snapshot.manifest.snapshot_id}' "
+                    "failed integrity verification"
+                )
             candles = candles_or_snapshot.load_candles()
             snapshot_id = candles_or_snapshot.manifest.snapshot_id
+            is_synthetic = False
+            provenance_class = "AUTHENTIC_RESEARCH_SNAPSHOT"
+            content_hash = candles_or_snapshot.manifest.sha256_checksum
+        elif candles_or_snapshot is None:
+            if not config.snapshot_id:
+                raise LaboratoryError(
+                    "ExperimentConfig must specify snapshot_id when candles_or_snapshot is None"
+                )
+            safe_snapshot_id = validate_storage_identifier(config.snapshot_id)
+            manager = ResearchDatasetManager(self.root)
+            snapshots = manager.list_snapshots()
+            matched = next(
+                (s for s in snapshots if s.manifest.snapshot_id == safe_snapshot_id), None
+            )
+            if not matched:
+                raise LaboratoryError(f"Verified research snapshot '{safe_snapshot_id}' not found")
+            if not matched.verify_integrity():
+                raise DatasetIntegrityError(
+                    f"Research snapshot '{safe_snapshot_id}' failed integrity verification"
+                )
+            candles = matched.load_candles()
+            snapshot_id = matched.manifest.snapshot_id
+            is_synthetic = False
+            provenance_class = "AUTHENTIC_RESEARCH_SNAPSHOT"
+            content_hash = matched.manifest.sha256_checksum
         else:
             candles = list(candles_or_snapshot)
+            # Ad-hoc candle sequences are strictly classified as synthetic / unverified
+            is_synthetic = True
+            provenance_class = "SYNTHETIC_OR_UNVERIFIED_AD_HOC"
+            snapshot_id = "ad_hoc_synthetic_sequence"
+            h_content = hashlib.sha256()
+            for c in candles:
+                h_content.update(
+                    f"{c.from_ts}:{c.to_ts}:{c.open}:{c.high}:{c.low}:{c.close}:{c.volume};".encode()
+                )
+            content_hash = h_content.hexdigest()
 
         if len(candles) < 100:
             raise LaboratoryError(
@@ -317,12 +373,13 @@ class ModelLaboratory:
                 "purged splitting, and scientific evaluation."
             )
 
-        # 2. Extract Causal Features (drop_warmup=False so row indices align with candles)
+        # 2. Extract Causal Features (enforce_temporal_continuity=True prevents bridging gaps)
         update(15, "Computing backward-looking causal features...")
         feat_pipe = CausalFeaturePipeline(
             drop_warmup=False,
             include_volume=True,
             include_quotes=False,
+            enforce_temporal_continuity=True,
         )
         feat_dataset: FeatureDataset = feat_pipe.transform(candles)
 
@@ -332,10 +389,15 @@ class ModelLaboratory:
             target_type=TargetType.DIRECTION_BINARY,
             horizon_bars=config.horizon_bars,
         )
-        ml_data: MLDataset = build_ml_dataset(candles, feat_dataset, target_spec)
+        ml_data: MLDataset = build_ml_dataset(
+            candles,
+            feat_dataset,
+            target_spec,
+            enforce_temporal_continuity=True,
+        )
 
         dataset_fp = hashlib.sha256(
-            f"{snapshot_id}_{ml_data.row_count}_{ml_data.feature_dim}".encode()
+            f"{snapshot_id}_{provenance_class}_{content_hash}_{ml_data.row_count}_{ml_data.feature_dim}".encode()
         ).hexdigest()[:16]
 
         # 4. Chronological Splitting with Purging and Embargo
@@ -463,85 +525,174 @@ class ModelLaboratory:
                 )
             )
 
-        # 10. Statistical Edge Assessment
+        # 10. Statistical Edge Assessment (Strict Scientific Standard)
         break_even = 1.0 / (1.0 + config.assumed_payout)
-        # Edge requires lower 95% CI to strictly exceed break-even win rate
-        has_edge = test_metrics.trade_count >= 30 and test_metrics.ci_lower_95 > break_even
-        verdict = "CANDIDATE_EDGE_REQUIRES_REPLICATION" if has_edge else "NO_RELIABLE_EDGE_DETECTED"
+        has_min_trades = test_metrics.trade_count >= 30
+        exceeds_break_even_ci = test_metrics.ci_lower_95 > break_even
+        outperforms_baselines = all(b.delta_accuracy > 0.0 for b in baseline_comparisons)
 
-        # 11. Artifact Versioning & Persistence
+        has_edge = has_min_trades and exceeds_break_even_ci and outperforms_baselines
+
+        if not has_min_trades:
+            verdict = "INSUFFICIENT_SAMPLE_SIZE_NO_EDGE"
+        elif not exceeds_break_even_ci:
+            verdict = "NO_RELIABLE_EDGE_DETECTED"
+        elif not outperforms_baselines:
+            verdict = "BASELINE_SUPERIORITY_NOT_MET_NO_EDGE"
+        else:
+            verdict = "CANDIDATE_EDGE_REQUIRES_REPLICATION"
+
+        # 11. Target Contract Specification (Generic Directional Research, Not Phase 38)
+        target_contract = {
+            "target_type": "GENERIC_CLOSE_TO_CLOSE_DIRECTION",
+            "horizon_bars": config.horizon_bars,
+            "horizon_seconds": config.horizon_bars * 60,
+            "description": (
+                f"Generic {config.horizon_bars}-bar close-to-close directional classification: "
+                f"y = 1 if Close_{{t+{config.horizon_bars}}} > Close_t else 0."
+            ),
+            "is_phase38_contract": False,
+            "phase38_status": "FROZEN_UNCHANGED",
+            "phase38_contract_distinction": (
+                "Phase 38 prospective pilot enforces a strict execution contract including "
+                "decision deadlines, entry delays, 60s expiration boundaries, and sampling slots. "
+                "The Phase 39 laboratory evaluates generic close-to-close directional prediction "
+                "offline and does NOT represent verified Phase 38 option contract execution."
+            ),
+        }
+
+        # 12. Scientific Limitations
+        scientific_limitations = {
+            "wilson_ci_independence_assumption": (
+                "Wilson score interval assumes independent and identically distributed Bernoulli "
+                "trials. Financial time-series exhibit autocorrelation and volatility clustering. "
+                "For prediction horizons H > 1, consecutive observations overlap temporally, "
+                "creating serial dependence that violates independence and inflates effective "
+                "sample size. Reported intervals represent an optimistic upper bound on "
+                "parameter certainty."
+            ),
+            "multiple_testing_and_selection_bias": (
+                "Testing multiple candidate model families, architectures, or hyperparameter "
+                "configurations on the same holdout set increases the false discovery rate "
+                "(data snooping). Apparent performance improvements without pre-registered "
+                "prospective validation are subject to selection bias."
+            ),
+            "holdout_leakage_prohibition": (
+                "The holdout test partition must NEVER be used for hyperparameter tuning, "
+                "model selection, or threshold optimization. All scaling was fit strictly "
+                "on train, and calibration fit strictly on validation."
+            ),
+            "broker_execution_gap": (
+                "Assumed 85% broker payout is a static hypothetical model. Real broker payouts "
+                "fluctuate, and live binary options are subject to slippage, execution delays, "
+                "rejection, and spread costs."
+            ),
+            "research_disposition": "NO_DEMONSTRATED_EDGE",
+        }
+
+        # 13. Artifact Versioning & Atomic Persistence
         update(95, "Persisting immutable model bundle and manifest...")
         run_id = f"lab_{uuid.uuid4().hex[:12]}"
         now_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-        model_id = f"candidate_{config.model_family}_{now_str}_{run_id}"
+        safe_family = validate_storage_identifier(config.model_family)
+        model_id = f"candidate_{safe_family}_{now_str}_{run_id}"
 
         target_dir = (
             models_dir.resolve()
             if models_dir is not None
             else (self.root / DEFAULT_CANDIDATE_MODELS_DIR).resolve()
         )
+        target_dir.mkdir(parents=True, exist_ok=True)
         model_path = target_dir / model_id
-        model_path.mkdir(parents=True, exist_ok=False)
+        if model_path.exists():
+            raise LaboratoryError(
+                f"Candidate model artifact directory already exists: {model_path}"
+            )
 
-        # Bundle contents
-        bundle_file = model_path / "bundle.joblib"
-        bundle_dict = {
-            "model": model,
-            "scaler": scaler,
-            "calibrator": calibrator,
-            "feature_names": ml_data.feature_names,
-            "config": config.to_dict(),
-        }
-        joblib.dump(bundle_dict, bundle_file)
-        bundle_sha = hashlib.sha256(bundle_file.read_bytes()).hexdigest()
+        import shutil
 
-        # Artifact Manifest
-        manifest_data = {
-            "model_id": model_id,
-            "run_id": run_id,
-            "created_at_utc": datetime.now(UTC).isoformat(),
-            "snapshot_id": snapshot_id,
-            "model_family": config.model_family,
-            "feature_names": list(ml_data.feature_names),
-            "horizon_bars": config.horizon_bars,
-            "data_cutoff_ts": int(ds_train.timestamps[-1]),
-            "hyperparameters": config.hyperparameters,
-            "seed": config.seed,
-            "software_environment": {
-                "python": sys.version,
-                "platform": sys.platform,
-            },
-            "metrics": {
-                "train": train_metrics.to_dict(),
-                "val": val_metrics.to_dict(),
-                "test": test_metrics.to_dict(),
-            },
-            "break_even_win_rate": break_even,
-            "has_statistical_edge": has_edge,
-            "verdict": verdict,
-            "bundle_sha256": bundle_sha,
-            "disclaimer": SCIENTIFIC_DISCLAIMER,
-        }
-        manifest_data["manifest_sha256"] = digest(manifest_data)
-        manifest_file = model_path / "manifest.json"
-        manifest_file.write_text(
-            json.dumps(manifest_data, indent=2, sort_keys=True), encoding="utf-8"
-        )
+        staging_dir = target_dir / f".tmp_{model_id}_{uuid.uuid4().hex[:8]}"
+        staging_dir.mkdir(parents=True, exist_ok=False)
 
-        # 12. SQLite Experiment Logging
+        try:
+            bundle_file = staging_dir / "bundle.joblib"
+            bundle_dict = {
+                "model": model,
+                "scaler": scaler,
+                "calibrator": calibrator,
+                "feature_names": ml_data.feature_names,
+                "config": config.to_dict(),
+            }
+            joblib.dump(bundle_dict, bundle_file)
+            bundle_sha = hashlib.sha256(bundle_file.read_bytes()).hexdigest()
+
+            # Artifact Manifest
+            manifest_data = {
+                "model_id": model_id,
+                "run_id": run_id,
+                "created_at_utc": datetime.now(UTC).isoformat(),
+                "snapshot_id": snapshot_id,
+                "is_synthetic": is_synthetic,
+                "provenance_class": provenance_class,
+                "dataset_content_sha256": content_hash,
+                "wallet_classification": (
+                    "CONFLICTING_ACCOUNT_INDICATORS (UNVERIFIED_PRACTICE_INDEPENDENT)"
+                ),
+                "model_family": config.model_family,
+                "feature_names": list(ml_data.feature_names),
+                "horizon_bars": config.horizon_bars,
+                "target_contract": target_contract,
+                "continuity_report": (
+                    ml_data.continuity_report.to_dict() if ml_data.continuity_report else None
+                ),
+                "scientific_limitations": scientific_limitations,
+                "data_cutoff_ts": int(ds_train.timestamps[-1]),
+                "hyperparameters": config.hyperparameters,
+                "seed": config.seed,
+                "software_environment": {
+                    "python": sys.version,
+                    "platform": sys.platform,
+                },
+                "metrics": {
+                    "train": train_metrics.to_dict(),
+                    "val": val_metrics.to_dict(),
+                    "test": test_metrics.to_dict(),
+                },
+                "baseline_superiority_met": outperforms_baselines,
+                "break_even_win_rate": break_even,
+                "has_statistical_edge": has_edge,
+                "verdict": verdict,
+                "bundle_sha256": bundle_sha,
+                "disclaimer": SCIENTIFIC_DISCLAIMER,
+            }
+            clean_manifest = {k: v for k, v in manifest_data.items() if k != "manifest_sha256"}
+            manifest_data["manifest_sha256"] = digest(clean_manifest)
+            manifest_file = staging_dir / "manifest.json"
+            manifest_file.write_text(
+                json.dumps(manifest_data, indent=2, sort_keys=True), encoding="utf-8"
+            )
+
+            # Atomic promotion
+            staging_dir.rename(model_path)
+        finally:
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
+
+        # 14. SQLite Experiment Logging
         update(98, "Logging experiment record in tracker database...")
+        evidence_class = "synthetic_fixture" if is_synthetic else "authentic_offline_research"
         self.tracker.log_experiment(
             experiment_name=config.experiment_name,
             model_name=config.model_family,
             dataset_symbol="EURUSD",
             dataset_rows=ml_data.row_count,
             dataset_fingerprint=dataset_fp,
-            is_synthetic=False,
+            is_synthetic=is_synthetic,
             target_type="DIRECTION_BINARY",
             horizon_bars=config.horizon_bars,
             split_type="chronological_purged_embargo",
             calibration_method=config.calibration_method,
-            evidence_class="authentic_offline_research",
+            evidence_class=evidence_class,
             verdict=verdict,
             metrics={
                 "train": train_metrics.to_dict(),
@@ -576,6 +727,14 @@ class ModelLaboratory:
             disclaimer=SCIENTIFIC_DISCLAIMER,
             artifact_dir=str(model_path),
             artifact_manifest_sha256=str(manifest_data["manifest_sha256"]),
+            is_synthetic=is_synthetic,
+            provenance_class=provenance_class,
+            baseline_superiority_met=outperforms_baselines,
+            target_contract=target_contract,
+            continuity_report=(
+                ml_data.continuity_report.to_dict() if ml_data.continuity_report else None
+            ),
+            scientific_limitations=scientific_limitations,
         )
 
     def _create_model(self, family: str, seed: int, hyperparams: dict[str, Any]) -> BaseMLModel:
@@ -692,8 +851,53 @@ class ModelLaboratory:
         """Query historical experiment records from SQLite tracker."""
         return self.tracker.list_experiments()
 
+    def load_candidate_bundle(self, model_id_or_path: str | Path) -> dict[str, Any]:
+        """Safely load and verify a candidate model bundle within cryptographic trust boundaries."""
+        if isinstance(model_id_or_path, Path):
+            m_path = model_id_or_path.resolve()
+        else:
+            safe_id = validate_storage_identifier(model_id_or_path)
+            target_dir = (self.root / DEFAULT_CANDIDATE_MODELS_DIR).resolve()
+            m_path = (target_dir / safe_id).resolve()
+            try:
+                m_path.relative_to(target_dir)
+            except ValueError as exc:
+                raise LaboratoryError(
+                    f"Path traversal attempt in model_id: {model_id_or_path}"
+                ) from exc
+
+        manifest_file = m_path / "manifest.json"
+        bundle_file = m_path / "bundle.joblib"
+
+        if not manifest_file.is_file():
+            raise LaboratoryError(f"Candidate model manifest missing: {manifest_file}")
+        if not bundle_file.is_file():
+            raise LaboratoryError(f"Candidate model bundle file missing: {bundle_file}")
+
+        try:
+            data = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise LaboratoryError(f"Malformed manifest JSON in {manifest_file}: {exc}") from exc
+
+        claimed_manifest_sha = data.get("manifest_sha256")
+        if not claimed_manifest_sha or not isinstance(claimed_manifest_sha, str):
+            raise LaboratoryError(f"Candidate manifest in {m_path} lacks required manifest_sha256")
+
+        clean_data = {k: v for k, v in data.items() if k != "manifest_sha256"}
+        if digest(clean_data) != claimed_manifest_sha:
+            raise LaboratoryError(f"Tampered manifest detected in candidate model {m_path.name}")
+
+        actual_bundle_sha = hashlib.sha256(bundle_file.read_bytes()).hexdigest()
+        if actual_bundle_sha != data.get("bundle_sha256"):
+            raise LaboratoryError(f"Tampered bundle file detected in candidate model {m_path.name}")
+
+        loaded = joblib.load(bundle_file)
+        if not isinstance(loaded, dict) or "model" not in loaded:
+            raise LaboratoryError(f"Invalid bundle structure in {bundle_file}")
+        return loaded
+
     def list_candidate_models(self) -> list[dict[str, Any]]:
-        """List verified saved candidate model manifests from data/candidate_models."""
+        """List candidate models, explicitly identifying verification status and provenance."""
         target_dir = self.root / DEFAULT_CANDIDATE_MODELS_DIR
         if not target_dir.is_dir():
             return []
@@ -704,23 +908,74 @@ class ModelLaboratory:
                 continue
             manifest_file = m_dir / "manifest.json"
             bundle_file = m_dir / "bundle.joblib"
-            if not manifest_file.is_file() or not bundle_file.is_file():
-                continue
-            try:
-                data = json.loads(manifest_file.read_text(encoding="utf-8"))
+
+            if not manifest_file.is_file():
                 models.append({
-                    "model_id": data.get("model_id", m_dir.name),
-                    "model_family": data.get("model_family", "unknown"),
-                    "created_at_utc": data.get("created_at_utc", ""),
-                    "verdict": data.get("verdict", "N/A"),
-                    "test_accuracy": data
-                    .get("metrics", {})
-                    .get("test", {})
-                    .get("directional_accuracy", 0.0),
-                    "test_brier": data.get("metrics", {}).get("test", {}).get("brier_score", 0.0),
+                    "model_id": m_dir.name,
+                    "model_family": "unknown",
+                    "created_at_utc": "",
+                    "verdict": "CORRUPTED_MISSING_MANIFEST",
+                    "status": "CORRUPTED_MISSING_MANIFEST",
+                    "is_verified": False,
+                    "is_synthetic": True,
+                    "provenance_class": "UNKNOWN",
+                    "test_accuracy": 0.0,
+                    "test_brier": 0.0,
                     "path": str(m_dir),
                 })
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Error reading candidate manifest at %s: %s", m_dir, exc)
+                continue
+
+            try:
+                data = json.loads(manifest_file.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                models.append({
+                    "model_id": m_dir.name,
+                    "model_family": "unknown",
+                    "created_at_utc": "",
+                    "verdict": "CORRUPTED_JSON",
+                    "status": "CORRUPTED_JSON",
+                    "is_verified": False,
+                    "is_synthetic": True,
+                    "provenance_class": "UNKNOWN",
+                    "test_accuracy": 0.0,
+                    "test_brier": 0.0,
+                    "path": str(m_dir),
+                })
+                continue
+
+            claimed_sha = data.get("manifest_sha256")
+            clean_data = {k: v for k, v in data.items() if k != "manifest_sha256"}
+            if not claimed_sha or not isinstance(claimed_sha, str):
+                status = "UNVERIFIED_MISSING_DIGEST"
+                is_verified = False
+            elif digest(clean_data) != claimed_sha:
+                status = "TAMPERED_MANIFEST"
+                is_verified = False
+            elif not bundle_file.is_file():
+                status = "CORRUPTED_MISSING_BUNDLE"
+                is_verified = False
+            elif hashlib.sha256(bundle_file.read_bytes()).hexdigest() != data.get("bundle_sha256"):
+                status = "TAMPERED_BUNDLE"
+                is_verified = False
+            else:
+                status = "VERIFIED"
+                is_verified = True
+
+            models.append({
+                "model_id": data.get("model_id", m_dir.name),
+                "model_family": data.get("model_family", "unknown"),
+                "created_at_utc": data.get("created_at_utc", ""),
+                "verdict": data.get("verdict", "N/A"),
+                "status": status,
+                "is_verified": is_verified,
+                "is_synthetic": data.get("is_synthetic", False),
+                "provenance_class": data.get("provenance_class", "UNKNOWN"),
+                "test_accuracy": data
+                .get("metrics", {})
+                .get("test", {})
+                .get("directional_accuracy", 0.0),
+                "test_brier": data.get("metrics", {}).get("test", {}).get("brier_score", 0.0),
+                "path": str(m_dir),
+            })
 
         return models

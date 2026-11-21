@@ -326,15 +326,18 @@ def list_models_command(
     table.add_column("Model ID", style="cyan")
     table.add_column("Family", style="white")
     table.add_column("Created UTC", style="white")
+    table.add_column("Status", style="magenta")
     table.add_column("Test Acc", style="green", justify="right")
     table.add_column("Brier", style="white", justify="right")
     table.add_column("Verdict", style="yellow")
 
     for m in models:
+        status_style = "green" if m.get("is_verified") else "bold red"
         table.add_row(
             m["model_id"],
             m["model_family"],
             m["created_at_utc"][:19],
+            f"[{status_style}]{m.get('status', 'N/A')}[/{status_style}]",
             f"{m['test_accuracy']:.2%}",
             f"{m.get('test_brier', m.get('brier_score', 0.0)):.4f}",
             m["verdict"],
@@ -355,10 +358,23 @@ def evaluate_model_command(
     ] = None,
 ) -> None:
     repo_root = root or Path.cwd()
+    if ".." in model_id or "/" in model_id or "\\" in model_id:
+        console.print("[bold red]Path traversal detected in model_id.[/bold red]")
+        raise typer.Exit(code=1)
+
     manifest_path = repo_root / "data" / "candidate_models" / model_id / "manifest.json"
     if not manifest_path.is_file():
         console.print(f"[bold red]Model manifest not found: {manifest_path}[/bold red]")
         raise typer.Exit(code=1)
+
+    try:
+        lab = ModelLaboratory(repo_root)
+        lab.load_candidate_bundle(model_id)
+        console.print(
+            "[bold green]Cryptographic Artifact Verification: VERIFIED (Pass)[/bold green]"
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[bold red]Cryptographic Artifact Verification FAILED: {exc}[/bold red]")
 
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     console.print(

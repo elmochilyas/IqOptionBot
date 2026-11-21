@@ -142,8 +142,10 @@ class CausalFeaturePipeline:
         custom_specs: list[FeatureSpec] | None = None,
         impute_missing_quotes: bool = False,
         default_spread_pips: float = 1.0,
+        enforce_temporal_continuity: bool = False,
     ) -> None:
         self.drop_warmup = drop_warmup
+        self.enforce_temporal_continuity = enforce_temporal_continuity
         specs: list[FeatureSpec] = list(custom_specs or DEFAULT_FEATURE_SPECS)
         self.include_volume = include_volume
         self.include_quotes = include_quotes
@@ -201,9 +203,23 @@ class CausalFeaturePipeline:
         rows: list[FeatureRow] = []
 
         # 2. Iterate chronologically; bar t ONLY accesses history indices <= t
+        current_segment_len = 0
         for t in range(len(candles)):
             curr = candles[t]
-            is_warmup = t < (max_lookback - 1)
+            if t == 0:
+                current_segment_len = 1
+            else:
+                prev = candles[t - 1]
+                if curr.from_ts == prev.to_ts:
+                    current_segment_len += 1
+                else:
+                    # Gap detected across missing minutes or weekend closure
+                    current_segment_len = 1
+
+            if self.enforce_temporal_continuity:
+                is_warmup = current_segment_len < max_lookback
+            else:
+                is_warmup = t < (max_lookback - 1)
 
             if self.drop_warmup and is_warmup:
                 continue
@@ -222,7 +238,10 @@ class CausalFeaturePipeline:
             feats["lower_shadow_ratio"] = (min(op, cl) - lo) / bar_rng
 
             # 1-bar returns (lookback = 2)
-            if t >= 1:
+            has_return_lookback = (
+                current_segment_len >= 2 if self.enforce_temporal_continuity else (t >= 1)
+            )
+            if has_return_lookback and t >= 1:
                 prev = candles[t - 1]
                 feats["return_1"] = (cl - prev.close) / prev.close
                 feats["log_return_1"] = math.log(cl / prev.close)
@@ -232,7 +251,12 @@ class CausalFeaturePipeline:
 
             # Rolling SMAs
             for period in (5, 10, 20):
-                if t >= period - 1:
+                has_sma_lookback = (
+                    current_segment_len >= period
+                    if self.enforce_temporal_continuity
+                    else (t >= period - 1)
+                )
+                if has_sma_lookback and t >= period - 1:
                     window_closes = [candles[t - k].close for k in range(period)]
                     sma_val = sum(window_closes) / period
                     feats[f"sma_{period}"] = sma_val
@@ -243,8 +267,13 @@ class CausalFeaturePipeline:
 
             # Rolling Volatility (standard deviation of 1-bar returns)
             for period in (10, 20):
-                # Requires period returns, which means period + 1 candles
-                if t >= period:
+                # Requires period returns, which means period + 1 candles in continuous run
+                has_vol_lookback = (
+                    current_segment_len >= period + 1
+                    if self.enforce_temporal_continuity
+                    else (t >= period)
+                )
+                if has_vol_lookback and t >= period:
                     ret_window: list[float] = [
                         (candles[t - k].close - candles[t - k - 1].close) / candles[t - k - 1].close
                         for k in range(period)
@@ -259,7 +288,10 @@ class CausalFeaturePipeline:
             if can_use_volume:
                 v = float(curr.volume)
                 feats["log_volume"] = math.log(v + 1.0)
-                if t >= 9:
+                has_vol_sma_lookback = (
+                    current_segment_len >= 10 if self.enforce_temporal_continuity else (t >= 9)
+                )
+                if has_vol_sma_lookback and t >= 9:
                     vol_window = [float(candles[t - k].volume) for k in range(10)]
                     vol_sma = sum(vol_window) / 10.0
                     feats["volume_sma_10"] = vol_sma

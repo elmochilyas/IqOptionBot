@@ -235,20 +235,22 @@ class ModelLaboratoryPanel:
         )
         self.btn_refresh_models.pack(side="left", padx=(0, 8))
 
-        columns = ("model_id", "family", "created", "test_acc", "brier", "verdict")
+        columns = ("model_id", "family", "status", "created", "test_acc", "brier", "verdict")
         self.model_tree = ttk.Treeview(self.eval_frame, columns=columns, show="headings", height=6)
         self.model_tree.heading("model_id", text="Candidate Model ID")
         self.model_tree.heading("family", text="Model Family")
+        self.model_tree.heading("status", text="Integrity Status")
         self.model_tree.heading("created", text="Created UTC")
         self.model_tree.heading("test_acc", text="Test Acc")
         self.model_tree.heading("brier", text="Brier Score")
         self.model_tree.heading("verdict", text="Scientific Verdict")
 
-        self.model_tree.column("model_id", width=340)
-        self.model_tree.column("family", width=140)
-        self.model_tree.column("created", width=150)
-        self.model_tree.column("test_acc", width=80)
-        self.model_tree.column("brier", width=90)
+        self.model_tree.column("model_id", width=300)
+        self.model_tree.column("family", width=120)
+        self.model_tree.column("status", width=120)
+        self.model_tree.column("created", width=140)
+        self.model_tree.column("test_acc", width=70)
+        self.model_tree.column("brier", width=80)
         self.model_tree.column("verdict", width=220)
 
         self.model_tree.pack(fill="x", pady=(0, 8))
@@ -564,9 +566,10 @@ class ModelLaboratoryPanel:
                 values=(
                     m["model_id"],
                     m["model_family"],
-                    m["created_at_utc"],
+                    m.get("status", "VERIFIED" if m.get("is_verified") else "UNVERIFIED"),
+                    m["created_at_utc"][:19],
                     f"{m['test_accuracy']:.2%}" if m.get("test_accuracy") is not None else "N/A",
-                    f"{m.get('brier', m.get('brier_score', 0.0)):.4f}",
+                    f"{m.get('test_brier', m.get('brier_score', 0.0)):.4f}",
                     m.get("verdict", "UNKNOWN"),
                 ),
             )
@@ -605,13 +608,26 @@ class ModelLaboratoryPanel:
         ci_upper = m_test.get("ci_upper_95", 0.0)
         ci_test_str = f"[{ci_lower:.2%}, {ci_upper:.2%}]"
         edge_str = "YES (CONFIRMED)" if data.get("has_statistical_edge") else "NO"
+        status = model_info.get(
+            "status", "VERIFIED" if model_info.get("is_verified") else "UNVERIFIED"
+        )
+        provenance = data.get("provenance_class", "UNKNOWN")
+        synthetic_flag = "YES (TEST FIXTURE)" if data.get("is_synthetic") else "NO (AUTHENTIC DATA)"
+        contract_desc = data.get("target_contract", {}).get(
+            "description",
+            f"Generic {data.get('horizon_bars')}-bar close-to-close directional prediction",
+        )
 
         lines = [
             "CANDIDATE MODEL EVALUATION REPORT",
             "=" * 65,
             f"Model ID:            {data.get('model_id')}",
             f"Family:              {data.get('model_family')}",
+            f"Integrity Status:    {status}",
+            f"Provenance Class:    {provenance}",
+            f"Synthetic Fixture:   {synthetic_flag}",
             f"Created At (UTC):    {data.get('created_at_utc')}",
+            f"Target Formulation:  {contract_desc}",
             f"Prediction Horizon:  {data.get('horizon_bars')} bar(s)",
             f"Data Cutoff Epoch:   {data.get('data_cutoff_ts')}",
             f"Bundle SHA-256:      {data.get('bundle_sha256')}",

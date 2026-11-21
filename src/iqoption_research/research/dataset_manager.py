@@ -227,11 +227,27 @@ class ResearchDatasetSnapshot:
         return self.parquet_path.parent
 
     def verify_integrity(self) -> bool:
-        """Verify that the candles parquet file sha256 matches the signed manifest."""
-        if not self.parquet_path.is_file():
+        """Verify cryptographic integrity of both the manifest and the candles Parquet file."""
+        if not self.manifest_path.is_file() or not self.parquet_path.is_file():
             return False
-        computed = hashlib.sha256(self.parquet_path.read_bytes()).hexdigest()
-        return computed == self.manifest.sha256_checksum
+        try:
+            data = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return False
+
+        claimed_manifest_sha = data.get("manifest_sha256")
+        if not claimed_manifest_sha or not isinstance(claimed_manifest_sha, str):
+            return False
+
+        clean_data = {k: v for k, v in data.items() if k != "manifest_sha256"}
+        if digest(clean_data) != claimed_manifest_sha:
+            return False
+
+        parquet_bytes = self.parquet_path.read_bytes()
+        actual_parquet_sha = hashlib.sha256(parquet_bytes).hexdigest()
+        if actual_parquet_sha != self.manifest.sha256_checksum:
+            return False
+        return actual_parquet_sha == data.get("sha256_checksum")
 
     def load_candles(self) -> list[Candle]:
         """Load and verify all candles from the snapshot Parquet file."""
@@ -426,6 +442,39 @@ class ResearchDatasetManager:
         if sources is None:
             all_sources = self.discover_sources()
             sources = [s for s in all_sources if s.is_eligible]
+        else:
+            # Enforce documented eligibility rules on caller-supplied sources
+            for s in sources:
+                if not s.is_eligible:
+                    raise DatasetIntegrityError(
+                        f"Ineligible source supplied to prepare_dataset: {s.source_id} "
+                        f"({s.exclusion_reason})"
+                    )
+                if s.candle_count <= 0:
+                    raise DatasetIntegrityError(
+                        f"Empty source (0 candles) supplied to prepare_dataset: {s.source_id}"
+                    )
+                if not s.path.exists():
+                    raise DatasetIntegrityError(f"Source path does not exist: {s.path}")
+                if s.source_type == "EXTENDED_SESSION":
+                    info = inspect_session(s.path)
+                    if not info.get("is_valid_format"):
+                        raise DatasetIntegrityError(
+                            f"Extended session source {s.source_id} failed format verification"
+                        )
+                    if info.get("candle_count", 0) <= 0:
+                        raise DatasetIntegrityError(
+                            f"Extended session source {s.source_id} contains zero candles"
+                        )
+                    if info.get("symbol") != "EURUSD":
+                        sym = info.get("symbol")
+                        raise DatasetIntegrityError(
+                            f"Extended session source {s.source_id} symbol {sym!r} != 'EURUSD'"
+                        )
+                    if info.get("is_otc"):
+                        raise DatasetIntegrityError(
+                            f"Extended session {s.source_id} has is_otc=True (OTC prohibited)"
+                        )
 
         if not sources:
             raise DatasetManagerError("No eligible authentic datasets available for preparation")
@@ -595,81 +644,113 @@ class ResearchDatasetManager:
                 f"{retained_candles[0].from_ts}_{retained_candles[-1].to_ts}_{len(retained_candles)}".encode()
             ).hexdigest()[:12]
             snapshot_id = f"rds_eurusd_m1_{date_str}_{content_digest}"
+        else:
+            if ".." in snapshot_id or "/" in snapshot_id or "\\" in snapshot_id:
+                raise DatasetManagerError(
+                    f"Directory traversal detected in snapshot_id: {snapshot_id!r}"
+                )
+            if not all(c.isalnum() or c in ("_", "-") for c in snapshot_id):
+                raise DatasetManagerError(f"Invalid characters in snapshot_id: {snapshot_id!r}")
+            resolved_snapshot = (out_base / snapshot_id).resolve()
+            try:
+                resolved_snapshot.relative_to(out_base.resolve())
+            except ValueError as exc:
+                raise DatasetManagerError(
+                    f"Path traversal attempt in snapshot_id: {snapshot_id!r}"
+                ) from exc
 
         snapshot_dir = out_base / snapshot_id
-        snapshot_dir.mkdir(parents=True, exist_ok=False)
+        if snapshot_dir.exists():
+            raise DatasetManagerError(f"Snapshot directory already exists: {snapshot_dir}")
 
-        parquet_path = snapshot_dir / "candles.parquet"
-        manifest_path = snapshot_dir / "manifest.json"
+        import shutil
 
-        # Build Arrow Table
-        arrays = {
-            "symbol": pa.array([c.symbol for c in retained_candles], type=pa.string()),
-            "active_id": pa.array([c.active_id for c in retained_candles], type=pa.int32()),
-            "is_otc": pa.array([False for _ in retained_candles], type=pa.bool_()),
-            "size_seconds": pa.array([c.size.value for c in retained_candles], type=pa.int32()),
-            "from_ts": pa.array([c.from_ts for c in retained_candles], type=pa.int64()),
-            "to_ts": pa.array([c.to_ts for c in retained_candles], type=pa.int64()),
-            "at_ts": pa.array([c.at_ts for c in retained_candles], type=pa.int64()),
-            "open": pa.array([c.open for c in retained_candles], type=pa.float64()),
-            "high": pa.array([c.high for c in retained_candles], type=pa.float64()),
-            "low": pa.array([c.low for c in retained_candles], type=pa.float64()),
-            "close": pa.array([c.close for c in retained_candles], type=pa.float64()),
-            "volume": pa.array([c.volume for c in retained_candles], type=pa.int64()),
-            "bid": pa.array(
-                [c.bid if c.bid is not None else 0.0 for c in retained_candles],
-                type=pa.float64(),
-            ),
-            "ask": pa.array(
-                [c.ask if c.ask is not None else 0.0 for c in retained_candles],
-                type=pa.float64(),
-            ),
-            "is_complete": pa.array([c.is_complete for c in retained_candles], type=pa.bool_()),
-            "original_index": pa.array(list(range(len(retained_candles))), type=pa.int32()),
-        }
-        table = pa.Table.from_arrays(
-            [arrays[field.name] for field in CANDLE_ARROW_SCHEMA],
-            schema=CANDLE_ARROW_SCHEMA,
+        staging_dir = (
+            out_base / f".tmp_{snapshot_id}_{hashlib.sha256(str(now_utc).encode()).hexdigest()[:8]}"
         )
-        pq.write_table(table, parquet_path, compression="snappy")
-        parquet_sha = hashlib.sha256(parquet_path.read_bytes()).hexdigest()
+        staging_dir.mkdir(parents=True, exist_ok=False)
 
-        # Build Manifest
-        manifest = ResearchDatasetManifest(
-            snapshot_id=snapshot_id,
-            created_at_utc=now_utc.isoformat(),
-            dataset_version="1.0",
-            symbol="EURUSD",
-            candle_size_seconds=60,
-            from_ts=retained_candles[0].from_ts,
-            to_ts=retained_candles[-1].to_ts,
-            from_utc=datetime.fromtimestamp(retained_candles[0].from_ts, UTC).isoformat(),
-            to_utc=datetime.fromtimestamp(retained_candles[-1].to_ts, UTC).isoformat(),
-            total_candles_discovered=total_discovered,
-            total_candles_retained=len(retained_candles),
-            duplicate_boundaries_deduplicated=duplicate_count,
-            conflicts_quarantined_count=len(quarantined_conflicts),
-            conflicts_quarantined=[c.to_dict() for c in quarantined_conflicts],
-            unscheduled_gaps_count=len(unscheduled_gaps),
-            unscheduled_gaps=[g.to_dict() for g in unscheduled_gaps],
-            scheduled_closures_count=len(scheduled_closures),
-            scheduled_closures=[g.to_dict() for g in scheduled_closures],
-            provenance_breakdown=provenance_counts,
-            source_files=source_manifest_records,
-            eligibility_rules=self.ELIGIBILITY_RULES,
-            sha256_checksum=parquet_sha,
-        )
+        try:
+            parquet_path = staging_dir / "candles.parquet"
+            manifest_path = staging_dir / "manifest.json"
 
-        manifest_dict = manifest.to_dict()
-        manifest_dict["manifest_sha256"] = digest(manifest_dict)
-        manifest_path.write_text(
-            json.dumps(manifest_dict, indent=2, sort_keys=True), encoding="utf-8"
-        )
+            # Build Arrow Table
+            arrays = {
+                "symbol": pa.array([c.symbol for c in retained_candles], type=pa.string()),
+                "active_id": pa.array([c.active_id for c in retained_candles], type=pa.int32()),
+                "is_otc": pa.array([False for _ in retained_candles], type=pa.bool_()),
+                "size_seconds": pa.array([c.size.value for c in retained_candles], type=pa.int32()),
+                "from_ts": pa.array([c.from_ts for c in retained_candles], type=pa.int64()),
+                "to_ts": pa.array([c.to_ts for c in retained_candles], type=pa.int64()),
+                "at_ts": pa.array([c.at_ts for c in retained_candles], type=pa.int64()),
+                "open": pa.array([c.open for c in retained_candles], type=pa.float64()),
+                "high": pa.array([c.high for c in retained_candles], type=pa.float64()),
+                "low": pa.array([c.low for c in retained_candles], type=pa.float64()),
+                "close": pa.array([c.close for c in retained_candles], type=pa.float64()),
+                "volume": pa.array([c.volume for c in retained_candles], type=pa.int64()),
+                "bid": pa.array(
+                    [c.bid if c.bid is not None else 0.0 for c in retained_candles],
+                    type=pa.float64(),
+                ),
+                "ask": pa.array(
+                    [c.ask if c.ask is not None else 0.0 for c in retained_candles],
+                    type=pa.float64(),
+                ),
+                "is_complete": pa.array([c.is_complete for c in retained_candles], type=pa.bool_()),
+                "original_index": pa.array(list(range(len(retained_candles))), type=pa.int32()),
+            }
+            table = pa.Table.from_arrays(
+                [arrays[field.name] for field in CANDLE_ARROW_SCHEMA],
+                schema=CANDLE_ARROW_SCHEMA,
+            )
+            pq.write_table(table, parquet_path, compression="snappy")
+            parquet_sha = hashlib.sha256(parquet_path.read_bytes()).hexdigest()
+
+            # Build Manifest
+            manifest = ResearchDatasetManifest(
+                snapshot_id=snapshot_id,
+                created_at_utc=now_utc.isoformat(),
+                dataset_version="1.0",
+                symbol="EURUSD",
+                candle_size_seconds=60,
+                from_ts=retained_candles[0].from_ts,
+                to_ts=retained_candles[-1].to_ts,
+                from_utc=datetime.fromtimestamp(retained_candles[0].from_ts, UTC).isoformat(),
+                to_utc=datetime.fromtimestamp(retained_candles[-1].to_ts, UTC).isoformat(),
+                total_candles_discovered=total_discovered,
+                total_candles_retained=len(retained_candles),
+                duplicate_boundaries_deduplicated=duplicate_count,
+                conflicts_quarantined_count=len(quarantined_conflicts),
+                conflicts_quarantined=[c.to_dict() for c in quarantined_conflicts],
+                unscheduled_gaps_count=len(unscheduled_gaps),
+                unscheduled_gaps=[g.to_dict() for g in unscheduled_gaps],
+                scheduled_closures_count=len(scheduled_closures),
+                scheduled_closures=[g.to_dict() for g in scheduled_closures],
+                provenance_breakdown=provenance_counts,
+                source_files=source_manifest_records,
+                eligibility_rules=self.ELIGIBILITY_RULES,
+                sha256_checksum=parquet_sha,
+            )
+
+            manifest_dict = manifest.to_dict()
+            manifest_dict["manifest_sha256"] = digest(manifest_dict)
+            manifest_path.write_text(
+                json.dumps(manifest_dict, indent=2, sort_keys=True), encoding="utf-8"
+            )
+
+            # Atomic move
+            staging_dir.rename(snapshot_dir)
+        finally:
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
+
+        final_parquet = snapshot_dir / "candles.parquet"
+        final_manifest = snapshot_dir / "manifest.json"
 
         return ResearchDatasetSnapshot(
             manifest=manifest,
-            parquet_path=parquet_path,
-            manifest_path=manifest_path,
+            parquet_path=final_parquet,
+            manifest_path=final_manifest,
         )
 
     def list_snapshots(self, base_dir: Path | None = None) -> list[ResearchDatasetSnapshot]:
@@ -694,8 +775,12 @@ class ResearchDatasetManager:
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 claimed_sha = data.get("manifest_sha256")
                 clean_data = {k: v for k, v in data.items() if k != "manifest_sha256"}
-                if claimed_sha and digest(clean_data) != claimed_sha:
-                    logger.warning("Manifest integrity mismatch in %s", s_dir)
+                if (
+                    not claimed_sha
+                    or not isinstance(claimed_sha, str)
+                    or digest(clean_data) != claimed_sha
+                ):
+                    logger.warning("Manifest integrity mismatch or missing digest in %s", s_dir)
                     continue
                 # Verify Parquet checksum
                 actual_parquet_sha = hashlib.sha256(parquet_file.read_bytes()).hexdigest()

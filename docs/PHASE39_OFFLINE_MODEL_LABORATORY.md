@@ -51,15 +51,20 @@ The Dataset Manager provides an automated, immutable dataset preparation pipelin
   - If OHLCV values agree identically across sources, duplicate boundaries are consolidated and counted in `deduplicated_boundaries_count`.
   - If OHLCV values disagree beyond floating-point tolerance ($10^{-6}$), the conflict is **quarantined** into `quarantined_conflicts` without guessing or silently choosing one source.
 
-### C. Continuity Analysis
+### C. Continuity Analysis & Temporal Validation
 - Analyzes all inter-candle gaps across chronological boundaries:
-  - **Scheduled Weekend Closure**: Gaps occurring between Friday 21:00+ UTC and Sunday 21:00+ UTC are identified and classified as regular closures.
+  - **Scheduled Weekend Closure**: Gaps occurring between Friday close (17:00 America/New_York) and Sunday reopen (17:00 America/New_York) are identified and classified via verified interbank Forex schedules (`EURUSD_FOREX_SCHEDULE`).
   - **Intraday Gaps**: Missing candles occurring during regular trading hours are tagged as unscheduled gaps.
+- When `enforce_temporal_continuity=True`, forward prediction target windows $[t, t+H]$ that cross any intraday gap or weekend closure are invalidated (`valid_mask[t] = False`) and omitted from training sets.
+- Rolling feature windows reset lookback at any gap, ensuring features never bridge across discontinuities without genuine chronological warmup.
+- Detailed sample exclusions are logged via `ContinuityReport` with breakdown: `excluded_lookback_warmup`, `excluded_gap_horizon`, `excluded_weekend_closure_horizon`, and `excluded_tail_horizon`.
 
 ### D. Versioned Snapshots & Manifests
 - Prepared snapshots are written to `data/research_datasets/<snapshot_id>/`:
   - `candles.parquet`: Immutable dataset written with standard schema.
-  - `manifest.json`: Cryptographically hashed manifest recording snapshot ID, SHA-256 of parquet data, source files, source hashes, retained rows, quarantined conflicts, gap distributions, and software environment.
+  - `manifest.json`: Cryptographically hashed manifest recording snapshot ID, SHA-256 of parquet data, source files, source hashes, retained rows, quarantined conflicts, gap distributions, software environment, and self-digest `manifest_sha256`.
+- Atomic publication via temporary staging directory (`.tmp_<snapshot_id>_<uuid>`) and atomic rename guarantees partial snapshots cannot be loaded or discovered.
+- Directory traversal checks prevent snapshot identifier escalation outside authorized paths.
 
 ---
 
@@ -92,22 +97,45 @@ The Dataset Manager provides an automated, immutable dataset preparation pipelin
 4. `majority_class`: Baseline predicting historical dominant class.
 5. `rule_momentum`: Baseline directional momentum heuristic.
 
-### E. Realistic Payout Economics & Wilson 95% Confidence Edge Test
+### E. Realistic Payout Economics & Scientific Edge Standard
 - Binary options pay out less than 100% on winning trades (typically 80% to 90%). At a standard 85% payout ($b = 0.85$):
   $$\text{Break-even Win Rate} = \frac{1}{1 + 0.85} \approx 54.054\%$$
 - To ensure scientific robustness against sample noise and selective abstention, candidate models must satisfy:
-  $$\text{Wilson Lower Bound}_{95\%} > \text{Break-even Win Rate}$$
-  Where:
-  $$w = \hat{p}, \quad z = 1.95996$$
-  $$\text{CI}_{\text{lower}} = \frac{w + \frac{z^2}{2n} - z \sqrt{\frac{w(1-w)}{n} + \frac{z^2}{4n^2}}}{1 + \frac{z^2}{n}}$$
-- In addition, test partition directional accuracy must strictly exceed baseline models.
-- If the criteria are not met, the model receives an unambiguous verdict: `NO_RELIABLE_EDGE_DETECTED`.
+  1. **Minimum Sample Size**: Test partition must contain $\ge 100$ trades. Failing this yields `INSUFFICIENT_SAMPLE_SIZE_NO_EDGE`.
+  2. **Statistical Significance**: The Wilson 95% score lower bound must strictly exceed the break-even threshold:
+     $$\text{Wilson Lower Bound}_{95\%} > \text{Break-even Win Rate}$$
+     Where:
+     $$w = \hat{p}, \quad z = 1.95996$$
+     $$\text{CI}_{\text{lower}} = \frac{w + \frac{z^2}{2n} - z \sqrt{\frac{w(1-w)}{n} + \frac{z^2}{4n^2}}}{1 + \frac{z^2}{n}}$$
+  3. **Strict Baseline Superiority**: Candidate model must strictly outperform all relevant baselines:
+     $$\Delta \text{Accuracy} = \text{Accuracy}_{\text{candidate}} - \text{Accuracy}_{\text{baseline}} > 0$$
+     $$\Delta \text{Brier} = \text{Brier}_{\text{baseline}} - \text{Brier}_{\text{candidate}} > 0$$
+     If a candidate fails to strictly beat both `majority_class` and `rule_momentum`, it receives:
+     `BASELINE_SUPERIORITY_NOT_MET_NO_EDGE`.
+  4. **Synthetic Data Quarantine**: If evaluated on synthetic or unverified sequences, edge claims are strictly quarantined as `SYNTHETIC_DATA_STUDY_ONLY`.
 
-### F. Experiment Tracking & Artifact Bundles
+### F. Provenance Enforcement & Authentic Data Binding
+- Caller-supplied in-memory sequences default to `is_synthetic=True` with provenance `SYNTHETIC_OR_UNVERIFIED_AD_HOC`.
+- Dataset fingerprints are cryptographically bound to actual candle content bytes (SHA-256 of all normalized OHLCV arrays), ensuring that changing even one price or volume alters the fingerprint.
+- Practice-wallet classification ambiguity is explicitly preserved independently (`CONFLICTING_ACCOUNT_INDICATORS (UNVERIFIED_PRACTICE_INDEPENDENT)`).
+
+### G. Target Contract Distinction from Phase 38
+- Target is formally designated `GENERIC_CLOSE_TO_CLOSE_DIRECTION` ($y = 1$ if $Close_{t+H} > Close_t$ else $0$).
+- Target contract explicitly documents:
+  - `is_phase38_contract`: `False`
+  - `phase38_status`: `FROZEN_UNCHANGED`
+  - `phase38_contract_distinction`: Documents that Phase 38 prospective pilot enforces a strict execution contract including decision deadlines, entry delays, 60s expiration boundaries, and sampling slots. The Phase 39 laboratory evaluates generic close-to-close directional prediction offline and does NOT represent verified Phase 38 option contract execution.
+
+### H. Experiment Tracking, Staging & Cryptographic Artifacts
 - Every training run logs metadata into `data/ml_experiments.db` via `ExperimentTracker`.
 - Candidate model bundles are saved in `data/candidate_models/<model_id>/`:
   - `bundle.joblib`: Contains model, calibrator, scaler, feature list, and hyperparameters.
-  - `manifest.json`: Full evaluation results, SHA-256 hashes, test metrics, and scientific disclaimers.
+  - `manifest.json`: Full evaluation results, SHA-256 hashes, test metrics, scientific limitations, and disclaimers.
+- Integrity guarantees:
+  - Atomic publication via `.tmp_<model_id>_<uuid>` directory staging and rename.
+  - Cryptographic self-digest `manifest_sha256` matching clean manifest content.
+  - Bundle checksum verification preventing tampered model loading (`load_candidate_bundle`).
+  - Strict path traversal protection for model and snapshot identifiers.
 
 ---
 
@@ -154,7 +182,7 @@ iqresearch laboratory evaluate-model <MODEL_ID>
 | Ruff Linter | Passed (0 errors) | 374 files checked |
 | Pip Environment Integrity | Passed (0 broken deps) | No broken requirements found |
 | Security Check | Passed (7/7 checks) | Read-only posture, zero TLS bypass, offline default |
-| Unit Test Suite | 13/13 Phase 39 tests passed | `test_dataset_manager.py`, `test_model_laboratory.py`, `test_desktop_laboratory.py` |
-| Full Regression Suite | Passed | Zero regressions across existing modules |
+| Unit Test Suite | 25/25 Phase 39 tests passed | `test_dataset_manager.py`, `test_model_laboratory.py`, `test_desktop_laboratory.py`, `test_phase39_scientific_review_corrections.py` |
+| Full Regression Suite | Passed (2,434 passed, 2 skipped) | Zero regressions across existing modules (2,436 total collected items) |
 | Historical Evidence Preservation | 100% Intact | `data/extended_collection/collection_a20ad775b77d4f2bab787f540b2d6890` unmodified |
 | Live Execution Authority | ZERO | Offline research only. Phase 38 model remains frozen |

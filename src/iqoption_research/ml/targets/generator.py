@@ -39,12 +39,21 @@ class TargetAlignmentError(TargetError):
 def generate_targets(
     candles: Sequence[Candle],
     spec: TargetSpec,
+    *,
+    enforce_temporal_continuity: bool = False,
+    timeframe_seconds: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Generate forward-looking prediction targets and valid availability mask.
 
     Parameters:
         candles: Chronological sequence of complete historical candles.
         spec: Target specification governing horizon, target type, and thresholds.
+        enforce_temporal_continuity: If True, requires every forward bar in the horizon
+                                     window [t, t+H] to be consecutive in time. Any bar
+                                     whose horizon crosses an intraday gap or weekend
+                                     market closure has valid_mask set to False.
+        timeframe_seconds: Expected candle duration in seconds. Inferred from candle
+                           size if not provided (default 60 for M1).
 
     Returns:
         tuple[targets, valid_mask]:
@@ -99,10 +108,38 @@ def generate_targets(
     valid_mask = np.zeros(n, dtype=bool)
     valid_mask[:valid_len] = True
 
+    # If temporal continuity is enforced, invalidate any bar crossing a gap or weekend
+    if enforce_temporal_continuity:
+        tf = (
+            timeframe_seconds
+            if timeframe_seconds is not None
+            else (
+                candles[0].size.value
+                if hasattr(candles[0], "size") and candles[0].size
+                else (candles[0].to_ts - candles[0].from_ts)
+            )
+        )
+        is_step_continuous = np.zeros(n, dtype=bool)
+        is_step_continuous[0] = True
+        for i in range(1, n):
+            # Bar i must begin exactly when bar i-1 ended, with expected timeframe duration
+            is_step_continuous[i] = (
+                candles[i].from_ts == candles[i - 1].to_ts
+                and (candles[i].to_ts - candles[i].from_ts) == tf
+            )
+
+        # A window [t, t+H] is continuous iff all steps from t+1 to t+H are continuous
+        prefix_gaps = np.cumsum(~is_step_continuous)
+        for t in range(valid_len):
+            gaps_in_window = prefix_gaps[t + h] - prefix_gaps[t]
+            if gaps_in_window > 0:
+                valid_mask[t] = False
+
     if spec.target_type == TargetType.DIRECTION_BINARY:
         # 1 if future price exceeds current price by strictly more than threshold, else 0
         targets_bin = np.zeros(n, dtype=np.int64)
-        targets_bin[:valid_len] = np.where(diffs > threshold, 1, 0).astype(np.int64)
+        raw_bin = np.where(diffs > threshold, 1, 0).astype(np.int64)
+        targets_bin[:valid_len] = np.where(valid_mask[:valid_len], raw_bin, 0)
         return targets_bin, valid_mask
 
     if spec.target_type == TargetType.DIRECTION_TERNARY:
@@ -110,6 +147,7 @@ def generate_targets(
         valid_ter = np.zeros(valid_len, dtype=np.int64)
         valid_ter[diffs > threshold] = 1
         valid_ter[diffs < -threshold] = -1
+        valid_ter[~valid_mask[:valid_len]] = 0
         targets_ter = np.zeros(n, dtype=np.int64)
         targets_ter[:valid_len] = valid_ter
         return targets_ter, valid_mask
@@ -117,7 +155,7 @@ def generate_targets(
     if spec.target_type == TargetType.RETURN_CONTINUOUS:
         # Percentage forward return: (C_{t+H} - C_t) / C_t
         targets_cont = np.full(n, np.nan, dtype=np.float64)
-        targets_cont[:valid_len] = diffs / current_closes
+        targets_cont[:valid_len] = np.where(valid_mask[:valid_len], diffs / current_closes, np.nan)
         return targets_cont, valid_mask
 
     raise TargetGenerationError(f"Unsupported target type: {spec.target_type}")
@@ -128,6 +166,8 @@ def validate_target_causality(
     targets: np.ndarray,
     spec: TargetSpec,
     valid_mask: np.ndarray | None = None,
+    *,
+    allow_gap_invalidation: bool = True,
 ) -> bool:
     """Validate strict forward-looking causality and mathematical alignment of targets.
 
@@ -163,7 +203,7 @@ def validate_target_causality(
             raise TargetCausalityError(
                 f"Valid mask length ({len(valid_mask)}) does not match candles length ({n})"
             )
-        if not np.all(valid_mask[:valid_len]):
+        if not allow_gap_invalidation and not np.all(valid_mask[:valid_len]):
             raise TargetCausalityError(
                 f"Valid mask contains False entries within valid range [0, {valid_len})"
             )
@@ -189,6 +229,20 @@ def validate_target_causality(
                 f"<= current from_ts={c_curr.from_ts}"
             )
 
+        # If bar is marked invalid (e.g. crossing an intraday gap or weekend closure)
+        if valid_mask is not None and not valid_mask[t]:
+            if spec.target_type == TargetType.RETURN_CONTINUOUS:
+                if not math.isnan(targets[t]):
+                    raise TargetCausalityError(
+                        f"Target at gap index {t} must be NaN, got {targets[t]}"
+                    )
+            else:
+                if targets[t] != 0:
+                    raise TargetCausalityError(
+                        f"Target at gap index {t} must be 0, got {targets[t]}"
+                    )
+            continue
+
         diff = round(c_fut.close - c_curr.close, 9)
 
         if spec.target_type == TargetType.DIRECTION_BINARY:
@@ -207,6 +261,11 @@ def validate_target_causality(
                 )
         elif spec.target_type == TargetType.RETURN_CONTINUOUS:
             expected_cont = diff / c_curr.close
+            if not math.isclose(float(targets[t]), expected_cont, rel_tol=1e-9, abs_tol=1e-12):
+                raise TargetCausalityError(
+                    f"Continuous return mismatch at index {t}: got {targets[t]}, "
+                    f"expected {expected_cont}"
+                )
             if not math.isclose(float(targets[t]), expected_cont, rel_tol=1e-9, abs_tol=1e-12):
                 raise TargetCausalityError(
                     f"Continuous return mismatch at index {t}: got {targets[t]}, "

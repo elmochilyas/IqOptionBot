@@ -143,7 +143,12 @@ def test_train_candidate_models(snapshot_setup: tuple[Path, str], family: str) -
     assert "expectancy_pct" in test_metrics
 
     # Check edge detection verdict
-    assert result.verdict in ("NO_RELIABLE_EDGE_DETECTED", "CANDIDATE_EDGE_REQUIRES_REPLICATION")
+    assert result.verdict in (
+        "NO_RELIABLE_EDGE_DETECTED",
+        "BASELINE_SUPERIORITY_NOT_MET_NO_EDGE",
+        "INSUFFICIENT_SAMPLE_SIZE_NO_EDGE",
+        "CANDIDATE_EDGE_REQUIRES_REPLICATION",
+    )
     assert isinstance(result.has_statistical_edge, bool)
 
     # Check bundle on disk

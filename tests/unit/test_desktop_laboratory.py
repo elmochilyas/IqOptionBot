@@ -100,4 +100,4 @@ def test_model_selection_and_report_rendering(mock_dashboard: MagicMock, tk_root
     vals = panel.model_tree.item(items[0])["values"]
     assert vals[0] == "candidate_rf_test"
     assert vals[1] == "random_forest"
-    assert "58.20%" in vals[3]
+    assert "58.20%" in vals[4]

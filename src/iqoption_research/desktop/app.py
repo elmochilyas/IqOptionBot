@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from iqoption_research.desktop.core import STUDY, require_slot, slot_used, slots
 from iqoption_research.desktop.laboratory_panel import ModelLaboratoryPanel
 from iqoption_research.desktop.process import SessionProcess, refresh
+from iqoption_research.desktop.shadow_panel import ShadowEvaluationPanel
 from iqoption_research.desktop.windows import DashboardMutex
 from iqoption_research.desktop.workstation import WorkstationPanels
 from iqoption_research.research.prospective_pilot import (
@@ -108,6 +109,7 @@ class Dashboard:
         self.overview = self.text_tab(notebook, "Overview")
         self.workstation = WorkstationPanels(self, notebook)
         self.laboratory = ModelLaboratoryPanel(self, notebook)
+        self.shadow_evaluation = ShadowEvaluationPanel(self, notebook)
         evaluation = ttk.Notebook(phase_body)
         evaluation.pack(fill="both", expand=True)
         notebook.add(phase_body, text="Model Evaluation")
@@ -358,6 +360,9 @@ class Dashboard:
         if hasattr(self, "laboratory"):
             self.laboratory.tick()
             busy = busy or self.laboratory.busy()
+        if hasattr(self, "shadow_evaluation"):
+            self.shadow_evaluation.tick()
+            busy = busy or self.shadow_evaluation.busy()
         self.start_button.state([
             "!disabled"
             if can_start and not busy and self.pending is None and not self.closing

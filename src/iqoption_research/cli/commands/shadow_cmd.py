@@ -38,11 +38,21 @@ def register_candidate_command(
     threshold: Annotated[
         float | None, typer.Option("--threshold", help="Override confidence threshold.")
     ] = None,
+    baseline_model_id: Annotated[
+        str | None,
+        typer.Option(
+            "--baseline-model-id",
+            "-b",
+            help="Optional registered authentic baseline model ID for benchmark comparison.",
+        ),
+    ] = None,
     notes: Annotated[str, typer.Option("--notes", help="Registration notes.")] = "",
 ) -> None:
     repo_root = root or Path.cwd()
     try:
         validate_storage_identifier(model_id)
+        if baseline_model_id is not None:
+            validate_storage_identifier(baseline_model_id)
     except Exception as exc:
         console.print(f"[bold red]Invalid model ID:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -50,7 +60,12 @@ def register_candidate_command(
     registry = ShadowModelRegistry(repo_root)
 
     try:
-        rec = registry.register_candidate(model_id, confidence_threshold=threshold, notes=notes)
+        rec = registry.register_candidate(
+            model_id,
+            confidence_threshold=threshold,
+            baseline_model_id=baseline_model_id,
+            notes=notes,
+        )
         console.print(
             Panel(
                 f"[bold green]Successfully registered frozen candidate:[/bold green]\n\n"
@@ -59,6 +74,12 @@ def register_candidate_command(
                 f"Family: {rec.model_family} (baseline={rec.is_baseline})\n"
                 f"Confidence Threshold: {rec.confidence_threshold:.2f}\n"
                 f"Data Cutoff (ts): {rec.data_cutoff_ts}\n"
+                f"Exposure Boundaries: train={rec.training_cutoff_ts}, "
+                f"val={rec.validation_cutoff_ts}, holdout={rec.holdout_cutoff_ts}, "
+                f"snap_end={rec.source_snapshot_end_ts}\n"
+                f"Baseline Status: [bold]{rec.baseline_status}[/bold] "
+                f"(source={rec.baseline_source_model_id or 'none'}, "
+                f"maj_dir={rec.training_majority_direction})\n"
                 f"Bundle Hash: {rec.bundle_sha256[:16]}...\n"
                 f"Lab Verdict: [yellow]{rec.verdict}[/yellow]\n\n"
                 f"[dim]{rec.disclaimer}[/dim]",

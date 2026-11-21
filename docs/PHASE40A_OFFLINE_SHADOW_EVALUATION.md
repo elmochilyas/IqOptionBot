@@ -146,8 +146,12 @@ The `ShadowOutcomeEvaluator` resolves outcomes for committed predictions strictl
   *(Corrected from legacy formula which counted refunded ties as losses resulting in -12.39%).*
 - **Hindsight-Free Reference Baselines**:
   - Compares candidate metrics against Majority Class and Random Uniform baselines on the **identical observation population** (`trade_preds`, $N=397$).
+  - **No Fabricated Defaults**: Baseline statistics are obtained strictly from an authentic, verified pre-evaluation training source or a separately registered authentic majority-class baseline (`is_baseline=True`). If verified baseline statistics are unavailable, `baseline_comparison_available` is marked `False`, preventing any baseline-superiority claim.
+  - Parameters are cryptographically bound to source evidence (`baseline_source_model_id`, `baseline_source_sha256`).
+  - Unverifiable legacy records are classified explicitly as `LEGACY_UNVERIFIED_BASELINE` with `baseline_comparison_available = False`.
   - The majority class baseline direction is permanently frozen from pre-cutoff training metadata (`training_majority_direction = "DOWN"`, `training_majority_prob_up = 0.4691`). The evaluator never derives a baseline direction from evaluation period labels.
   - Modifying future evaluation outcomes leaves the baseline's predictions and probabilities invariant.
+  - Every baseline comparison explicitly reports `matched_sample_count`, `decisive_sample_count`, and `tie_count`.
 
 ---
 
@@ -160,20 +164,31 @@ The `HistoricalReplayEngine` coordinates chronological playback of historical ma
 - Safe for execution on resource-constrained systems (safe for 16 GB RAM).
 - Supports cooperative cancellation via `cancel_token` and progress reporting.
 
-### B. Training Cutoff Overlap Disclosure & Scientific Verdicts
-- Compares the replay start timestamp against the model's frozen `data_cutoff_ts`.
-- If replay data starts before or overlaps the candidate's training data, the engine flags `is_functional_test = True` and records `FUNCTIONAL_REPLAY_TEST_ONLY` in `session.json`, upholding complete scientific honesty regarding out-of-sample validity.
+### B. Multi-Tier Model Exposure Boundaries & Scientific Verdicts
+- Verified exposure-boundary metadata distinguishes:
+  - **Training Cutoff** (`training_cutoff_ts` / `data_cutoff_ts`): Last timestamp included in model parameter fitting.
+  - **Validation & Calibration Exposure** (`validation_cutoff_ts`): Last timestamp included in probability calibrator fitting (e.g. isotonic regression) and threshold selection.
+  - **Holdout Evaluation Exposure** (`holdout_cutoff_ts`): Last timestamp included in holdout test evaluation.
+  - **Complete Source Snapshot Boundary** (`source_snapshot_end_ts`): End timestamp of the source research dataset snapshot.
+  - **Genuine Prospective Observation**: Can only occur strictly post-registration on streaming market data.
+- The replay engine compares data start against all exposure tiers:
+  - Overlap with training -> `OVERLAPS_TRAINING_EXPOSURE` (`is_functional_test = True`).
+  - Overlap with validation/calibration -> `OVERLAPS_VALIDATION_EXPOSURE` (`is_functional_test = True`).
+  - Overlap with holdout -> `OVERLAPS_HOLDOUT_EXPOSURE` (`is_functional_test = True`).
+  - Overlap with source snapshot -> `OVERLAPS_SOURCE_SNAPSHOT_EXPOSURE` (`is_functional_test = True`).
+  - Start after snapshot end -> `POST_SNAPSHOT_HISTORICAL_REPLAY` (`is_functional_test = False`, but strictly `OFFLINE_REPLAY`).
+- **All historical replays remain retrospective**: Even when a replay begins after the training cutoff or source snapshot, historical replays are retrospective (`evidence_class == "OFFLINE_REPLAY"`) and never claim prospective evidence.
 - For all offline replays, `has_statistical_edge` remains strictly `False` and project disposition remains `NO_DEMONSTRATED_EDGE`. Candidate models are not automatically promoted.
 
 ### C. Evidence Storage Durability, Replay Diagnostics & Provenance
-- **Self-Digest Integrity Verification**: `ShadowModelRegistry` verifies the top-level `registry_sha256` upon initialization and reading, failing closed with `RegistryIntegrityError` if tampering is detected.
-- **Fail-Closed Journal Recovery**: `ShadowPredictionJournal` rejects corrupt, malformed, orphaned, or conflicting records on startup (`JournalCorruptionError`, `OrphanedOutcomeError`, `ConflictingOutcomeError`).
+- **Self-Digest Integrity Verification**: `ShadowModelRegistry` verifies the top-level `registry_sha256` upon initialization and reading unconditionally (even on registries with zero records), failing closed with `RegistryIntegrityError` if tampering or missing digest is detected.
+- **Fail-Closed Journal Recovery**: `ShadowPredictionJournal` rejects corrupt, malformed, orphaned, duplicate, or conflicting records on startup (`JournalCorruptionError`, `OrphanedOutcomeError`, `DuplicateOutcomeError`, `ConflictingOutcomeError`).
 - **Disk Durability**: Append operations enforce immediate persistence via `f.flush()` and `os.fsync(f.fileno())`.
 - **Path Traversal Protection**: Session and model identifiers are validated across CLI, engine, and journal via `validate_storage_identifier()`, rejecting directory traversal attempts (`..`, `/`, `\`).
 - **Idempotency & Session Protection**: Attempts to reuse completed session IDs fail closed with `SessionAlreadyCompletedError`.
 - **Diagnostic Failure Tracking**: Prediction engine errors are tracked in `prediction_failures_count` and diagnostics, strictly distinguished from model abstentions (`SKIP`).
 - **Provenance Timestamps**: Distinguishes theoretical candle close (`feature_cutoff_ts`), simulated decision time (`simulated_decision_ts`), actual wall-clock execution time (`executed_wall_clock_utc`), and market feed availability (`broker_availability_type = "HISTORICAL_THEORETICAL_CLOSE"`).
-- **Session Verification**: `verify_session()` computes cryptographic checksums over `predictions.jsonl` and `outcomes.jsonl`. Legacy sessions without checksums are preserved without modification and classified as `LEGACY_UNVERIFIED_EVIDENCE`.
+- **Session Verification**: `verify_session()` computes cryptographic checksums over `predictions.jsonl` and `outcomes.jsonl`. Rejects missing or inconsistent outcomes journals whenever metadata claims recorded outcomes or specifies a journal digest, while handling genuinely empty journals explicitly. Legacy sessions without checksums are preserved without modification and classified as `LEGACY_UNVERIFIED_EVIDENCE`.
 
 ### D. Acceptance Verification Replay Results
 A full offline historical replay run was executed on authentic EURUSD M1 market data (`rds_eurusd_m1_20261121_161531_215496a1a71f`) using frozen candidate `candidate_logistic_regression_20261121_161709_lab_07c5d55f97fc`:

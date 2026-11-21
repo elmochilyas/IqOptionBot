@@ -50,6 +50,7 @@ from iqoption_research.shadow.evaluator import (
 )
 from iqoption_research.shadow.journal import (
     ConflictingOutcomeError,
+    DuplicateOutcomeError,
     DuplicatePredictionError,
     JournalCorruptionError,
     JournalError,
@@ -62,6 +63,7 @@ from iqoption_research.shadow.journal import (
     validate_storage_identifier,
 )
 from iqoption_research.shadow.registry import (
+    FrozenRegistrationRecord,
     RegistryIntegrityError,
     ShadowModelRegistry,
 )
@@ -1430,3 +1432,492 @@ def test_shadow_session_verification_lifecycle(
     report_legacy = replay_engine.verify_session("session_legacy_test")
     assert report_legacy["status"] == "LEGACY_UNVERIFIED_EVIDENCE"
     assert report_legacy["verified"] is False
+
+
+# ---------------------------------------------------------------------------
+# 8. Phase 40A Final Targeted Acceptance Patch Tests
+# ---------------------------------------------------------------------------
+
+
+def test_shadow_baseline_no_fallback_and_cryptographic_binding(
+    shadow_workspace: tuple[Path, str, str],
+) -> None:
+    """Requirement 1: Prohibit fabricated baseline statistics; enforce cryptographic binding.
+
+    1. When no authentic majority baseline exists, baseline comparison must be UNAVAILABLE,
+       preventing any baseline-superiority claim. No fallback 'DOWN' or 0.4691 is invented.
+    2. When an authentic majority baseline is registered, parameters are cryptographically bound.
+    3. Legacy records without verifiable binding are classified as LEGACY_UNVERIFIED_BASELINE.
+    """
+    tmp_path, snapshot_id, model_id = shadow_workspace
+    registry = ShadowModelRegistry(tmp_path)
+
+    # 1. Candidate registered without any majority baseline in registry
+    rec = registry.register_candidate(model_id, confidence_threshold=0.52)
+    assert rec.training_majority_direction is None
+    assert rec.training_majority_prob_up is None
+    assert rec.baseline_status == "UNAVAILABLE"
+    assert rec.baseline_comparison_available is False
+
+    # Evaluation with candidate marks majority baseline unavailable and prevents superiority claim
+    session_dir = tmp_path / "sessions" / "session_no_base"
+    journal = ShadowPredictionJournal("session_no_base", session_dir=session_dir)
+    evaluator = ShadowOutcomeEvaluator(
+        journal,
+        min_qualifying_trades=5,
+        frozen_majority_direction=rec.training_majority_direction,
+        frozen_majority_prob_up=rec.training_majority_prob_up,
+        baseline_comparison_available=rec.baseline_comparison_available,
+    )
+
+    t = 1000
+    for i in range(10):
+        pid = f"trade_{i}"
+        p = ShadowPredictionRecord(
+            session_id="session_no_base",
+            prediction_id=pid,
+            model_id=model_id,
+            artifact_hash="hash",
+            symbol="EURUSD",
+            timeframe=60,
+            feature_cutoff_ts=t,
+            feature_cutoff_utc="2023-11-14T22:00:00+00:00",
+            data_availability_ts=t,
+            data_availability_utc="2023-11-14T22:00:00+00:00",
+            provenance_class="HISTORICAL",
+            prediction_created_ts="2023-11-14T22:00:00+00:00",
+            probabilities={"UP": 0.9, "DOWN": 0.1},
+            decision="UP",
+            confidence_threshold=0.52,
+            prediction_horizon_bars=1,
+            expected_maturity_ts=t + 60,
+            expected_maturity_utc="2023-11-14T22:01:00+00:00",
+            feature_fingerprint=f"fp_{pid}",
+            prediction_fingerprint="",
+            runtime_diagnostics={},
+            evidence_class="OFFLINE_REPLAY",
+        )
+        journal.record_prediction(p)
+        journal.resolve_outcome(
+            prediction_id=pid,
+            evaluated_at_utc="2023-11-14T22:01:01+00:00",
+            outcome_status=OutcomeStatus.RESOLVED_WIN,
+            cutoff_candle_close=1.0500,
+            maturity_candle_close=1.0510,
+            actual_return=0.0010,
+            market_direction="UP",
+            was_trade_taken=True,
+            is_winning_trade=True,
+            simulated_payout_pnl=0.85,
+        )
+        t += 60
+
+    summary = evaluator.summarize()
+    # Baseline comparison unavailable prevents claiming superiority
+    assert summary.baseline_comparison_available is False
+    assert summary.has_statistical_edge is False
+    assert summary.scientific_verdict == "BASELINE_COMPARISON_UNAVAILABLE_NO_EDGE"
+    maj_b = next(b for b in summary.baseline_comparisons if b.baseline_name == "majority_class")
+    assert maj_b.status == "UNAVAILABLE"
+    assert maj_b.is_verified is False
+
+    # 2. Register authentic majority class baseline and verify cryptographic binding
+    lab = ModelLaboratory(tmp_path)
+    base_cfg = ExperimentConfig(
+        model_family="majority_class",
+        snapshot_id=snapshot_id,
+        horizon_bars=1,
+    )
+    base_res = lab.run_experiment(base_cfg)
+    base_rec = registry.register_candidate(base_res.model_id, is_baseline=True)
+    assert base_rec.is_baseline is True
+    assert base_rec.baseline_status == "VERIFIED"
+    assert base_rec.baseline_source_sha256 == base_rec.bundle_sha256
+    assert base_rec.training_majority_direction in ("UP", "DOWN")
+    assert base_rec.training_majority_prob_up is not None
+
+    # Register another candidate model bound to this authentic baseline
+    cand_cfg2 = ExperimentConfig(
+        model_family="logistic_regression",
+        snapshot_id=snapshot_id,
+        horizon_bars=1,
+    )
+    cand_res2 = lab.run_experiment(cand_cfg2)
+    cand_rec2 = registry.register_candidate(cand_res2.model_id, baseline_model_id=base_rec.model_id)
+    assert cand_rec2.baseline_status == "VERIFIED"
+    assert cand_rec2.baseline_source_model_id == base_rec.model_id
+    assert cand_rec2.baseline_source_sha256 == base_rec.bundle_sha256
+    assert cand_rec2.training_majority_direction == base_rec.training_majority_direction
+    assert cand_rec2.training_majority_prob_up == base_rec.training_majority_prob_up
+    assert cand_rec2.baseline_comparison_available is True
+
+    # 3. Classify legacy records explicitly
+    legacy_record_dict = {
+        "registration_id": "eval_legacy_1",
+        "registered_at_utc": "2026-11-20T10:00:00+00:00",
+        "model_id": "legacy_model",
+        "run_id": "run_legacy",
+        "model_family": "logistic_regression",
+        "bundle_sha256": "sha",
+        "manifest_sha256": "msha",
+        "snapshot_id": "snap",
+        "dataset_content_sha256": "dsha",
+        "data_cutoff_ts": 1000,
+        "feature_names": ["f1"],
+        "horizon_bars": 1,
+        "confidence_threshold": 0.55,
+        "calibration_method": "none",
+        "verdict": "NO_EDGE",
+        "wallet_classification": "UNKNOWN",
+        "is_baseline": False,
+        "training_majority_direction": "DOWN",  # unverified legacy field
+    }
+    legacy_rec = FrozenRegistrationRecord.from_dict(legacy_record_dict)
+    assert legacy_rec.baseline_status == "LEGACY_UNVERIFIED_BASELINE"
+    assert legacy_rec.baseline_comparison_available is False
+
+
+def test_shadow_model_exposure_boundaries_and_replay_classification(
+    shadow_workspace: tuple[Path, str, str],
+) -> None:
+    """Requirement 2: Distinguish training, validation, holdout, and snapshot boundaries.
+
+    All historical replays remain retrospective (OFFLINE_REPLAY), never claiming
+    prospective evidence, even when replay begins after the training cutoff.
+    """
+    tmp_path, snapshot_id, model_id = shadow_workspace
+    registry = ShadowModelRegistry(tmp_path)
+    rec = registry.register_candidate(model_id)
+
+    assert rec.training_cutoff_ts > 0
+    assert rec.validation_cutoff_ts > rec.training_cutoff_ts
+    assert rec.holdout_cutoff_ts > rec.validation_cutoff_ts
+    assert rec.source_snapshot_end_ts >= rec.holdout_cutoff_ts
+
+    replay_engine = HistoricalReplayEngine(registry, root=tmp_path)
+
+    # 1. Replay starting inside training exposure
+    c_train = [
+        _make_candle(rec.training_cutoff_ts - 120, rec.training_cutoff_ts - 60, 1.05, 1.055),
+        _make_candle(rec.training_cutoff_ts - 60, rec.training_cutoff_ts, 1.055, 1.06),
+    ]
+    cfg_train = ReplayConfig(
+        model_id=model_id, session_id="s_train_overlap", snapshot_id=snapshot_id
+    )
+    res_train = replay_engine.run_replay(cfg_train, c_train)
+    assert res_train.is_functional_test is True
+    assert res_train.exposure_classification == "OVERLAPS_TRAINING_EXPOSURE"
+    assert res_train.summary.scientific_verdict == "FUNCTIONAL_REPLAY_TEST_ONLY_NO_EDGE"
+
+    # 2. Replay starting inside validation/calibration exposure
+    c_val = [
+        _make_candle(rec.training_cutoff_ts + 60, rec.training_cutoff_ts + 120, 1.05, 1.055),
+        _make_candle(rec.training_cutoff_ts + 120, rec.training_cutoff_ts + 180, 1.055, 1.06),
+    ]
+    cfg_val = ReplayConfig(model_id=model_id, session_id="s_val_overlap", snapshot_id=snapshot_id)
+    res_val = replay_engine.run_replay(cfg_val, c_val)
+    assert res_val.is_functional_test is True
+    assert res_val.exposure_classification == "OVERLAPS_VALIDATION_EXPOSURE"
+    assert res_val.summary.scientific_verdict == "FUNCTIONAL_REPLAY_TEST_ONLY_NO_EDGE"
+
+    # 3. Replay starting inside holdout test exposure
+    c_holdout = [
+        _make_candle(rec.validation_cutoff_ts + 60, rec.validation_cutoff_ts + 120, 1.05, 1.055),
+        _make_candle(rec.validation_cutoff_ts + 120, rec.validation_cutoff_ts + 180, 1.055, 1.06),
+    ]
+    cfg_holdout = ReplayConfig(
+        model_id=model_id, session_id="s_holdout_overlap", snapshot_id=snapshot_id
+    )
+    res_holdout = replay_engine.run_replay(cfg_holdout, c_holdout)
+    assert res_holdout.is_functional_test is True
+    assert res_holdout.exposure_classification == "OVERLAPS_HOLDOUT_EXPOSURE"
+    assert res_holdout.summary.scientific_verdict == "FUNCTIONAL_REPLAY_TEST_ONLY_NO_EDGE"
+
+    # 4. Replay starting beyond the source snapshot
+    post_ts = rec.source_snapshot_end_ts + 3600
+    c_post = [
+        _make_candle(post_ts, post_ts + 60, 1.05, 1.055),
+        _make_candle(post_ts + 60, post_ts + 120, 1.055, 1.06),
+    ]
+    cfg_post = ReplayConfig(
+        model_id=model_id, session_id="s_post_snapshot", snapshot_id=snapshot_id
+    )
+    res_post = replay_engine.run_replay(cfg_post, c_post)
+    assert res_post.is_functional_test is False
+    assert res_post.exposure_classification == "POST_SNAPSHOT_HISTORICAL_REPLAY"
+    # Never claims prospective evidence; verdict is strictly retrospective replay
+    assert res_post.summary.has_statistical_edge is False
+    assert (
+        "PROSPECTIVE" not in res_post.summary.scientific_verdict
+        or "PENDING" in res_post.summary.scientific_verdict
+    )
+
+
+def test_shadow_statistical_populations_and_confidence_intervals(tmp_path: Path) -> None:
+    """Requirement 3: Mathematical consistency of statistical populations.
+
+    - Decisive win rate compared to decisive break-even threshold.
+    - All-trades win rate compared to tie-adjusted all-trades break-even threshold.
+    - Explicit sample counts (matched_sample_count, decisive_sample_count, tie_count)
+      on all comparisons.
+    """
+    session_dir = tmp_path / "sessions" / "session_pop_exact"
+    journal = ShadowPredictionJournal("session_pop_exact", session_dir=session_dir)
+    evaluator = ShadowOutcomeEvaluator(
+        journal,
+        assumed_payout=0.85,
+        min_qualifying_trades=50,
+        frozen_majority_direction="DOWN",
+        frozen_majority_prob_up=0.4691,
+        baseline_comparison_available=True,
+    )
+
+    # 188 wins, 194 losses, 15 ties (Total=397, Decisive=382)
+    t = 1000
+    # Wins
+    for i in range(188):
+        pid = f"w_{i}"
+        journal.record_prediction(
+            ShadowPredictionRecord(
+                session_id="session_pop_exact",
+                prediction_id=pid,
+                model_id="m",
+                artifact_hash="h",
+                symbol="EURUSD",
+                timeframe=60,
+                feature_cutoff_ts=t,
+                feature_cutoff_utc="",
+                data_availability_ts=t,
+                data_availability_utc="",
+                provenance_class="H",
+                prediction_created_ts="",
+                probabilities={"UP": 0.6},
+                decision="UP",
+                confidence_threshold=0.52,
+                prediction_horizon_bars=1,
+                expected_maturity_ts=t + 60,
+                expected_maturity_utc="",
+                feature_fingerprint="",
+                prediction_fingerprint="",
+                runtime_diagnostics={},
+                evidence_class="OFFLINE_REPLAY",
+            )
+        )
+        journal.resolve_outcome(
+            pid, "", OutcomeStatus.RESOLVED_WIN, 1.05, 1.06, 0.01, "UP", True, True, 0.85
+        )
+        t += 60
+
+    # Losses
+    for i in range(194):
+        pid = f"l_{i}"
+        journal.record_prediction(
+            ShadowPredictionRecord(
+                session_id="session_pop_exact",
+                prediction_id=pid,
+                model_id="m",
+                artifact_hash="h",
+                symbol="EURUSD",
+                timeframe=60,
+                feature_cutoff_ts=t,
+                feature_cutoff_utc="",
+                data_availability_ts=t,
+                data_availability_utc="",
+                provenance_class="H",
+                prediction_created_ts="",
+                probabilities={"UP": 0.6},
+                decision="UP",
+                confidence_threshold=0.52,
+                prediction_horizon_bars=1,
+                expected_maturity_ts=t + 60,
+                expected_maturity_utc="",
+                feature_fingerprint="",
+                prediction_fingerprint="",
+                runtime_diagnostics={},
+                evidence_class="OFFLINE_REPLAY",
+            )
+        )
+        journal.resolve_outcome(
+            pid, "", OutcomeStatus.RESOLVED_LOSS, 1.06, 1.05, -0.01, "DOWN", True, False, -1.0
+        )
+        t += 60
+
+    # Ties
+    for i in range(15):
+        pid = f"t_{i}"
+        journal.record_prediction(
+            ShadowPredictionRecord(
+                session_id="session_pop_exact",
+                prediction_id=pid,
+                model_id="m",
+                artifact_hash="h",
+                symbol="EURUSD",
+                timeframe=60,
+                feature_cutoff_ts=t,
+                feature_cutoff_utc="",
+                data_availability_ts=t,
+                data_availability_utc="",
+                provenance_class="H",
+                prediction_created_ts="",
+                probabilities={"UP": 0.6},
+                decision="UP",
+                confidence_threshold=0.52,
+                prediction_horizon_bars=1,
+                expected_maturity_ts=t + 60,
+                expected_maturity_utc="",
+                feature_fingerprint="",
+                prediction_fingerprint="",
+                runtime_diagnostics={},
+                evidence_class="OFFLINE_REPLAY",
+            )
+        )
+        journal.resolve_outcome(
+            pid, "", OutcomeStatus.RESOLVED_TIE, 1.05, 1.05, 0.0, "TIE", True, False, 0.0
+        )
+        t += 60
+
+    summary = evaluator.summarize()
+    assert summary.trade_count == 397
+    assert summary.win_count == 188
+    assert summary.loss_count == 194
+    assert summary.tie_count == 15
+
+    # Population 1: Decisive (188 / 382)
+    assert abs(summary.win_rate_decisive - 0.4921) < 0.001
+    assert abs(summary.break_even_win_rate - 0.5405) < 0.001
+    assert (
+        summary.wilson_ci_lower_95_decisive
+        < summary.win_rate_decisive
+        < summary.wilson_ci_upper_95_decisive
+    )
+
+    # Population 2: All trades (188 / 397)
+    assert abs(summary.win_rate - 0.4736) < 0.001
+    assert abs(summary.break_even_win_rate_all - 0.5201) < 0.001
+    assert summary.wilson_ci_lower_95_all < summary.win_rate < summary.wilson_ci_upper_95_all
+
+    # Expectancy: (188 * 0.85 - 194 * 1.0) / 397 = -8.61%
+    assert abs(summary.simulated_expectancy_pct - (-8.61)) < 0.02
+
+    # Baseline comparisons have explicit sample counts for every comparison
+    for b in summary.baseline_comparisons:
+        assert b.sample_count == 397
+        assert b.decisive_sample_count == 382
+        assert b.tie_count == 15
+
+
+def test_shadow_evidence_integrity_empty_registry_and_outcomes_verification(
+    shadow_workspace: tuple[Path, str, str],
+) -> None:
+    """Requirement 4: Enforce evidence integrity on empty registries and outcomes journals.
+
+    - Validates self-digest even when registry has 0 records.
+    - Rejects missing or inconsistent outcomes journal when metadata claims outcomes.
+    - Fails closed on duplicate or contradictory outcome records during recovery.
+    """
+    tmp_path, snapshot_id, model_id = shadow_workspace
+    empty_reg_dir = tmp_path / "data" / "empty_shadow_eval"
+    empty_reg_dir.mkdir(parents=True, exist_ok=True)
+    reg_path = empty_reg_dir / "registry.json"
+
+    # 1. Empty registry validation
+    registry = ShadowModelRegistry(tmp_path, registry_path=reg_path)
+    assert len(registry.list_candidates()) == 0
+
+    # Tamper with empty registry file
+    raw = json.loads(reg_path.read_text(encoding="utf-8"))
+    raw["registry_version"] = "2.0"  # tampered
+    reg_path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(RegistryIntegrityError, match="Registry self-digest mismatch"):
+        ShadowModelRegistry(tmp_path, registry_path=reg_path)
+
+    # Missing registry_sha256 on empty registry
+    del raw["registry_sha256"]
+    reg_path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(RegistryIntegrityError, match="lacks registry_sha256 digest"):
+        ShadowModelRegistry(tmp_path, registry_path=reg_path)
+
+    # 2. Outcomes journal integrity in verify_session
+    full_registry = ShadowModelRegistry(tmp_path)
+    full_registry.register_candidate(model_id)
+    replay_engine = HistoricalReplayEngine(full_registry, root=tmp_path)
+    parquet_path = tmp_path / "data" / "catalog" / "eurusd_m1.parquet"
+    candles = _candles_from_parquet(parquet_path)
+
+    config = ReplayConfig(
+        model_id=model_id,
+        session_id="s_verif_outcomes",
+        snapshot_id=snapshot_id,
+        max_candles=30,
+    )
+    res = replay_engine.run_replay(config, candles[:30])
+
+    # A. Delete outcomes.jsonl on completed session
+    outcomes_file = res.session_dir / "outcomes.jsonl"
+    outcomes_file.unlink()
+    rep = replay_engine.verify_session("s_verif_outcomes")
+    assert rep["status"] == "MISSING_OUTCOMES_JOURNAL"
+    assert rep["verified"] is False
+
+    # B. Empty outcomes.jsonl when outcomes were resolved
+    outcomes_file.write_text("", encoding="utf-8")
+    rep_empty = replay_engine.verify_session("s_verif_outcomes")
+    assert rep_empty["status"] in (
+        "OUTCOMES_JOURNAL_TAMPERED",
+        "OUTCOMES_JOURNAL_EMPTY_INCONSISTENT",
+    )
+    assert rep_empty["verified"] is False
+
+    # 3. Duplicate outcome records rejected on recovery
+    session_dir = tmp_path / "sessions" / "session_dup_outcome"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    preds_file = session_dir / "predictions.jsonl"
+    outs_file = session_dir / "outcomes.jsonl"
+
+    pred = ShadowPredictionRecord(
+        session_id="session_dup_outcome",
+        prediction_id="p1",
+        model_id="m",
+        artifact_hash="h",
+        symbol="EURUSD",
+        timeframe=60,
+        feature_cutoff_ts=1000,
+        feature_cutoff_utc="",
+        data_availability_ts=1000,
+        data_availability_utc="",
+        provenance_class="H",
+        prediction_created_ts="",
+        probabilities={"UP": 0.6},
+        decision="UP",
+        confidence_threshold=0.52,
+        prediction_horizon_bars=1,
+        expected_maturity_ts=1060,
+        expected_maturity_utc="",
+        feature_fingerprint="",
+        prediction_fingerprint="",
+        runtime_diagnostics={},
+        evidence_class="OFFLINE_REPLAY",
+    )
+    preds_file.write_text(json.dumps(pred.to_dict()) + "\n", encoding="utf-8")
+
+    out_evt = OutcomeEventRecord(
+        session_id="session_dup_outcome",
+        prediction_id="p1",
+        evaluated_at_utc="",
+        outcome_status=OutcomeStatus.RESOLVED_WIN.value,
+        cutoff_candle_close=1.05,
+        maturity_candle_close=1.06,
+        actual_return=0.01,
+        market_direction="UP",
+        was_trade_taken=True,
+        is_winning_trade=True,
+        simulated_payout_pnl=0.85,
+    )
+    # Write identical duplicate outcome line
+    outs_file.write_text(
+        json.dumps(out_evt.to_dict()) + "\n" + json.dumps(out_evt.to_dict()) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DuplicateOutcomeError, match="Duplicate outcome at line 2"):
+        ShadowPredictionJournal("session_dup_outcome", session_dir=session_dir)

@@ -101,6 +101,7 @@ class ReplayResult:
     completed_at_utc: str
     disclaimer: str
     prediction_failures_count: int = 0
+    exposure_classification: str = "UNKNOWN"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -113,6 +114,7 @@ class ReplayResult:
             "prediction_failures_count": self.prediction_failures_count,
             "summary": self.summary.to_dict(),
             "is_functional_test": self.is_functional_test,
+            "exposure_classification": self.exposure_classification,
             "data_cutoff_overlap_warning": self.data_cutoff_overlap_warning,
             "completed_at_utc": self.completed_at_utc,
             "disclaimer": self.disclaimer,
@@ -160,18 +162,65 @@ class HistoricalReplayEngine:
         engine = ShadowPredictionEngine(self.registry, config.model_id)
         frozen_record = engine.record
 
-        # Check training cutoff overlap
+        # Check multi-tier model exposure boundaries
         first_candle_ts = candles[0].from_ts
         is_functional_test = False
+        exposure_classification = "OUT_OF_DATASET_RETROSPECTIVE"
         overlap_warning = None
-        if first_candle_ts <= frozen_record.data_cutoff_ts:
+
+        t_cutoff = frozen_record.training_cutoff_ts or frozen_record.data_cutoff_ts
+        val_cutoff = frozen_record.validation_cutoff_ts
+        holdout_cutoff = frozen_record.holdout_cutoff_ts
+        snap_end = frozen_record.source_snapshot_end_ts
+
+        if first_candle_ts <= t_cutoff:
             is_functional_test = True
+            exposure_classification = "OVERLAPS_TRAINING_EXPOSURE"
             overlap_warning = (
                 f"REPLAY DATA OVERLAPS TRAINING EXPOSURE (data starts at {first_candle_ts}, "
-                f"training cutoff was {frozen_record.data_cutoff_ts}). "
+                f"training cutoff was {t_cutoff}). "
                 "Designated as FUNCTIONAL_REPLAY_TEST_ONLY; cannot be cited as out-of-sample edge."
             )
-            logger.info("Replay designated as functional test: %s", overlap_warning)
+        elif val_cutoff and first_candle_ts <= val_cutoff:
+            is_functional_test = True
+            exposure_classification = "OVERLAPS_VALIDATION_EXPOSURE"
+            overlap_warning = (
+                f"REPLAY DATA OVERLAPS VALIDATION/CALIBRATION EXPOSURE "
+                f"(data starts at {first_candle_ts}, validation cutoff was {val_cutoff}). "
+                "Designated as FUNCTIONAL_REPLAY_TEST_ONLY; model calibration used this window."
+            )
+        elif holdout_cutoff and first_candle_ts <= holdout_cutoff:
+            is_functional_test = True
+            exposure_classification = "OVERLAPS_HOLDOUT_EXPOSURE"
+            overlap_warning = (
+                f"REPLAY DATA OVERLAPS HOLDOUT TEST EXPOSURE (data starts at {first_candle_ts}, "
+                f"holdout cutoff was {holdout_cutoff}). "
+                "Designated as FUNCTIONAL_REPLAY_TEST_ONLY; holdout evaluation used this window."
+            )
+        elif snap_end and first_candle_ts <= snap_end:
+            is_functional_test = True
+            exposure_classification = "OVERLAPS_SOURCE_SNAPSHOT_EXPOSURE"
+            overlap_warning = (
+                f"REPLAY DATA OVERLAPS SOURCE DATASET SNAPSHOT (data starts at {first_candle_ts}, "
+                f"snapshot end was {snap_end}). "
+                "Designated as FUNCTIONAL_REPLAY_TEST_ONLY; data is within research archive."
+            )
+        else:
+            # Replay data occurs after source dataset snapshot
+            # All historical replays remain retrospective and must NEVER claim prospective evidence!
+            is_functional_test = False
+            exposure_classification = "POST_SNAPSHOT_HISTORICAL_REPLAY"
+            overlap_warning = (
+                f"HISTORICAL RETROSPECTIVE REPLAY ONLY (data starts at {first_candle_ts}). "
+                "Replay data occurs after source dataset snapshot, but historical replay "
+                "DOES NOT CONSTITUTE PROSPECTIVE OBSERVATION. Zero execution authority."
+            )
+
+        logger.info(
+            "Replay exposure classification: %s (is_functional_test=%s)",
+            exposure_classification,
+            is_functional_test,
+        )
 
         # 2. Setup session directory and journal
         session_dir = self.sessions_base_dir / config.session_id
@@ -195,6 +244,10 @@ class HistoricalReplayEngine:
             min_qualifying_trades=config.min_qualifying_trades,
             frozen_majority_direction=frozen_record.training_majority_direction,
             frozen_majority_prob_up=frozen_record.training_majority_prob_up,
+            baseline_comparison_available=frozen_record.baseline_comparison_available,
+            baseline_source_id=frozen_record.baseline_source_model_id,
+            baseline_source_sha256=frozen_record.baseline_source_sha256,
+            exposure_overlap_classification=exposure_classification,
         )
 
         total_candles = len(candles)
@@ -337,6 +390,7 @@ class HistoricalReplayEngine:
             "prediction_failures_count": prediction_failures_count,
             "prediction_failures": prediction_failures,
             "is_functional_test": is_functional_test,
+            "exposure_classification": exposure_classification,
             "data_cutoff_overlap_warning": overlap_warning,
             "summary": summary.to_dict(),
             "disclaimer": summary.scientific_disclaimer,
@@ -358,6 +412,7 @@ class HistoricalReplayEngine:
             prediction_failures_count=prediction_failures_count,
             summary=summary,
             is_functional_test=is_functional_test,
+            exposure_classification=exposure_classification,
             data_cutoff_overlap_warning=overlap_warning,
             completed_at_utc=now_utc,
             disclaimer=summary.scientific_disclaimer,
@@ -438,17 +493,55 @@ class HistoricalReplayEngine:
                 ),
             }
 
-        # Verify outcomes.jsonl checksum if recorded
-        if outcomes_file.is_file():
+        # Verify outcomes.jsonl checksum and presence
+        has_outcomes_digest = "outcomes_sha256" in meta
+        expected_out_sha = meta.get("outcomes_sha256")
+        outcomes_resolved = meta.get("outcomes_resolved", 0)
+
+        if has_outcomes_digest or outcomes_resolved > 0:
+            if not outcomes_file.is_file():
+                return {
+                    "session_id": session_id,
+                    "status": "MISSING_OUTCOMES_JOURNAL",
+                    "verified": False,
+                    "error": f"Missing outcomes journal at {outcomes_file}",
+                }
             actual_out_sha = hashlib.sha256(outcomes_file.read_bytes()).hexdigest()
-            if meta.get("outcomes_sha256") and actual_out_sha != meta.get("outcomes_sha256"):
+            if has_outcomes_digest and actual_out_sha != expected_out_sha:
                 return {
                     "session_id": session_id,
                     "status": "OUTCOMES_JOURNAL_TAMPERED",
                     "verified": False,
                     "error": (
-                        f"Outcomes checksum mismatch: expected {meta.get('outcomes_sha256')}, "
+                        f"Outcomes checksum mismatch: expected {expected_out_sha}, "
                         f"got {actual_out_sha}"
+                    ),
+                }
+            if outcomes_resolved > 0 and outcomes_file.stat().st_size == 0:
+                return {
+                    "session_id": session_id,
+                    "status": "OUTCOMES_JOURNAL_EMPTY_INCONSISTENT",
+                    "verified": False,
+                    "error": "Outcomes journal is empty but metadata claims resolved outcomes",
+                }
+            if outcomes_resolved == 0 and outcomes_file.stat().st_size > 0:
+                return {
+                    "session_id": session_id,
+                    "status": "OUTCOMES_JOURNAL_UNEXPECTED_CONTENT",
+                    "verified": False,
+                    "error": (
+                        "Outcomes journal contains records but metadata claims 0 resolved outcomes"
+                    ),
+                }
+        else:
+            # Genuinely empty outcomes journal (0 outcomes resolved, no outcomes digest recorded)
+            if outcomes_file.is_file() and outcomes_file.stat().st_size > 0:
+                return {
+                    "session_id": session_id,
+                    "status": "OUTCOMES_JOURNAL_UNEXPECTED_CONTENT",
+                    "verified": False,
+                    "error": (
+                        "Outcomes journal contains records but metadata claims 0 resolved outcomes"
                     ),
                 }
 

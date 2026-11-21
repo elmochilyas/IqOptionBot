@@ -52,6 +52,10 @@ class ConflictingOutcomeError(JournalIntegrityError):
     """Raised when conflicting outcome records exist for the same prediction."""
 
 
+class DuplicateOutcomeError(JournalIntegrityError):
+    """Raised when duplicate outcome records exist for the same prediction."""
+
+
 class DuplicatePredictionError(JournalError):
     """Raised when attempting to record a duplicate prediction for the same cutoff."""
 
@@ -254,6 +258,10 @@ class ShadowPredictionJournal:
                                 f"Conflicting outcome at line {line_no} in {self.outcomes_file} "
                                 f"for prediction_id={out_rec.prediction_id}"
                             )
+                        raise DuplicateOutcomeError(
+                            f"Duplicate outcome at line {line_no} in {self.outcomes_file} "
+                            f"for prediction_id={out_rec.prediction_id}"
+                        )
 
                     self._outcomes[out_rec.prediction_id] = out_rec
                     p = self._predictions[out_rec.prediction_id]

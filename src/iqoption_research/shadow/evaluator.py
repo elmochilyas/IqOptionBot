@@ -33,10 +33,16 @@ class BaselineComparison:
 
     baseline_name: str
     sample_count: int
+    decisive_sample_count: int
+    tie_count: int
     directional_accuracy: float
+    decisive_directional_accuracy: float
     brier_score: float
     candidate_delta_accuracy: float
+    candidate_delta_decisive_accuracy: float
     candidate_delta_brier: float
+    is_verified: bool = True
+    status: str = "VERIFIED"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -77,6 +83,10 @@ class EvaluationSummary:
     tie_rate: float
     wilson_ci_lower_95: float
     wilson_ci_upper_95: float
+    wilson_ci_lower_95_decisive: float
+    wilson_ci_upper_95_decisive: float
+    wilson_ci_lower_95_all: float
+    wilson_ci_upper_95_all: float
     break_even_win_rate: float
     break_even_win_rate_all: float
     has_statistical_edge: bool
@@ -87,6 +97,10 @@ class EvaluationSummary:
     baseline_comparisons: list[BaselineComparison]
     scientific_disclaimer: str
     evaluation_timestamp_utc: str
+    baseline_comparison_available: bool = False
+    baseline_source_id: str | None = None
+    baseline_source_sha256: str | None = None
+    exposure_overlap_classification: str = "UNKNOWN"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -103,14 +117,25 @@ class ShadowOutcomeEvaluator:
         *,
         assumed_payout: float = 0.85,
         min_qualifying_trades: int = 100,
-        frozen_majority_direction: str = "DOWN",
-        frozen_majority_prob_up: float = 0.4691,
+        frozen_majority_direction: str | None = None,
+        frozen_majority_prob_up: float | None = None,
+        baseline_comparison_available: bool | None = None,
+        baseline_source_id: str | None = None,
+        baseline_source_sha256: str | None = None,
+        exposure_overlap_classification: str = "UNKNOWN",
     ) -> None:
         self.journal = journal
         self.assumed_payout = assumed_payout
         self.min_qualifying_trades = min_qualifying_trades
         self.frozen_majority_direction = frozen_majority_direction
         self.frozen_majority_prob_up = frozen_majority_prob_up
+        if baseline_comparison_available is not None:
+            self.baseline_comparison_available = baseline_comparison_available
+        else:
+            self.baseline_comparison_available = bool(frozen_majority_direction in ("UP", "DOWN"))
+        self.baseline_source_id = baseline_source_id
+        self.baseline_source_sha256 = baseline_source_sha256
+        self.exposure_overlap_classification = exposure_overlap_classification
 
     def resolve_pending(
         self,
@@ -285,7 +310,7 @@ class ShadowOutcomeEvaluator:
         coverage = (trade_count / len(resolved_preds)) if resolved_preds else 0.0
         abstention = (skipped_count / len(resolved_preds)) if resolved_preds else 0.0
 
-        # Break-even threshold:
+        # Break-even thresholds:
         # Decisive trades: BE_decisive = 1 / (1 + payout)
         # All trades (with refunded ties): BE_all = (1 - tie_rate) / (1 + payout)
         break_even_decisive = 1.0 / (1.0 + self.assumed_payout)
@@ -295,11 +320,25 @@ class ShadowOutcomeEvaluator:
             else break_even_decisive
         )
 
-        # Wilson Confidence Interval on selective win rate
-        if trade_count > 0:
-            ci_low, ci_high = compute_wilson_score_interval(win_count, trade_count)
+        # Wilson Confidence Intervals on matched populations:
+        # 1. Decisive trades: W / (W + L)
+        decisive_count = win_count + loss_count
+        if decisive_count > 0:
+            ci_low_decisive, ci_high_decisive = compute_wilson_score_interval(
+                win_count, decisive_count
+            )
         else:
-            ci_low, ci_high = 0.0, 1.0
+            ci_low_decisive, ci_high_decisive = 0.0, 1.0
+
+        # 2. All trades (including refunded ties): W / (W + L + T)
+        if trade_count > 0:
+            ci_low_all, ci_high_all = compute_wilson_score_interval(win_count, trade_count)
+        else:
+            ci_low_all, ci_high_all = 0.0, 1.0
+
+        # Default confidence interval bounds
+        ci_low = ci_low_decisive
+        ci_high = ci_high_decisive
 
         # Simulated Expectancy: E = (Wins * payout - Losses * 1.0 + Ties * 0.0) / Total trades
         if trade_count > 0:
@@ -317,7 +356,6 @@ class ShadowOutcomeEvaluator:
         ]
         if evaluable:
             y_true = [1 if p.market_direction == "UP" else 0 for p in evaluable]
-            # Directional accuracy: predicted class UP if prob_up >= 0.5 else DOWN
             correct_dirs = sum(
                 1
                 for p, yt in zip(evaluable, y_true, strict=False)
@@ -330,49 +368,106 @@ class ShadowOutcomeEvaluator:
             dir_acc = 0.0
             brier = 0.25
 
-        # Reference baselines evaluated on identical population (trade_preds)
+        # Reference baselines evaluated on matched population (trade_preds)
         base_comps: list[BaselineComparison] = []
         if trade_preds:
-            # Majority class baseline uses frozen pre-cutoff training direction
-            # (never derived from evaluation labels!)
-            maj_correct = sum(
-                1 for p in trade_preds if p.market_direction == self.frozen_majority_direction
-            )
-            maj_acc = maj_correct / trade_count
-
-            # Binary directional evaluation on decisive trades for Brier score calibration
             decisive_preds = [p for p in trade_preds if p.market_direction in ("UP", "DOWN")]
+
+            # 1. Majority Class Baseline
+            if self.baseline_comparison_available and self.frozen_majority_direction in (
+                "UP",
+                "DOWN",
+            ):
+                maj_all_correct = sum(
+                    1 for p in trade_preds if p.market_direction == self.frozen_majority_direction
+                )
+                maj_all_acc = maj_all_correct / trade_count
+
+                maj_decisive_correct = sum(
+                    1
+                    for p in decisive_preds
+                    if p.market_direction == self.frozen_majority_direction
+                )
+                maj_decisive_acc = (
+                    (maj_decisive_correct / decisive_count) if decisive_count > 0 else 0.0
+                )
+
+                prob_maj = (
+                    self.frozen_majority_prob_up
+                    if self.frozen_majority_prob_up is not None
+                    else 0.5
+                )
+
+                if decisive_preds:
+                    y_binary = [1 if p.market_direction == "UP" else 0 for p in decisive_preds]
+                    cand_probs = [p.probabilities.get("UP", 0.5) for p in decisive_preds]
+                    cand_trade_brier = float(brier_score_loss(y_binary, cand_probs))
+                    maj_trade_brier = float(brier_score_loss(y_binary, [prob_maj] * len(y_binary)))
+                else:
+                    cand_trade_brier = 0.25
+                    maj_trade_brier = 0.25
+
+                base_comps.append(
+                    BaselineComparison(
+                        baseline_name="majority_class",
+                        sample_count=trade_count,
+                        decisive_sample_count=decisive_count,
+                        tie_count=tie_count,
+                        directional_accuracy=round(maj_all_acc, 4),
+                        decisive_directional_accuracy=round(maj_decisive_acc, 4),
+                        brier_score=round(maj_trade_brier, 4),
+                        candidate_delta_accuracy=round(win_rate - maj_all_acc, 4),
+                        candidate_delta_decisive_accuracy=round(
+                            win_rate_decisive - maj_decisive_acc, 4
+                        ),
+                        candidate_delta_brier=round(maj_trade_brier - cand_trade_brier, 4),
+                        is_verified=True,
+                        status="VERIFIED",
+                    )
+                )
+            else:
+                # Majority baseline unavailable from verified pre-evaluation evidence
+                base_comps.append(
+                    BaselineComparison(
+                        baseline_name="majority_class",
+                        sample_count=trade_count,
+                        decisive_sample_count=decisive_count,
+                        tie_count=tie_count,
+                        directional_accuracy=0.0,
+                        decisive_directional_accuracy=0.0,
+                        brier_score=0.25,
+                        candidate_delta_accuracy=0.0,
+                        candidate_delta_decisive_accuracy=0.0,
+                        candidate_delta_brier=0.0,
+                        is_verified=False,
+                        status="UNAVAILABLE",
+                    )
+                )
+
+            # 2. Random Uniform Baseline
             if decisive_preds:
                 y_binary = [1 if p.market_direction == "UP" else 0 for p in decisive_preds]
                 cand_probs = [p.probabilities.get("UP", 0.5) for p in decisive_preds]
                 cand_trade_brier = float(brier_score_loss(y_binary, cand_probs))
-                maj_trade_brier = float(
-                    brier_score_loss(y_binary, [self.frozen_majority_prob_up] * len(y_binary))
-                )
                 uniform_trade_brier = float(brier_score_loss(y_binary, [0.5] * len(y_binary)))
             else:
                 cand_trade_brier = 0.25
-                maj_trade_brier = 0.25
                 uniform_trade_brier = 0.25
 
             base_comps.append(
                 BaselineComparison(
-                    baseline_name="majority_class",
-                    sample_count=trade_count,
-                    directional_accuracy=round(maj_acc, 4),
-                    brier_score=round(maj_trade_brier, 4),
-                    candidate_delta_accuracy=round(win_rate - maj_acc, 4),
-                    candidate_delta_brier=round(maj_trade_brier - cand_trade_brier, 4),
-                )
-            )
-            base_comps.append(
-                BaselineComparison(
                     baseline_name="random_uniform",
                     sample_count=trade_count,
+                    decisive_sample_count=decisive_count,
+                    tie_count=tie_count,
                     directional_accuracy=0.50,
+                    decisive_directional_accuracy=0.50,
                     brier_score=round(uniform_trade_brier, 4),
                     candidate_delta_accuracy=round(win_rate - 0.50, 4),
+                    candidate_delta_decisive_accuracy=round(win_rate_decisive - 0.50, 4),
                     candidate_delta_brier=round(uniform_trade_brier - cand_trade_brier, 4),
+                    is_verified=True,
+                    status="VERIFIED",
                 )
             )
 
@@ -383,11 +478,16 @@ class ShadowOutcomeEvaluator:
         elif trade_count < self.min_qualifying_trades:
             has_edge = False
             verdict = "INSUFFICIENT_SAMPLE_SIZE_NO_EDGE"
-        elif ci_low <= break_even_decisive:
+        elif not self.baseline_comparison_available:
+            has_edge = False
+            verdict = "BASELINE_COMPARISON_UNAVAILABLE_NO_EDGE"
+        elif (ci_low_decisive <= break_even_decisive) or (ci_low_all <= break_even_all):
             has_edge = False
             verdict = "BREAK_EVEN_NOT_MET_NO_EDGE"
         elif not all(
-            b.candidate_delta_accuracy > 0.0 and b.candidate_delta_brier > 0.0 for b in base_comps
+            b.candidate_delta_accuracy > 0.0 and b.candidate_delta_brier > 0.0
+            for b in base_comps
+            if b.is_verified
         ):
             has_edge = False
             verdict = "BASELINE_SUPERIORITY_NOT_MET_NO_EDGE"
@@ -408,7 +508,10 @@ class ShadowOutcomeEvaluator:
         disclaimer = (
             "OFFLINE RESEARCH SHADOW EVALUATION. NO LIVE EXECUTION AUTHORITY. "
             "NO DEMONSTRATED EDGE. ASSUMED PAYOUT SIMULATIONS DO NOT CONSTITUTE "
-            "PROOF OF PROSPECTIVE PROFITABILITY. PHASE 38 MODEL REMAINS FROZEN."
+            "PROOF OF PROSPECTIVE PROFITABILITY. WILSON SCORE INTERVALS ASSUME "
+            "I.I.D. BERNOULLI TRIALS AND REPRESENT AN OPTIMAL BOUND UNDER "
+            "TEMPORAL SERIAL DEPENDENCE AND HISTORICAL MODEL SELECTION. "
+            "PHASE 38 MODEL REMAINS FROZEN."
         )
 
         return EvaluationSummary(
@@ -433,6 +536,10 @@ class ShadowOutcomeEvaluator:
             tie_rate=round(tie_rate, 4),
             wilson_ci_lower_95=round(ci_low, 4),
             wilson_ci_upper_95=round(ci_high, 4),
+            wilson_ci_lower_95_decisive=round(ci_low_decisive, 4),
+            wilson_ci_upper_95_decisive=round(ci_high_decisive, 4),
+            wilson_ci_lower_95_all=round(ci_low_all, 4),
+            wilson_ci_upper_95_all=round(ci_high_all, 4),
             break_even_win_rate=round(break_even_decisive, 4),
             break_even_win_rate_all=round(break_even_all, 4),
             has_statistical_edge=has_edge,
@@ -443,4 +550,8 @@ class ShadowOutcomeEvaluator:
             baseline_comparisons=base_comps,
             scientific_disclaimer=disclaimer,
             evaluation_timestamp_utc=datetime.now(UTC).isoformat(),
+            baseline_comparison_available=self.baseline_comparison_available,
+            baseline_source_id=self.baseline_source_id,
+            baseline_source_sha256=self.baseline_source_sha256,
+            exposure_overlap_classification=self.exposure_overlap_classification,
         )

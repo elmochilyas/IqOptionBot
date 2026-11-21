@@ -276,22 +276,169 @@ class ResearchDatasetManager:
     def __init__(self, root: Path | None = None) -> None:
         self.root = root.resolve() if root is not None else Path().resolve()
 
-    def discover_sources(self) -> list[DiscoveredSource]:
-        """Scan data catalogs and extended collection directories for potential datasets."""
-        sources: list[DiscoveredSource] = []
-
-        # 1. Discover catalogued Parquet datasets (e.g. data/datasets/catalog.db)
+    def _get_catalog(self) -> tuple[DatasetCatalog, Path] | None:
+        """Locate and return the primary DatasetCatalog instance and its base directory."""
         catalog_candidates = [
             self.root / "data" / "datasets" / "catalog.db",
             self.root / "datasets" / "catalog.db",
             self.root / "data" / "catalog.db",
             self.root / "catalog.db",
         ]
-        catalog_path = next((p for p in catalog_candidates if p.is_file()), None)
-        if catalog_path is not None:
-            catalog_base = catalog_path.parent
+        for p in catalog_candidates:
+            if p.is_file():
+                try:
+                    return DatasetCatalog(p), p.parent
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Error loading catalog at %s: %s", p, exc)
+        return None
+
+    def _validate_catalog_parquet_source(self, s: DiscoveredSource) -> CatalogEntry:
+        """Validate a CATALOG_PARQUET source strictly against the trusted DatasetCatalog.
+
+        Requires matching dataset ID, source path, symbol, instrument ID, timeframe,
+        synthetic/OTC flags, candle count, structural-integrity status, and checksums.
+        Rejects missing or mismatched catalog entries.
+        Do not trust caller-supplied is_eligible, provenance_class, or checksum fields.
+        """
+        cat_info = self._get_catalog()
+        if cat_info is None:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} rejected: "
+                f"no dataset catalog database found under {self.root}"
+            )
+        cat, catalog_base = cat_info
+        entry = cat.get_dataset(s.source_id)
+        if entry is None:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} is not registered in catalog ({cat.db_path})"
+            )
+        if s.source_id != entry.dataset_id:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source ID mismatch: caller claimed {s.source_id}, "
+                f"catalog entry has {entry.dataset_id}"
+            )
+
+        # Resolve expected paths from entry.file_path
+        entry_p = Path(entry.file_path)
+        valid_paths: list[Path] = []
+        if entry_p.is_absolute():
+            valid_paths.append(entry_p.resolve())
+        else:
+            valid_paths.append((catalog_base / entry_p).resolve())
+            valid_paths.append((self.root / entry_p).resolve())
+
+        if not s.path.exists():
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} file does not exist: {s.path}"
+            )
+        s_path_resolved = s.path.resolve()
+        if s_path_resolved not in valid_paths:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} path mismatch: "
+                f"path {s.path} (resolved {s_path_resolved}) does not match catalog registered path"
+            )
+        if not s.path.is_file():
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} path is not a file: {s.path}"
+            )
+
+        # Verify symbol and active_id
+        if entry.symbol != "EURUSD" or entry.active_id != 1:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} instrument mismatch: "
+                f"catalog symbol={entry.symbol}, active_id={entry.active_id} (expected EURUSD / 1)"
+            )
+
+        # Verify timeframe
+        if entry.candle_size_seconds != 60:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} timeframe mismatch: "
+                f"catalog candle_size_seconds={entry.candle_size_seconds} != 60"
+            )
+
+        # Verify synthetic / OTC flags
+        if entry.is_otc:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} has is_otc=True in catalog (OTC prohibited)"
+            )
+        if entry.is_synthetic:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} has is_synthetic=True in catalog "
+                "(synthetic prohibited)"
+            )
+
+        # Verify candle count
+        if entry.candle_count <= 0:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} has non-positive candle count in catalog "
+                f"({entry.candle_count})"
+            )
+        if s.candle_count != entry.candle_count:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} candle count mismatch: "
+                f"caller claimed {s.candle_count}, catalog has {entry.candle_count}"
+            )
+
+        # Verify structural integrity
+        if not entry.structural_integrity_passed:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} structural integrity failed in catalog"
+            )
+
+        # Verify actual file on disk
+        actual_sha = hashlib.sha256(s.path.read_bytes()).hexdigest()
+        if actual_sha != entry.sha256_checksum:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} file checksum mismatch: "
+                f"actual {actual_sha} != catalog {entry.sha256_checksum}"
+            )
+        if s.sha256_checksum and s.sha256_checksum != entry.sha256_checksum:
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} caller checksum mismatch: "
+                f"caller claimed {s.sha256_checksum}, catalog has {entry.sha256_checksum}"
+            )
+
+        # Verify Parquet table rows
+        try:
+            pq_file = pq.ParquetFile(s.path)
+            if pq_file.metadata.num_rows != entry.candle_count:
+                raise DatasetIntegrityError(
+                    f"Catalog parquet source {s.source_id} row count mismatch: "
+                    f"file has {pq_file.metadata.num_rows}, catalog has {entry.candle_count}"
+                )
+        except Exception as exc:
+            if isinstance(exc, DatasetIntegrityError):
+                raise
+            raise DatasetIntegrityError(
+                f"Catalog parquet source {s.source_id} corrupt: {exc}"
+            ) from exc
+
+        # Verify metadata sidecar if catalog entry specifies metadata_sha256
+        if entry.metadata_sha256:
+            meta_path = s.path.with_suffix(".meta.json")
+            if not meta_path.is_file():
+                raise DatasetIntegrityError(
+                    f"Catalog parquet source {s.source_id} missing sidecar metadata file: "
+                    f"{meta_path}"
+                )
+            actual_meta_sha = hashlib.sha256(meta_path.read_bytes()).hexdigest()
+            if actual_meta_sha != entry.metadata_sha256:
+                raise DatasetIntegrityError(
+                    f"Catalog parquet source {s.source_id} sidecar checksum mismatch: "
+                    f"actual {actual_meta_sha} != catalog {entry.metadata_sha256}"
+                )
+
+        return entry
+
+    def discover_sources(self) -> list[DiscoveredSource]:
+        """Scan data catalogs and extended collection directories for potential datasets."""
+        sources: list[DiscoveredSource] = []
+
+        # 1. Discover catalogued Parquet datasets (e.g. data/datasets/catalog.db)
+        cat_info = self._get_catalog()
+        if cat_info is not None:
+            catalog, catalog_base = cat_info
             try:
-                catalog = DatasetCatalog(catalog_path)
                 for entry in catalog.find_datasets():
                     entry_path = Path(entry.file_path)
                     if entry_path.is_absolute():
@@ -351,7 +498,7 @@ class ResearchDatasetManager:
                         )
                     )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Error reading catalog at %s: %s", catalog_path, exc)
+                logger.warning("Error reading catalog at %s: %s", catalog.db_path, exc)
 
         # 2. Discover Extended Collection sessions (e.g. data/extended_collection/collection_*)
         extended_candidates = [
@@ -440,9 +587,19 @@ class ResearchDatasetManager:
 
         Returns an immutable ResearchDatasetSnapshot with tamper-evident manifest.
         """
+        catalog_entries_by_source_id: dict[str, CatalogEntry] = {}
+
         if sources is None:
             all_sources = self.discover_sources()
             sources = [s for s in all_sources if s.is_eligible]
+            cat_info = self._get_catalog()
+            if cat_info is not None:
+                cat, _ = cat_info
+                for s in sources:
+                    if s.source_type == "CATALOG_PARQUET":
+                        entry = cat.get_dataset(s.source_id)
+                        if entry is not None:
+                            catalog_entries_by_source_id[s.source_id] = entry
         else:
             # Enforce documented eligibility rules on caller-supplied sources
             for s in sources:
@@ -521,28 +678,8 @@ class ResearchDatasetManager:
                             f"caller={s.wallet_classification}, inspected={inspected_wallet}"
                         )
                 elif s.source_type == "CATALOG_PARQUET":
-                    if not s.path.is_file():
-                        raise DatasetIntegrityError(f"Catalog file missing: {s.path}")
-                    actual_sha = hashlib.sha256(s.path.read_bytes()).hexdigest()
-                    if s.sha256_checksum and s.sha256_checksum != actual_sha:
-                        raise DatasetIntegrityError(
-                            f"Catalog parquet source {s.source_id} checksum mismatch: "
-                            f"caller claimed {s.sha256_checksum}, actual {actual_sha}"
-                        )
-                    try:
-                        pq_file = pq.ParquetFile(s.path)
-                        if pq_file.metadata.num_rows != s.candle_count:
-                            raise DatasetIntegrityError(
-                                f"Catalog parquet source {s.source_id} row count mismatch: "
-                                f"caller claimed {s.candle_count}, "
-                                f"file has {pq_file.metadata.num_rows}"
-                            )
-                    except Exception as exc:
-                        if isinstance(exc, DatasetIntegrityError):
-                            raise
-                        raise DatasetIntegrityError(
-                            f"Catalog parquet source {s.source_id} corrupt: {exc}"
-                        ) from exc
+                    entry = self._validate_catalog_parquet_source(s)
+                    catalog_entries_by_source_id[s.source_id] = entry
 
         if not sources:
             raise DatasetManagerError("No eligible authentic datasets available for preparation")
@@ -563,20 +700,14 @@ class ResearchDatasetManager:
         for src in sources:
             loaded_for_src: list[Candle] = []
             if src.source_type == "CATALOG_PARQUET":
-                # Find matching catalog entry
-                catalog_candidates = [
-                    self.root / "data" / "datasets" / "catalog.db",
-                    self.root / "datasets" / "catalog.db",
-                    self.root / "data" / "catalog.db",
-                    self.root / "catalog.db",
-                ]
-                catalog_path = next((p for p in catalog_candidates if p.is_file()), None)
-                cat = DatasetCatalog(catalog_path) if catalog_path else None
-                entry = cat.get_dataset(src.source_id) if cat else None
+                entry = catalog_entries_by_source_id.get(src.source_id)
+                if entry is None:
+                    entry = self._validate_catalog_parquet_source(src)
+                    catalog_entries_by_source_id[src.source_id] = entry
                 loaded_for_src = read_candles_parquet(
                     src.path,
                     catalog_entry=entry,
-                    verify_checksum=bool(entry and entry.sha256_checksum),
+                    verify_checksum=True,
                 )
             elif src.source_type == "EXTENDED_SESSION":
                 # Load candles from receipts

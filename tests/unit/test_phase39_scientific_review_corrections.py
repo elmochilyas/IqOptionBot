@@ -1064,6 +1064,64 @@ def test_wallet_provenance_faithful_reporting(tmp_path: Path) -> None:
         wallet_classification="REAL",
         sha256_checksum=snap_real.manifest.sha256_checksum,
     )
+    # Register sources in manager's catalog to prove authentic provenance
+    cat_m = DatasetCatalog(tmp_path / "m" / "data" / "datasets" / "catalog.db")
+    cat_m.register_dataset(
+        CatalogEntry(
+            dataset_id="src_prac",
+            schema_version="1.0.0",
+            source="TEST",
+            is_synthetic=False,
+            symbol="EURUSD",
+            active_id=1,
+            is_otc=False,
+            candle_size_seconds=60,
+            from_ts=snap_practice.manifest.from_ts,
+            to_ts=snap_practice.manifest.to_ts,
+            from_utc=snap_practice.manifest.from_utc,
+            to_utc=snap_practice.manifest.to_utc,
+            candle_count=snap_practice.manifest.total_candles_retained,
+            created_at_utc=datetime.now(UTC).isoformat(),
+            imported_at_utc=datetime.now(UTC).isoformat(),
+            quality_summary={},
+            structural_integrity_passed=True,
+            coverage_completeness_ratio=1.0,
+            research_sufficiency_status="SUFFICIENT",
+            research_sufficiency_policy="NONE",
+            file_path=str(snap_practice.parquet_path),
+            sha256_checksum=snap_practice.manifest.sha256_checksum,
+            metadata_path="",
+            metadata_sha256="",
+        )
+    )
+    cat_m.register_dataset(
+        CatalogEntry(
+            dataset_id="src_real",
+            schema_version="1.0.0",
+            source="TEST",
+            is_synthetic=False,
+            symbol="EURUSD",
+            active_id=1,
+            is_otc=False,
+            candle_size_seconds=60,
+            from_ts=snap_real.manifest.from_ts,
+            to_ts=snap_real.manifest.to_ts,
+            from_utc=snap_real.manifest.from_utc,
+            to_utc=snap_real.manifest.to_utc,
+            candle_count=snap_real.manifest.total_candles_retained,
+            created_at_utc=datetime.now(UTC).isoformat(),
+            imported_at_utc=datetime.now(UTC).isoformat(),
+            quality_summary={},
+            structural_integrity_passed=True,
+            coverage_completeness_ratio=1.0,
+            research_sufficiency_status="SUFFICIENT",
+            research_sufficiency_policy="NONE",
+            file_path=str(snap_real.parquet_path),
+            sha256_checksum=snap_real.manifest.sha256_checksum,
+            metadata_path="",
+            metadata_sha256="",
+        )
+    )
     mgr_mixed = ResearchDatasetManager(tmp_path / "m")
     snap_mixed = mgr_mixed.prepare_dataset(sources=[s1, s2])
     assert "MIXED_WALLET_EVIDENCE" in snap_mixed.manifest.wallet_classification
@@ -1145,3 +1203,155 @@ def test_scientific_verdict_matches_manifest_tracker_and_desktop(tmp_path: Path)
         assert item_vals[6] == result.verdict
     finally:
         root.destroy()
+
+
+# -----------------------------------------------------------------------------
+# 22. Fabricated caller-supplied Parquet rejected even with matching checksum
+# -----------------------------------------------------------------------------
+def test_fabricated_caller_supplied_parquet_rejected_even_with_matching_checksum(
+    tmp_path: Path,
+) -> None:
+    """Verify fabricated Parquet cannot be promoted to authentic snapshot via matching checksum."""
+    mgr = ResearchDatasetManager(tmp_path)
+
+    # Create a fabricated parquet file outside any catalog
+    fake_dir = tmp_path / "fabricated"
+    fake_dir.mkdir(parents=True)
+    fake_parquet = fake_dir / "fake_candles.parquet"
+    sha = _create_synthetic_parquet(fake_parquet, 1700000000, 100)
+
+    # Caller claims is_eligible=True, authentic provenance, and supplies exact matching checksum
+    fake_source = DiscoveredSource(
+        source_id="fabricated_unregistered_id",
+        source_type="CATALOG_PARQUET",
+        path=fake_parquet,
+        candle_count=100,
+        from_ts=1700000000,
+        to_ts=1700000000 + 99 * 60,
+        from_utc=datetime.fromtimestamp(1700000000, tz=UTC).isoformat(),
+        to_utc=datetime.fromtimestamp(1700000000 + 99 * 60, tz=UTC).isoformat(),
+        is_eligible=True,
+        exclusion_reason=None,
+        provenance_class="AUTHENTIC_RESEARCH_SNAPSHOT",
+        wallet_classification="PRACTICE",
+        sha256_checksum=sha,
+    )
+
+    # 1. Rejection when no catalog exists
+    with pytest.raises(DatasetIntegrityError, match="no dataset catalog database found"):
+        mgr.prepare_dataset(sources=[fake_source])
+
+    # 2. Rejection when catalog exists but source is not registered
+    _ = DatasetCatalog(tmp_path / "data" / "datasets" / "catalog.db")
+    # Catalog is empty, source is not registered
+    with pytest.raises(DatasetIntegrityError, match="is not registered in catalog"):
+        mgr.prepare_dataset(sources=[fake_source])
+
+
+# -----------------------------------------------------------------------------
+# 23. Caller-supplied Parquet with mismatched catalog metadata rejected
+# -----------------------------------------------------------------------------
+def test_caller_supplied_parquet_mismatched_catalog_metadata_rejected(tmp_path: Path) -> None:
+    """Verify caller-supplied catalog parquet with mismatched metadata is strictly rejected."""
+    cat_dir = tmp_path / "data" / "datasets"
+    cat_dir.mkdir(parents=True)
+    cat = DatasetCatalog(cat_dir / "catalog.db")
+
+    real_p = cat_dir / "legit.parquet"
+    sha_real = _create_synthetic_parquet(real_p, 1700000000, 100)
+
+    # Register legit dataset with symbol='GBPUSD' (ineligible symbol)
+    cat.register_dataset(
+        CatalogEntry(
+            dataset_id="ds_gbpusd",
+            schema_version="1.0.0",
+            source="TEST",
+            is_synthetic=False,
+            symbol="GBPUSD",
+            active_id=2,
+            is_otc=False,
+            candle_size_seconds=60,
+            from_ts=1700000000,
+            to_ts=1700000000 + 99 * 60,
+            from_utc=datetime.fromtimestamp(1700000000, tz=UTC).isoformat(),
+            to_utc=datetime.fromtimestamp(1700000000 + 99 * 60, tz=UTC).isoformat(),
+            candle_count=100,
+            created_at_utc=datetime.now(UTC).isoformat(),
+            imported_at_utc=datetime.now(UTC).isoformat(),
+            quality_summary={},
+            structural_integrity_passed=True,
+            coverage_completeness_ratio=1.0,
+            research_sufficiency_status="SUFFICIENT",
+            research_sufficiency_policy="NONE",
+            file_path=str(real_p),
+            sha256_checksum=sha_real,
+            metadata_path="",
+            metadata_sha256="",
+        )
+    )
+
+    mgr = ResearchDatasetManager(tmp_path)
+    s_wrong_sym = DiscoveredSource(
+        source_id="ds_gbpusd",
+        source_type="CATALOG_PARQUET",
+        path=real_p,
+        candle_count=100,
+        from_ts=1700000000,
+        to_ts=1700000000 + 99 * 60,
+        from_utc="",
+        to_utc="",
+        is_eligible=True,
+        exclusion_reason=None,
+        provenance_class="AUTHENTIC_RESEARCH_SNAPSHOT",
+        wallet_classification="UNKNOWN",
+        sha256_checksum=sha_real,
+    )
+    with pytest.raises(DatasetIntegrityError, match="instrument mismatch"):
+        mgr.prepare_dataset(sources=[s_wrong_sym])
+
+    # Register legit dataset with wrong path
+    cat.register_dataset(
+        CatalogEntry(
+            dataset_id="ds_path_mismatch",
+            schema_version="1.0.0",
+            source="TEST",
+            is_synthetic=False,
+            symbol="EURUSD",
+            active_id=1,
+            is_otc=False,
+            candle_size_seconds=60,
+            from_ts=1700000000,
+            to_ts=1700000000 + 99 * 60,
+            from_utc="",
+            to_utc="",
+            candle_count=100,
+            created_at_utc=datetime.now(UTC).isoformat(),
+            imported_at_utc=datetime.now(UTC).isoformat(),
+            quality_summary={},
+            structural_integrity_passed=True,
+            coverage_completeness_ratio=1.0,
+            research_sufficiency_status="SUFFICIENT",
+            research_sufficiency_policy="NONE",
+            file_path="other_location/file.parquet",
+            sha256_checksum=sha_real,
+            metadata_path="",
+            metadata_sha256="",
+        )
+    )
+    s_wrong_path = DiscoveredSource(
+        source_id="ds_path_mismatch",
+        source_type="CATALOG_PARQUET",
+        path=real_p,  # real_p does not match 'other_location/file.parquet'
+        candle_count=100,
+        from_ts=1700000000,
+        to_ts=1700000000 + 99 * 60,
+        from_utc="",
+        to_utc="",
+        is_eligible=True,
+        exclusion_reason=None,
+        provenance_class="AUTHENTIC_RESEARCH_SNAPSHOT",
+        wallet_classification="UNKNOWN",
+        sha256_checksum=sha_real,
+    )
+    with pytest.raises(DatasetIntegrityError, match="path mismatch"):
+        mgr.prepare_dataset(sources=[s_wrong_path])

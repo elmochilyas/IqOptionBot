@@ -130,6 +130,15 @@ The Dataset Manager provides an automated, immutable dataset preparation pipelin
   - Valid candle count must be $> 0$.
   - Symbol must strictly match `EURUSD` on timeframe `M1`.
   - Explicitly rejects OTC (`is_otc=True`), synthetic instruments, uncommitted files, forged candle counts, checksum mismatches, or forged wallet metadata with `DatasetIntegrityError`.
+- **Strict Catalog Source Binding & Fabricated Data Rejection**: Every caller-supplied `CATALOG_PARQUET` source is validated strictly against the trusted `DatasetCatalog` database under the repository root:
+  - Requires an active, verified catalog entry in `catalog.db` matching `dataset_id`.
+  - Enforces path matching against registered catalog paths (absolute or catalog-relative).
+  - Enforces `symbol == 'EURUSD'`, `active_id == 1`, `candle_size_seconds == 60`, `is_otc == False`, `is_synthetic == False`.
+  - Enforces matching positive candle count across catalog metadata and physical Parquet rows.
+  - Enforces `structural_integrity_passed == True`.
+  - Verifies cryptographic SHA-256 of the Parquet file against `entry.sha256_checksum` and sidecar metadata checksums if present.
+  - Fabricated or uncataloged Parquet files cannot be promoted to authentic snapshots merely by providing their own matching checksums; any mismatch raises `DatasetIntegrityError`.
+  - `read_candles_parquet()` is always invoked with a verified `CatalogEntry` and `verify_checksum=True`.
 
 ### G. Target Contract Distinction from Phase 38
 - Target is formally designated `GENERIC_CLOSE_TO_CLOSE_DIRECTION` ($y = 1$ if $Close_{t+H} > Close_t$ else $0$).
@@ -194,7 +203,51 @@ iqresearch laboratory evaluate-model <MODEL_ID>
 | Ruff Linter | Passed (0 errors) | 374 files checked |
 | Pip Environment Integrity | Passed (0 broken deps) | No broken requirements found |
 | Security Check | Passed (7/7 checks) | Read-only posture, zero TLS bypass, offline default |
-| Unit Test Suite | 25/25 Phase 39 tests passed | `test_dataset_manager.py`, `test_model_laboratory.py`, `test_desktop_laboratory.py`, `test_phase39_scientific_review_corrections.py` |
-| Full Regression Suite | Passed (2,434 passed, 2 skipped) | Zero regressions across existing modules (2,436 total collected items) |
+| Unit Test Suite | 27/27 Phase 39 tests passed | `test_dataset_manager.py`, `test_model_laboratory.py`, `test_desktop_laboratory.py`, `test_phase39_scientific_review_corrections.py` |
+| Full Regression Suite | Passed (2,447 passed, 2 skipped) | Zero regressions across existing modules |
 | Historical Evidence Preservation | 100% Intact | `data/extended_collection/collection_a20ad775b77d4f2bab787f540b2d6890` unmodified |
 | Live Execution Authority | ZERO | Offline research only. Phase 38 model remains frozen |
+
+---
+
+## 8. Real Offline Acceptance Run Summary
+
+A live offline acceptance run was executed against authentic local market data:
+1. **Source Discovery**:
+   - 152 total discovered sources (146 catalog Parquet datasets + 1 live V2 collection session + 5 empty weekend sessions excluded fail-closed).
+   - 147 eligible authentic EURUSD sources.
+2. **Immutable Snapshot**:
+   - `snapshot_id`: `rds_eurusd_m1_20261121_161531_215496a1a71f`
+   - `sha256_checksum`: `6398befe8e0da71a27d27c1f6e4b147e8e8ef612d474de7ec9fd168eb2ac3071`
+   - Discovered: 67,675 candles.
+   - Deduplicated boundaries: 1,206.
+   - Quarantined conflicts: 2 boundaries (`OHLCV_DISAGREEMENT_ACROSS_SOURCES`).
+   - Retained candles: 66,464 authentic candles ($2026\text{-}09\text{-}15\text{T}05:01:00\text{Z}$ to $2026\text{-}11\text{-}20\text{T}21:59:00\text{Z}$).
+   - Scheduled closures: 9 weekend market closures.
+   - Unscheduled intraday gaps: 4 gaps.
+   - Wallet provenance: `MIXED_WALLET_EVIDENCE: ['CONFLICTING_ACCOUNT_INDICATORS', 'UNKNOWN']`.
+3. **Training Row Exclusions**:
+   - Feature & target pipeline processed 66,464 retained candles.
+   - Excluded lookback warmup: 237 rows.
+   - Excluded weekend closure forward horizons: 9 rows.
+   - Excluded intraday gap forward horizons: 2 rows.
+   - Excluded tail horizon: 0 rows.
+   - Total excluded: 248 rows; Retained ML rows: 66,216.
+4. **Baseline Model (`majority_class`)**:
+   - Model ID: `candidate_majority_class_20261121_161656_lab_18f835315aea`
+   - Test Directional Accuracy: 53.49% (full partition classification).
+   - Test Brier Score: 0.2492.
+   - Trade Count: 0 trades (coverage: 0.0%, abstention: 100.0%).
+   - Verdict: `INSUFFICIENT_SAMPLE_SIZE_NO_EDGE`.
+5. **Candidate Model (`logistic_regression`)**:
+   - Model ID: `candidate_logistic_regression_20261121_161709_lab_07c5d55f97fc`
+   - Configuration: `seed=42`, `horizon_bars=1`, `assumed_payout=0.85` (break-even: 54.054%), `confidence_threshold=0.55`, `calibrator=isotonic`.
+   - Test Directional Accuracy: 51.97% (full partition).
+   - Test Brier Score: 0.2495.
+   - Holdout Trade Count: 278 qualifying trades (coverage: 2.8%, abstention: 97.2%).
+   - Selective Win Rate: 59.06% (164 wins / 278 trades).
+   - Wilson 95% Confidence Interval: $[53.17\%, 64.70\%]$.
+   - Break-even Comparison: Lower bound ($53.17\%$) does not strictly exceed break-even ($54.054\%$).
+   - Baseline Superiority: False (majority class baseline full holdout accuracy 53.49% > candidate 51.97%).
+   - Scientific Verdict: `NO_RELIABLE_EDGE_DETECTED` (`has_statistical_edge = False`).
+   - Artifacts: Bundle, manifest, SQLite tracker, and Tkinter UI display 100% consistent metrics and verdicts.

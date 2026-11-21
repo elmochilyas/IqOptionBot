@@ -131,14 +131,23 @@ The `ShadowOutcomeEvaluator` resolves outcomes for committed predictions strictl
 - **INVALID_DISCONTINUITY**: An unexpected gap or missing candle occurred before maturity.
 
 ### C. Statistical & Economic Metrics
-- **Selective Win Rate**: Calculated strictly on taken trades: $W = \frac{\text{Wins}}{\text{Wins} + \text{Losses} + \text{Ties}}$.
+- **Selective Win Rate (All Trades)**: Calculated across all trades taken, including ties: $W = \frac{\text{Wins}}{\text{Wins} + \text{Losses} + \text{Ties}}$.
+- **Selective Win Rate (Decisive Trades)**: Calculated strictly conditional on decisive (non-tie) outcomes: $W_{\text{decisive}} = \frac{\text{Wins}}{\text{Wins} + \text{Losses}}$.
+- **Tie Rate**: Proportion of trades resulting in an exact price tie (refund): $T_{\text{rate}} = \frac{\text{Ties}}{\text{Total Trades}}$.
 - **Coverage & Abstention Rates**: $\text{Coverage} = \frac{\text{Trades}}{\text{Resolved}}$, $\text{Abstention} = \frac{\text{Skips}}{\text{Resolved}}$.
 - **Full Directional Accuracy**: Proportion of correct directional classifications across all observations.
 - **Brier Score Calibration**: Mean squared difference between predicted probabilities and binary outcomes: $\text{Brier} = \frac{1}{N} \sum (P(\text{UP}) - Y)^2$.
-- **Wilson 95% Score Confidence Interval**: Exact binomial confidence interval $[L, U]$ on the selective win rate.
-- **Break-Even Win Rate**: Calculated from assumed payout rate $P$ (default 85%): $W_{\text{be}} = \frac{1}{1 + P} = 54.05\%$.
-- **Simulated Expectancy**: $E = (W \cdot P - (1 - W)) \cdot 100\%$.
-- **Reference Baselines**: Compares candidate metrics against Majority Class and Random Uniform baselines on the identical observation population.
+- **Wilson 95% Score Confidence Interval**: Exact binomial confidence interval $[L, U]$ on selective win rate.
+- **Break-Even Win Rate (Decisive)**: Decisive break-even hurdle from assumed payout rate $P$ (default 85%): $W_{\text{be, decisive}} = \frac{1}{1 + P} = 54.05\%$.
+- **Break-Even Win Rate (All Trades)**: Accounts for refunded ties: $W_{\text{be, all}} = \frac{1 - T_{\text{rate}}}{1 + P} = \frac{1 - 15/397}{1.85} = 52.01\%$.
+- **Tie-Aware Simulated Expectancy**: Calculated from actual simulated P&L where ties refund 0:
+  $$\text{PnL} = \text{Wins} \cdot P - \text{Losses} \cdot 1.0 + \text{Ties} \cdot 0.0$$
+  $$E = \frac{\text{PnL}}{\text{Total Trades}} \cdot 100\% = \frac{188 \cdot 0.85 - 194 \cdot 1.0}{397} \cdot 100\% = \frac{-34.2}{397} \cdot 100\% = -8.61\%$$
+  *(Corrected from legacy formula which counted refunded ties as losses resulting in -12.39%).*
+- **Hindsight-Free Reference Baselines**:
+  - Compares candidate metrics against Majority Class and Random Uniform baselines on the **identical observation population** (`trade_preds`, $N=397$).
+  - The majority class baseline direction is permanently frozen from pre-cutoff training metadata (`training_majority_direction = "DOWN"`, `training_majority_prob_up = 0.4691`). The evaluator never derives a baseline direction from evaluation period labels.
+  - Modifying future evaluation outcomes leaves the baseline's predictions and probabilities invariant.
 
 ---
 
@@ -151,11 +160,22 @@ The `HistoricalReplayEngine` coordinates chronological playback of historical ma
 - Safe for execution on resource-constrained systems (safe for 16 GB RAM).
 - Supports cooperative cancellation via `cancel_token` and progress reporting.
 
-### B. Training Cutoff Overlap Disclosure
+### B. Training Cutoff Overlap Disclosure & Scientific Verdicts
 - Compares the replay start timestamp against the model's frozen `data_cutoff_ts`.
 - If replay data starts before or overlaps the candidate's training data, the engine flags `is_functional_test = True` and records `FUNCTIONAL_REPLAY_TEST_ONLY` in `session.json`, upholding complete scientific honesty regarding out-of-sample validity.
+- For all offline replays, `has_statistical_edge` remains strictly `False` and project disposition remains `NO_DEMONSTRATED_EDGE`. Candidate models are not automatically promoted.
 
-### C. Acceptance Verification Replay Results
+### C. Evidence Storage Durability, Replay Diagnostics & Provenance
+- **Self-Digest Integrity Verification**: `ShadowModelRegistry` verifies the top-level `registry_sha256` upon initialization and reading, failing closed with `RegistryIntegrityError` if tampering is detected.
+- **Fail-Closed Journal Recovery**: `ShadowPredictionJournal` rejects corrupt, malformed, orphaned, or conflicting records on startup (`JournalCorruptionError`, `OrphanedOutcomeError`, `ConflictingOutcomeError`).
+- **Disk Durability**: Append operations enforce immediate persistence via `f.flush()` and `os.fsync(f.fileno())`.
+- **Path Traversal Protection**: Session and model identifiers are validated across CLI, engine, and journal via `validate_storage_identifier()`, rejecting directory traversal attempts (`..`, `/`, `\`).
+- **Idempotency & Session Protection**: Attempts to reuse completed session IDs fail closed with `SessionAlreadyCompletedError`.
+- **Diagnostic Failure Tracking**: Prediction engine errors are tracked in `prediction_failures_count` and diagnostics, strictly distinguished from model abstentions (`SKIP`).
+- **Provenance Timestamps**: Distinguishes theoretical candle close (`feature_cutoff_ts`), simulated decision time (`simulated_decision_ts`), actual wall-clock execution time (`executed_wall_clock_utc`), and market feed availability (`broker_availability_type = "HISTORICAL_THEORETICAL_CLOSE"`).
+- **Session Verification**: `verify_session()` computes cryptographic checksums over `predictions.jsonl` and `outcomes.jsonl`. Legacy sessions without checksums are preserved without modification and classified as `LEGACY_UNVERIFIED_EVIDENCE`.
+
+### D. Acceptance Verification Replay Results
 A full offline historical replay run was executed on authentic EURUSD M1 market data (`rds_eurusd_m1_20261121_161531_215496a1a71f`) using frozen candidate `candidate_logistic_regression_20261121_161709_lab_07c5d55f97fc`:
 
 | Metric | Recorded Value |
@@ -169,17 +189,20 @@ A full offline historical replay run was executed on authentic EURUSD M1 market 
 | **Skipped / Abstained** | 82 (17.12% abstention) |
 | **Trades Taken** | 397 (82.88% coverage) |
 | **Wins / Losses / Ties** | 188 / 194 / 15 |
-| **Selective Win Rate** | **47.36%** |
-| **Wilson 95% Confidence Interval** | **[42.49%, 52.27%]** |
-| **Break-Even Threshold (85% payout)** | **54.05%** |
+| **Selective Win Rate (All Trades)** | **47.36%** |
+| **Selective Win Rate (Decisive Non-Tie)** | **49.21%** |
+| **Tie Rate** | **3.78%** |
+| **Wilson 95% Confidence Interval (All)** | **[42.49%, 52.27%]** |
+| **Break-Even Threshold (Decisive / All)** | **54.05% / 52.01%** |
 | **Full Directional Accuracy** | 49.89% |
 | **Brier Score** | 0.2507 |
-| **Simulated Expectancy** | **-12.39%** |
+| **Simulated Expectancy (Corrected)** | **-8.61%** *(Legacy uncorrected: -12.39%)* |
 | **Statistical Edge Proven** | **False** |
-| **Designation** | `FUNCTIONAL_REPLAY_TEST_ONLY` (overlaps training cutoff) |
+| **Scientific Verdict** | `FUNCTIONAL_REPLAY_TEST_ONLY_NO_EDGE` |
+| **Evidence Status** | `LEGACY_UNVERIFIED_EVIDENCE` (original artifact preserved intact) |
 | **Session Self-Digest (`session_sha256`)** | `48a1fc55f12a9abaa509619305692bb103603641a54f737d2fc46b7e12a2b877` |
 
-**Scientific Verdict**: The candidate model achieved a selective win rate of 47.36%, with the upper bound of its Wilson 95% confidence interval (52.27%) failing to reach the 54.05% break-even hurdle. The model exhibits zero demonstrated predictive edge, confirming the necessity of fail-closed safety.
+**Scientific Verdict**: The candidate model achieved a selective win rate of 47.36% (49.21% decisive), with the upper bound of its Wilson 95% confidence interval (52.27%) failing to reach either break-even threshold (54.05% decisive, 52.01% all). Simulated expectancy under the 0-PnL refund assumption for ties is -8.61%. The model exhibits zero demonstrated predictive edge, confirming the necessity of fail-closed safety.
 
 ---
 

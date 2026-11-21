@@ -35,6 +35,7 @@ from iqoption_research.market_data.parquet_storage import (
 from iqoption_research.ml.laboratory import ExperimentConfig, ModelLaboratory
 from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.research.dataset_manager import ResearchDatasetManager
+from iqoption_research.research.prospective import digest
 from iqoption_research.shadow.engine import (
     DecisionAction,
     DiscontinuousDataError,
@@ -48,19 +49,28 @@ from iqoption_research.shadow.evaluator import (
     ShadowOutcomeEvaluator,
 )
 from iqoption_research.shadow.journal import (
+    ConflictingOutcomeError,
     DuplicatePredictionError,
+    JournalCorruptionError,
+    JournalError,
+    OrphanedOutcomeError,
+    OutcomeEventRecord,
     OutcomeResolutionError,
     OutcomeStatus,
     ShadowPredictionJournal,
     ShadowPredictionRecord,
+    validate_storage_identifier,
 )
 from iqoption_research.shadow.registry import (
+    RegistryIntegrityError,
     ShadowModelRegistry,
 )
 from iqoption_research.shadow.replay import (
     HistoricalReplayEngine,
     ReplayCancelledError,
     ReplayConfig,
+    ReplayError,
+    SessionAlreadyCompletedError,
 )
 
 
@@ -687,3 +697,736 @@ def test_desktop_shadow_panel_initialization(mock_dashboard: MagicMock, tk_root:
     # Scientific warning banner check (ensures offline disclaimer is prominent)
     assert "OFFLINE RESEARCH ONLY" in panel.warning_label["text"]
     assert "NO LIVE EXECUTION AUTHORITY" in panel.warning_label["text"]
+
+
+# ---------------------------------------------------------------------------
+# 7. Phase 40A Final Evidence & Evaluation Hardening Tests
+# ---------------------------------------------------------------------------
+
+
+def test_shadow_expectancy_and_tie_accounting_exact(tmp_path: Path) -> None:
+    """Requirement A: Tie-aware simulated expectancy calculation.
+
+    For 188 wins, 194 losses, 15 ties at 85% payout:
+    PnL = 188 * 0.85 - 194 * 1.0 + 15 * 0.0 = 159.8 - 194 = -34.2
+    Expectancy = -34.2 / 397 = -8.6146...% ≈ -8.61% (NOT -12.39%).
+    """
+    session_dir = tmp_path / "sessions" / "session_expectancy"
+    journal = ShadowPredictionJournal("session_expectancy", session_dir=session_dir)
+    evaluator = ShadowOutcomeEvaluator(journal, assumed_payout=0.85, min_qualifying_trades=100)
+
+    # Record 188 wins, 194 losses, 15 ties
+    t = 1000
+    # 188 Wins
+    for i in range(188):
+        pid = f"win_{i}"
+        rec = ShadowPredictionRecord(
+            session_id="session_expectancy",
+            prediction_id=pid,
+            model_id="cand_test",
+            artifact_hash="hash",
+            symbol="EURUSD",
+            timeframe=60,
+            feature_cutoff_ts=t,
+            feature_cutoff_utc="2023-11-14T22:00:00+00:00",
+            data_availability_ts=t,
+            data_availability_utc="2023-11-14T22:00:00+00:00",
+            provenance_class="HISTORICAL",
+            prediction_created_ts="2023-11-14T22:00:00+00:00",
+            probabilities={"UP": 0.6, "DOWN": 0.4},
+            decision="UP",
+            confidence_threshold=0.52,
+            prediction_horizon_bars=1,
+            expected_maturity_ts=t + 60,
+            expected_maturity_utc="2023-11-14T22:01:00+00:00",
+            feature_fingerprint=f"fp_{pid}",
+            prediction_fingerprint="",
+            runtime_diagnostics={},
+            evidence_class="OFFLINE_REPLAY",
+        )
+        journal.record_prediction(rec)
+        journal.resolve_outcome(
+            prediction_id=pid,
+            evaluated_at_utc="2023-11-14T22:01:01+00:00",
+            outcome_status=OutcomeStatus.RESOLVED_WIN,
+            cutoff_candle_close=1.0500,
+            maturity_candle_close=1.0510,
+            actual_return=0.0010,
+            market_direction="UP",
+            was_trade_taken=True,
+            is_winning_trade=True,
+            simulated_payout_pnl=0.85,
+        )
+        t += 60
+
+    # 194 Losses
+    for i in range(194):
+        pid = f"loss_{i}"
+        rec = ShadowPredictionRecord(
+            session_id="session_expectancy",
+            prediction_id=pid,
+            model_id="cand_test",
+            artifact_hash="hash",
+            symbol="EURUSD",
+            timeframe=60,
+            feature_cutoff_ts=t,
+            feature_cutoff_utc="2023-11-14T22:00:00+00:00",
+            data_availability_ts=t,
+            data_availability_utc="2023-11-14T22:00:00+00:00",
+            provenance_class="HISTORICAL",
+            prediction_created_ts="2023-11-14T22:00:00+00:00",
+            probabilities={"UP": 0.6, "DOWN": 0.4},
+            decision="UP",
+            confidence_threshold=0.52,
+            prediction_horizon_bars=1,
+            expected_maturity_ts=t + 60,
+            expected_maturity_utc="2023-11-14T22:01:00+00:00",
+            feature_fingerprint=f"fp_{pid}",
+            prediction_fingerprint="",
+            runtime_diagnostics={},
+            evidence_class="OFFLINE_REPLAY",
+        )
+        journal.record_prediction(rec)
+        journal.resolve_outcome(
+            prediction_id=pid,
+            evaluated_at_utc="2023-11-14T22:01:01+00:00",
+            outcome_status=OutcomeStatus.RESOLVED_LOSS,
+            cutoff_candle_close=1.0510,
+            maturity_candle_close=1.0500,
+            actual_return=-0.0010,
+            market_direction="DOWN",
+            was_trade_taken=True,
+            is_winning_trade=False,
+            simulated_payout_pnl=-1.0,
+        )
+        t += 60
+
+    # 15 Ties
+    for i in range(15):
+        pid = f"tie_{i}"
+        rec = ShadowPredictionRecord(
+            session_id="session_expectancy",
+            prediction_id=pid,
+            model_id="cand_test",
+            artifact_hash="hash",
+            symbol="EURUSD",
+            timeframe=60,
+            feature_cutoff_ts=t,
+            feature_cutoff_utc="2023-11-14T22:00:00+00:00",
+            data_availability_ts=t,
+            data_availability_utc="2023-11-14T22:00:00+00:00",
+            provenance_class="HISTORICAL",
+            prediction_created_ts="2023-11-14T22:00:00+00:00",
+            probabilities={"UP": 0.6, "DOWN": 0.4},
+            decision="UP",
+            confidence_threshold=0.52,
+            prediction_horizon_bars=1,
+            expected_maturity_ts=t + 60,
+            expected_maturity_utc="2023-11-14T22:01:00+00:00",
+            feature_fingerprint=f"fp_{pid}",
+            prediction_fingerprint="",
+            runtime_diagnostics={},
+            evidence_class="OFFLINE_REPLAY",
+        )
+        journal.record_prediction(rec)
+        journal.resolve_outcome(
+            prediction_id=pid,
+            evaluated_at_utc="2023-11-14T22:01:01+00:00",
+            outcome_status=OutcomeStatus.RESOLVED_TIE,
+            cutoff_candle_close=1.0500,
+            maturity_candle_close=1.0500,
+            actual_return=0.0,
+            market_direction="TIE",
+            was_trade_taken=True,
+            is_winning_trade=False,
+            simulated_payout_pnl=0.0,
+        )
+        t += 60
+
+    summary = evaluator.summarize(model_id="cand_test", symbol="EURUSD")
+
+    # Counts
+    assert summary.total_predictions == 397
+    assert summary.trade_count == 397
+    assert summary.win_count == 188
+    assert summary.loss_count == 194
+    assert summary.tie_count == 15
+
+    # Simulated expectancy: exactly -8.61%
+    assert summary.simulated_expectancy_pct == -8.61
+
+    # Win rate definitions:
+    # All trades: 188 / 397 = 47.36%
+    assert summary.win_rate == 0.4736
+    # Decisive (non-tie) trades: 188 / (188 + 194) = 188 / 382 = 49.21%
+    assert summary.win_rate_decisive == 0.4921
+    # Tie rate: 15 / 397 = 3.78%
+    assert summary.tie_rate == 0.0378
+    # Break-even threshold decisive: 1 / 1.85 = 54.05%
+    assert summary.break_even_win_rate == 0.5405
+    # Break-even threshold all: (1 - 0.0378) / 1.85 = 52.01%
+    assert summary.break_even_win_rate_all == 0.5201
+
+    # Invariants: no statistical edge
+    assert summary.has_statistical_edge is False
+
+
+def test_shadow_baseline_hindsight_prevention(tmp_path: Path) -> None:
+    """Requirement B: Baseline predictions must be invariant to evaluation period outcomes."""
+    # Setup evaluator with frozen majority direction "DOWN" and frozen prob up 0.4691
+    session_dir_a = tmp_path / "sessions" / "session_eval_up"
+    journal_a = ShadowPredictionJournal("session_eval_up", session_dir=session_dir_a)
+    evaluator_a = ShadowOutcomeEvaluator(
+        journal_a,
+        frozen_majority_direction="DOWN",
+        frozen_majority_prob_up=0.4691,
+    )
+
+    session_dir_b = tmp_path / "sessions" / "session_eval_down"
+    journal_b = ShadowPredictionJournal("session_eval_down", session_dir=session_dir_b)
+    evaluator_b = ShadowOutcomeEvaluator(
+        journal_b,
+        frozen_majority_direction="DOWN",
+        frozen_majority_prob_up=0.4691,
+    )
+
+    t = 1000
+    for i in range(50):
+        pid = f"p_{i}"
+        for jnl in (journal_a, journal_b):
+            rec = ShadowPredictionRecord(
+                session_id=jnl.session_id,
+                prediction_id=pid,
+                model_id="cand_test",
+                artifact_hash="hash",
+                symbol="EURUSD",
+                timeframe=60,
+                feature_cutoff_ts=t,
+                feature_cutoff_utc="2023-11-14T22:00:00+00:00",
+                data_availability_ts=t,
+                data_availability_utc="2023-11-14T22:00:00+00:00",
+                provenance_class="HISTORICAL",
+                prediction_created_ts="2023-11-14T22:00:00+00:00",
+                probabilities={"UP": 0.55, "DOWN": 0.45},
+                decision="UP",
+                confidence_threshold=0.52,
+                prediction_horizon_bars=1,
+                expected_maturity_ts=t + 60,
+                expected_maturity_utc="2023-11-14T22:01:00+00:00",
+                feature_fingerprint=f"fp_{pid}",
+                prediction_fingerprint="",
+                runtime_diagnostics={},
+                evidence_class="OFFLINE_REPLAY",
+            )
+            jnl.record_prediction(rec)
+
+        # Journal A resolves as 100% UP in evaluation period
+        journal_a.resolve_outcome(
+            prediction_id=pid,
+            evaluated_at_utc="2023-11-14T22:01:01+00:00",
+            outcome_status=OutcomeStatus.RESOLVED_WIN,
+            cutoff_candle_close=1.0500,
+            maturity_candle_close=1.0510,
+            actual_return=0.0010,
+            market_direction="UP",
+            was_trade_taken=True,
+            is_winning_trade=True,
+            simulated_payout_pnl=0.85,
+        )
+
+        # Journal B resolves as 100% DOWN in evaluation period
+        journal_b.resolve_outcome(
+            prediction_id=pid,
+            evaluated_at_utc="2023-11-14T22:01:01+00:00",
+            outcome_status=OutcomeStatus.RESOLVED_LOSS,
+            cutoff_candle_close=1.0510,
+            maturity_candle_close=1.0500,
+            actual_return=-0.0010,
+            market_direction="DOWN",
+            was_trade_taken=True,
+            is_winning_trade=False,
+            simulated_payout_pnl=-1.0,
+        )
+        t += 60
+
+    summary_a = evaluator_a.summarize()
+    summary_b = evaluator_b.summarize()
+
+    # The frozen majority baseline always predicts "DOWN"
+    # When evaluation data was all UP: majority baseline accuracy is 0.0 (0/50)
+    maj_a = next(b for b in summary_a.baseline_comparisons if b.baseline_name == "majority_class")
+    assert maj_a.directional_accuracy == 0.0
+
+    # When evaluation data was all DOWN: majority baseline accuracy is 1.0 (50/50)
+    maj_b = next(b for b in summary_b.baseline_comparisons if b.baseline_name == "majority_class")
+    assert maj_b.directional_accuracy == 1.0
+
+    # If hindsight had been used, maj_a would have snooped UP and claimed accuracy 1.0!
+    # Our frozen baseline adhered strictly to pre-cutoff metadata without hindsight.
+
+
+def test_shadow_matched_comparison_populations(tmp_path: Path) -> None:
+    """Requirement B: Candidate and baseline metrics must compare identical populations."""
+    session_dir = tmp_path / "sessions" / "session_pop"
+    journal = ShadowPredictionJournal("session_pop", session_dir=session_dir)
+    evaluator = ShadowOutcomeEvaluator(journal, frozen_majority_direction="DOWN")
+
+    t = 1000
+    # 20 trades taken, 10 abstentions
+    for i in range(20):
+        pid = f"trade_{i}"
+        rec = ShadowPredictionRecord(
+            session_id="session_pop",
+            prediction_id=pid,
+            model_id="cand_test",
+            artifact_hash="hash",
+            symbol="EURUSD",
+            timeframe=60,
+            feature_cutoff_ts=t,
+            feature_cutoff_utc="2023-11-14T22:00:00+00:00",
+            data_availability_ts=t,
+            data_availability_utc="2023-11-14T22:00:00+00:00",
+            provenance_class="HISTORICAL",
+            prediction_created_ts="2023-11-14T22:00:00+00:00",
+            probabilities={"UP": 0.6, "DOWN": 0.4},
+            decision="UP",
+            confidence_threshold=0.52,
+            prediction_horizon_bars=1,
+            expected_maturity_ts=t + 60,
+            expected_maturity_utc="2023-11-14T22:01:00+00:00",
+            feature_fingerprint=f"fp_{pid}",
+            prediction_fingerprint="",
+            runtime_diagnostics={},
+            evidence_class="OFFLINE_REPLAY",
+        )
+        journal.record_prediction(rec)
+        status = OutcomeStatus.RESOLVED_WIN if i % 2 == 0 else OutcomeStatus.RESOLVED_LOSS
+        journal.resolve_outcome(
+            prediction_id=pid,
+            evaluated_at_utc="2023-11-14T22:01:01+00:00",
+            outcome_status=status,
+            cutoff_candle_close=1.0500,
+            maturity_candle_close=1.0510 if i % 2 == 0 else 1.0490,
+            actual_return=0.0010 if i % 2 == 0 else -0.0010,
+            market_direction="UP" if i % 2 == 0 else "DOWN",
+            was_trade_taken=True,
+            is_winning_trade=(i % 2 == 0),
+            simulated_payout_pnl=0.85 if i % 2 == 0 else -1.0,
+        )
+        t += 60
+
+    # 10 abstentions (SKIP)
+    for i in range(10):
+        pid = f"skip_{i}"
+        rec = ShadowPredictionRecord(
+            session_id="session_pop",
+            prediction_id=pid,
+            model_id="cand_test",
+            artifact_hash="hash",
+            symbol="EURUSD",
+            timeframe=60,
+            feature_cutoff_ts=t,
+            feature_cutoff_utc="2023-11-14T22:00:00+00:00",
+            data_availability_ts=t,
+            data_availability_utc="2023-11-14T22:00:00+00:00",
+            provenance_class="HISTORICAL",
+            prediction_created_ts="2023-11-14T22:00:00+00:00",
+            probabilities={"UP": 0.50, "DOWN": 0.50},
+            decision="SKIP",
+            confidence_threshold=0.52,
+            prediction_horizon_bars=1,
+            expected_maturity_ts=t + 60,
+            expected_maturity_utc="2023-11-14T22:01:00+00:00",
+            feature_fingerprint=f"fp_{pid}",
+            prediction_fingerprint="",
+            runtime_diagnostics={},
+            evidence_class="OFFLINE_REPLAY",
+        )
+        journal.record_prediction(rec)
+        journal.resolve_outcome(
+            prediction_id=pid,
+            evaluated_at_utc="2023-11-14T22:01:01+00:00",
+            outcome_status=OutcomeStatus.SKIPPED_ABSTAIN,
+            cutoff_candle_close=1.0500,
+            maturity_candle_close=1.0510,
+            actual_return=0.0010,
+            market_direction="UP",
+            was_trade_taken=False,
+            is_winning_trade=None,
+            simulated_payout_pnl=None,
+        )
+        t += 60
+
+    summary = evaluator.summarize()
+    assert summary.total_predictions == 30
+    assert summary.trade_count == 20
+    assert summary.skipped_abstain_count == 10
+
+    # Baselines are evaluated on matched 20 trades taken
+    for b in summary.baseline_comparisons:
+        assert b.sample_count == 20
+
+
+def test_shadow_functional_replay_evidence_quarantine(tmp_path: Path) -> None:
+    """Requirement C: Functional replays overlapping training must never claim statistical edge."""
+    session_dir = tmp_path / "sessions" / "session_quarantine"
+    journal = ShadowPredictionJournal("session_quarantine", session_dir=session_dir)
+    evaluator = ShadowOutcomeEvaluator(journal, min_qualifying_trades=10)
+
+    # Record 15 consecutive winning trades
+    t = 1000
+    for i in range(15):
+        pid = f"trade_{i}"
+        rec = ShadowPredictionRecord(
+            session_id="session_quarantine",
+            prediction_id=pid,
+            model_id="cand_test",
+            artifact_hash="hash",
+            symbol="EURUSD",
+            timeframe=60,
+            feature_cutoff_ts=t,
+            feature_cutoff_utc="2023-11-14T22:00:00+00:00",
+            data_availability_ts=t,
+            data_availability_utc="2023-11-14T22:00:00+00:00",
+            provenance_class="HISTORICAL",
+            prediction_created_ts="2023-11-14T22:00:00+00:00",
+            probabilities={"UP": 0.8, "DOWN": 0.2},
+            decision="UP",
+            confidence_threshold=0.52,
+            prediction_horizon_bars=1,
+            expected_maturity_ts=t + 60,
+            expected_maturity_utc="2023-11-14T22:01:00+00:00",
+            feature_fingerprint=f"fp_{pid}",
+            prediction_fingerprint="",
+            runtime_diagnostics={},
+            evidence_class="OFFLINE_REPLAY",
+        )
+        journal.record_prediction(rec)
+        journal.resolve_outcome(
+            prediction_id=pid,
+            evaluated_at_utc="2023-11-14T22:01:01+00:00",
+            outcome_status=OutcomeStatus.RESOLVED_WIN,
+            cutoff_candle_close=1.0500,
+            maturity_candle_close=1.0510,
+            actual_return=0.0010,
+            market_direction="UP",
+            was_trade_taken=True,
+            is_winning_trade=True,
+            simulated_payout_pnl=0.85,
+        )
+        t += 60
+
+    # Summary with is_functional_test=True
+    summary = evaluator.compute_summary(is_functional_test=True)
+    assert summary.has_statistical_edge is False
+    assert summary.scientific_verdict == "FUNCTIONAL_REPLAY_TEST_ONLY_NO_EDGE"
+    assert summary.is_functional_test is True
+
+
+def test_shadow_registry_self_digest_tampering(
+    shadow_workspace: tuple[Path, str, str],
+) -> None:
+    """Requirement D: Fail closed on registry self-digest tampering or missing digest."""
+    tmp_path, _, model_id = shadow_workspace
+    reg_file = tmp_path / "data" / "shadow_eval" / "registry.json"
+
+    registry = ShadowModelRegistry(tmp_path)
+    registry.register_candidate(model_id)
+
+    # 1. Verify clean loading
+    reg_clean = ShadowModelRegistry(tmp_path)
+    assert reg_clean.get_candidate(model_id) is not None
+
+    # 2. Tamper with file without recalculating digest
+    raw_data = json.loads(reg_file.read_text(encoding="utf-8"))
+    raw_data["records"][model_id]["confidence_threshold"] = 0.99
+    reg_file.write_text(json.dumps(raw_data), encoding="utf-8")
+
+    with pytest.raises(RegistryIntegrityError, match="Registry self-digest mismatch"):
+        ShadowModelRegistry(tmp_path)
+
+    # 3. Missing self-digest
+    del raw_data["registry_sha256"]
+    reg_file.write_text(json.dumps(raw_data), encoding="utf-8")
+
+    with pytest.raises(RegistryIntegrityError, match="lacks registry_sha256 digest"):
+        ShadowModelRegistry(tmp_path)
+
+
+def test_shadow_journal_corruption_and_crash_recovery(tmp_path: Path) -> None:
+    """Requirement D: Fail closed on corrupt, orphaned, or conflicting journal entries."""
+    session_dir = tmp_path / "sessions" / "session_corrupt"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    preds_file = session_dir / "predictions.jsonl"
+    outcomes_file = session_dir / "outcomes.jsonl"
+
+    # 1. Malformed prediction line
+    preds_file.write_text('{"prediction_id": "p1", "valid": false\n', encoding="utf-8")
+    with pytest.raises(JournalCorruptionError, match="Malformed prediction at line"):
+        ShadowPredictionJournal("session_corrupt", session_dir=session_dir)
+
+    # 2. Orphaned outcome (references non-existent prediction)
+    preds_file.write_text("", encoding="utf-8")  # empty predictions
+    outcomes_file.write_text(
+        json.dumps({
+            "session_id": "session_corrupt",
+            "prediction_id": "unknown_p999",
+            "evaluated_at_utc": "2023-11-14T22:00:00+00:00",
+            "outcome_status": "RESOLVED_WIN",
+            "cutoff_candle_close": 1.05,
+            "maturity_candle_close": 1.06,
+            "actual_return": 0.01,
+            "market_direction": "UP",
+            "was_trade_taken": True,
+            "is_winning_trade": True,
+            "simulated_payout_pnl": 0.85,
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(OrphanedOutcomeError, match="Orphaned outcome at line"):
+        ShadowPredictionJournal("session_corrupt", session_dir=session_dir)
+
+    # 3. Conflicting outcome records
+    outcomes_file.unlink()
+    journal = ShadowPredictionJournal("session_corrupt", session_dir=session_dir)
+    rec = ShadowPredictionRecord(
+        session_id="session_corrupt",
+        prediction_id="p1",
+        model_id="cand_test",
+        artifact_hash="hash",
+        symbol="EURUSD",
+        timeframe=60,
+        feature_cutoff_ts=1000,
+        feature_cutoff_utc="2023-11-14T22:00:00+00:00",
+        data_availability_ts=1000,
+        data_availability_utc="2023-11-14T22:00:00+00:00",
+        provenance_class="HISTORICAL",
+        prediction_created_ts="2023-11-14T22:00:00+00:00",
+        probabilities={"UP": 0.6, "DOWN": 0.4},
+        decision="UP",
+        confidence_threshold=0.52,
+        prediction_horizon_bars=1,
+        expected_maturity_ts=1060,
+        expected_maturity_utc="2023-11-14T22:01:00+00:00",
+        feature_fingerprint="fp1",
+        prediction_fingerprint="",
+        runtime_diagnostics={},
+        evidence_class="OFFLINE_REPLAY",
+    )
+    journal.record_prediction(rec)
+    journal.resolve_outcome(
+        prediction_id="p1",
+        evaluated_at_utc="2023-11-14T22:01:01+00:00",
+        outcome_status=OutcomeStatus.RESOLVED_WIN,
+        cutoff_candle_close=1.05,
+        maturity_candle_close=1.06,
+        actual_return=0.01,
+        market_direction="UP",
+        was_trade_taken=True,
+        is_winning_trade=True,
+        simulated_payout_pnl=0.85,
+    )
+
+    # Append a conflicting outcome line for p1
+    with outcomes_file.open("a", encoding="utf-8") as f:
+        conflict_evt = OutcomeEventRecord(
+            session_id="session_corrupt",
+            prediction_id="p1",
+            evaluated_at_utc="2023-11-14T22:01:02+00:00",
+            outcome_status=OutcomeStatus.RESOLVED_LOSS.value,
+            cutoff_candle_close=1.05,
+            maturity_candle_close=1.04,
+            actual_return=-0.01,
+            market_direction="DOWN",
+            was_trade_taken=True,
+            is_winning_trade=False,
+            simulated_payout_pnl=-1.0,
+        )
+        f.write(json.dumps(conflict_evt.to_dict()) + "\n")
+
+    with pytest.raises(ConflictingOutcomeError, match="Conflicting outcome at line"):
+        ShadowPredictionJournal("session_corrupt", session_dir=session_dir)
+
+
+def test_shadow_storage_identifier_validation() -> None:
+    """Requirement D: Prevent path traversal and enforce safe storage identifiers."""
+    unsafe = [
+        "../traversal",
+        "..\\traversal",
+        "/etc/passwd",
+        "C:\\Windows\\System32",
+        "session with spaces",
+        "session$special!",
+        "",
+    ]
+    for identifier in unsafe:
+        with pytest.raises(JournalError):
+            validate_storage_identifier(identifier)
+
+    safe = [
+        "sreplay_logistic_20261121_120000",
+        "candidate-model-01",
+        "model_42",
+        "eval_id_123",
+    ]
+    for identifier in safe:
+        assert validate_storage_identifier(identifier) == identifier
+
+
+def test_shadow_replay_completed_session_reuse_rejection(
+    shadow_workspace: tuple[Path, str, str],
+) -> None:
+    """Requirement D: Reject unsafe attempts to reuse completed session IDs."""
+    tmp_path, snapshot_id, model_id = shadow_workspace
+    registry = ShadowModelRegistry(tmp_path)
+    registry.register_candidate(model_id)
+
+    replay_engine = HistoricalReplayEngine(registry, root=tmp_path)
+    parquet_path = tmp_path / "data" / "catalog" / "eurusd_m1.parquet"
+    candles = _candles_from_parquet(parquet_path)
+
+    config = ReplayConfig(
+        model_id=model_id,
+        session_id="session_unique_001",
+        snapshot_id=snapshot_id,
+        max_candles=50,
+    )
+
+    # First run succeeds
+    replay_engine.run_replay(config, candles[:50])
+
+    # Second run with same session ID must fail closed
+    with pytest.raises(SessionAlreadyCompletedError, match="already completed"):
+        replay_engine.run_replay(config, candles[:50])
+
+
+def test_shadow_replay_prediction_failure_tracking(
+    shadow_workspace: tuple[Path, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Requirement D: Prediction failures must be tracked in diagnostics, distinct from SKIPs."""
+    tmp_path, snapshot_id, model_id = shadow_workspace
+    registry = ShadowModelRegistry(tmp_path)
+    registry.register_candidate(model_id)
+
+    replay_engine = HistoricalReplayEngine(registry, root=tmp_path)
+    parquet_path = tmp_path / "data" / "catalog" / "eurusd_m1.parquet"
+    candles = _candles_from_parquet(parquet_path)
+
+    config = ReplayConfig(
+        model_id=model_id,
+        session_id="session_failure_test",
+        snapshot_id=snapshot_id,
+        max_candles=40,
+    )
+
+    # Monkeypatch engine.predict to raise an exception on one candle
+    orig_predict = ShadowPredictionEngine.predict
+    call_count = 0
+
+    def flaky_predict(self, window, decision_ts=None):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 5:
+            raise RuntimeError("Synthetic inference engine timeout")
+        return orig_predict(self, window, decision_ts=decision_ts)
+
+    monkeypatch.setattr(ShadowPredictionEngine, "predict", flaky_predict)
+
+    res = replay_engine.run_replay(config, candles[:40])
+    assert res.prediction_failures_count == 1
+
+    session_data = json.loads((res.session_dir / "session.json").read_text(encoding="utf-8"))
+    assert session_data["prediction_failures_count"] == 1
+    assert len(session_data["prediction_failures"]) == 1
+    assert session_data["prediction_failures"][0]["error_type"] == "RuntimeError"
+
+
+def test_shadow_replay_provenance_and_timestamps(
+    shadow_workspace: tuple[Path, str, str],
+) -> None:
+    """Requirement E: Provenance distinctions and rejection of prospective claims."""
+    tmp_path, snapshot_id, model_id = shadow_workspace
+    registry = ShadowModelRegistry(tmp_path)
+    registry.register_candidate(model_id)
+
+    # 1. Attempting prospective label in ReplayConfig must fail closed
+    with pytest.raises(ReplayError, match="cannot be labeled 'PROSPECTIVE_SHADOW'"):
+        ReplayConfig(
+            model_id=model_id,
+            evidence_class="PROSPECTIVE_SHADOW",
+        )
+
+    # 2. Check provenance fields in generated records
+    replay_engine = HistoricalReplayEngine(registry, root=tmp_path)
+    parquet_path = tmp_path / "data" / "catalog" / "eurusd_m1.parquet"
+    candles = _candles_from_parquet(parquet_path)
+
+    config = ReplayConfig(
+        model_id=model_id,
+        session_id="session_provenance_test",
+        snapshot_id=snapshot_id,
+        max_candles=30,
+    )
+    res = replay_engine.run_replay(config, candles[:30])
+
+    journal = ShadowPredictionJournal("session_provenance_test", session_dir=res.session_dir)
+    preds = journal.list_predictions()
+    assert len(preds) > 0
+
+    for p in preds:
+        assert p.evidence_class == "OFFLINE_REPLAY"
+        assert p.broker_availability_type == "HISTORICAL_THEORETICAL_CLOSE"
+        assert p.simulated_decision_ts == p.feature_cutoff_ts
+        assert p.executed_wall_clock_utc != ""
+        assert p.feature_cutoff_utc != ""
+
+
+def test_shadow_session_verification_lifecycle(
+    shadow_workspace: tuple[Path, str, str],
+) -> None:
+    """Requirement D: verify_session identifies valid, tampered, and legacy sessions."""
+    tmp_path, snapshot_id, model_id = shadow_workspace
+    registry = ShadowModelRegistry(tmp_path)
+    registry.register_candidate(model_id)
+
+    replay_engine = HistoricalReplayEngine(registry, root=tmp_path)
+    parquet_path = tmp_path / "data" / "catalog" / "eurusd_m1.parquet"
+    candles = _candles_from_parquet(parquet_path)
+
+    config = ReplayConfig(
+        model_id=model_id,
+        session_id="session_verif_test",
+        snapshot_id=snapshot_id,
+        max_candles=35,
+    )
+    res = replay_engine.run_replay(config, candles[:35])
+
+    # 1. Newly created session is VERIFIED
+    report = replay_engine.verify_session("session_verif_test")
+    assert report["status"] == "VERIFIED"
+    assert report["verified"] is True
+
+    # 2. Tampering with predictions.jsonl causes failure
+    preds_file = res.session_dir / "predictions.jsonl"
+    preds_file.write_text(preds_file.read_text() + " ", encoding="utf-8")
+    report_tampered = replay_engine.verify_session("session_verif_test")
+    assert report_tampered["status"] == "PREDICTIONS_JOURNAL_TAMPERED"
+    assert report_tampered["verified"] is False
+
+    # 3. Legacy session without predictions_sha256 is classified as LEGACY_UNVERIFIED_EVIDENCE
+    legacy_dir = tmp_path / "data" / "shadow_eval" / "sessions" / "session_legacy_test"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "session_id": "session_legacy_test",
+        "created_at_utc": "2026-11-20T10:00:00+00:00",
+        "evidence_class": "OFFLINE_REPLAY",
+        "config": {"model_id": model_id},
+    }
+    meta["session_sha256"] = digest(meta)
+    (legacy_dir / "session.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    report_legacy = replay_engine.verify_session("session_legacy_test")
+    assert report_legacy["status"] == "LEGACY_UNVERIFIED_EVIDENCE"
+    assert report_legacy["verified"] is False

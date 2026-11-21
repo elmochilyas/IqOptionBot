@@ -18,6 +18,7 @@ from rich.table import Table
 from iqoption_research.research.dataset_manager import ResearchDatasetManager
 from iqoption_research.shadow.journal import (
     DEFAULT_SHADOW_SESSIONS_DIR,
+    validate_storage_identifier,
 )
 from iqoption_research.shadow.registry import ShadowModelRegistry
 from iqoption_research.shadow.replay import HistoricalReplayEngine, ReplayConfig
@@ -40,6 +41,12 @@ def register_candidate_command(
     notes: Annotated[str, typer.Option("--notes", help="Registration notes.")] = "",
 ) -> None:
     repo_root = root or Path.cwd()
+    try:
+        validate_storage_identifier(model_id)
+    except Exception as exc:
+        console.print(f"[bold red]Invalid model ID:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
     registry = ShadowModelRegistry(repo_root)
 
     try:
@@ -115,6 +122,14 @@ def replay_command(
     root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
 ) -> None:
     repo_root = root or Path.cwd()
+    try:
+        validate_storage_identifier(model_id)
+        if session_id:
+            validate_storage_identifier(session_id)
+    except Exception as exc:
+        console.print(f"[bold red]Identifier validation failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
     registry = ShadowModelRegistry(repo_root)
     mgr = ResearchDatasetManager(repo_root)
     engine = HistoricalReplayEngine(registry, root=repo_root)
@@ -175,14 +190,20 @@ def replay_command(
     table.add_row("Invalid (Discontinuity)", f"{s.invalid_discontinuity_count:,}")
     table.add_row("Trades Taken", f"{s.trade_count:,}")
     table.add_row("Wins / Losses / Ties", f"{s.win_count} / {s.loss_count} / {s.tie_count}")
-    table.add_row("Selective Win Rate", f"{s.win_rate * 100:.2f}%")
+    table.add_row("Selective Win Rate (All)", f"{s.win_rate * 100:.2f}%")
+    table.add_row("Selective Win Rate (Decisive)", f"{s.win_rate_decisive * 100:.2f}%")
+    table.add_row("Tie Rate", f"{s.tie_rate * 100:.2f}%")
     ci_str = f"[{s.wilson_ci_lower_95 * 100:.2f}%, {s.wilson_ci_upper_95 * 100:.2f}%]"
-    table.add_row("Wilson 95% CI", ci_str)
-    table.add_row("Break-Even Threshold", f"{s.break_even_win_rate * 100:.2f}%")
+    table.add_row("Wilson 95% CI (All)", ci_str)
+    be_str = f"{s.break_even_win_rate * 100:.2f}% / {s.break_even_win_rate_all * 100:.2f}%"
+    table.add_row("Break-Even (Decisive / All)", be_str)
+    table.add_row("Simulated Expectancy", f"{s.simulated_expectancy_pct:+.2f}%")
     table.add_row("Full Directional Accuracy", f"{s.directional_accuracy * 100:.2f}%")
     table.add_row("Brier Score", f"{s.brier_score:.4f}")
     cov_str = f"{s.coverage * 100:.1f}% / {s.abstention_rate * 100:.1f}%"
     table.add_row("Coverage / Abstention", cov_str)
+    table.add_row("Prediction Failures", f"{res.prediction_failures_count}")
+    table.add_row("Scientific Verdict", s.scientific_verdict)
     table.add_row("Statistical Edge Proven", str(s.has_statistical_edge))
 
     console.print(table)
@@ -197,6 +218,33 @@ def show_session_command(
     root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
 ) -> None:
     repo_root = root or Path.cwd()
+    try:
+        validate_storage_identifier(session_id)
+    except Exception as exc:
+        console.print(f"[bold red]Invalid session identifier:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    registry = ShadowModelRegistry(repo_root)
+    engine = HistoricalReplayEngine(registry, root=repo_root)
+    verif = engine.verify_session(session_id)
+
+    status = verif.get("status")
+    if status == "VERIFIED":
+        console.print(
+            "[bold green]Cryptographic Evidence Status: VERIFIED "
+            "(Journal and session hashes verified)[/bold green]"
+        )
+    elif status == "LEGACY_UNVERIFIED_EVIDENCE":
+        console.print(
+            "[bold yellow]Cryptographic Evidence Status: LEGACY_UNVERIFIED_EVIDENCE "
+            "(Older evidence preserved without modification)[/bold yellow]"
+        )
+    else:
+        console.print(
+            f"[bold red]Cryptographic Evidence Status: {status} "
+            f"({verif.get('error', 'Integrity issue')})[/bold red]"
+        )
+
     s_dir = repo_root / DEFAULT_SHADOW_SESSIONS_DIR / session_id
     meta_file = s_dir / "session.json"
     if not meta_file.is_file():

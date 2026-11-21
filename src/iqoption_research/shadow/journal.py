@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -35,12 +36,39 @@ class JournalError(ValueError):
     """Base exception for prediction journal operations."""
 
 
+class JournalIntegrityError(JournalError):
+    """Raised when prediction or outcome journal fails integrity verification."""
+
+
+class JournalCorruptionError(JournalIntegrityError):
+    """Raised when a journal file contains malformed or unparseable records."""
+
+
+class OrphanedOutcomeError(JournalIntegrityError):
+    """Raised when an outcome record references a non-existent prediction ID."""
+
+
+class ConflictingOutcomeError(JournalIntegrityError):
+    """Raised when conflicting outcome records exist for the same prediction."""
+
+
 class DuplicatePredictionError(JournalError):
     """Raised when attempting to record a duplicate prediction for the same cutoff."""
 
 
 class OutcomeResolutionError(JournalError):
     """Raised when an invalid outcome resolution is attempted."""
+
+
+def validate_storage_identifier(identifier: str) -> str:
+    """Validate that an identifier contains only safe characters and cannot traverse directories."""
+    if not identifier or not isinstance(identifier, str):
+        raise JournalError("Identifier must be a non-empty string")
+    if ".." in identifier or "/" in identifier or "\\" in identifier:
+        raise JournalError(f"Directory traversal detected in identifier: {identifier!r}")
+    if not all(c.isalnum() or c in ("_", "-") for c in identifier):
+        raise JournalError(f"Invalid characters in identifier: {identifier!r}")
+    return identifier
 
 
 @dataclass(slots=True)
@@ -69,6 +97,9 @@ class ShadowPredictionRecord:
     prediction_fingerprint: str
     runtime_diagnostics: dict[str, Any]
     evidence_class: str  # "OFFLINE_REPLAY" or "PROSPECTIVE_SHADOW"
+    simulated_decision_ts: int = 0
+    executed_wall_clock_utc: str = ""
+    broker_availability_type: str = "HISTORICAL_THEORETICAL_CLOSE"
     outcome_status: str = OutcomeStatus.PENDING.value
 
     # Outcome fields (populated upon delayed maturity)
@@ -89,7 +120,14 @@ class ShadowPredictionRecord:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ShadowPredictionRecord:
         """Construct record from dictionary."""
-        return cls(**data)
+        d = dict(data)
+        if "simulated_decision_ts" not in d:
+            d["simulated_decision_ts"] = int(d.get("feature_cutoff_ts", 0))
+        if "executed_wall_clock_utc" not in d:
+            d["executed_wall_clock_utc"] = str(d.get("prediction_created_ts", ""))
+        if "broker_availability_type" not in d:
+            d["broker_availability_type"] = "HISTORICAL_THEORETICAL_CLOSE"
+        return cls(**d)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,12 +165,12 @@ class ShadowPredictionJournal:
         root: Path | None = None,
         session_dir: Path | None = None,
     ) -> None:
-        self.session_id = session_id
+        self.session_id = validate_storage_identifier(session_id)
         self.root = root.resolve() if root is not None else Path().resolve()
         self.session_dir = (
             session_dir.resolve()
             if session_dir is not None
-            else (self.root / DEFAULT_SHADOW_SESSIONS_DIR / session_id).resolve()
+            else (self.root / DEFAULT_SHADOW_SESSIONS_DIR / self.session_id).resolve()
         )
         self.session_dir.mkdir(parents=True, exist_ok=True)
 
@@ -149,43 +187,86 @@ class ShadowPredictionJournal:
         self._recover_state()
 
     def _recover_state(self) -> None:
-        """Read existing prediction and outcome files to reconstruct in-memory state."""
+        """Read existing prediction and outcome files to reconstruct in-memory state.
+
+        Fails closed on corrupt, malformed, duplicate, or orphaned records.
+        """
         if self.predictions_file.is_file():
             with self.predictions_file.open("r", encoding="utf-8") as f:
-                for line in f:
+                for line_no, line in enumerate(f, start=1):
                     line = line.strip()
                     if not line:
                         continue
                     try:
-                        rec = ShadowPredictionRecord.from_dict(json.loads(line))
-                        self._predictions[rec.prediction_id] = rec
-                        self._cutoff_index.add((rec.model_id, rec.feature_cutoff_ts))
-                    except (json.JSONDecodeError, KeyError, ValueError) as exc:
-                        logger.warning("Error reading prediction line: %s", exc)
+                        data = json.loads(line)
+                        if not isinstance(data, dict):
+                            raise JournalCorruptionError(
+                                f"Prediction line {line_no} is not a valid JSON dict"
+                            )
+                        rec = ShadowPredictionRecord.from_dict(data)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                        raise JournalCorruptionError(
+                            f"Malformed prediction at line {line_no} in "
+                            f"{self.predictions_file}: {exc}"
+                        ) from exc
+
+                    key = (rec.model_id, rec.feature_cutoff_ts)
+                    if key in self._cutoff_index:
+                        raise DuplicatePredictionError(
+                            f"Duplicate prediction record at line {line_no} in "
+                            f"{self.predictions_file}: model={rec.model_id}, "
+                            f"cutoff={rec.feature_cutoff_ts}"
+                        )
+                    self._predictions[rec.prediction_id] = rec
+                    self._cutoff_index.add(key)
 
         if self.outcomes_file.is_file():
             with self.outcomes_file.open("r", encoding="utf-8") as f:
-                for line in f:
+                for line_no, line in enumerate(f, start=1):
                     line = line.strip()
                     if not line:
                         continue
                     try:
-                        out_rec = OutcomeEventRecord.from_dict(json.loads(line))
-                        self._outcomes[out_rec.prediction_id] = out_rec
-                        if out_rec.prediction_id in self._predictions:
-                            p = self._predictions[out_rec.prediction_id]
-                            p.outcome_status = out_rec.outcome_status
-                            p.evaluated_at_utc = out_rec.evaluated_at_utc
-                            p.cutoff_candle_close = out_rec.cutoff_candle_close
-                            p.maturity_candle_close = out_rec.maturity_candle_close
-                            p.actual_return = out_rec.actual_return
-                            p.market_direction = out_rec.market_direction
-                            p.was_trade_taken = out_rec.was_trade_taken
-                            p.is_winning_trade = out_rec.is_winning_trade
-                            p.simulated_payout_pnl = out_rec.simulated_payout_pnl
-                            p.outcome_note = out_rec.outcome_note
-                    except (json.JSONDecodeError, KeyError, ValueError) as exc:
-                        logger.warning("Error reading outcome line: %s", exc)
+                        data = json.loads(line)
+                        if not isinstance(data, dict):
+                            raise JournalCorruptionError(
+                                f"Outcome line {line_no} is not a valid JSON dict"
+                            )
+                        out_rec = OutcomeEventRecord.from_dict(data)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                        raise JournalCorruptionError(
+                            f"Malformed outcome at line {line_no} in {self.outcomes_file}: {exc}"
+                        ) from exc
+
+                    if out_rec.prediction_id not in self._predictions:
+                        raise OrphanedOutcomeError(
+                            f"Orphaned outcome at line {line_no} in {self.outcomes_file}: "
+                            f"prediction_id={out_rec.prediction_id} has no matching prediction"
+                        )
+
+                    if out_rec.prediction_id in self._outcomes:
+                        existing = self._outcomes[out_rec.prediction_id]
+                        if (
+                            existing.outcome_status != out_rec.outcome_status
+                            or existing.simulated_payout_pnl != out_rec.simulated_payout_pnl
+                        ):
+                            raise ConflictingOutcomeError(
+                                f"Conflicting outcome at line {line_no} in {self.outcomes_file} "
+                                f"for prediction_id={out_rec.prediction_id}"
+                            )
+
+                    self._outcomes[out_rec.prediction_id] = out_rec
+                    p = self._predictions[out_rec.prediction_id]
+                    p.outcome_status = out_rec.outcome_status
+                    p.evaluated_at_utc = out_rec.evaluated_at_utc
+                    p.cutoff_candle_close = out_rec.cutoff_candle_close
+                    p.maturity_candle_close = out_rec.maturity_candle_close
+                    p.actual_return = out_rec.actual_return
+                    p.market_direction = out_rec.market_direction
+                    p.was_trade_taken = out_rec.was_trade_taken
+                    p.is_winning_trade = out_rec.is_winning_trade
+                    p.simulated_payout_pnl = out_rec.simulated_payout_pnl
+                    p.outcome_note = out_rec.outcome_note
 
     def record_prediction(self, record: ShadowPredictionRecord) -> None:
         """Append a newly generated prediction to the immutable predictions.jsonl log.
@@ -213,11 +294,12 @@ class ShadowPredictionJournal:
         ]
         record.prediction_fingerprint = content_sha
 
-        # Append to log
+        # Append to log with immediate durability flush
         line = json.dumps(record.to_dict(), sort_keys=True)
         with self.predictions_file.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
             f.flush()
+            os.fsync(f.fileno())
 
         self._predictions[record.prediction_id] = record
         self._cutoff_index.add(key)
@@ -238,11 +320,12 @@ class ShadowPredictionJournal:
                 f"Prediction {outcome.prediction_id} already resolved as {pred.outcome_status}"
             )
 
-        # Append to outcomes log
+        # Append to outcomes log with immediate durability flush
         line = json.dumps(outcome.to_dict(), sort_keys=True)
         with self.outcomes_file.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
             f.flush()
+            os.fsync(f.fileno())
 
         # Update in-memory record
         pred.outcome_status = outcome.outcome_status

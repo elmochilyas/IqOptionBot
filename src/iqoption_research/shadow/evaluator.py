@@ -44,7 +44,17 @@ class BaselineComparison:
 
 @dataclass(frozen=True, slots=True)
 class EvaluationSummary:
-    """Scientific evaluation summary of shadow predictions over resolved outcomes."""
+    """Scientific evaluation summary of shadow predictions over resolved outcomes.
+
+    Distinguishes:
+    - win_rate: Wins / Total trades taken (including ties).
+    - win_rate_decisive: Wins / Decisive trades (Wins + Losses, excluding refunded ties).
+    - tie_rate: Ties / Total trades taken.
+    - break_even_win_rate: 1 / (1 + assumed_payout) (break-even for decisive trades).
+    - break_even_win_rate_all: (1 - tie_rate) / (1 + assumed_payout) (all trades).
+    - simulated_expectancy_pct: Expected return per trade:
+      (Wins * payout - Losses * 1.0) / Total trades * 100%.
+    """
 
     session_id: str
     model_id: str
@@ -63,10 +73,15 @@ class EvaluationSummary:
     coverage: float
     abstention_rate: float
     win_rate: float
+    win_rate_decisive: float
+    tie_rate: float
     wilson_ci_lower_95: float
     wilson_ci_upper_95: float
     break_even_win_rate: float
+    break_even_win_rate_all: float
     has_statistical_edge: bool
+    scientific_verdict: str
+    is_functional_test: bool
     simulated_expectancy_pct: float
     assumed_payout: float
     baseline_comparisons: list[BaselineComparison]
@@ -88,10 +103,14 @@ class ShadowOutcomeEvaluator:
         *,
         assumed_payout: float = 0.85,
         min_qualifying_trades: int = 100,
+        frozen_majority_direction: str = "DOWN",
+        frozen_majority_prob_up: float = 0.4691,
     ) -> None:
         self.journal = journal
         self.assumed_payout = assumed_payout
         self.min_qualifying_trades = min_qualifying_trades
+        self.frozen_majority_direction = frozen_majority_direction
+        self.frozen_majority_prob_up = frozen_majority_prob_up
 
     def resolve_pending(
         self,
@@ -217,14 +236,18 @@ class ShadowOutcomeEvaluator:
         self,
         model_id: str | None = None,
         symbol: str | None = None,
+        is_functional_test: bool = False,
     ) -> EvaluationSummary:
         """Alias for compute_summary, optionally specifying model_id and symbol override."""
-        return self.compute_summary(model_id=model_id, symbol=symbol)
+        return self.compute_summary(
+            model_id=model_id, symbol=symbol, is_functional_test=is_functional_test
+        )
 
     def compute_summary(
         self,
         model_id: str | None = None,
         symbol: str | None = None,
+        is_functional_test: bool = False,
     ) -> EvaluationSummary:
         """Compute comprehensive statistical metrics over all predictions in the journal."""
         all_preds = self.journal.list_predictions()
@@ -255,11 +278,22 @@ class ShadowOutcomeEvaluator:
         )
 
         win_rate = (win_count / trade_count) if trade_count > 0 else 0.0
+        win_rate_decisive = (
+            (win_count / (win_count + loss_count)) if (win_count + loss_count) > 0 else 0.0
+        )
+        tie_rate = (tie_count / trade_count) if trade_count > 0 else 0.0
         coverage = (trade_count / len(resolved_preds)) if resolved_preds else 0.0
         abstention = (skipped_count / len(resolved_preds)) if resolved_preds else 0.0
 
-        # Break-even threshold
-        break_even = 1.0 / (1.0 + self.assumed_payout)
+        # Break-even threshold:
+        # Decisive trades: BE_decisive = 1 / (1 + payout)
+        # All trades (with refunded ties): BE_all = (1 - tie_rate) / (1 + payout)
+        break_even_decisive = 1.0 / (1.0 + self.assumed_payout)
+        break_even_all = (
+            (1.0 - tie_rate) / (1.0 + self.assumed_payout)
+            if trade_count > 0
+            else break_even_decisive
+        )
 
         # Wilson Confidence Interval on selective win rate
         if trade_count > 0:
@@ -267,9 +301,10 @@ class ShadowOutcomeEvaluator:
         else:
             ci_low, ci_high = 0.0, 1.0
 
-        # Simulated Expectancy: E = win_rate * payout - (1 - win_rate)
+        # Simulated Expectancy: E = (Wins * payout - Losses * 1.0 + Ties * 0.0) / Total trades
         if trade_count > 0:
-            exp_pct = (win_rate * self.assumed_payout - (1.0 - win_rate)) * 100.0
+            total_simulated_pnl = (win_count * self.assumed_payout) - (loss_count * 1.0)
+            exp_pct = (total_simulated_pnl / trade_count) * 100.0
         else:
             exp_pct = 0.0
 
@@ -295,41 +330,71 @@ class ShadowOutcomeEvaluator:
             dir_acc = 0.0
             brier = 0.25
 
-        # Statistical edge requirement: Wilson lower bound > break-even AND qualifying trades >= 100
-        has_edge = trade_count >= self.min_qualifying_trades and ci_low > break_even
-
-        # Baselines: majority class (always predicts UP if majority is UP)
+        # Reference baselines evaluated on identical population (trade_preds)
         base_comps: list[BaselineComparison] = []
         if trade_preds:
-            y_trade_true = [
-                1 if p.market_direction == "UP" else 0
-                for p in trade_preds
-                if p.market_direction in ("UP", "DOWN")
-            ]
-            if y_trade_true:
-                maj_val = 1 if (sum(y_trade_true) / len(y_trade_true)) >= 0.5 else 0
-                maj_acc = sum(1 for yt in y_trade_true if yt == maj_val) / len(y_trade_true)
-                maj_brier = float(brier_score_loss(y_trade_true, [0.5] * len(y_trade_true)))
-                base_comps.append(
-                    BaselineComparison(
-                        baseline_name="majority_class",
-                        sample_count=len(y_trade_true),
-                        directional_accuracy=round(maj_acc, 4),
-                        brier_score=round(maj_brier, 4),
-                        candidate_delta_accuracy=round(win_rate - maj_acc, 4),
-                        candidate_delta_brier=round(maj_brier - brier, 4),
-                    )
+            # Majority class baseline uses frozen pre-cutoff training direction
+            # (never derived from evaluation labels!)
+            maj_correct = sum(
+                1 for p in trade_preds if p.market_direction == self.frozen_majority_direction
+            )
+            maj_acc = maj_correct / trade_count
+
+            # Binary directional evaluation on decisive trades for Brier score calibration
+            decisive_preds = [p for p in trade_preds if p.market_direction in ("UP", "DOWN")]
+            if decisive_preds:
+                y_binary = [1 if p.market_direction == "UP" else 0 for p in decisive_preds]
+                cand_probs = [p.probabilities.get("UP", 0.5) for p in decisive_preds]
+                cand_trade_brier = float(brier_score_loss(y_binary, cand_probs))
+                maj_trade_brier = float(
+                    brier_score_loss(y_binary, [self.frozen_majority_prob_up] * len(y_binary))
                 )
-                base_comps.append(
-                    BaselineComparison(
-                        baseline_name="random_uniform",
-                        sample_count=len(y_trade_true),
-                        directional_accuracy=0.50,
-                        brier_score=0.25,
-                        candidate_delta_accuracy=round(win_rate - 0.50, 4),
-                        candidate_delta_brier=round(0.25 - brier, 4),
-                    )
+                uniform_trade_brier = float(brier_score_loss(y_binary, [0.5] * len(y_binary)))
+            else:
+                cand_trade_brier = 0.25
+                maj_trade_brier = 0.25
+                uniform_trade_brier = 0.25
+
+            base_comps.append(
+                BaselineComparison(
+                    baseline_name="majority_class",
+                    sample_count=trade_count,
+                    directional_accuracy=round(maj_acc, 4),
+                    brier_score=round(maj_trade_brier, 4),
+                    candidate_delta_accuracy=round(win_rate - maj_acc, 4),
+                    candidate_delta_brier=round(maj_trade_brier - cand_trade_brier, 4),
                 )
+            )
+            base_comps.append(
+                BaselineComparison(
+                    baseline_name="random_uniform",
+                    sample_count=trade_count,
+                    directional_accuracy=0.50,
+                    brier_score=round(uniform_trade_brier, 4),
+                    candidate_delta_accuracy=round(win_rate - 0.50, 4),
+                    candidate_delta_brier=round(uniform_trade_brier - cand_trade_brier, 4),
+                )
+            )
+
+        # Scientific verdict determination
+        if is_functional_test:
+            has_edge = False
+            verdict = "FUNCTIONAL_REPLAY_TEST_ONLY_NO_EDGE"
+        elif trade_count < self.min_qualifying_trades:
+            has_edge = False
+            verdict = "INSUFFICIENT_SAMPLE_SIZE_NO_EDGE"
+        elif ci_low <= break_even_decisive:
+            has_edge = False
+            verdict = "BREAK_EVEN_NOT_MET_NO_EDGE"
+        elif not all(
+            b.candidate_delta_accuracy > 0.0 and b.candidate_delta_brier > 0.0 for b in base_comps
+        ):
+            has_edge = False
+            verdict = "BASELINE_SUPERIORITY_NOT_MET_NO_EDGE"
+        else:
+            # Replays are retrospective/historical; prospective observation is required
+            has_edge = False
+            verdict = "OFFLINE_REPLAY_CONFIRMED_PENDING_PROSPECTIVE_OBSERVATION"
 
         eff_model_id = (
             model_id
@@ -364,10 +429,15 @@ class ShadowOutcomeEvaluator:
             coverage=round(coverage, 4),
             abstention_rate=round(abstention, 4),
             win_rate=round(win_rate, 4),
+            win_rate_decisive=round(win_rate_decisive, 4),
+            tie_rate=round(tie_rate, 4),
             wilson_ci_lower_95=round(ci_low, 4),
             wilson_ci_upper_95=round(ci_high, 4),
-            break_even_win_rate=round(break_even, 4),
+            break_even_win_rate=round(break_even_decisive, 4),
+            break_even_win_rate_all=round(break_even_all, 4),
             has_statistical_edge=has_edge,
+            scientific_verdict=verdict,
+            is_functional_test=is_functional_test,
             simulated_expectancy_pct=round(exp_pct, 2),
             assumed_payout=self.assumed_payout,
             baseline_comparisons=base_comps,

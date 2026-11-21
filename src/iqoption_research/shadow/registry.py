@@ -28,12 +28,27 @@ class RegistryError(ValueError):
     """Base exception for shadow model registry errors."""
 
 
+class RegistryIntegrityError(RegistryError):
+    """Raised when registry self-digest verification fails or registry is corrupt."""
+
+
 class ModelVerificationError(RegistryError):
     """Raised when candidate model fails cryptographic or schema verification."""
 
 
 class ModelMutationError(RegistryError):
     """Raised when attempting to mutate or retrain a registered frozen model."""
+
+
+def validate_storage_identifier(identifier: str) -> str:
+    """Validate that an identifier contains only safe characters and cannot traverse directories."""
+    if not identifier or not isinstance(identifier, str):
+        raise RegistryError("Identifier must be a non-empty string")
+    if ".." in identifier or "/" in identifier or "\\" in identifier:
+        raise RegistryError(f"Directory traversal detected in identifier: {identifier!r}")
+    if not all(c.isalnum() or c in ("_", "-") for c in identifier):
+        raise RegistryError(f"Invalid characters in identifier: {identifier!r}")
+    return identifier
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +72,8 @@ class FrozenRegistrationRecord:
     verdict: str
     wallet_classification: str
     is_baseline: bool
+    training_majority_direction: str = "DOWN"
+    training_majority_prob_up: float = 0.4691
     evaluation_id: str = ""
     bundle_path: str = ""
     is_frozen: bool = True
@@ -80,6 +97,10 @@ class FrozenRegistrationRecord:
         d = dict(data)
         if "feature_names" in d and isinstance(d["feature_names"], list):
             d["feature_names"] = tuple(d["feature_names"])
+        if "training_majority_direction" not in d:
+            d["training_majority_direction"] = "DOWN"
+        if "training_majority_prob_up" not in d:
+            d["training_majority_prob_up"] = 0.4691
         return cls(**d)
 
 
@@ -108,20 +129,45 @@ class ShadowModelRegistry:
         self._init_registry()
 
     def _init_registry(self) -> None:
-        """Ensure registry directory and initial file exist."""
+        """Ensure registry directory and initial file exist and verify integrity."""
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.registry_path.is_file():
             self._save_registry_data({"registry_version": "1.0", "records": {}})
+        else:
+            # Verify cryptographic integrity on initialization
+            self._load_registry_data()
 
     def _load_registry_data(self) -> dict[str, Any]:
-        """Load and return registry dictionary."""
+        """Load and return registry dictionary, verifying self-digest."""
         if not self.registry_path.is_file():
             return {"registry_version": "1.0", "records": {}}
         try:
-            return json.loads(self.registry_path.read_text(encoding="utf-8"))
+            data = json.loads(self.registry_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Error reading registry at %s: %s", self.registry_path, exc)
-            return {"registry_version": "1.0", "records": {}}
+            raise RegistryIntegrityError(
+                f"Registry file at {self.registry_path} is corrupt or unreadable: {exc}"
+            ) from exc
+
+        if not isinstance(data, dict):
+            raise RegistryIntegrityError(
+                f"Registry data in {self.registry_path} is not a valid JSON dictionary"
+            )
+
+        if data.get("records"):
+            reg_sha = data.get("registry_sha256")
+            if not reg_sha:
+                raise RegistryIntegrityError(
+                    f"Registry file at {self.registry_path} lacks registry_sha256 digest"
+                )
+            clean = {k: v for k, v in data.items() if k != "registry_sha256"}
+            computed_sha = digest(clean)
+            if computed_sha != reg_sha:
+                raise RegistryIntegrityError(
+                    f"Registry self-digest mismatch in {self.registry_path}: "
+                    f"expected {reg_sha}, computed {computed_sha}. Tampering detected."
+                )
+
+        return data
 
     def _save_registry_data(self, data: dict[str, Any]) -> None:
         """Atomically persist registry data with clean formatting."""
@@ -149,6 +195,7 @@ class ShadowModelRegistry:
         if isinstance(model_id_or_path, Path):
             m_path = model_id_or_path.resolve()
         else:
+            validate_storage_identifier(model_id_or_path)
             m_path = (self.candidate_models_dir / model_id_or_path).resolve()
 
         if not m_path.is_dir():
@@ -174,6 +221,7 @@ class ShadowModelRegistry:
             ) from exc
 
         model_id = manifest["model_id"]
+        validate_storage_identifier(model_id)
 
         # Check existing registration
         reg_data = self._load_registry_data()
@@ -216,6 +264,19 @@ class ShadowModelRegistry:
                 f"Invalid confidence threshold: {thresh} (must be in [0.50, 1.0])"
             )
 
+        # Extract pre-cutoff training majority direction and class probability
+        training_maj_dir = "DOWN"
+        training_maj_prob_up = 0.4691
+        raw_model = bundle_dict.get("model")
+        if raw_model is not None:
+            if hasattr(raw_model, "majority_class_"):
+                maj_class = raw_model.majority_class_
+                training_maj_dir = "UP" if maj_class == 1 else "DOWN"
+            if hasattr(raw_model, "class_frequencies_"):
+                freqs = raw_model.class_frequencies_
+                if len(freqs) == 2:
+                    training_maj_prob_up = float(freqs[1])
+
         now_utc = datetime.now(UTC).isoformat()
         eval_id = (
             f"eval_{model_id}_{hashlib.sha256(f'{model_id}_{now_utc}'.encode()).hexdigest()[:8]}"
@@ -241,6 +302,8 @@ class ShadowModelRegistry:
             verdict=manifest.get("verdict", "NO_RELIABLE_EDGE_DETECTED"),
             wallet_classification=manifest.get("wallet_classification", "UNKNOWN_WALLET_EVIDENCE"),
             is_baseline=is_baseline,
+            training_majority_direction=training_maj_dir,
+            training_majority_prob_up=training_maj_prob_up,
             notes=notes,
         )
 

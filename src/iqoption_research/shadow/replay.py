@@ -31,10 +31,23 @@ from iqoption_research.shadow.journal import (
     DEFAULT_SHADOW_SESSIONS_DIR,
     ShadowPredictionJournal,
     ShadowPredictionRecord,
+    validate_storage_identifier,
 )
 from iqoption_research.shadow.registry import ShadowModelRegistry
 
 logger = logging.getLogger(__name__)
+
+
+class ReplayError(ValueError):
+    """Base exception for replay errors."""
+
+
+class SessionAlreadyCompletedError(ReplayError):
+    """Raised when attempting to reuse an already completed session ID."""
+
+
+class SessionIntegrityError(ReplayError):
+    """Raised when session metadata or journal digests fail verification."""
 
 
 class ReplayCancelledError(Exception):
@@ -56,10 +69,17 @@ class ReplayConfig:
     notes: str = ""
 
     def __post_init__(self) -> None:
+        validate_storage_identifier(self.model_id)
         if not self.session_id:
             now_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             safe_model = self.model_id.replace("candidate_", "").split("_")[0]
             object.__setattr__(self, "session_id", f"sreplay_{safe_model}_{now_str}")
+        validate_storage_identifier(self.session_id)
+        if self.evidence_class != "OFFLINE_REPLAY":
+            raise ReplayError(
+                f"Historical replay cannot be labeled {self.evidence_class!r}. "
+                "Only OFFLINE_REPLAY is authorized for historical evaluations."
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -80,6 +100,7 @@ class ReplayResult:
     data_cutoff_overlap_warning: str | None
     completed_at_utc: str
     disclaimer: str
+    prediction_failures_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -89,6 +110,7 @@ class ReplayResult:
             "total_candles_processed": self.total_candles_processed,
             "predictions_recorded": self.predictions_recorded,
             "outcomes_resolved": self.outcomes_resolved,
+            "prediction_failures_count": self.prediction_failures_count,
             "summary": self.summary.to_dict(),
             "is_functional_test": self.is_functional_test,
             "data_cutoff_overlap_warning": self.data_cutoff_overlap_warning,
@@ -153,12 +175,26 @@ class HistoricalReplayEngine:
 
         # 2. Setup session directory and journal
         session_dir = self.sessions_base_dir / config.session_id
+        session_file = session_dir / "session.json"
+        if session_file.is_file():
+            try:
+                existing_data = json.loads(session_file.read_text(encoding="utf-8"))
+                if "summary" in existing_data:
+                    raise SessionAlreadyCompletedError(
+                        f"Replay session '{config.session_id}' already completed. "
+                        "Unsafe reuse of completed session IDs is prohibited."
+                    )
+            except (json.JSONDecodeError, OSError):
+                pass
+
         session_dir.mkdir(parents=True, exist_ok=True)
         journal = ShadowPredictionJournal(config.session_id, session_dir=session_dir)
         evaluator = ShadowOutcomeEvaluator(
             journal,
             assumed_payout=config.assumed_payout,
             min_qualifying_trades=config.min_qualifying_trades,
+            frozen_majority_direction=frozen_record.training_majority_direction,
+            frozen_majority_prob_up=frozen_record.training_majority_prob_up,
         )
 
         total_candles = len(candles)
@@ -167,6 +203,8 @@ class HistoricalReplayEngine:
 
         lookback_bars = max(config.window_lookback_bars, engine.min_warmup_bars + 5)
         rolling_buffer: list[Candle] = []
+        prediction_failures_count = 0
+        prediction_failures: list[dict[str, Any]] = []
 
         logger.info(
             "Starting historical replay session %s with %d candles for model %s",
@@ -221,6 +259,9 @@ class HistoricalReplayEngine:
                         data_availability_utc=data_avail_utc,
                         provenance_class=config.snapshot_id or "HISTORICAL_REPLAY",
                         prediction_created_ts=pred_created_utc,
+                        simulated_decision_ts=curr_candle.to_ts,
+                        executed_wall_clock_utc=pred_created_utc,
+                        broker_availability_type="HISTORICAL_THEORETICAL_CLOSE",
                         probabilities={
                             "UP": pred_output.probability_up,
                             "DOWN": pred_output.probability_down,
@@ -239,7 +280,15 @@ class HistoricalReplayEngine:
                 except (WarmupIncompleteError, PointInTimeViolationError) as exc:
                     logger.debug("Skipped prediction at index %d: %s", i, exc)
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("Unexpected prediction error at index %d: %s", i, exc)
+                    prediction_failures_count += 1
+                    failure_info = {
+                        "candle_index": i,
+                        "candle_cutoff_ts": curr_candle.to_ts,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    }
+                    prediction_failures.append(failure_info)
+                    logger.warning("Prediction failure at index %d: %s", i, exc)
 
             if progress_callback is not None and (i % 25 == 0 or i == total_candles - 1):
                 try:
@@ -261,8 +310,16 @@ class HistoricalReplayEngine:
         evaluator.resolve_pending(rolling_buffer)
 
         # 5. Compute summary and persist session.json
-        summary = evaluator.compute_summary()
+        summary = evaluator.compute_summary(is_functional_test=is_functional_test)
         now_utc = datetime.now(UTC).isoformat()
+
+        # Compute SHA-256 hashes of predictions and outcomes files for evidence integrity
+        pred_bytes = (
+            journal.predictions_file.read_bytes() if journal.predictions_file.is_file() else b""
+        )
+        out_bytes = journal.outcomes_file.read_bytes() if journal.outcomes_file.is_file() else b""
+        predictions_sha256 = hashlib.sha256(pred_bytes).hexdigest()
+        outcomes_sha256 = hashlib.sha256(out_bytes).hexdigest()
 
         session_meta = {
             "session_id": config.session_id,
@@ -275,6 +332,10 @@ class HistoricalReplayEngine:
             "predictions_recorded": journal.total_count,
             "outcomes_resolved": journal.resolved_count,
             "outcomes_pending": journal.pending_count,
+            "predictions_sha256": predictions_sha256,
+            "outcomes_sha256": outcomes_sha256,
+            "prediction_failures_count": prediction_failures_count,
+            "prediction_failures": prediction_failures,
             "is_functional_test": is_functional_test,
             "data_cutoff_overlap_warning": overlap_warning,
             "summary": summary.to_dict(),
@@ -294,9 +355,111 @@ class HistoricalReplayEngine:
             total_candles_processed=total_candles,
             predictions_recorded=journal.total_count,
             outcomes_resolved=journal.resolved_count,
+            prediction_failures_count=prediction_failures_count,
             summary=summary,
             is_functional_test=is_functional_test,
             data_cutoff_overlap_warning=overlap_warning,
             completed_at_utc=now_utc,
             disclaimer=summary.scientific_disclaimer,
         )
+
+    def verify_session(self, session_id: str) -> dict[str, Any]:
+        """Verify session metadata against journal files and compute integrity status.
+
+        Does not modify or delete any files. Classifies older artifacts lacking new
+        digests as LEGACY_UNVERIFIED_EVIDENCE.
+        """
+        validate_storage_identifier(session_id)
+        session_dir = self.sessions_base_dir / session_id
+        session_file = session_dir / "session.json"
+        if not session_file.is_file():
+            return {
+                "session_id": session_id,
+                "status": "MISSING_SESSION_METADATA",
+                "verified": False,
+                "error": f"Session file not found: {session_file}",
+            }
+
+        try:
+            meta = json.loads(session_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            return {
+                "session_id": session_id,
+                "status": "CORRUPT_SESSION_METADATA",
+                "verified": False,
+                "error": f"Failed to parse session metadata: {exc}",
+            }
+
+        recorded_session_sha = meta.get("session_sha256")
+        clean_meta = {k: v for k, v in meta.items() if k != "session_sha256"}
+        computed_session_sha = digest(clean_meta)
+        if recorded_session_sha != computed_session_sha:
+            return {
+                "session_id": session_id,
+                "status": "SESSION_METADATA_TAMPERED",
+                "verified": False,
+                "error": "Session metadata SHA-256 mismatch",
+            }
+
+        predictions_file = session_dir / "predictions.jsonl"
+        outcomes_file = session_dir / "outcomes.jsonl"
+
+        # Check if legacy session without journal sha256 fields
+        if "predictions_sha256" not in meta:
+            return {
+                "session_id": session_id,
+                "status": "LEGACY_UNVERIFIED_EVIDENCE",
+                "verified": False,
+                "note": (
+                    "Older session artifact lacks cryptographic journal checksums. "
+                    "Preserved without modification."
+                ),
+                "session_meta": meta,
+            }
+
+        # Verify predictions.jsonl checksum
+        if not predictions_file.is_file():
+            return {
+                "session_id": session_id,
+                "status": "MISSING_PREDICTIONS_JOURNAL",
+                "verified": False,
+                "error": f"Missing {predictions_file}",
+            }
+
+        actual_pred_sha = hashlib.sha256(predictions_file.read_bytes()).hexdigest()
+        if actual_pred_sha != meta.get("predictions_sha256"):
+            return {
+                "session_id": session_id,
+                "status": "PREDICTIONS_JOURNAL_TAMPERED",
+                "verified": False,
+                "error": (
+                    f"Predictions checksum mismatch: expected {meta.get('predictions_sha256')}, "
+                    f"got {actual_pred_sha}"
+                ),
+            }
+
+        # Verify outcomes.jsonl checksum if recorded
+        if outcomes_file.is_file():
+            actual_out_sha = hashlib.sha256(outcomes_file.read_bytes()).hexdigest()
+            if meta.get("outcomes_sha256") and actual_out_sha != meta.get("outcomes_sha256"):
+                return {
+                    "session_id": session_id,
+                    "status": "OUTCOMES_JOURNAL_TAMPERED",
+                    "verified": False,
+                    "error": (
+                        f"Outcomes checksum mismatch: expected {meta.get('outcomes_sha256')}, "
+                        f"got {actual_out_sha}"
+                    ),
+                }
+
+        return {
+            "session_id": session_id,
+            "status": "VERIFIED",
+            "verified": True,
+            "evidence_class": meta.get("evidence_class", "UNKNOWN"),
+            "model_id": meta.get("config", {}).get("model_id", ""),
+            "predictions_recorded": meta.get("predictions_recorded", 0),
+            "outcomes_resolved": meta.get("outcomes_resolved", 0),
+            "is_functional_test": meta.get("is_functional_test", False),
+            "session_meta": meta,
+        }

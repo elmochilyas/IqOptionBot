@@ -614,9 +614,12 @@ def verify_session_command(
             Panel(
                 f"[bold green]Session integrity verified successfully.[/bold green]\n\n"
                 f"Session ID: [cyan]{result['session_id']}[/cyan]\n"
+                f"Evidence Class: [bold]{result.get('evidence_classification', 'N/A')}[/bold] "
+                f"(Prospective Verified: {result.get('is_prospective_verified')})\n"
                 f"Manifest SHA-256: {result['checksums'].get('manifest_sha256')}\n"
                 f"Predictions SHA-256: {result['checksums'].get('predictions_sha256')}\n"
                 f"Outcomes SHA-256: {result['checksums'].get('outcomes_sha256')}\n"
+                f"Commitments SHA-256: {result['checksums'].get('commitments_sha256', 'N/A')}\n"
                 f"Session JSON SHA-256: {result['checksums'].get('session_json_sha256')}\n\n"
                 f"[dim]All digests match; journal logs are contiguous and valid.[/dim]",
                 title="Cryptographic Sealing Verified",

@@ -40,6 +40,7 @@ from iqoption_research.research.dataset_manager import ResearchDatasetManager
 from iqoption_research.shadow.evaluator import ShadowOutcomeEvaluator
 from iqoption_research.shadow.journal import (
     DEFAULT_SHADOW_SESSIONS_DIR,
+    CommitmentAttestationRecord,
     OutcomeStatus,
     ShadowPredictionJournal,
     ShadowPredictionRecord,
@@ -316,6 +317,23 @@ def test_contract_economics_binary_vs_digital(tmp_path: Path) -> None:
             evidence_class="PROSPECTIVE_SHADOW",
         )
         journal.record_prediction(rec)
+        att = CommitmentAttestationRecord(
+            session_id=session_id,
+            prediction_id=pid,
+            model_id="cand_1",
+            prediction_fingerprint=rec.prediction_fingerprint,
+            feature_cutoff_ts=cutoff,
+            expected_maturity_ts=cutoff + 60,
+            post_fsync_completion_ts=cutoff + 0.05,
+            post_fsync_completion_utc=datetime.fromtimestamp(cutoff + 0.05, tz=UTC).isoformat(),
+            commitment_deadline_ts=cutoff + 55.0,
+            clock_uncertainty_ms=10.0,
+            commitment_safety_margin_seconds=5.0,
+            is_timely=True,
+            evidence_class="PROSPECTIVE_SHADOW",
+            notes="",
+        )
+        journal.record_commitment(att)
 
     # Resolve outcomes
     # 1. UP WIN (close > open)
@@ -970,6 +988,19 @@ async def test_session_integrity_sealing_and_tamper_detection(
     check_tampered_man = verify_session_integrity(session_dir)
     assert check_tampered_man["is_valid"] is False
     assert any("Manifest self-digest mismatch" in e for e in check_tampered_man["errors"])
+    manifest_file.write_text(
+        json.dumps(dict(man_data, accepted_opportunities_count=res.accepted_opportunities_count)),
+        encoding="utf-8",
+    )
+
+    # 5. Tamper commitments.jsonl -> fails
+    comm_file = session_dir / "commitments.jsonl"
+    comm_text = comm_file.read_text(encoding="utf-8")
+    comm_file.write_text(comm_text + "\n", encoding="utf-8")
+    check_tampered_comm = verify_session_integrity(session_dir)
+    assert check_tampered_comm["is_valid"] is False
+    assert any("commitments.jsonl checksum mismatch" in e for e in check_tampered_comm["errors"])
+    comm_file.write_text(comm_text, encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -1053,6 +1084,7 @@ def test_cli_shadow_verify_session(
     )
     assert res_valid.exit_code == 0
     assert "Session integrity verified successfully" in res_valid.stdout
+    assert "Commitments SHA-256:" in res_valid.stdout
 
     sess_dir = obs.session_dir
     (sess_dir / "predictions.jsonl").write_text("tampered_content\n", encoding="utf-8")
@@ -1260,3 +1292,180 @@ async def test_prospective_observer_lifecycle_connection_failure_and_teardown_pr
 
     verification = verify_session_integrity(observer.session_dir)
     assert verification["is_valid"] is True
+
+
+@pytest.mark.asyncio
+async def test_prospective_commitment_attestation_disk_recovery(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    """Verify that predictions and commitment attestations are recovered cleanly from disk."""
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+    initial_candles = raw_candles[:30]
+    stream_candles = raw_candles[30:35]
+
+    stream = SyntheticMarketStream(stream_candles)
+    cfg = ObservationSessionConfig(
+        session_id="test_comm_recovery",
+        model_ids=(m1_id,),
+        duration_minutes=15,
+        is_synthetic=True,
+        allow_shortened_session=True,
+    )
+    reg = ShadowModelRegistry(root)
+    obs = ProspectiveShadowObserver(
+        config=cfg,
+        registry=reg,
+        root=root,
+        initial_history=initial_candles,
+    )
+    res = await obs.run(stream)
+    assert res.accepted_opportunities_count > 0
+
+    session_dir = obs.session_dir
+    commitments_file = session_dir / "commitments.jsonl"
+    assert commitments_file.is_file()
+    assert commitments_file.stat().st_size > 0
+
+    # Instantiate new journal from disk
+    recovered_journal = ShadowPredictionJournal(
+        "test_comm_recovery", root=root, session_dir=session_dir
+    )
+    assert recovered_journal.commitment_count == recovered_journal.total_count
+    assert recovered_journal.commitment_count > 0
+
+    for pred in recovered_journal.list_predictions():
+        comm = recovered_journal.get_commitment(pred.prediction_id)
+        assert comm is not None
+        assert comm.prediction_fingerprint == pred.prediction_fingerprint
+        assert comm.model_id == pred.model_id
+        assert comm.feature_cutoff_ts == pred.feature_cutoff_ts
+        assert comm.expected_maturity_ts == pred.expected_maturity_ts
+        assert comm.is_timely is True
+        assert pred.runtime_diagnostics["post_fsync_completion_ts"] == comm.post_fsync_completion_ts
+        assert pred.runtime_diagnostics["is_timely"] is True
+
+
+@pytest.mark.asyncio
+async def test_verify_session_integrity_rejects_missing_commitments_in_prospective(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    """Prospective session missing commitments.jsonl fails verification and cannot be verified."""
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+    initial_candles = raw_candles[:30]
+    stream_candles = raw_candles[30:33]
+
+    stream = SyntheticMarketStream(stream_candles)
+    cfg = ObservationSessionConfig(
+        session_id="test_comm_missing",
+        model_ids=(m1_id,),
+        duration_minutes=15,
+        is_synthetic=True,
+        allow_shortened_session=True,
+    )
+    reg = ShadowModelRegistry(root)
+    obs = ProspectiveShadowObserver(
+        config=cfg,
+        registry=reg,
+        root=root,
+        initial_history=initial_candles,
+    )
+    await obs.run(stream)
+
+    session_dir = obs.session_dir
+    commitments_file = session_dir / "commitments.jsonl"
+    commitments_file.unlink()
+
+    check = verify_session_integrity(session_dir)
+    assert check["is_valid"] is False
+    assert check["is_prospective_verified"] is False
+    assert any("commitments.jsonl" in e for e in check["errors"])
+
+
+@pytest.mark.asyncio
+async def test_verify_session_integrity_rejects_tampered_or_contradictory_commitment(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    """Detects duplicate and orphaned commitment attestations in verification."""
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+    initial_candles = raw_candles[:30]
+    stream_candles = raw_candles[30:33]
+
+    stream = SyntheticMarketStream(stream_candles)
+    cfg = ObservationSessionConfig(
+        session_id="test_comm_tamper_rules",
+        model_ids=(m1_id,),
+        duration_minutes=15,
+        is_synthetic=True,
+        allow_shortened_session=True,
+    )
+    reg = ShadowModelRegistry(root)
+    obs = ProspectiveShadowObserver(
+        config=cfg,
+        registry=reg,
+        root=root,
+        initial_history=initial_candles,
+    )
+    await obs.run(stream)
+    session_dir = obs.session_dir
+
+    # Duplicate commitment attestation inside journal
+    comm_file = session_dir / "commitments.jsonl"
+    lines = [line for line in comm_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) > 0
+    # Append duplicate of first line
+    comm_file.write_text("\n".join([*lines, lines[0]]) + "\n", encoding="utf-8")
+    # Also update manifest to match new checksum so we test journal check
+    manifest_file = session_dir / "manifest.json"
+    man = json.loads(manifest_file.read_text(encoding="utf-8"))
+    man["commitments_sha256"] = hashlib.sha256(comm_file.read_bytes()).hexdigest()
+    manifest_file.write_text(json.dumps(man, indent=2, sort_keys=True), encoding="utf-8")
+
+    check_dup = verify_session_integrity(session_dir)
+    assert check_dup["is_valid"] is False
+    assert any("Duplicate" in e or "already recorded" in e for e in check_dup["errors"])
+
+
+def test_verify_session_integrity_offline_replay_compatibility(
+    tmp_path: Path,
+) -> None:
+    """Historical offline replay sessions pass structural check but are NOT prospective verified."""
+    session_dir = tmp_path / "offline_replay_session"
+    session_dir.mkdir(parents=True)
+
+    session_meta = {
+        "schema_version": 1,
+        "session_id": "offline_replay_session",
+        "evidence_class": "OFFLINE_REPLAY",
+        "created_at_utc": datetime.now(UTC).isoformat(),
+        "execution_authority": "NONE",
+    }
+    session_file = session_dir / "session.json"
+    session_file.write_text(json.dumps(session_meta, indent=2, sort_keys=True), encoding="utf-8")
+
+    preds_file = session_dir / "predictions.jsonl"
+    preds_file.write_text("", encoding="utf-8")
+    outcomes_file = session_dir / "outcomes.jsonl"
+    outcomes_file.write_text("", encoding="utf-8")
+
+    manifest_data = {
+        "schema_version": 1,
+        "session_id": "offline_replay_session",
+        "evidence_class": "OFFLINE_REPLAY",
+        "is_synthetic": False,
+        "predictions_sha256": hashlib.sha256(b"").hexdigest(),
+        "outcomes_sha256": hashlib.sha256(b"").hexdigest(),
+        "session_json_sha256": hashlib.sha256(session_file.read_bytes()).hexdigest(),
+    }
+    manifest_bytes = json.dumps(manifest_data, indent=2, sort_keys=True).encode("utf-8")
+    manifest_data["manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
+
+    manifest_file = session_dir / "manifest.json"
+    manifest_file.write_text(json.dumps(manifest_data, indent=2, sort_keys=True), encoding="utf-8")
+
+    result = verify_session_integrity(session_dir)
+    assert result["is_valid"] is True
+    assert result["is_prospective_verified"] is False
+    assert result["evidence_classification"] == "OFFLINE_REPLAY"

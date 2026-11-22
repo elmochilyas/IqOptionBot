@@ -31,6 +31,7 @@ from iqoption_research.shadow.evaluator import (
 )
 from iqoption_research.shadow.journal import (
     DEFAULT_SHADOW_SESSIONS_DIR,
+    CommitmentAttestationRecord,
     OutcomeEventRecord,
     OutcomeStatus,
     ShadowPredictionJournal,
@@ -228,14 +229,21 @@ def verify_session_integrity(session_dir: Path) -> dict[str, Any]:
     Checks:
     1. Presence and JSON validity of manifest.json and session.json.
     2. Self-consistency of manifest_sha256 digest.
-    3. Matching SHA-256 digests for session.json, predictions.jsonl, and outcomes.jsonl.
+    3. Matching SHA-256 digests for session.json, predictions.jsonl, outcomes.jsonl,
+       and commitments.jsonl.
     4. Internal consistency of the append-only journal logs.
+    5. Exactly one valid commitment attestation per applicable prospective prediction.
+    6. No orphaned or duplicated commitment attestations.
+    7. Matching prediction IDs and fingerprints.
+    8. Correct deadline comparisons and consistent quarantine status.
+    9. Compatibility rules for historical offline replay sessions without commitment attestations.
     """
     errors: list[str] = []
     manifest_file = session_dir / "manifest.json"
     session_file = session_dir / "session.json"
     predictions_file = session_dir / "predictions.jsonl"
     outcomes_file = session_dir / "outcomes.jsonl"
+    commitments_file = session_dir / "commitments.jsonl"
 
     if not manifest_file.is_file():
         return {
@@ -243,6 +251,7 @@ def verify_session_integrity(session_dir: Path) -> dict[str, Any]:
             "session_id": session_dir.name,
             "errors": [f"Missing manifest file: {manifest_file}"],
             "checksums": {},
+            "is_prospective_verified": False,
         }
 
     try:
@@ -253,6 +262,7 @@ def verify_session_integrity(session_dir: Path) -> dict[str, Any]:
             "session_id": session_dir.name,
             "errors": [f"Malformed manifest JSON: {exc}"],
             "checksums": {},
+            "is_prospective_verified": False,
         }
 
     session_id = manifest.get("session_id", session_dir.name)
@@ -299,20 +309,161 @@ def verify_session_integrity(session_dir: Path) -> dict[str, Any]:
                 f"actual={actual_outcomes_sha}"
             )
 
+    # Check commitments.jsonl digest
+    recorded_comm_sha = manifest.get("commitments_sha256")
+    if recorded_comm_sha is not None:
+        actual_comm_sha = _compute_file_sha256(commitments_file)
+        if recorded_comm_sha != actual_comm_sha:
+            errors.append(
+                f"commitments.jsonl checksum mismatch: expected={recorded_comm_sha}, "
+                f"actual={actual_comm_sha}"
+            )
+
+    # Session metadata inspection
+    session_meta: dict[str, Any] = {}
+    if session_file.is_file():
+        with contextlib.suppress(Exception):
+            session_meta = json.loads(session_file.read_text(encoding="utf-8"))
+
+    evidence_class = manifest.get("evidence_class") or session_meta.get("evidence_class", "")
+
     # Validate journal structural integrity
+    journal: ShadowPredictionJournal | None = None
     try:
-        ShadowPredictionJournal(session_id, session_dir=session_dir)
+        journal = ShadowPredictionJournal(session_id, session_dir=session_dir)
     except Exception as exc:  # noqa: BLE001
         errors.append(f"Journal integrity check failed: {exc}")
+
+    predictions = journal.list_predictions() if journal is not None else []
+    commitments = journal.list_commitments() if journal is not None else []
+
+    if evidence_class in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST"):
+        is_prospective_session = True
+    elif evidence_class in ("OFFLINE_REPLAY", "HISTORICAL"):
+        is_prospective_session = False
+    else:
+        is_prospective_session = any(
+            p.evidence_class in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST")
+            for p in predictions
+        )
+
+    is_prospective_verified = False
+
+    if is_prospective_session:
+        # Enforce presence of commitments.jsonl and manifest digest
+        if not commitments_file.is_file() and len(predictions) > 0:
+            errors.append(f"Missing commitments.jsonl journal in prospective session {session_id}")
+        if recorded_comm_sha is None and len(predictions) > 0:
+            errors.append(
+                f"Manifest lacks commitments_sha256 digest in prospective session {session_id}"
+            )
+
+        if journal is not None:
+            prospective_preds = [
+                p
+                for p in predictions
+                if p.evidence_class in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST")
+            ]
+            pred_map = {p.prediction_id: p for p in prospective_preds}
+            comm_map: dict[str, CommitmentAttestationRecord] = {}
+
+            # Exactly one commitment per prediction & no duplicates
+            for comm in commitments:
+                if comm.prediction_id in comm_map:
+                    errors.append(
+                        f"Duplicate commitment attestation for prediction {comm.prediction_id}"
+                    )
+                comm_map[comm.prediction_id] = comm
+
+            # Check for orphaned commitment attestations
+            for comm in commitments:
+                if comm.prediction_id not in pred_map:
+                    errors.append(
+                        f"Orphaned commitment attestation referencing unknown prediction: "
+                        f"{comm.prediction_id}"
+                    )
+
+            # Check for missing commitment attestations
+            for pred_id in pred_map:
+                if pred_id not in comm_map:
+                    errors.append(
+                        f"Missing commitment attestation for prospective prediction: {pred_id}"
+                    )
+
+            # Field and deadline integrity
+            for pred_id, comm in comm_map.items():
+                pred = pred_map.get(pred_id)
+                if pred is None:
+                    continue
+
+                if comm.prediction_fingerprint != pred.prediction_fingerprint:
+                    errors.append(
+                        f"Fingerprint mismatch for {pred_id}: "
+                        f"attestation={comm.prediction_fingerprint}, "
+                        f"prediction={pred.prediction_fingerprint}"
+                    )
+                if comm.model_id != pred.model_id:
+                    errors.append(
+                        f"Model ID mismatch for {pred_id}: "
+                        f"attestation={comm.model_id}, prediction={pred.model_id}"
+                    )
+                if comm.feature_cutoff_ts != pred.feature_cutoff_ts:
+                    errors.append(
+                        f"Cutoff timestamp mismatch for {pred_id}: "
+                        f"attestation={comm.feature_cutoff_ts}, prediction={pred.feature_cutoff_ts}"
+                    )
+                if comm.expected_maturity_ts != pred.expected_maturity_ts:
+                    errors.append(
+                        f"Maturity timestamp mismatch for {pred_id}: "
+                        f"attestation={comm.expected_maturity_ts}, "
+                        f"prediction={pred.expected_maturity_ts}"
+                    )
+
+                # Correct deadline comparisons
+                expected_timely = comm.post_fsync_completion_ts < comm.commitment_deadline_ts
+                if comm.is_timely != expected_timely:
+                    errors.append(
+                        f"Contradictory commitment timeliness for {pred_id}: "
+                        f"is_timely={comm.is_timely} but "
+                        f"post_fsync={comm.post_fsync_completion_ts:.3f} "
+                        f"vs deadline={comm.commitment_deadline_ts:.3f}"
+                    )
+
+                # Consistent quarantine status for late commitments
+                if not comm.is_timely:
+                    if pred.outcome_status != OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value:
+                        errors.append(
+                            f"Late commitment {pred_id} was not quarantined: "
+                            f"outcome_status={pred.outcome_status}"
+                        )
+                elif pred.outcome_status == OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value:
+                    errors.append(
+                        f"Timely commitment {pred_id} was falsely marked with "
+                        "QUARANTINED_LATE_COMMITMENT"
+                    )
+
+            if len(errors) == 0 and len(prospective_preds) > 0:
+                is_prospective_verified = True
+    else:
+        # Historical offline replay session: commitment journal is not expected,
+        # but legacy evidence must never be silently labeled as prospective verified.
+        is_prospective_verified = False
 
     return {
         "is_valid": len(errors) == 0,
         "session_id": session_id,
         "errors": errors,
+        "is_prospective_verified": is_prospective_verified,
+        "evidence_classification": (
+            evidence_class
+            if evidence_class
+            else ("PROSPECTIVE" if is_prospective_session else "OFFLINE_REPLAY")
+        ),
         "checksums": {
             "manifest_sha256": recorded_manifest_sha,
             "predictions_sha256": recorded_pred_sha,
             "outcomes_sha256": recorded_outcomes_sha,
+            "commitments_sha256": recorded_comm_sha,
             "session_json_sha256": recorded_session_sha,
         },
     }
@@ -694,12 +845,28 @@ class ProspectiveShadowObserver:
                     post_fsync_ts = time.time()
                     post_fsync_utc = datetime.now(UTC).isoformat()
 
-                pred_rec.runtime_diagnostics["post_fsync_completion_ts"] = post_fsync_ts
-                pred_rec.runtime_diagnostics["post_fsync_completion_utc"] = post_fsync_utc
-                pred_rec.runtime_diagnostics["commitment_deadline_ts"] = deadline_ts
-                pred_rec.runtime_diagnostics["is_timely"] = post_fsync_ts < deadline_ts
+                is_timely = post_fsync_ts < deadline_ts
 
-                if post_fsync_ts < deadline_ts:
+                # Record separate immutable fsynced commitment attestation
+                attestation = CommitmentAttestationRecord(
+                    session_id=self.config.session_id,
+                    prediction_id=pred_rec.prediction_id,
+                    model_id=model_id,
+                    prediction_fingerprint=pred_rec.prediction_fingerprint,
+                    feature_cutoff_ts=cutoff_ts,
+                    expected_maturity_ts=maturity_ts,
+                    post_fsync_completion_ts=post_fsync_ts,
+                    post_fsync_completion_utc=post_fsync_utc,
+                    commitment_deadline_ts=deadline_ts,
+                    clock_uncertainty_ms=event.clock_uncertainty_ms,
+                    commitment_safety_margin_seconds=self.config.commitment_safety_margin_seconds,
+                    is_timely=is_timely,
+                    evidence_class=pred_rec.evidence_class,
+                    notes="",
+                )
+                self.journal.record_commitment(attestation)
+
+                if is_timely:
                     any_accepted = True
                     self._last_commitment_latency_ms = max(
                         0.0, (post_fsync_ts - event.received_at_utc_ts) * 1000.0
@@ -994,6 +1161,9 @@ class ProspectiveShadowObserver:
             "termination_reason": termination_reason,
             "is_interrupted": session_failed,
             "is_synthetic": self.config.is_synthetic,
+            "evidence_class": (
+                "SYNTHETIC_STREAMING_TEST" if self.config.is_synthetic else "PROSPECTIVE_SHADOW"
+            ),
             "warmup_state": self._warmup_state,
             "total_candles_processed": self._valid_candles_count,
             "consecutive_valid_candles": self._consecutive_valid_candles,
@@ -1009,6 +1179,7 @@ class ProspectiveShadowObserver:
             "synthetic_observations_count": self._synthetic_observations_count,
             "predictions_sha256": _compute_file_sha256(self.journal.predictions_file),
             "outcomes_sha256": _compute_file_sha256(self.journal.outcomes_file),
+            "commitments_sha256": _compute_file_sha256(self.journal.commitments_file),
             "session_json_sha256": _compute_file_sha256(meta_file),
             "models_sha256": {m: r.bundle_sha256 for m, r in self.records.items()},
             "summaries": {m: s.to_dict() for m, s in summaries.items()},

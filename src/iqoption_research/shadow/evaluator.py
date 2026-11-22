@@ -106,6 +106,7 @@ class EvaluationSummary:
     break_even_win_rate_digital: float = 0.0
     opportunity_count: int = 0
     quarantined_late_count: int = 0
+    commitments_verified_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -221,6 +222,53 @@ class ShadowOutcomeEvaluator:
                     self.journal.record_outcome(out_event)
                     resolved_count += 1
                 continue
+
+            # Prospective commitment attestation verification
+            if pred.evidence_class in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST"):
+                comm = (
+                    self.journal.get_commitment(pred.prediction_id)
+                    if hasattr(self.journal, "get_commitment")
+                    else None
+                )
+                if comm is None:
+                    out_event = OutcomeEventRecord(
+                        session_id=pred.session_id,
+                        prediction_id=pred.prediction_id,
+                        evaluated_at_utc=now_iso,
+                        outcome_status=OutcomeStatus.INVALID_DISCONTINUITY.value,
+                        cutoff_candle_close=cutoff_candle.close,
+                        maturity_candle_close=maturity_candle.close,
+                        actual_return=0.0,
+                        market_direction="UNVERIFIED_PROSPECTIVE",
+                        was_trade_taken=False,
+                        is_winning_trade=None,
+                        simulated_payout_pnl=None,
+                        outcome_note=(
+                            "Missing durable commitment attestation: "
+                            "unverified prospective prediction"
+                        ),
+                    )
+                    self.journal.record_outcome(out_event)
+                    resolved_count += 1
+                    continue
+                if not comm.is_timely:
+                    out_event = OutcomeEventRecord(
+                        session_id=pred.session_id,
+                        prediction_id=pred.prediction_id,
+                        evaluated_at_utc=now_iso,
+                        outcome_status=OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value,
+                        cutoff_candle_close=cutoff_candle.close,
+                        maturity_candle_close=maturity_candle.close,
+                        actual_return=0.0,
+                        market_direction="LATE_COMMITMENT",
+                        was_trade_taken=False,
+                        is_winning_trade=None,
+                        simulated_payout_pnl=None,
+                        outcome_note="Late commitment quarantined from prospective scoring",
+                    )
+                    self.journal.record_outcome(out_event)
+                    resolved_count += 1
+                    continue
 
             # Continuity check: maturity candle must be consecutive to cutoff
             # For H=1 bar (60s), maturity_candle.from_ts must equal cutoff_candle.to_ts
@@ -341,7 +389,19 @@ class ShadowOutcomeEvaluator:
             if p.outcome_status == OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value
         )
 
-        trade_preds = [p for p in resolved_preds if p.was_trade_taken]
+        trade_preds = [
+            p
+            for p in resolved_preds
+            if p.was_trade_taken
+            and (
+                p.evidence_class not in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST")
+                or (
+                    hasattr(self.journal, "get_commitment")
+                    and self.journal.get_commitment(p.prediction_id) is not None
+                    and self.journal.get_commitment(p.prediction_id).is_timely  # type: ignore[union-attr]
+                )
+            )
+        ]
         trade_count = len(trade_preds)
         win_count = sum(1 for p in trade_preds if p.is_winning_trade is True)
         loss_count = sum(
@@ -414,7 +474,23 @@ class ShadowOutcomeEvaluator:
                 OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value,
             )
             and p.market_direction in ("UP", "DOWN")
+            and (
+                p.evidence_class not in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST")
+                or (
+                    hasattr(self.journal, "get_commitment")
+                    and self.journal.get_commitment(p.prediction_id) is not None
+                    and self.journal.get_commitment(p.prediction_id).is_timely  # type: ignore[union-attr]
+                )
+            )
         ]
+        commitments_verified_count = len([
+            p
+            for p in resolved_preds
+            if p.evidence_class in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST")
+            and hasattr(self.journal, "get_commitment")
+            and self.journal.get_commitment(p.prediction_id) is not None
+            and self.journal.get_commitment(p.prediction_id).is_timely  # type: ignore[union-attr]
+        ])
         if evaluable:
             y_true = [1 if p.market_direction == "UP" else 0 for p in evaluable]
             correct_dirs = sum(
@@ -624,4 +700,5 @@ class ShadowOutcomeEvaluator:
             break_even_win_rate_digital=round(break_even_digital, 4),
             opportunity_count=total_predictions,
             quarantined_late_count=quarantined_late_count,
+            commitments_verified_count=commitments_verified_count,
         )

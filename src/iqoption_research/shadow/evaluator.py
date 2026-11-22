@@ -101,6 +101,10 @@ class EvaluationSummary:
     baseline_source_id: str | None = None
     baseline_source_sha256: str | None = None
     exposure_overlap_classification: str = "UNKNOWN"
+    expectancy_binary_pct: float = 0.0
+    expectancy_digital_pct: float = 0.0
+    break_even_win_rate_digital: float = 0.0
+    opportunity_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -276,6 +280,8 @@ class ShadowOutcomeEvaluator:
     ) -> EvaluationSummary:
         """Compute comprehensive statistical metrics over all predictions in the journal."""
         all_preds = self.journal.list_predictions()
+        if model_id is not None:
+            all_preds = [p for p in all_preds if p.model_id == model_id]
         total_predictions = len(all_preds)
 
         resolved_preds = [p for p in all_preds if p.outcome_status != OutcomeStatus.PENDING.value]
@@ -340,12 +346,18 @@ class ShadowOutcomeEvaluator:
         ci_low = ci_low_decisive
         ci_high = ci_high_decisive
 
-        # Simulated Expectancy: E = (Wins * payout - Losses * 1.0 + Ties * 0.0) / Total trades
+        # Simulated Expectancy:
+        # Binary options: ATM ties refund 100% of stake (net PnL multiplier 0.0).
+        # Digital options: ATM ties forfeit 100% of stake (net PnL multiplier -1.0).
         if trade_count > 0:
             total_simulated_pnl = (win_count * self.assumed_payout) - (loss_count * 1.0)
             exp_pct = (total_simulated_pnl / trade_count) * 100.0
+            digital_simulated_pnl = total_simulated_pnl - (tie_count * 1.0)
+            exp_digital_pct = (digital_simulated_pnl / trade_count) * 100.0
         else:
             exp_pct = 0.0
+            exp_digital_pct = 0.0
+        break_even_digital = 1.0 / (1.0 + self.assumed_payout)
 
         # Full-partition directional accuracy & Brier score (on all non-discontinuous observations)
         evaluable = [
@@ -507,10 +519,11 @@ class ShadowOutcomeEvaluator:
 
         disclaimer = (
             "OFFLINE RESEARCH SHADOW EVALUATION. NO LIVE EXECUTION AUTHORITY. "
-            "NO DEMONSTRATED EDGE. ASSUMED PAYOUT SIMULATIONS DO NOT CONSTITUTE "
-            "PROOF OF PROSPECTIVE PROFITABILITY. WILSON SCORE INTERVALS ASSUME "
-            "I.I.D. BERNOULLI TRIALS AND REPRESENT AN OPTIMAL BOUND UNDER "
-            "TEMPORAL SERIAL DEPENDENCE AND HISTORICAL MODEL SELECTION. "
+            "NO DEMONSTRATED EDGE. CANDLE-CLOSE COMPARISONS ARE HYPOTHETICAL "
+            "RESEARCH BENCHMARKS AND NEVER OBSERVED BROKER ORDER SETTLEMENTS. "
+            "ASSUMED PAYOUT SIMULATIONS DO NOT CONSTITUTE PROOF OF PROSPECTIVE "
+            "PROFITABILITY. WILSON SCORE INTERVALS ASSUME I.I.D. BERNOULLI TRIALS "
+            "AND REPRESENT AN OPTIMAL BOUND UNDER TEMPORAL SERIAL DEPENDENCE. "
             "PHASE 38 MODEL REMAINS FROZEN."
         )
 
@@ -554,4 +567,8 @@ class ShadowOutcomeEvaluator:
             baseline_source_id=self.baseline_source_id,
             baseline_source_sha256=self.baseline_source_sha256,
             exposure_overlap_classification=self.exposure_overlap_classification,
+            expectancy_binary_pct=round(exp_pct, 2),
+            expectancy_digital_pct=round(exp_digital_pct, 2),
+            break_even_win_rate_digital=round(break_even_digital, 4),
+            opportunity_count=total_predictions,
         )

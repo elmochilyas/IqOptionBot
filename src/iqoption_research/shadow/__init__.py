@@ -1,7 +1,8 @@
-"""Offline Shadow Evaluation Foundation (Phase 40A).
+"""Shadow Evaluation & Prospective AI Shadow Observation (Phases 40A & 40B).
 
 Provides point-in-time model prediction, append-only immutable prediction journaling,
-delayed outcome evaluation, and historical replay verification.
+delayed outcome evaluation, historical replay verification, and supervised
+prospective shadow observation.
 """
 
 from __future__ import annotations
@@ -22,6 +23,13 @@ from iqoption_research.shadow.journal import (
     ShadowPredictionJournal,
     ShadowPredictionRecord,
 )
+from iqoption_research.shadow.observer import (
+    ModelObservationState,
+    ObservationProgress,
+    ObservationSessionConfig,
+    ObservationSessionResult,
+    ProspectiveShadowObserver,
+)
 from iqoption_research.shadow.registry import (
     FrozenRegistrationRecord,
     ShadowModelRegistry,
@@ -31,6 +39,12 @@ from iqoption_research.shadow.replay import (
     ReplayConfig,
     ReplayResult,
 )
+from iqoption_research.shadow.streaming import (
+    LiveCollectorStream,
+    MarketStreamProtocol,
+    StreamingCandleEvent,
+    SyntheticMarketStream,
+)
 
 __all__ = [
     "BaselineComparison",
@@ -39,8 +53,15 @@ __all__ = [
     "FrozenRegistrationRecord",
     "HistoricalReplayEngine",
     "InferenceDiagnostic",
+    "LiveCollectorStream",
+    "MarketStreamProtocol",
+    "ModelObservationState",
+    "ObservationProgress",
+    "ObservationSessionConfig",
+    "ObservationSessionResult",
     "OutcomeStatus",
     "PredictionOutput",
+    "ProspectiveShadowObserver",
     "ReplayConfig",
     "ReplayResult",
     "ShadowModelRegistry",
@@ -48,4 +69,6 @@ __all__ = [
     "ShadowPredictionEngine",
     "ShadowPredictionJournal",
     "ShadowPredictionRecord",
+    "StreamingCandleEvent",
+    "SyntheticMarketStream",
 ]

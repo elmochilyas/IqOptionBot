@@ -145,6 +145,73 @@ class SessionProcess:
         self._launch(args, control, "collector")
         self.hard_deadline = time.monotonic() + minutes * 60
 
+    def start_prospective_shadow(
+        self,
+        model_ids: list[str],
+        minutes: int,
+        account_id: str | None = None,
+        *,
+        synthetic: bool = False,
+        allow_shortened: bool = False,
+    ) -> None:
+        self.require_idle()
+        validate_duration(minutes)
+        if not model_ids:
+            raise ValueError("Select at least one registered frozen model for observation")
+
+        if not synthetic:
+            from datetime import UTC, datetime
+
+            now_utc = datetime.now(UTC)
+            try:
+                require_regular_market()
+            except ScheduledMarketClosure as exc:
+                raise ScheduledMarketClosure(
+                    f"Cannot start live shadow observation: {exc}. "
+                    "The regular EURUSD market is currently closed."
+                ) from exc
+
+            if require_regular_market == extended.require_regular_market:
+                fit = assess_duration_market_fit(now_utc, minutes)
+                if not fit.fits and not allow_shortened:
+                    raise MarketCloseBeforeDeadlineError(
+                        reason=fit.rejection_message,
+                        fitting_durations=fit.fitting_durations,
+                        available_minutes=fit.available_minutes,
+                    )
+
+            if not account_id or uuid.UUID(hex=account_id).hex != account_id:
+                raise ValueError("Select an available saved account for live observation")
+
+        control = self.root / CONTROL / "sessions" / uuid.uuid4().hex
+        control.mkdir(parents=True)
+        args = [
+            str(self.root / ".venv/Scripts/python.exe"),
+            "-m",
+            "iqoption_research.desktop.foreground",
+            str(control),
+            "shadow",
+            "observe",
+            "--minutes",
+            str(minutes),
+            "--cancel-file",
+            str(control / "cancel"),
+            "--status-file",
+            str(control / "status.json"),
+        ]
+        for mid in model_ids:
+            args.extend(["--model-id", mid])
+
+        if synthetic:
+            args.append("--synthetic")
+        else:
+            args.extend(["--live", "--yes-i-understand", "--account-id", account_id or ""])
+            if allow_shortened:
+                args.append("--allow-shortened-session")
+
+        self._launch(args, control, "prospective-shadow")
+        self.hard_deadline = time.monotonic() + minutes * 60
+
     def account_entry(self, account_id: str | None = None) -> None:
         self.require_idle()
         control = self.root / CONTROL / "sessions" / uuid.uuid4().hex

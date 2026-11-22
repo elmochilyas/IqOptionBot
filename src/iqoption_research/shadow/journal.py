@@ -30,6 +30,7 @@ class OutcomeStatus(StrEnum):
     RESOLVED_TIE = "RESOLVED_TIE"
     SKIPPED_ABSTAIN = "SKIPPED_ABSTAIN"
     INVALID_DISCONTINUITY = "INVALID_DISCONTINUITY"
+    QUARANTINED_LATE_COMMITMENT = "QUARANTINED_LATE_COMMITMENT"
 
 
 class JournalError(ValueError):
@@ -412,6 +413,10 @@ class ShadowPredictionJournal:
         return [
             p for p in self.list_predictions() if p.outcome_status != OutcomeStatus.PENDING.value
         ]
+
+    def list_outcomes(self) -> list[OutcomeEventRecord]:
+        """Return all outcome event records committed to the journal."""
+        return list(self._outcomes.values())
 
     @property
     def total_count(self) -> int:

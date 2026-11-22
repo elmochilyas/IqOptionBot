@@ -42,6 +42,7 @@ class ShadowEvaluationPanel:
         self.active_future: Future[Any] | None = None
         self.is_cancelled = False
         self.current_journal: ShadowPredictionJournal | None = None
+        self._obs_accounts_map: dict[str, str] = {}
 
         # Main Tab Frame
         self.frame = ttk.Frame(notebook, padding=12)
@@ -267,7 +268,19 @@ class ShadowEvaluationPanel:
                 from iqoption_research.auth.vault import WindowsCredentialVault
 
                 store = WindowsCredentialVault().account_store()
-                acc_labels = [f"{a.label} [{a.account_id[:8]}]" for a in store.list_accounts()]
+                accounts = store.list_accounts()
+                self._obs_accounts_map.clear()
+                acc_labels: list[str] = []
+                for a in accounts:
+                    masked_id = (
+                        f"{a.account_id[:4]}...{a.account_id[-4:]}"
+                        if len(a.account_id) > 8
+                        else a.account_id
+                    )
+                    label = f"{a.label} [{masked_id}]"
+                    self._obs_accounts_map[label] = a.account_id
+                    self._obs_accounts_map[a.account_id] = a.account_id
+                    acc_labels.append(label)
                 self.combo_obs_account["values"] = acc_labels
                 if acc_labels and not self.combo_obs_account.get():
                     self.combo_obs_account.current(0)
@@ -568,6 +581,22 @@ class ShadowEvaluationPanel:
         else:
             self.combo_obs_account.config(state="disabled")
 
+    def _resolve_selected_account_id(self) -> str | None:
+        """Resolve full opaque account UUID from combobox selection or private mapping."""
+        val = (
+            (self.combo_obs_account.get() or "").strip()
+            if hasattr(self, "combo_obs_account")
+            else ""
+        )
+        if not val:
+            return None
+        if val in self._obs_accounts_map:
+            return self._obs_accounts_map[val]
+        for label, acc_id in self._obs_accounts_map.items():
+            if val in (label, acc_id):
+                return acc_id
+        return val
+
     def start_observation(self) -> None:
         model_id = self.combo_obs_model.get()
         if not model_id:
@@ -578,21 +607,21 @@ class ShadowEvaluationPanel:
         mode = self.var_obs_mode.get()
 
         if mode == "live":
-            acc_val = self.combo_obs_account.get()
-            if not acc_val:
+            acc_id = self._resolve_selected_account_id()
+            if not acc_id:
                 messagebox.showwarning(
                     "Account Required",
                     "Please select a Windows Vault account for live observation.",
                 )
                 return
-            acc_id = acc_val.split(" [")[-1].rstrip("]") if " [" in acc_val else acc_val
 
+            display_acc = self.combo_obs_account.get() or acc_id
             if not messagebox.askyesno(
                 "Authorize Supervised Live Observation?",
                 f"You are about to launch a supervised read-only observation session for "
                 f"{minutes} minutes.\n\n"
                 f"Model: {model_id}\n"
-                f"Account: {acc_id}\n\n"
+                f"Account: {display_acc}\n\n"
                 "Orders remain strictly disabled (Authority NONE).\n"
                 "Do you authorize this session?",
                 parent=self.dashboard.window,

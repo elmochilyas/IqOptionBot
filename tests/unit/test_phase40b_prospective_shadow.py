@@ -51,6 +51,7 @@ from iqoption_research.shadow.observer import (
 )
 from iqoption_research.shadow.registry import ShadowModelRegistry
 from iqoption_research.shadow.streaming import (
+    MarketStreamProtocol,
     StreamingCandleEvent,
     SyntheticMarketStream,
 )
@@ -1060,3 +1061,202 @@ def test_cli_shadow_verify_session(
     )
     assert res_invalid.exit_code == 1
     assert "Session integrity verification FAILED" in res_invalid.stdout
+
+
+def test_shadow_panel_live_account_selection_full_uuid(
+    prospective_workspace: tuple[Path, str, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GUI regression test: ensure Windows Vault account dropdown maps to full 32-char UUID."""
+    import uuid
+    from unittest.mock import MagicMock
+
+    from iqoption_research.auth.accounts import SavedAccount
+
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+
+    try:
+        tk_root = tk.Tk()
+        tk_root.withdraw()
+    except tk.TclError:
+        pytest.skip("Tkinter not available in headless CI environment")
+
+    try:
+        realistic_uuid = "0123456789abcdef0123456789abcdef"
+        mock_account = SavedAccount(
+            account_id=realistic_uuid,
+            label="trader***@example.com",
+        )
+
+        mock_store = MagicMock()
+        mock_store.list_accounts.return_value = [mock_account]
+
+        mock_vault_cls = MagicMock()
+        mock_vault_cls.return_value.account_store.return_value = mock_store
+
+        monkeypatch.setattr(
+            "iqoption_research.auth.vault.WindowsCredentialVault",
+            mock_vault_cls,
+        )
+
+        dashboard = MagicMock()
+        dashboard.root = root
+        dashboard.window = tk_root
+        dashboard.process = MagicMock()
+
+        notebook = ttk.Notebook(tk_root)
+        panel = ShadowEvaluationPanel(dashboard, notebook)
+        panel.refresh()
+
+        expected_label = f"trader***@example.com [{realistic_uuid[:4]}...{realistic_uuid[-4:]}]"
+        assert expected_label in panel.combo_obs_account["values"]
+        assert panel._resolve_selected_account_id() == realistic_uuid
+
+        panel.combo_obs_model.set(m1_id)
+        panel.var_obs_mode.set("live")
+        panel.combo_obs_account.set(expected_label)
+
+        monkeypatch.setattr(
+            "tkinter.messagebox.askyesno",
+            lambda *_args, **_kwargs: True,
+        )
+
+        panel.start_observation()
+
+        dashboard.process.start_prospective_shadow.assert_called_once_with(
+            model_ids=[m1_id],
+            minutes=15,
+            account_id=realistic_uuid,
+            synthetic=False,
+        )
+        assert uuid.UUID(hex=realistic_uuid).hex == realistic_uuid
+    finally:
+        with contextlib.suppress(Exception):
+            tk_root.destroy()
+
+
+async def test_prospective_durable_commitment_delay_and_multi_model_quarantine(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    """Test durable commitment deadline: one timely candidate and another late quarantined."""
+    root, _snapshot_id, m1_id, m2_id = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+    initial_candles = raw_candles[:30]
+    stream_candles = raw_candles[30:35]
+
+    stream = SyntheticMarketStream(stream_candles)
+
+    cfg = ObservationSessionConfig(
+        session_id="test_delay_quarantine_multi",
+        model_ids=(m1_id, m2_id),
+        duration_minutes=15,
+        is_synthetic=True,
+        commitment_safety_margin_seconds=5.0,
+        synthetic_model_delays_seconds={m2_id: 60.0},
+        allow_shortened_session=True,
+    )
+
+    reg = ShadowModelRegistry(root)
+    observer = ProspectiveShadowObserver(
+        config=cfg,
+        registry=reg,
+        root=root,
+        initial_history=initial_candles,
+    )
+
+    res = await observer.run(stream)
+
+    assert res.accepted_opportunities_count > 0
+    assert res.quarantined_late_count > 0
+
+    preds = observer.journal.list_predictions()
+    m1_preds = [p for p in preds if p.model_id == m1_id]
+    m2_preds = [p for p in preds if p.model_id == m2_id]
+    assert len(m1_preds) > 0
+    assert len(m2_preds) > 0
+    assert len(preds) == len(m1_preds) + len(m2_preds)
+
+    outcomes = observer.journal.list_outcomes()
+    m2_outcomes = [o for o in outcomes if any(p.prediction_id == o.prediction_id for p in m2_preds)]
+    assert len(m2_outcomes) > 0
+    assert all(
+        o.outcome_status == OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value for o in m2_outcomes
+    )
+
+    m1_sum = res.summaries[m1_id]
+    assert m1_sum.quarantined_late_count == 0
+
+    m2_sum = res.summaries[m2_id]
+    assert m2_sum.quarantined_late_count > 0
+    assert m2_sum.trade_count == 0
+    assert m2_sum.coverage == 0.0
+
+    verification = verify_session_integrity(observer.session_dir)
+    assert verification["is_valid"] is True
+
+
+async def test_prospective_observer_lifecycle_connection_failure_and_teardown_preservation(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    """Test lifecycle cleanup on connection failure with teardown exception preservation."""
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+    initial_candles = raw_candles[:30]
+
+    class FailingMarketStream(MarketStreamProtocol):
+        is_synthetic: bool = True
+
+        def __init__(self) -> None:
+            self.disconnect_called = False
+
+        async def connect(self) -> None:
+            raise ConnectionError("Simulated primary connection setup failure")
+
+        async def disconnect(self) -> None:
+            self.disconnect_called = True
+            raise RuntimeError("Simulated secondary teardown exception")
+
+        async def get_warmup_candles(self, count: int) -> list[Candle]:
+            return []
+
+        async def get_next_event(self) -> StreamingCandleEvent | None:
+            return None
+
+    stream = FailingMarketStream()
+
+    cfg = ObservationSessionConfig(
+        session_id="test_lifecycle_failure_preserve",
+        model_ids=(m1_id,),
+        duration_minutes=15,
+        is_synthetic=True,
+        allow_shortened_session=True,
+    )
+
+    reg = ShadowModelRegistry(root)
+    observer = ProspectiveShadowObserver(
+        config=cfg,
+        registry=reg,
+        root=root,
+        initial_history=initial_candles,
+    )
+
+    with pytest.raises(ConnectionError, match="Simulated primary connection setup failure"):
+        await observer.run(stream)
+
+    assert stream.disconnect_called is True
+
+    session_file = observer.session_dir / "session.json"
+    manifest_file = observer.session_dir / "manifest.json"
+    assert session_file.is_file()
+    assert manifest_file.is_file()
+
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    assert manifest["termination_reason"] == "FAILED_ConnectionError"
+    assert manifest["is_interrupted"] is True
+
+    session_meta = json.loads(session_file.read_text(encoding="utf-8"))
+    assert session_meta["termination_reason"] == "FAILED_ConnectionError"
+    assert session_meta["is_interrupted"] is True
+
+    verification = verify_session_integrity(observer.session_dir)
+    assert verification["is_valid"] is True

@@ -105,6 +105,7 @@ class EvaluationSummary:
     expectancy_digital_pct: float = 0.0
     break_even_win_rate_digital: float = 0.0
     opportunity_count: int = 0
+    quarantined_late_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -328,7 +329,16 @@ class ShadowOutcomeEvaluator:
         invalid_count = sum(
             1
             for p in resolved_preds
-            if p.outcome_status == OutcomeStatus.INVALID_DISCONTINUITY.value
+            if p.outcome_status
+            in (
+                OutcomeStatus.INVALID_DISCONTINUITY.value,
+                OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value,
+            )
+        )
+        quarantined_late_count = sum(
+            1
+            for p in resolved_preds
+            if p.outcome_status == OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value
         )
 
         trade_preds = [p for p in resolved_preds if p.was_trade_taken]
@@ -398,7 +408,11 @@ class ShadowOutcomeEvaluator:
         evaluable = [
             p
             for p in resolved_preds
-            if p.outcome_status != OutcomeStatus.INVALID_DISCONTINUITY.value
+            if p.outcome_status
+            not in (
+                OutcomeStatus.INVALID_DISCONTINUITY.value,
+                OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value,
+            )
             and p.market_direction in ("UP", "DOWN")
         ]
         if evaluable:
@@ -609,4 +623,5 @@ class ShadowOutcomeEvaluator:
             expectancy_digital_pct=round(exp_digital_pct, 2),
             break_even_win_rate_digital=round(break_even_digital, 4),
             opportunity_count=total_predictions,
+            quarantined_late_count=quarantined_late_count,
         )

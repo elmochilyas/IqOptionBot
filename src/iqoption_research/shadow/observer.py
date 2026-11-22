@@ -11,6 +11,7 @@ synthetic streaming market data. Enforces:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -30,6 +31,7 @@ from iqoption_research.shadow.evaluator import (
 )
 from iqoption_research.shadow.journal import (
     DEFAULT_SHADOW_SESSIONS_DIR,
+    OutcomeEventRecord,
     OutcomeStatus,
     ShadowPredictionJournal,
     ShadowPredictionRecord,
@@ -70,6 +72,7 @@ class ObservationSessionConfig:
     min_warmup_bars: int = 21
     max_history_bars: int = 120
     allow_shortened_session: bool = False
+    synthetic_model_delays_seconds: dict[str, float] = field(default_factory=dict)
     status_path: Path | None = None
     cancel_file: Path | None = None
     notes: str = ""
@@ -101,6 +104,7 @@ class ModelObservationState:
     losses_count: int = 0
     ties_count: int = 0
     invalid_count: int = 0
+    quarantined_late_count: int = 0
     win_rate: float = 0.0
     win_rate_decisive: float = 0.0
     brier_score: float = 0.25
@@ -138,6 +142,8 @@ class ObservationProgress:
     consecutive_valid_candles: int = 0
     accepted_opportunities_count: int = 0
     late_opportunities_rejected_count: int = 0
+    quarantined_late_count: int = 0
+    is_interrupted: bool = False
     clock_uncertainty_rejections_count: int = 0
     clock_disagreements_count: int = 0
     genuine_observations_count: int = 0
@@ -170,6 +176,8 @@ class ObservationSessionResult:
     manifest_sha256: str
     accepted_opportunities_count: int = 0
     late_opportunities_rejected_count: int = 0
+    quarantined_late_count: int = 0
+    is_interrupted: bool = False
     clock_uncertainty_rejections_count: int = 0
     clock_disagreements_count: int = 0
     genuine_observations_count: int = 0
@@ -195,6 +203,8 @@ class ObservationSessionResult:
             "stale_candles_count": self.stale_candles_count,
             "accepted_opportunities_count": self.accepted_opportunities_count,
             "late_opportunities_rejected_count": self.late_opportunities_rejected_count,
+            "quarantined_late_count": self.quarantined_late_count,
+            "is_interrupted": self.is_interrupted,
             "clock_uncertainty_rejections_count": self.clock_uncertainty_rejections_count,
             "clock_disagreements_count": self.clock_disagreements_count,
             "genuine_observations_count": self.genuine_observations_count,
@@ -397,6 +407,7 @@ class ProspectiveShadowObserver:
         self._stale_candles_count = 0
         self._accepted_opportunities_count = 0
         self._late_opportunities_rejected_count = 0
+        self._quarantined_late_count = 0
         self._clock_uncertainty_rejections_count = 0
         self._clock_disagreements_count = 0
         self._genuine_observations_count = 0
@@ -614,25 +625,11 @@ class ProspectiveShadowObserver:
             self.publish_progress()
             return
 
-        # 4d. Durable prediction commitment check
+        # 4d. Durable prediction commitment check and execution
         maturity_iso = datetime.fromtimestamp(maturity_ts, UTC).isoformat()
         now_iso = datetime.now(UTC).isoformat()
 
-        if self.config.is_synthetic:
-            sim_commit_ts = event.received_at_utc_ts + 0.050
-            if sim_commit_ts >= deadline_ts:
-                self._late_opportunities_rejected_count += 1
-                self._update_model_states()
-                self.publish_progress()
-                return
-            commit_wall_ts = sim_commit_ts
-        else:
-            commit_wall_ts = time.time()
-            if commit_wall_ts >= deadline_ts:
-                self._late_opportunities_rejected_count += 1
-                self._update_model_states()
-                self.publish_progress()
-                return
+        any_accepted = False
 
         for model_id, engine in self.engines.items():
             rec = self.records[model_id]
@@ -680,8 +677,63 @@ class ProspectiveShadowObserver:
                     broker_availability_type="OBSERVED_FEED_RECEIPT",
                     outcome_status=OutcomeStatus.PENDING.value,
                 )
-                # Commit prediction durably before future outcome exists
+                # Physical journal ordering: persist prediction before outcome or deadline decision
                 self.journal.record_prediction(pred_rec)
+
+                # Instrument actual post-fsync completion timestamp
+                if self.config.is_synthetic:
+                    sim_delay = self.config.synthetic_model_delays_seconds.get(model_id, 0.0)
+                    post_fsync_ts = (
+                        event.received_at_utc_ts
+                        + (pred_out.diagnostic.inference_duration_ms / 1000.0)
+                        + sim_delay
+                        + 0.010
+                    )
+                    post_fsync_utc = datetime.fromtimestamp(post_fsync_ts, UTC).isoformat()
+                else:
+                    post_fsync_ts = time.time()
+                    post_fsync_utc = datetime.now(UTC).isoformat()
+
+                pred_rec.runtime_diagnostics["post_fsync_completion_ts"] = post_fsync_ts
+                pred_rec.runtime_diagnostics["post_fsync_completion_utc"] = post_fsync_utc
+                pred_rec.runtime_diagnostics["commitment_deadline_ts"] = deadline_ts
+                pred_rec.runtime_diagnostics["is_timely"] = post_fsync_ts < deadline_ts
+
+                if post_fsync_ts < deadline_ts:
+                    any_accepted = True
+                    self._last_commitment_latency_ms = max(
+                        0.0, (post_fsync_ts - event.received_at_utc_ts) * 1000.0
+                    )
+                else:
+                    # Late commitment quarantine
+                    quarantine_out = OutcomeEventRecord(
+                        session_id=self.config.session_id,
+                        prediction_id=pred_rec.prediction_id,
+                        evaluated_at_utc=post_fsync_utc,
+                        outcome_status=OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value,
+                        cutoff_candle_close=c.close,
+                        maturity_candle_close=c.close,
+                        actual_return=0.0,
+                        market_direction="NONE",
+                        was_trade_taken=False,
+                        is_winning_trade=None,
+                        simulated_payout_pnl=None,
+                        outcome_note=(
+                            f"Quarantined late commitment: post-fsync completion "
+                            f"{post_fsync_ts:.3f} >= deadline {deadline_ts:.3f}"
+                        ),
+                    )
+                    self.journal.record_outcome(quarantine_out)
+                    self._quarantined_late_count += 1
+                    self._late_opportunities_rejected_count += 1
+                    logger.warning(
+                        "Prediction %s for model %s committed late "
+                        "(post_fsync=%.3f >= deadline=%.3f). Quarantined.",
+                        pred_rec.prediction_id,
+                        model_id,
+                        post_fsync_ts,
+                        deadline_ts,
+                    )
 
             except EngineError as exc:
                 logger.error(
@@ -691,10 +743,8 @@ class ProspectiveShadowObserver:
                     exc,
                 )
 
-        self._accepted_opportunities_count += 1
-        self._last_commitment_latency_ms = max(
-            0.0, (commit_wall_ts - event.received_at_utc_ts) * 1000.0
-        )
+        if any_accepted:
+            self._accepted_opportunities_count += 1
 
         # 5. Update model metrics
         self._update_model_states()
@@ -716,6 +766,7 @@ class ProspectiveShadowObserver:
             state.losses_count = summary.loss_count
             state.ties_count = summary.tie_count
             state.invalid_count = summary.invalid_discontinuity_count
+            state.quarantined_late_count = summary.quarantined_late_count
             state.win_rate = summary.win_rate
             state.win_rate_decisive = summary.win_rate_decisive
             state.brier_score = summary.brier_score
@@ -770,6 +821,7 @@ class ProspectiveShadowObserver:
             consecutive_valid_candles=self._consecutive_valid_candles,
             accepted_opportunities_count=self._accepted_opportunities_count,
             late_opportunities_rejected_count=self._late_opportunities_rejected_count,
+            quarantined_late_count=self._quarantined_late_count,
             clock_uncertainty_rejections_count=self._clock_uncertainty_rejections_count,
             clock_disagreements_count=self._clock_disagreements_count,
             genuine_observations_count=self._genuine_observations_count,
@@ -821,10 +873,12 @@ class ProspectiveShadowObserver:
         self._deadline_mono = self._started_at_mono + (self.config.duration_minutes * 60.0)
 
         started_iso = datetime.fromtimestamp(self._started_at_wall, UTC).isoformat()
+        session_failed = False
+        original_exc: Exception | None = None
         termination_reason = "COMPLETED_DURATION_LIMIT"
 
-        await stream.connect()
         try:
+            await stream.connect()
             # Verified live warmup acquisition if buffer lacks minimum history
             if len(self._candle_buffer) < self.config.min_warmup_bars:
                 needed = self.config.min_warmup_bars - len(self._candle_buffer)
@@ -876,21 +930,34 @@ class ProspectiveShadowObserver:
                     progress_callback(self.get_progress())
 
         except Exception as exc:
+            session_failed = True
+            original_exc = exc
             termination_reason = f"FAILED_{type(exc).__name__}"
             self._fsm_state = "FAILED"
             logger.error(
-                "Observation session encountered unexpected exception: %s",
+                "Observation session encountered failure: %s",
                 exc,
                 exc_info=True,
             )
-            self.publish_progress(is_final=True, termination_reason=termination_reason)
-            raise
         finally:
-            await stream.disconnect()
+            try:
+                await stream.disconnect()
+            except Exception as teardown_exc:
+                logger.error(
+                    "Error during stream disconnect teardown: %s",
+                    teardown_exc,
+                    exc_info=True,
+                )
+                if original_exc is None:
+                    session_failed = True
+                    original_exc = teardown_exc
+                    termination_reason = f"FAILED_{type(teardown_exc).__name__}"
+                    self._fsm_state = "FAILED"
 
-        # Final outcome resolution pass
-        self.evaluator.resolve_pending(self._candle_buffer)
-        self._update_model_states()
+        # Final outcome resolution pass (best-effort)
+        with contextlib.suppress(Exception):
+            self.evaluator.resolve_pending(self._candle_buffer)
+            self._update_model_states()
 
         ended_wall = time.time()
         ended_iso = datetime.fromtimestamp(ended_wall, UTC).isoformat()
@@ -899,19 +966,22 @@ class ProspectiveShadowObserver:
         # Build final evaluation summaries per model
         summaries: dict[str, EvaluationSummary] = {}
         for m in self.config.model_ids:
-            summaries[m] = self.evaluator.compute_summary(
-                model_id=m,
-                is_functional_test=self.config.is_synthetic,
-            )
+            with contextlib.suppress(Exception):
+                summaries[m] = self.evaluator.compute_summary(
+                    model_id=m,
+                    is_functional_test=self.config.is_synthetic,
+                )
 
         # Finalize session.json before computing its hash for manifest
         meta_file = self.session_dir / "session.json"
         if meta_file.is_file():
-            meta = json.loads(meta_file.read_text(encoding="utf-8"))
-            meta["ended_at_utc"] = ended_iso
-            meta["actual_duration_seconds"] = round(actual_duration, 2)
-            meta["termination_reason"] = termination_reason
-            meta_file.write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+            with contextlib.suppress(Exception):
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                meta["ended_at_utc"] = ended_iso
+                meta["actual_duration_seconds"] = round(actual_duration, 2)
+                meta["termination_reason"] = termination_reason
+                meta["is_interrupted"] = session_failed
+                meta_file.write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
 
         # Generate cryptographic manifest sealing session.json, predictions, and outcomes
         manifest_data = {
@@ -922,6 +992,7 @@ class ProspectiveShadowObserver:
             "actual_duration_seconds": round(actual_duration, 2),
             "requested_minutes": self.config.duration_minutes,
             "termination_reason": termination_reason,
+            "is_interrupted": session_failed,
             "is_synthetic": self.config.is_synthetic,
             "warmup_state": self._warmup_state,
             "total_candles_processed": self._valid_candles_count,
@@ -931,6 +1002,7 @@ class ProspectiveShadowObserver:
             "stale_candles_count": self._stale_candles_count,
             "accepted_opportunities_count": self._accepted_opportunities_count,
             "late_opportunities_rejected_count": self._late_opportunities_rejected_count,
+            "quarantined_late_count": self._quarantined_late_count,
             "clock_uncertainty_rejections_count": self._clock_uncertainty_rejections_count,
             "clock_disagreements_count": self._clock_disagreements_count,
             "genuine_observations_count": self._genuine_observations_count,
@@ -953,6 +1025,9 @@ class ProspectiveShadowObserver:
 
         self.publish_progress(is_final=True, termination_reason=termination_reason)
 
+        if session_failed and original_exc is not None:
+            raise original_exc
+
         return ObservationSessionResult(
             session_id=self.config.session_id,
             started_at_utc=started_iso,
@@ -969,6 +1044,8 @@ class ProspectiveShadowObserver:
             manifest_sha256=manifest_sha,
             accepted_opportunities_count=self._accepted_opportunities_count,
             late_opportunities_rejected_count=self._late_opportunities_rejected_count,
+            quarantined_late_count=self._quarantined_late_count,
+            is_interrupted=session_failed,
             clock_uncertainty_rejections_count=self._clock_uncertainty_rejections_count,
             clock_disagreements_count=self._clock_disagreements_count,
             genuine_observations_count=self._genuine_observations_count,

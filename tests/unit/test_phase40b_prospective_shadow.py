@@ -14,6 +14,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -46,6 +47,7 @@ from iqoption_research.shadow.journal import (
 from iqoption_research.shadow.observer import (
     ObservationSessionConfig,
     ProspectiveShadowObserver,
+    verify_session_integrity,
 )
 from iqoption_research.shadow.registry import ShadowModelRegistry
 from iqoption_research.shadow.streaming import (
@@ -652,3 +654,409 @@ def test_shadow_panel_prospective_tab_initialization(
     finally:
         with contextlib.suppress(Exception):
             tk_root.destroy()
+
+
+# ---------------------------------------------------------------------------
+# 6. Real Prospective Commitment Deadlines & Clock Variations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prospective_commitment_deadline_variations(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+    initial_candles = raw_candles[:30]
+
+    # Stream 7 candles with distinct prospective timing profiles:
+    # c0: normal (+250ms after close) -> ACCEPTED
+    # c1: near deadline (+45s after close, margin=5s -> deadline is ~54.975s) -> ACCEPTED
+    # c2: past deadline (+56s after close, > 54.975s) -> REJECTED (late)
+    # c3: exactly at maturity (+60s after close) -> REJECTED (late)
+    # c4: after maturity (+75s after close) -> REJECTED (late)
+    # c5: excessive clock uncertainty (uncertainty=6000ms > max 5000ms) -> REJECTED
+    # c6: clock disagreement (received 10s BEFORE close: recv = to_ts - 10s) -> REJECTED
+    test_candles = raw_candles[30:37]
+    arrival_ts = [
+        test_candles[0].to_ts + 0.250,
+        test_candles[1].to_ts + 45.0,
+        test_candles[2].to_ts + 56.0,
+        test_candles[3].to_ts + 60.0,
+        test_candles[4].to_ts + 75.0,
+        test_candles[5].to_ts + 1.0,
+        test_candles[6].to_ts - 10.0,
+    ]
+    uncertainties = [
+        25.0,
+        25.0,
+        25.0,
+        25.0,
+        25.0,
+        6000.0,
+        25.0,
+    ]
+    clock_statuses = ["SYNCHRONIZED"] * 7
+
+    stream = SyntheticMarketStream(
+        test_candles,
+        arrival_timestamps=arrival_ts,
+        clock_uncertainties_ms=uncertainties,
+        clock_statuses=clock_statuses,
+    )
+
+    cfg = ObservationSessionConfig(
+        session_id="test_sess_deadlines",
+        model_ids=(m1_id,),
+        duration_minutes=15,
+        is_synthetic=True,
+        commitment_safety_margin_seconds=5.0,
+        max_clock_uncertainty_ms=5000.0,
+        allow_shortened_session=True,
+    )
+
+    reg = ShadowModelRegistry(root)
+    observer = ProspectiveShadowObserver(
+        config=cfg,
+        registry=reg,
+        root=root,
+        initial_history=initial_candles,
+    )
+
+    res = await observer.run(stream)
+
+    assert res.total_candles_processed == 7
+    assert res.accepted_opportunities_count == 2
+    assert res.late_opportunities_rejected_count == 3
+    assert res.clock_uncertainty_rejections_count == 1
+    assert res.clock_disagreements_count == 1
+
+    preds = observer.journal.list_predictions()
+    assert len(preds) == 2
+
+
+# ---------------------------------------------------------------------------
+# 7. Live Warmup Stream Acquisition & Insufficient History Accumulation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prospective_observer_warmup_stream_acquisition(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+    warmup_bars = raw_candles[:25]
+    stream_bars = raw_candles[25:30]
+
+    stream = SyntheticMarketStream(
+        stream_bars,
+        warmup_candles=warmup_bars,
+        latency_simulation_ms=100.0,
+    )
+
+    cfg = ObservationSessionConfig(
+        session_id="test_sess_warmup_acq",
+        model_ids=(m1_id,),
+        duration_minutes=15,
+        is_synthetic=True,
+        min_warmup_bars=21,
+        allow_shortened_session=True,
+    )
+
+    reg = ShadowModelRegistry(root)
+    observer = ProspectiveShadowObserver(
+        config=cfg,
+        registry=reg,
+        root=root,
+        initial_history=None,
+    )
+
+    assert observer.get_progress().warmup_state == "WARMING_UP"
+
+    res = await observer.run(stream)
+
+    assert res.warmup_state == "WARMED_UP"
+    assert res.consecutive_valid_candles >= 25
+    assert res.total_candles_processed == 5
+    assert res.accepted_opportunities_count == 5
+
+    preds = observer.journal.list_predictions()
+    # Zero predictions from pre-warmup bars; only the 5 live bars generate predictions
+    assert len(preds) == 5
+
+
+@pytest.mark.asyncio
+async def test_prospective_observer_insufficient_warmup_accumulation(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+    stream_bars = raw_candles[:25]
+
+    stream = SyntheticMarketStream(stream_bars, latency_simulation_ms=100.0)
+
+    cfg = ObservationSessionConfig(
+        session_id="test_sess_no_warmup",
+        model_ids=(m1_id,),
+        duration_minutes=30,
+        is_synthetic=True,
+        min_warmup_bars=21,
+        allow_shortened_session=True,
+    )
+
+    reg = ShadowModelRegistry(root)
+    observer = ProspectiveShadowObserver(
+        config=cfg,
+        registry=reg,
+        root=root,
+        initial_history=None,
+    )
+
+    res = await observer.run(stream)
+
+    assert res.warmup_state == "WARMED_UP"
+    assert res.total_candles_processed == 25
+    assert res.consecutive_valid_candles == 25
+    # First 20 candles accumulated during WARMING_UP, remaining 5 candles emitted predictions
+    assert res.accepted_opportunities_count == 5
+
+    preds = observer.journal.list_predictions()
+    assert len(preds) == 5
+
+
+# ---------------------------------------------------------------------------
+# 8. Market Gap Recovery & Pending Invalidation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prospective_observer_gap_recovery_and_invalidation(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+
+    initial_candles = raw_candles[:25]
+    c25 = raw_candles[25]
+
+    # Gap of 300 seconds
+    gap_start_ts = c25.to_ts + 300
+    c_gap = _make_candle(gap_start_ts, gap_start_ts + 60, 1.050, 1.051)
+
+    post_gap_candles = [
+        _make_candle(
+            c_gap.to_ts + i * 60,
+            c_gap.to_ts + (i + 1) * 60,
+            1.0510 + i * 0.0001,
+            1.0512 + i * 0.0001,
+        )
+        for i in range(25)
+    ]
+
+    stream_bars = [c25, c_gap, *post_gap_candles]
+    stream = SyntheticMarketStream(stream_bars, latency_simulation_ms=100.0)
+
+    cfg = ObservationSessionConfig(
+        session_id="test_sess_gap_recovery",
+        model_ids=(m1_id,),
+        duration_minutes=35,
+        is_synthetic=True,
+        min_warmup_bars=21,
+        allow_shortened_session=True,
+    )
+
+    reg = ShadowModelRegistry(root)
+    observer = ProspectiveShadowObserver(
+        config=cfg,
+        registry=reg,
+        root=root,
+        initial_history=initial_candles,
+    )
+
+    res = await observer.run(stream)
+
+    assert res.continuity_gaps_count == 1
+    preds = observer.journal.list_predictions()
+    # Pred 1 (at c25) + 6 predictions after rebuilding 21 bars of post-gap warmup
+    assert len(preds) == 7
+
+    first_pred = preds[0]
+    assert first_pred.outcome_status == OutcomeStatus.INVALID_DISCONTINUITY.value
+    assert first_pred.market_direction == "MISSING_SETTLEMENT_EVIDENCE"
+
+
+# ---------------------------------------------------------------------------
+# 9. Anti-Overwrite, Sealing, & Tamper Verification
+# ---------------------------------------------------------------------------
+
+
+def test_prospective_observer_duplicate_session_rejection(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    cfg = ObservationSessionConfig(
+        session_id="test_sess_anti_overwrite",
+        model_ids=(m1_id,),
+        duration_minutes=15,
+        is_synthetic=True,
+        allow_shortened_session=True,
+    )
+    reg = ShadowModelRegistry(root)
+    obs1 = ProspectiveShadowObserver(config=cfg, registry=reg, root=root)
+    assert (obs1.session_dir / "session.json").exists()
+
+    with pytest.raises(ValueError, match="already exists"):
+        ProspectiveShadowObserver(config=cfg, registry=reg, root=root)
+
+
+@pytest.mark.asyncio
+async def test_session_integrity_sealing_and_tamper_detection(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+    initial_candles = raw_candles[:30]
+    stream_candles = raw_candles[30:35]
+
+    stream = SyntheticMarketStream(stream_candles)
+    cfg = ObservationSessionConfig(
+        session_id="test_sess_sealed_verification",
+        model_ids=(m1_id,),
+        duration_minutes=15,
+        is_synthetic=True,
+        allow_shortened_session=True,
+    )
+    reg = ShadowModelRegistry(root)
+    observer = ProspectiveShadowObserver(
+        config=cfg,
+        registry=reg,
+        root=root,
+        initial_history=initial_candles,
+    )
+    res = await observer.run(stream)
+    session_dir = observer.session_dir
+
+    # 1. Clean session passes verification
+    check_clean = verify_session_integrity(session_dir)
+    assert check_clean["is_valid"] is True
+    assert len(check_clean["errors"]) == 0
+    assert check_clean["checksums"]["manifest_sha256"] == res.manifest_sha256
+
+    # 2. Tamper predictions.jsonl -> fails
+    preds_file = session_dir / "predictions.jsonl"
+    preds_text = preds_file.read_text(encoding="utf-8")
+    preds_file.write_text(preds_text + "\n", encoding="utf-8")
+    check_tampered_pred = verify_session_integrity(session_dir)
+    assert check_tampered_pred["is_valid"] is False
+    assert any("predictions.jsonl checksum mismatch" in e for e in check_tampered_pred["errors"])
+    preds_file.write_text(preds_text, encoding="utf-8")
+
+    # 3. Tamper session.json -> fails
+    sess_file = session_dir / "session.json"
+    sess_data = json.loads(sess_file.read_text(encoding="utf-8"))
+    sess_data["execution_authority"] = "TAMPERED_AUTHORITY"
+    sess_file.write_text(json.dumps(sess_data), encoding="utf-8")
+    check_tampered_sess = verify_session_integrity(session_dir)
+    assert check_tampered_sess["is_valid"] is False
+    assert any("session.json checksum mismatch" in e for e in check_tampered_sess["errors"])
+
+    # 4. Tamper manifest.json -> fails
+    manifest_file = session_dir / "manifest.json"
+    man_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+    man_data["accepted_opportunities_count"] = 9999
+    manifest_file.write_text(json.dumps(man_data), encoding="utf-8")
+    check_tampered_man = verify_session_integrity(session_dir)
+    assert check_tampered_man["is_valid"] is False
+    assert any("Manifest self-digest mismatch" in e for e in check_tampered_man["errors"])
+
+
+@pytest.mark.asyncio
+async def test_prospective_observer_mode_isolation(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+    candles = raw_candles[:30]
+
+    class MockLiveStream:
+        is_connected = True
+        is_synthetic = False
+
+        async def connect(self) -> None:
+            pass
+
+        async def disconnect(self) -> None:
+            pass
+
+        async def get_next_event(self) -> None:
+            return None
+
+        async def get_warmup_candles(self, count: int) -> list[Candle]:
+            return []
+
+    reg = ShadowModelRegistry(root)
+
+    cfg_synth = ObservationSessionConfig(
+        session_id="test_sess_iso_1",
+        model_ids=(m1_id,),
+        duration_minutes=15,
+        is_synthetic=True,
+    )
+    obs1 = ProspectiveShadowObserver(config=cfg_synth, registry=reg, root=root)
+    with pytest.raises(ValueError, match="Mode conflict"):
+        await obs1.run(MockLiveStream())  # type: ignore[arg-type]
+
+    cfg_live = ObservationSessionConfig(
+        session_id="test_sess_iso_2",
+        model_ids=(m1_id,),
+        duration_minutes=15,
+        is_synthetic=False,
+        account_id="demo_acc",
+    )
+    obs2 = ProspectiveShadowObserver(config=cfg_live, registry=reg, root=root)
+    synth_stream = SyntheticMarketStream(candles)
+    with pytest.raises(ValueError, match="Mode conflict"):
+        await obs2.run(synth_stream)
+
+
+def test_cli_shadow_verify_session(
+    prospective_workspace: tuple[Path, str, str, str],
+) -> None:
+    from typer.testing import CliRunner
+
+    from iqoption_research.cli.commands.shadow_cmd import shadow_app
+
+    root, _snapshot_id, m1_id, _ = prospective_workspace
+    raw_candles = read_candles_parquet(root / "data" / "catalog" / "eurusd_m1.parquet")
+    initial_candles = raw_candles[:30]
+    stream_candles = raw_candles[30:35]
+
+    stream = SyntheticMarketStream(stream_candles)
+    cfg = ObservationSessionConfig(
+        session_id="test_cli_verify_sess",
+        model_ids=(m1_id,),
+        duration_minutes=15,
+        is_synthetic=True,
+        allow_shortened_session=True,
+    )
+    reg = ShadowModelRegistry(root)
+    obs = ProspectiveShadowObserver(
+        config=cfg, registry=reg, root=root, initial_history=initial_candles
+    )
+    asyncio.run(obs.run(stream))
+
+    runner = CliRunner()
+    res_valid = runner.invoke(
+        shadow_app, ["verify-session", "test_cli_verify_sess", "--root", str(root)]
+    )
+    assert res_valid.exit_code == 0
+    assert "Session integrity verified successfully" in res_valid.stdout
+
+    sess_dir = obs.session_dir
+    (sess_dir / "predictions.jsonl").write_text("tampered_content\n", encoding="utf-8")
+    res_invalid = runner.invoke(
+        shadow_app, ["verify-session", "test_cli_verify_sess", "--root", str(root)]
+    )
+    assert res_invalid.exit_code == 1
+    assert "Session integrity verification FAILED" in res_invalid.stdout

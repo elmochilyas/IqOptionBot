@@ -135,7 +135,7 @@ class StreamingCandleEvent:
     is_synthetic: bool = False
 ```
 
-### 3.2 Evidence Rejection Rules
+### 3.2 Evidence Rejection & Prospective Commitment Deadline Rules
 
 Incoming evidence is rejected prior to feature generation or buffer ingestion if any of the following conditions occur:
 1. **Instrument/Timeframe Mismatch**: Symbol must be `"EURUSD"` and size must be `60` seconds.
@@ -143,7 +143,30 @@ Incoming evidence is rejected prior to feature generation or buffer ingestion if
 3. **Prohibited OTC Data**: Any weekend or OTC-flagged candle is immediately rejected.
 4. **Stale Evidence**: Observed wall clock receipt age exceeding `max_data_age_seconds` (default $300\text{s}$) is dropped.
 5. **Duplicate Boundary**: `candle.to_ts` already present in `_seen_boundaries`.
-6. **Temporal Continuity Gap**: `candle.from_ts != _candle_buffer[-1].to_ts` triggers a continuity gap event, rejects the discontinuous candle, and resets model alignment.
+6. **Temporal Continuity Gap**: `candle.from_ts != _candle_buffer[-1].to_ts` triggers a continuity gap event (`GAP_DETECTED`), invalidates pending predictions affected by missing settlement evidence (`INVALID_DISCONTINUITY`), resets the buffer to the post-gap candle without fabricating data, and transitions to `REBUILDING_WARMUP`.
+7. **Clock Disagreement / Clock Step**: Observation arrival time strictly preceding nominal candle close cutoff ($t_{\text{recv}} < t_{\text{cutoff}}$) is rejected from generating prospective opportunities.
+8. **Excessive Clock Uncertainty**: Total clock uncertainty exceeding $5000\text{ms}$ or unsynchronized clock status is rejected from prospective prediction.
+9. **Prospective Commitment Deadline**:
+   $$t_{\text{deadline}} = t_{\text{maturity}} - \text{safety\_margin} - \frac{\text{clock\_uncertainty\_ms}}{1000.0}$$
+   where for M1, $t_{\text{maturity}} = t_{\text{cutoff}} + 60\text{s}$. If either observation arrival $t_{\text{recv}} \ge t_{\text{deadline}}$ or durable prediction commitment $t_{\text{commit}} \ge t_{\text{deadline}}$, the observation is retained for lookback history and delayed evaluation of past predictions, but strictly rejected as a prospective prediction opportunity (`late_opportunities_rejected_count += 1`).
+
+### 3.3 Verified Live Warmup & Lookback Protocol
+
+The prediction engine requires a minimum lookback history (default 21 consecutive bars). To ensure immediate readiness without backdating predictions:
+- `stream.get_warmup_candles(count)` acquires verified pre-session regular M1 candles up to the session start boundary.
+- Warmup candles populate the causal lookback buffer only; they NEVER pass through the prediction pipeline, guaranteeing zero retroactive predictions.
+- If pre-session history is unavailable or discontinuous, the session begins in `INSUFFICIENT_VERIFIED_HISTORY` / `WARMING_UP` state, safely accumulating live observations until the contiguous threshold is reached, then automatically transitioning to `WARMED_UP` / `OBSERVING`.
+
+### 3.4 Cryptographic Sealing & Anti-Overwrite Protection
+
+- **Anti-Overwrite**: Re-running or overwriting an existing session ID is strictly prohibited (`ValueError` fail-closed).
+- **Session Sealing**: At session conclusion or operator cancellation, the manifest seals all components with SHA-256 digests:
+  - `predictions_sha256`: SHA-256 of `predictions.jsonl`
+  - `outcomes_sha256`: SHA-256 of `outcomes.jsonl`
+  - `session_json_sha256`: SHA-256 of `session.json`
+  - `models_sha256`: SHA-256 of frozen candidate bundles
+  - `manifest_sha256`: Canonical self-digest of `manifest.json`
+- **Verification Tool**: `python -m iqoption_research.cli.main shadow verify-session <SESSION_DIR_OR_ID>` performs tamper-evident validation of all digests and log contiguity.
 
 ### 3.3 Two-Phase Invariant Loop Order
 

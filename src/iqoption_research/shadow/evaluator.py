@@ -179,11 +179,46 @@ class ShadowOutcomeEvaluator:
             maturity_candle = by_to_ts.get(pred.expected_maturity_ts)
 
             if maturity_candle is None:
-                # Candle at maturity has not arrived yet in the feed
+                # If market has advanced past expected maturity, settlement evidence was missed/gap
+                if effective_now > pred.expected_maturity_ts:
+                    out_event = OutcomeEventRecord(
+                        session_id=pred.session_id,
+                        prediction_id=pred.prediction_id,
+                        evaluated_at_utc=now_iso,
+                        outcome_status=OutcomeStatus.INVALID_DISCONTINUITY.value,
+                        cutoff_candle_close=(
+                            cutoff_candle.close if cutoff_candle is not None else 0.0
+                        ),
+                        maturity_candle_close=0.0,
+                        actual_return=0.0,
+                        market_direction="MISSING_SETTLEMENT_EVIDENCE",
+                        was_trade_taken=False,
+                        is_winning_trade=None,
+                        simulated_payout_pnl=None,
+                        outcome_note="Maturity candle missing due to market gap or discontinuity",
+                    )
+                    self.journal.record_outcome(out_event)
+                    resolved_count += 1
                 continue
 
             if cutoff_candle is None:
-                # Cutoff candle missing from available set
+                if effective_now > pred.expected_maturity_ts:
+                    out_event = OutcomeEventRecord(
+                        session_id=pred.session_id,
+                        prediction_id=pred.prediction_id,
+                        evaluated_at_utc=now_iso,
+                        outcome_status=OutcomeStatus.INVALID_DISCONTINUITY.value,
+                        cutoff_candle_close=0.0,
+                        maturity_candle_close=maturity_candle.close,
+                        actual_return=0.0,
+                        market_direction="MISSING_SETTLEMENT_EVIDENCE",
+                        was_trade_taken=False,
+                        is_winning_trade=None,
+                        simulated_payout_pnl=None,
+                        outcome_note="Cutoff candle missing from available candle buffer",
+                    )
+                    self.journal.record_outcome(out_event)
+                    resolved_count += 1
                 continue
 
             # Continuity check: maturity candle must be consecutive to cutoff
@@ -487,6 +522,9 @@ class ShadowOutcomeEvaluator:
         if is_functional_test:
             has_edge = False
             verdict = "FUNCTIONAL_REPLAY_TEST_ONLY_NO_EDGE"
+        elif total_predictions == 0 or len(resolved_preds) == 0:
+            has_edge = False
+            verdict = "INSUFFICIENT_EVALUATED_OBSERVATIONS_NO_VERDICT"
         elif trade_count < self.min_qualifying_trades:
             has_edge = False
             verdict = "INSUFFICIENT_SAMPLE_SIZE_NO_EDGE"

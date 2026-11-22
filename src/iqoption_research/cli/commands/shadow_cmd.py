@@ -27,6 +27,7 @@ from iqoption_research.shadow.journal import (
 from iqoption_research.shadow.observer import (
     ObservationSessionConfig,
     ProspectiveShadowObserver,
+    verify_session_integrity,
 )
 from iqoption_research.shadow.registry import ShadowModelRegistry
 from iqoption_research.shadow.replay import HistoricalReplayEngine, ReplayConfig
@@ -500,6 +501,25 @@ def observe_command(
         console.print(f"[bold red]Observation session terminated with error:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    console.print(
+        Panel(
+            f"Session ID: [cyan]{result.session_id}[/cyan]\n"
+            f"Termination Reason: [bold]{result.termination_reason}[/bold]\n"
+            f"Warmup State: {result.warmup_state} ({result.consecutive_valid_candles} valid bars)\n"
+            f"Candles Processed: {result.total_candles_processed:,} "
+            f"(Gaps: {result.continuity_gaps_count}, Stale: {result.stale_candles_count})\n"
+            f"Opportunities: {result.accepted_opportunities_count} accepted / "
+            f"{result.late_opportunities_rejected_count} late rejected\n"
+            f"Clock Diagnostics: {result.clock_uncertainty_rejections_count} uncertainty, "
+            f"{result.clock_disagreements_count} disagreements\n"
+            f"Evidence Provenance: {result.genuine_observations_count} genuine / "
+            f"{result.synthetic_observations_count} synthetic\n"
+            f"Manifest SHA-256: [cyan]{result.manifest_sha256}[/cyan]",
+            title="Session Integrity & Progress Summary",
+            border_style="cyan",
+        )
+    )
+
     table = Table(
         title=f"Prospective Observation Summary: {result.session_id} ({result.termination_reason})",
         show_header=True,
@@ -517,34 +537,101 @@ def observe_command(
 
     for mid, s in result.summaries.items():
         wlt = f"{s.win_count}/{s.loss_count}/{s.tie_count}"
-        ci_str = (
-            f"[{s.wilson_ci_lower_95_decisive * 100:.1f}%, "
-            f"{s.wilson_ci_upper_95_decisive * 100:.1f}%]"
-        )
+
+        if s.trade_count > 0:
+            win_str = f"{s.win_rate_decisive * 100:.2f}%"
+            ci_str = (
+                f"[{s.wilson_ci_lower_95_decisive * 100:.1f}%, "
+                f"{s.wilson_ci_upper_95_decisive * 100:.1f}%]"
+            )
+            exp_bin_str = f"{s.expectancy_binary_pct:+.2f}%"
+            exp_dig_str = f"{s.expectancy_digital_pct:+.2f}%"
+            be_hurdle = s.break_even_win_rate * 100
+            be_gap = (s.win_rate_decisive - s.break_even_win_rate) * 100
+            be_str = f"{be_hurdle:.1f}% ({be_gap:+.2f}%)"
+        else:
+            win_str = "N/A"
+            ci_str = "N/A"
+            exp_bin_str = "N/A"
+            exp_dig_str = "N/A"
+            be_str = "N/A"
+
         maj_str = "N/A"
         maj_comp = next(
             (b for b in s.baseline_comparisons if b.baseline_name == "majority_class"),
             None,
         )
-        if maj_comp is not None and maj_comp.is_verified:
+        if maj_comp is not None and maj_comp.is_verified and s.trade_count > 0:
             maj_str = f"{maj_comp.decisive_directional_accuracy * 100:.2f}%"
-
-        be_hurdle = s.break_even_win_rate * 100
-        be_gap = (s.win_rate_decisive - s.break_even_win_rate) * 100
-        be_str = f"{be_hurdle:.1f}% ({be_gap:+.2f}%)"
 
         table.add_row(
             mid,
             f"{s.total_predictions:,} (pend: {s.pending_count})",
             wlt,
-            f"{s.win_rate_decisive * 100:.2f}%",
+            win_str,
             maj_str,
             ci_str,
-            f"{s.expectancy_binary_pct:+.2f}%",
-            f"{s.expectancy_digital_pct:+.2f}%",
+            exp_bin_str,
+            exp_dig_str,
             be_str,
             s.scientific_verdict,
         )
 
     console.print(table)
     console.print(f"[dim]{result.disclaimer}[/dim]")
+
+
+@shadow_app.command(
+    "verify-session",
+    help="Verify cryptographic sealing and internal consistency of a shadow session.",
+)
+def verify_session_command(
+    session_target: Annotated[
+        str,
+        typer.Argument(help="Session ID or direct path to session directory."),
+    ],
+    root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
+) -> None:
+    repo_root = root or Path.cwd()
+    candidate_path = Path(session_target)
+    if candidate_path.is_dir():
+        session_dir = candidate_path.resolve()
+    else:
+        try:
+            validate_storage_identifier(session_target)
+        except Exception as exc:
+            console.print(f"[bold red]Invalid session identifier:[/bold red] {exc}")
+            raise typer.Exit(code=1) from exc
+        session_dir = (repo_root / DEFAULT_SHADOW_SESSIONS_DIR / session_target).resolve()
+
+    if not session_dir.is_dir():
+        console.print(f"[bold red]Session directory does not exist:[/bold red] {session_dir}")
+        raise typer.Exit(code=1)
+
+    result = verify_session_integrity(session_dir)
+    if result["is_valid"]:
+        console.print(
+            Panel(
+                f"[bold green]Session integrity verified successfully.[/bold green]\n\n"
+                f"Session ID: [cyan]{result['session_id']}[/cyan]\n"
+                f"Manifest SHA-256: {result['checksums'].get('manifest_sha256')}\n"
+                f"Predictions SHA-256: {result['checksums'].get('predictions_sha256')}\n"
+                f"Outcomes SHA-256: {result['checksums'].get('outcomes_sha256')}\n"
+                f"Session JSON SHA-256: {result['checksums'].get('session_json_sha256')}\n\n"
+                f"[dim]All digests match; journal logs are contiguous and valid.[/dim]",
+                title="Cryptographic Sealing Verified",
+                border_style="green",
+            )
+        )
+    else:
+        err_lines = "\n".join(f"- {e}" for e in result["errors"])
+        console.print(
+            Panel(
+                f"[bold red]Session integrity verification FAILED:[/bold red]\n\n"
+                f"{err_lines}\n\n"
+                f"Session Directory: {session_dir}",
+                title="Integrity Verification Failure",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=1)

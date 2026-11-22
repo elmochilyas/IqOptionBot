@@ -671,14 +671,24 @@ class ShadowEvaluationPanel:
         ):
             live = self.dashboard.process.live_state()
             conn = live.get("connection_status", "OBSERVING")
+            fsm = live.get("fsm_state", conn)
+            warmup = live.get("warmup_state", "WARMING_UP")
+            consec = live.get("consecutive_valid_candles", 0)
             elapsed = live.get("elapsed_seconds", 0.0)
             valid = live.get("valid_candles_count", 0)
-            dups = live.get("duplicate_boundaries_count", 0)
             gaps = live.get("continuity_gaps_count", 0)
+            acc_opps = live.get("accepted_opportunities_count", 0)
+            late_opps = live.get("late_opportunities_rejected_count", 0)
+            genuine = live.get("genuine_observations_count", 0)
+            synth = live.get("synthetic_observations_count", 0)
+            latency = live.get("last_commitment_latency_ms")
+            lat_str = f"{latency:.1f}ms" if latency is not None else "N/A"
+
             status_txt = (
-                f"Status: {conn}    |    Feed: Active    |    "
-                f"Valid: {valid}    |    Duplicates: {dups}    |    "
-                f"Gaps: {gaps}    |    Elapsed: {elapsed:.0f}s"
+                f"FSM: {fsm}  |  Warmup: {warmup} ({consec} bars)  |  "
+                f"Opps: {acc_opps} acc / {late_opps} late  |  "
+                f"Feed: {conn} ({genuine} live / {synth} synth)  |  "
+                f"Lat: {lat_str}  |  Valid: {valid}  |  Gaps: {gaps}  |  Elapsed: {elapsed:.0f}s"
             )
             self.lbl_obs_status.config(text=status_txt)
             models_data = live.get("models", {})
@@ -689,14 +699,29 @@ class ShadowEvaluationPanel:
                 loss = mstate.get("losses_count", 0)
                 tie = mstate.get("ties_count", 0)
                 wlt = f"{w}/{loss}/{tie}"
-                ci = mstate.get("wilson_ci_decisive", (0.0, 1.0))
-                ci_str = f"[{ci[0] * 100:.1f}%, {ci[1] * 100:.1f}%]"
+                trades = mstate.get("trades_taken", 0)
+
+                if trades > 0:
+                    win_dec = mstate.get("win_rate_decisive", 0.0) * 100.0
+                    win_str = f"{win_dec:.2f}%"
+                    ci = mstate.get("wilson_ci_decisive", (0.0, 1.0))
+                    ci_str = f"[{ci[0] * 100:.1f}%, {ci[1] * 100:.1f}%]"
+                    exp_b = mstate.get("expectancy_binary_pct", 0.0)
+                    exp_b_str = f"{exp_b:+.2f}%"
+                    exp_d = mstate.get("expectancy_digital_pct", 0.0)
+                    exp_d_str = f"{exp_d:+.2f}%"
+                    be_gap = mstate.get("break_even_gap_binary", 0.0) * 100.0
+                    be_gap_str = f"{be_gap:+.2f}%"
+                else:
+                    win_str = "N/A"
+                    ci_str = "N/A"
+                    exp_b_str = "N/A"
+                    exp_d_str = "N/A"
+                    be_gap_str = "N/A"
+
                 maj = mstate.get("matched_baseline_accuracy")
-                maj_str = f"{maj * 100:.2f}%" if maj is not None else "N/A"
-                win_dec = mstate.get("win_rate_decisive", 0.0) * 100.0
-                exp_b = mstate.get("expectancy_binary_pct", 0.0)
-                exp_d = mstate.get("expectancy_digital_pct", 0.0)
-                be_gap = mstate.get("break_even_gap_binary", 0.0) * 100.0
+                maj_str = f"{maj * 100:.2f}%" if (maj is not None and trades > 0) else "N/A"
+
                 self.obs_tree.insert(
                     "",
                     "end",
@@ -705,12 +730,12 @@ class ShadowEvaluationPanel:
                         mstate.get("total_predictions", 0),
                         mstate.get("pending_predictions", 0),
                         wlt,
-                        f"{win_dec:.2f}%",
+                        win_str,
                         maj_str,
                         ci_str,
-                        f"{exp_b:+.2f}%",
-                        f"{exp_d:+.2f}%",
-                        f"{be_gap:+.2f}%",
+                        exp_b_str,
+                        exp_d_str,
+                        be_gap_str,
                     ),
                 )
         elif (

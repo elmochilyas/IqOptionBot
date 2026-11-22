@@ -8,6 +8,7 @@ Provides unified streaming abstractions for both:
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from iqoption_research.models.market import Candle
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,9 +59,21 @@ class MarketStreamProtocol(Protocol):
         """
         ...
 
+    async def get_warmup_candles(self, count: int) -> list[Candle]:
+        """Fetch pre-session verified consecutive EURUSD M1 candles for warmup lookback.
+
+        Returns empty list if verified warmup cannot be established.
+        """
+        ...
+
     @property
     def is_connected(self) -> bool:
         """Indicate whether stream transport is active."""
+        ...
+
+    @property
+    def is_synthetic(self) -> bool:
+        """Indicate whether this stream provides synthetic or live market data."""
         ...
 
 
@@ -73,17 +88,29 @@ class SyntheticMarketStream:
         self,
         candles: Sequence[Candle],
         *,
+        warmup_candles: Sequence[Candle] | None = None,
         latency_simulation_ms: float = 250.0,
         step_delay_seconds: float = 0.0,
         clock_status: str = "SYNCHRONIZED",
         clock_uncertainty_ms: float = 25.0,
+        arrival_timestamps: Sequence[float] | None = None,
+        clock_uncertainties_ms: Sequence[float] | None = None,
+        clock_statuses: Sequence[str] | None = None,
         request_id_prefix: str = "synth_req_",
     ) -> None:
         self.candles = list(candles)
+        self.warmup_candles = list(warmup_candles) if warmup_candles is not None else []
         self.latency_simulation_ms = latency_simulation_ms
         self.step_delay_seconds = step_delay_seconds
         self.clock_status = clock_status
         self.clock_uncertainty_ms = clock_uncertainty_ms
+        self.arrival_timestamps = (
+            list(arrival_timestamps) if arrival_timestamps is not None else None
+        )
+        self.clock_uncertainties_ms = (
+            list(clock_uncertainties_ms) if clock_uncertainties_ms is not None else None
+        )
+        self.clock_statuses = list(clock_statuses) if clock_statuses is not None else None
         self.request_id_prefix = request_id_prefix
 
         self._index = 0
@@ -100,6 +127,16 @@ class SyntheticMarketStream:
     def is_connected(self) -> bool:
         return self._connected
 
+    @property
+    def is_synthetic(self) -> bool:
+        return True
+
+    async def get_warmup_candles(self, count: int) -> list[Candle]:
+        """Return configured warmup candles up to requested count."""
+        if count <= 0 or not self.warmup_candles:
+            return []
+        return list(self.warmup_candles[-count:])
+
     async def get_next_event(self) -> StreamingCandleEvent | None:
         if not self._connected or self._index >= len(self.candles):
             return None
@@ -107,20 +144,36 @@ class SyntheticMarketStream:
         if self.step_delay_seconds > 0.0:
             await asyncio.sleep(self.step_delay_seconds)
 
-        candle = self.candles[self._index]
+        curr_idx = self._index
+        candle = self.candles[curr_idx]
         self._index += 1
 
-        # Calculate arrival time from candle nominal close + simulated latency
-        arrival_ts = candle.to_ts + (self.latency_simulation_ms / 1000.0)
+        # Use explicitly provided arrival timestamp if available, else simulate from close + latency
+        if self.arrival_timestamps is not None and curr_idx < len(self.arrival_timestamps):
+            arrival_ts = self.arrival_timestamps[curr_idx]
+        else:
+            arrival_ts = candle.to_ts + (self.latency_simulation_ms / 1000.0)
+
+        if self.clock_uncertainties_ms is not None and curr_idx < len(self.clock_uncertainties_ms):
+            uncertainty = self.clock_uncertainties_ms[curr_idx]
+        else:
+            uncertainty = self.clock_uncertainty_ms
+
+        if self.clock_statuses is not None and curr_idx < len(self.clock_statuses):
+            status = self.clock_statuses[curr_idx]
+        else:
+            status = self.clock_status
+
         arrival_iso = datetime.fromtimestamp(arrival_ts, UTC).isoformat()
+        latency = max(0.0, (arrival_ts - candle.to_ts) * 1000.0)
 
         return StreamingCandleEvent(
             candle=candle,
             received_at_utc_ts=arrival_ts,
             received_at_utc=arrival_iso,
-            latency_ms=self.latency_simulation_ms,
-            clock_status=self.clock_status,
-            clock_uncertainty_ms=self.clock_uncertainty_ms,
+            latency_ms=round(latency, 2),
+            clock_status=status,
+            clock_uncertainty_ms=round(uncertainty, 2),
             source_provenance="synthetic_streaming_harness",
             request_id=f"{self.request_id_prefix}{self._index:06d}",
             is_synthetic=True,
@@ -204,6 +257,55 @@ class LiveCollectorStream:
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    @property
+    def is_synthetic(self) -> bool:
+        return False
+
+    async def get_warmup_candles(self, count: int) -> list[Candle]:
+        """Acquire verified pre-session EURUSD M1 candles from broker client."""
+        if not self._connected or self._client is None or self._collection is None:
+            return []
+        col = self._collection
+        client = self._client
+        try:
+            fetch_count = count + 5
+            result = await client.get_candles(
+                "EURUSD",
+                size=60,
+                count=fetch_count,
+                endtime=col.first_boundary,
+            )
+            valid_candles = [
+                c
+                for c in result.candles
+                if c.symbol == "EURUSD"
+                and c.size.value == 60
+                and c.is_complete
+                and not getattr(c, "is_otc", False)
+                and c.to_ts <= col.first_boundary
+            ]
+            valid_candles.sort(key=lambda x: x.from_ts)
+            if len(valid_candles) < count:
+                logger.warning(
+                    "Warmup fetch returned insufficient candles: %d < %d",
+                    len(valid_candles),
+                    count,
+                )
+                return []
+            tail = valid_candles[-count:]
+            for i in range(len(tail) - 1):
+                if tail[i].to_ts != tail[i + 1].from_ts:
+                    logger.warning(
+                        "Warmup candles contain temporal discontinuity between %d and %d",
+                        tail[i].to_ts,
+                        tail[i + 1].from_ts,
+                    )
+                    return []
+            return tail
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to acquire verified warmup candles from broker: %s", exc)
+            return []
 
     async def get_next_event(self) -> StreamingCandleEvent | None:
         """Wait for the next completed-minute boundary and return the verified candle event."""

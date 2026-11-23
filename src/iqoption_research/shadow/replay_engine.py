@@ -19,6 +19,7 @@ from iqoption_research.shadow.engine import ShadowPredictionEngine
 from iqoption_research.shadow.inputs_journal import ShadowInputsJournal
 from iqoption_research.shadow.journal import (
     DEFAULT_SHADOW_SESSIONS_DIR,
+    OutcomeStatus,
     ShadowPredictionJournal,
     validate_storage_identifier,
 )
@@ -51,6 +52,11 @@ class ReplayEvidenceReport:
     outcomes_mismatched: int
     commitments_timely_count: int
     commitments_late_quarantined_count: int
+    outcomes_unverifiable: int = 0
+    pending_outcomes_count: int = 0
+    orphan_outcomes_count: int = 0
+    duplicate_predictions_count: int = 0
+    replay_coverage: float = 1.0
     mismatch_details: list[dict[str, Any]] = field(default_factory=list)
     disclaimer: str = DISCLAIMER
 
@@ -249,7 +255,6 @@ class EvidenceReplayEngine:
             pred_journal = ShadowPredictionJournal(self.session_id, session_dir=self.session_dir)
             predictions = pred_journal.list_predictions()
             commitments = {c.prediction_id: c for c in pred_journal.list_commitments()}
-            outcomes = {o.prediction_id: o for o in pred_journal.list_outcomes()}
         except Exception as exc:  # noqa: BLE001
             return ReplayEvidenceReport(
                 session_id=self.session_id,
@@ -273,7 +278,7 @@ class EvidenceReplayEngine:
         session_file = self.session_dir / "session.json"
         session_meta = json.loads(session_file.read_text(encoding="utf-8"))
         model_ids: list[str] = session_meta.get("model_ids", [])
-        _assumed_payout: float = session_meta.get("assumed_payout", 0.85)
+        assumed_payout: float = session_meta.get("assumed_payout", 0.85)
 
         # Initialize engines
         engines: dict[str, ShadowPredictionEngine] = {}
@@ -292,15 +297,133 @@ class EvidenceReplayEngine:
         timely_commitments = 0
         quarantined_commitments = 0
 
-        # Group predictions by (cutoff_ts, model_id)
-        pred_index: dict[tuple[int, str], Any] = {
-            (p.feature_cutoff_ts, p.model_id): p for p in predictions
-        }
+        # Check for duplicate predictions and index by (cutoff_ts, model_id)
+        seen_keys: set[tuple[int, str]] = set()
+        duplicate_preds = 0
+        pred_index: dict[tuple[int, str], Any] = {}
+        for p in predictions:
+            k = (p.feature_cutoff_ts, p.model_id)
+            if k in seen_keys:
+                duplicate_preds += 1
+                mismatches.append({
+                    "prediction_id": p.prediction_id,
+                    "type": "DUPLICATE_PREDICTION_KEY",
+                    "key": f"{k[0]}:{k[1]}",
+                })
+            seen_keys.add(k)
+            pred_index[k] = p
 
-        # Sliding buffer reconstruction
+        # Check for duplicate outcome records and orphan outcomes
+        raw_outcomes = pred_journal.list_outcomes()
+        seen_outcome_ids: set[str] = set()
+        outcomes: dict[str, Any] = {}
+        for o in raw_outcomes:
+            if o.prediction_id in seen_outcome_ids:
+                mismatches.append({
+                    "prediction_id": o.prediction_id,
+                    "type": "DUPLICATE_OUTCOME_RECORD",
+                })
+            seen_outcome_ids.add(o.prediction_id)
+            outcomes[o.prediction_id] = o
+
+        all_pred_ids = {p.prediction_id for p in predictions}
+        orphan_outcomes_count = 0
+        for oid in outcomes:
+            if oid not in all_pred_ids:
+                orphan_outcomes_count += 1
+                mismatches.append({
+                    "prediction_id": oid,
+                    "type": "ORPHAN_OUTCOME_RECORD",
+                })
+
+        # Sliding buffer reconstruction and two-stage evaluation
         buffer: list[Candle] = []
+        pending_resolutions: list[tuple[Any, Candle]] = []
+        resolved_prediction_ids: set[str] = set()
+
         for c in candles:
-            # Check continuity
+            # Stage 1: Resolve pending predictions whose maturity matches candle c.to_ts
+            remaining_pending: list[tuple[Any, Candle]] = []
+            for orig_pred, cutoff_cand in pending_resolutions:
+                if orig_pred.expected_maturity_ts == c.to_ts:
+                    maturity_cand = c
+                    resolved_prediction_ids.add(orig_pred.prediction_id)
+
+                    # Recompute outcome
+                    c_close = cutoff_cand.close
+                    m_close = maturity_cand.close
+                    if m_close > c_close:
+                        mkt_dir = "UP"
+                    elif m_close < c_close:
+                        mkt_dir = "DOWN"
+                    else:
+                        mkt_dir = "TIE"
+
+                    if orig_pred.decision == "SKIP":
+                        status = OutcomeStatus.SKIPPED_ABSTAIN.value
+                        pnl = None
+                    elif mkt_dir == "TIE":
+                        status = OutcomeStatus.RESOLVED_TIE.value
+                        pnl = 0.0
+                    elif mkt_dir == orig_pred.decision:
+                        status = OutcomeStatus.RESOLVED_WIN.value
+                        pnl = assumed_payout
+                    else:
+                        status = OutcomeStatus.RESOLVED_LOSS.value
+                        pnl = -1.0
+
+                    orig_outcome = outcomes.get(orig_pred.prediction_id)
+                    if orig_outcome is None:
+                        outcomes_mismatched += 1
+                        mismatches.append({
+                            "prediction_id": orig_pred.prediction_id,
+                            "type": "OUTCOME_MISSING_IN_RECORDED_JOURNAL",
+                            "expected_status": status,
+                        })
+                    else:
+                        cutoff_match = math.isclose(
+                            orig_outcome.cutoff_candle_close, c_close, abs_tol=1e-5
+                        )
+                        maturity_match = math.isclose(
+                            orig_outcome.maturity_candle_close, m_close, abs_tol=1e-5
+                        )
+                        status_match = orig_outcome.outcome_status == status
+                        mkt_dir_match = orig_outcome.market_direction == mkt_dir
+                        pnl_match = (orig_outcome.simulated_payout_pnl is None and pnl is None) or (
+                            orig_outcome.simulated_payout_pnl is not None
+                            and pnl is not None
+                            and math.isclose(orig_outcome.simulated_payout_pnl, pnl, abs_tol=1e-4)
+                        )
+
+                        if (
+                            cutoff_match
+                            and maturity_match
+                            and status_match
+                            and mkt_dir_match
+                            and pnl_match
+                        ):
+                            outcomes_matched += 1
+                        else:
+                            outcomes_mismatched += 1
+                            mismatches.append({
+                                "prediction_id": orig_pred.prediction_id,
+                                "type": "OUTCOME_MISMATCH",
+                                "recorded_status": orig_outcome.outcome_status,
+                                "recomputed_status": status,
+                                "recorded_cutoff_close": orig_outcome.cutoff_candle_close,
+                                "recomputed_cutoff_close": c_close,
+                                "recorded_maturity_close": orig_outcome.maturity_candle_close,
+                                "recomputed_maturity_close": m_close,
+                                "recorded_mkt_dir": orig_outcome.market_direction,
+                                "recomputed_mkt_dir": mkt_dir,
+                                "recorded_pnl": orig_outcome.simulated_payout_pnl,
+                                "recomputed_pnl": pnl,
+                            })
+                else:
+                    remaining_pending.append((orig_pred, cutoff_cand))
+            pending_resolutions = remaining_pending
+
+            # Stage 2: Buffer updating and prediction recomputation at cutoff_ts
             if buffer and c.from_ts != buffer[-1].to_ts:
                 # Discontinuity in inputs
                 buffer = [c]
@@ -372,41 +495,51 @@ class EvidenceReplayEngine:
                     else:
                         quarantined_commitments += 1
 
-                # Replay outcome evaluation if maturity candle present
-                orig_outcome = outcomes.get(orig_pred.prediction_id)
-                if orig_outcome is not None:
-                    by_to_ts = {cand.to_ts: cand for cand in buffer}
-                    cutoff_cand = by_to_ts.get(orig_pred.feature_cutoff_ts)
-                    maturity_cand = by_to_ts.get(orig_pred.expected_maturity_ts)
-                    if cutoff_cand is not None and maturity_cand is not None:
-                        is_cutoff_match = math.isclose(
-                            cutoff_cand.close,
-                            orig_outcome.cutoff_candle_close,
-                            abs_tol=1e-5,
-                        )
-                        is_maturity_match = math.isclose(
-                            maturity_cand.close,
-                            orig_outcome.maturity_candle_close,
-                            abs_tol=1e-5,
-                        )
-                        if is_cutoff_match and is_maturity_match:
-                            outcomes_matched += 1
-                        else:
-                            outcomes_mismatched += 1
-                            mismatches.append({
-                                "prediction_id": orig_pred.prediction_id,
-                                "type": "OUTCOME_MISMATCH",
-                                "recorded_cutoff_close": orig_outcome.cutoff_candle_close,
-                                "recomputed_cutoff_close": cutoff_cand.close,
-                                "recorded_maturity_close": orig_outcome.maturity_candle_close,
-                                "recomputed_maturity_close": maturity_cand.close,
-                            })
+                # Enqueue for Stage 1 outcome resolution
+                pending_resolutions.append((orig_pred, c))
+
+        # Post-loop reconciliation
+        outcomes_unverifiable = 0
+        pending_outcomes_count = 0
+        for orig_pred, _ in pending_resolutions:
+            if orig_pred.prediction_id in outcomes:
+                # Expected a resolved outcome, but maturity candle never arrived
+                outcomes_unverifiable += 1
+                mismatches.append({
+                    "prediction_id": orig_pred.prediction_id,
+                    "type": "UNVERIFIABLE_MISSING_MATURITY_CANDLE",
+                    "expected_maturity_ts": orig_pred.expected_maturity_ts,
+                })
+            else:
+                pending_outcomes_count += 1
+
+        replay_cov = (outcomes_matched / len(outcomes)) if outcomes else 1.0
+
+        # Check full reconciliation of predictions and outcomes
+        if preds_matched < len(predictions):
+            missing_preds = len(predictions) - preds_matched
+            mismatches.append({
+                "type": "UNVERIFIED_PREDICTIONS",
+                "missing_predictions_count": missing_preds,
+            })
+
+        if outcomes and outcomes_matched < len(outcomes):
+            unmatched_outcomes = len(outcomes) - outcomes_matched
+            mismatches.append({
+                "type": "UNRECONCILED_OUTCOMES",
+                "unmatched_outcomes_count": unmatched_outcomes,
+            })
 
         is_identical = (
             len(mismatches) == 0
             and preds_mismatched == 0
             and features_mismatched == 0
             and outcomes_mismatched == 0
+            and outcomes_unverifiable == 0
+            and orphan_outcomes_count == 0
+            and duplicate_preds == 0
+            and preds_matched == len(predictions)
+            and (len(outcomes) == 0 or outcomes_matched == len(outcomes))
         )
 
         return ReplayEvidenceReport(
@@ -424,5 +557,10 @@ class EvidenceReplayEngine:
             outcomes_mismatched=outcomes_mismatched,
             commitments_timely_count=timely_commitments,
             commitments_late_quarantined_count=quarantined_commitments,
+            outcomes_unverifiable=outcomes_unverifiable,
+            pending_outcomes_count=pending_outcomes_count,
+            orphan_outcomes_count=orphan_outcomes_count,
+            duplicate_predictions_count=duplicate_preds,
+            replay_coverage=round(replay_cov, 6),
             mismatch_details=mismatches,
         )

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import asdict, dataclass
@@ -26,6 +27,10 @@ from iqoption_research.shadow.journal import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class CandleValidationError(ValueError):
+    """Raised when candle prices or timestamps fail domain physical consistency."""
 
 
 def extract_candle_ohlcv(candle: Any) -> tuple[float, float, float, float, float]:
@@ -47,6 +52,96 @@ def extract_candle_ohlcv(candle: Any) -> tuple[float, float, float, float, float
     return open_p, high_p, low_p, close_p, vol
 
 
+def validate_candle_ohlcv(candle: Any) -> None:
+    """Validate physical consistency, finiteness, and positive bounds of OHLCV candle data.
+
+    Raises CandleValidationError on any violation.
+    """
+    open_p, high_p, low_p, close_p, vol = extract_candle_ohlcv(candle)
+
+    # Check finiteness
+    for name, val in (
+        ("open", open_p),
+        ("high", high_p),
+        ("low", low_p),
+        ("close", close_p),
+        ("volume", vol),
+    ):
+        if not math.isfinite(val):
+            raise CandleValidationError(f"Candle {name} must be finite, got {val}")
+
+    # Check positive prices
+    for name, val in (("open", open_p), ("high", high_p), ("low", low_p), ("close", close_p)):
+        if val <= 0.0:
+            raise CandleValidationError(f"Candle {name} price must be strictly positive, got {val}")
+
+    # Volume non-negative
+    if vol < 0.0:
+        raise CandleValidationError(f"Candle volume must be non-negative, got {vol}")
+
+    # High / low consistency
+    if high_p < low_p:
+        raise CandleValidationError(
+            f"Candle high ({high_p}) cannot be strictly lower than low ({low_p})"
+        )
+
+    # High must be >= max(open, close) with epsilon for float precision
+    eps = 1e-9
+    if high_p < open_p - eps or high_p < close_p - eps:
+        raise CandleValidationError(
+            f"Candle high ({high_p}) cannot be lower than open ({open_p}) or close ({close_p})"
+        )
+
+    # Low must be <= min(open, close) with epsilon for float precision
+    if low_p > open_p + eps or low_p > close_p + eps:
+        raise CandleValidationError(
+            f"Candle low ({low_p}) cannot be higher than open ({open_p}) or close ({close_p})"
+        )
+
+    # Timestamps
+    if hasattr(candle, "from_ts") and hasattr(candle, "to_ts"):
+        f_ts = int(getattr(candle, "from_ts", 0))
+        t_ts = int(getattr(candle, "to_ts", 0))
+        if f_ts > 0 and t_ts > 0 and t_ts <= f_ts:
+            raise CandleValidationError(
+                f"Candle to_ts ({t_ts}) must be strictly greater than from_ts ({f_ts})"
+            )
+    elif isinstance(candle, dict):
+        f_ts = int(candle.get("from_ts", 0))
+        t_ts = int(candle.get("to_ts", 0))
+        if f_ts > 0 and t_ts > 0 and t_ts <= f_ts:
+            raise CandleValidationError(
+                f"Candle to_ts ({t_ts}) must be strictly greater than from_ts ({f_ts})"
+            )
+
+
+def is_valid_candle_ohlcv(candle: Any) -> tuple[bool, list[str]]:
+    """Safe checker returning (is_valid, errors_list) for candle physical consistency."""
+    try:
+        validate_candle_ohlcv(candle)
+        return True, []
+    except CandleValidationError as exc:
+        return False, [str(exc)]
+    except Exception as exc:  # noqa: BLE001
+        return False, [f"Unexpected validation error: {exc}"]
+
+
+def format_canonical_float(val: float, max_decimals: int = 10) -> str:
+    """Deterministic, lossless normalized string formatting for float values.
+
+    Preserves sub-six-decimal precision (up to 10 decimal digits) and fractional volume
+    while remaining fully deterministic across platforms and stripping noisy trailing zeros.
+    """
+    if not math.isfinite(val):
+        raise CandleValidationError(f"Cannot format non-finite float: {val}")
+    formatted = f"{val:.{max_decimals}f}".rstrip("0")
+    if formatted.endswith("."):
+        formatted += "0"
+    if formatted == "-0.0":
+        formatted = "0.0"
+    return formatted
+
+
 def compute_candle_sha256(
     symbol_or_candle: Any = "EURUSD",
     timeframe: int = 60,
@@ -63,12 +158,15 @@ def compute_candle_sha256(
     """Compute canonical SHA-256 digest for an individual market candle.
 
     Accepts either a Candle object or individual explicit fields.
-    Uses a deterministic string representation to guarantee cross-platform bit-level repeatability.
+    Uses lossless normalized string representation to guarantee cross-platform
+    bit-level repeatability and preserve sub-six-decimal precision (up to 10
+    decimal digits) and fractional volume.
     """
     if not isinstance(symbol_or_candle, str) and (
         hasattr(symbol_or_candle, "from_ts") or isinstance(symbol_or_candle, dict)
     ):
         c = symbol_or_candle
+        validate_candle_ohlcv(c)
         open_p, high_p, low_p, close_p, vol = extract_candle_ohlcv(c)
         s = getattr(c, "symbol", None) if not isinstance(c, dict) else c.get("symbol")
         sym = s or symbol or "EURUSD"
@@ -98,9 +196,14 @@ def compute_candle_sha256(
         )
 
     sym = symbol if symbol is not None else symbol_or_candle
+    o_str = format_canonical_float(open_price)
+    c_str = format_canonical_float(close_price)
+    l_str = format_canonical_float(low_price)
+    h_str = format_canonical_float(high_price)
+    v_str = format_canonical_float(volume)
+
     canonical_repr = (
-        f"{str(sym).upper()}:{timeframe}:{from_ts}:{to_ts}:"
-        f"{open_price:.6f}:{close_price:.6f}:{low_price:.6f}:{high_price:.6f}:{volume:.6f}"
+        f"{str(sym).upper()}:{timeframe}:{from_ts}:{to_ts}:{o_str}:{c_str}:{l_str}:{h_str}:{v_str}"
     )
     return hashlib.sha256(canonical_repr.encode("utf-8")).hexdigest()
 
@@ -128,6 +231,8 @@ class NormalizedCandleRecord:
     collector_session_id: str | None = None
     collector_receipt_sha256: str | None = None
     collector_receipt_path: str | None = None
+    bid: float | None = None
+    ask: float | None = None
 
     @property
     def min(self) -> float:
@@ -172,9 +277,9 @@ class NormalizedCandleRecord:
             high=self.high,
             low=self.low,
             close=self.close,
-            volume=int(self.volume),
-            bid=self.close,
-            ask=self.close,
+            volume=round(self.volume),
+            bid=self.bid if self.bid is not None else self.close,
+            ask=self.ask if self.ask is not None else self.close,
             is_complete=self.is_complete,
         )
 
@@ -273,11 +378,22 @@ class ShadowInputsJournal:
         collector_receipt_path: str | None = None,
     ) -> NormalizedCandleRecord:
         """Append a normalized candle to inputs.jsonl with immediate flush and fsync."""
+        validate_candle_ohlcv(candle)
         mono_ns = receipt_mono_ns if receipt_mono_ns is not None else time.perf_counter_ns()
         wall_epoch = receipt_wall_epoch if receipt_wall_epoch is not None else time.time()
         wall_utc = datetime.fromtimestamp(wall_epoch, UTC).isoformat()
 
         open_p, high_p, low_p, close_p, vol = extract_candle_ohlcv(candle)
+        bid_val = (
+            float(getattr(candle, "bid", 0.0))
+            if hasattr(candle, "bid")
+            else (float(candle["bid"]) if isinstance(candle, dict) and "bid" in candle else None)
+        )
+        ask_val = (
+            float(getattr(candle, "ask", 0.0))
+            if hasattr(candle, "ask")
+            else (float(candle["ask"]) if isinstance(candle, dict) and "ask" in candle else None)
+        )
         seq_num = len(self._candles) + 1
         candle_hash = compute_candle_sha256(
             symbol=symbol,
@@ -311,6 +427,8 @@ class ShadowInputsJournal:
             collector_session_id=collector_session_id,
             collector_receipt_sha256=collector_receipt_sha256,
             collector_receipt_path=collector_receipt_path,
+            bid=bid_val,
+            ask=ask_val,
         )
 
         line = json.dumps(record.to_dict(), sort_keys=True) + "\n"
@@ -382,6 +500,11 @@ def verify_inputs_journal(inputs_file: Path) -> dict[str, Any]:
                         f"Sequence gap at line {line_no}: "
                         f"expected {expected_seq}, got {rec.sequence_number}"
                     )
+
+                try:
+                    validate_candle_ohlcv(rec)
+                except CandleValidationError as ve:
+                    errors.append(f"Candle physical consistency error at line {line_no}: {ve}")
 
                 candle_hash = compute_candle_sha256(
                     symbol=rec.symbol,

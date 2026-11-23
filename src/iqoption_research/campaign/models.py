@@ -29,6 +29,8 @@ class CampaignState(StrEnum):
     COMPLETED = "COMPLETED"
     INCOMPLETE = "INCOMPLETE"
     CANCELLED = "CANCELLED"
+    ABORTED = "ABORTED"
+    BLIND_BROKEN_EXPLORATORY = "BLIND_BROKEN_EXPLORATORY"
 
 
 class SlotState(StrEnum):
@@ -98,6 +100,12 @@ class CampaignProtocolSpec:
     created_at_utc: str
     registered_at_utc: str | None = None
     protocol_sha256: str = ""
+    candidate_artifact_hash: str = ""
+    baseline_artifact_hash: str = ""
+    statistical_analysis_version: str = "DAY_BLOCK_BOOTSTRAP_V1"
+    tie_policy: str = "PUSH"
+    window_duration_minutes: int = 60
+    is_confirmatory: bool = False
 
     def compute_sha256(self) -> str:
         """Compute canonical SHA-256 digest of the protocol specification fields."""
@@ -108,8 +116,10 @@ class CampaignProtocolSpec:
             "timeframe": self.timeframe,
             "candidate_model_id": self.candidate_model_id,
             "candidate_threshold": round(self.candidate_threshold, 6),
+            "candidate_artifact_hash": self.candidate_artifact_hash,
             "baseline_model_id": self.baseline_model_id,
             "baseline_threshold": round(self.baseline_threshold, 6),
+            "baseline_artifact_hash": self.baseline_artifact_hash,
             "assumed_payout": round(self.assumed_payout, 6),
             "break_even_hurdle": round(self.break_even_hurdle, 8),
             "min_total_market_days": self.min_total_market_days,
@@ -118,11 +128,16 @@ class CampaignProtocolSpec:
             "min_decisive_outcomes": self.min_decisive_outcomes,
             "windows_per_day": self.windows_per_day,
             "window_start_times_utc": list(self.window_start_times_utc),
+            "window_duration_minutes": self.window_duration_minutes,
             "local_timezone_name": self.local_timezone_name,
             "bootstrap_replicates": self.bootstrap_replicates,
             "bootstrap_seed": self.bootstrap_seed,
             "alpha": round(self.alpha, 6),
+            "statistical_analysis_version": self.statistical_analysis_version,
+            "tie_policy": self.tie_policy,
+            "is_confirmatory": self.is_confirmatory,
             "created_at_utc": self.created_at_utc,
+            "registered_at_utc": self.registered_at_utc or "",
         }
         return hashlib.sha256(json.dumps(canon, sort_keys=True).encode("utf-8")).hexdigest()
 

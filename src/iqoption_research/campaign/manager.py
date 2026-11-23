@@ -64,6 +64,7 @@ class CampaignManager:
         bootstrap_replicates: int = DEFAULT_BOOTSTRAP_REPLICATES,
         bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
         alpha: float = 0.05,
+        is_confirmatory: bool = True,
         notes: str = "",
     ) -> CampaignRecord:
         """Create a new research campaign in DRAFT state with scheduled calendar slots."""
@@ -86,6 +87,9 @@ class CampaignManager:
             logger.info(
                 "Baseline candidate '%s' registered as frozen comparator", baseline_model_id
             )
+
+        cand_hash = getattr(cand_rec, "model_sha256", "") or ""
+        base_hash = getattr(base_rec, "model_sha256", "") if base_rec is not None else ""
 
         now_utc = datetime.now(UTC).isoformat()
         slots = generate_campaign_slots(
@@ -119,6 +123,12 @@ class CampaignManager:
             created_at_utc=now_utc,
             registered_at_utc=None,
             protocol_sha256="",
+            candidate_artifact_hash=cand_hash,
+            baseline_artifact_hash=base_hash,
+            statistical_analysis_version="DAY_BLOCK_BOOTSTRAP_V1",
+            tie_policy="PUSH",
+            window_duration_minutes=60,
+            is_confirmatory=is_confirmatory,
         )
 
         record = CampaignRecord(
@@ -157,3 +167,13 @@ class CampaignManager:
             session_id=session_id,
             session_dir=session_dir,
         )
+
+    def break_blind(
+        self,
+        campaign_id: str,
+        *,
+        reason: str,
+        operator: str = "SUPERVISED_OPERATOR",
+    ) -> CampaignRecord:
+        """Irreversibly break confirmatory blinding, transitioning to BLIND_BROKEN_EXPLORATORY."""
+        return self.registry.break_blind(campaign_id, reason=reason, operator=operator)

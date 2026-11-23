@@ -317,11 +317,21 @@ def test_campaign_registry_lifecycle(tmp_path: Path) -> None:
     updated_slot = registry.update_slot_state(
         "camp_20261201_test",
         slots[0].slot_id,
-        new_state=SlotState.COMPLETED_VERIFIED.value,
+        new_state=SlotState.READY.value,
         session_id="pobs_sess_001",
     )
-    assert updated_slot.slot_state == SlotState.COMPLETED_VERIFIED.value
+    assert updated_slot.slot_state == SlotState.READY.value
     assert updated_slot.session_id == "pobs_sess_001"
+
+    # Direct promotion to COMPLETED_VERIFIED without passing eligibility fails
+    from iqoption_research.campaign.registry import SessionIneligibleError
+
+    with pytest.raises(SessionIneligibleError):
+        registry.update_slot_state(
+            "camp_20261201_test",
+            slots[0].slot_id,
+            new_state=SlotState.COMPLETED_VERIFIED.value,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -313,8 +313,9 @@ def analyze_campaign_command(
                 f"Completed Days: {rep.completed_days}\n"
                 f"Completed Sessions: {rep.completed_sessions}\n"
                 f"Verified Sessions: {rep.verified_sessions}\n\n"
-                f"[dim]To inspect exploratory outcomes before study completion, "
-                f"pass --unblind explicitly.[/dim]",
+                f"[dim]Confirmatory blinding is active until study completion. "
+                f"To irreversibly break blinding for exploratory inspection, run:\n"
+                f"agy campaign break-blind {rep.campaign_id} --reason <audited_reason>[/dim]",
                 title="Confirmatory Blinding Active",
                 border_style="yellow",
             )
@@ -343,12 +344,29 @@ def analyze_campaign_command(
         f"Candidate Brier Score: {rep.candidate_brier_score} vs "
         f"Baseline: {rep.baseline_brier_score}"
     )
-    expectancy_str = (
-        f"Binary Expectancy: {rep.expectancy_binary_pct:+.2f}% | "
-        f"Digital Sensitivity: {rep.sensitivity_digital_pct:+.2f}%"
+    exp_bin_str = (
+        f"{rep.expectancy_binary_pct:+.2f}%" if rep.expectancy_binary_pct is not None else "N/A"
     )
-    coverage_str = (
-        f"Coverage: {rep.coverage_rate * 100:.1f}% | Abstention: {rep.abstention_rate * 100:.1f}%"
+    sens_dig_str = (
+        f"{rep.sensitivity_digital_pct:+.2f}%" if rep.sensitivity_digital_pct is not None else "N/A"
+    )
+    expectancy_str = f"Binary Expectancy: {exp_bin_str} | Digital Sensitivity: {sens_dig_str}"
+
+    cov_pct_str = f"{rep.coverage_rate * 100:.1f}%" if rep.coverage_rate is not None else "N/A"
+    abs_pct_str = f"{rep.abstention_rate * 100:.1f}%" if rep.abstention_rate is not None else "N/A"
+    coverage_str = f"Coverage: {cov_pct_str} | Abstention: {abs_pct_str}"
+
+    cand_acc_str = f"{rep.decisive_accuracy:.4f}" if rep.decisive_accuracy is not None else "N/A"
+    wilson_str = (
+        f"[{rep.wilson_ci_95[0]:.4f}, {rep.wilson_ci_95[1]:.4f}]" if rep.wilson_ci_95 else "N/A"
+    )
+    base_acc_str = (
+        f"{rep.baseline_decisive_accuracy:.4f}"
+        if rep.baseline_decisive_accuracy is not None
+        else "N/A"
+    )
+    paired_diff_str = (
+        f"{rep.paired_accuracy_diff:+.4f}" if rep.paired_accuracy_diff is not None else "N/A"
     )
 
     console.print(
@@ -357,14 +375,14 @@ def analyze_campaign_command(
             f"Rationale: {rep.verdict_rationale}\n\n"
             f"Candidate Model: [bold]{rep.candidate_model_id}[/bold]\n"
             f"{decisive_summary}\n"
-            f"Candidate Decisive Accuracy: [bold]{rep.decisive_accuracy:.4f}[/bold]\n"
-            f"95% Wilson Score CI: [{rep.wilson_ci_95[0]:.4f}, {rep.wilson_ci_95[1]:.4f}]\n"
+            f"Candidate Decisive Accuracy: [bold]{cand_acc_str}[/bold]\n"
+            f"95% Wilson Score CI: {wilson_str}\n"
             f"95% Day-Block Bootstrap CI: {boot_ci_str} (20,000 replicates, seed 20261123)\n"
             f"95% Two-Day Block Sensitivity CI: {two_day_ci_str}\n"
             f"{hurdle_str}\n\n"
             f"Matched Baseline ({rep.baseline_model_id}) "
-            f"Accuracy: {rep.baseline_decisive_accuracy:.4f}\n"
-            f"Paired Accuracy Difference: [bold]{rep.paired_accuracy_diff:+.4f}[/bold] "
+            f"Accuracy: {base_acc_str}\n"
+            f"Paired Accuracy Difference: [bold]{paired_diff_str}[/bold] "
             f"(95% CI: {paired_ci_str})\n"
             f"Beats Paired Baseline: [bold]{rep.beats_paired_baseline}[/bold]\n\n"
             f"{brier_str}\n"
@@ -457,6 +475,7 @@ def export_campaign_command(
         paired_diff_str = (
             f"{rep.paired_accuracy_diff}" if rep.paired_accuracy_diff is not None else "N/A"
         )
+        cand_acc_md = f"{rep.decisive_accuracy:.4f}" if rep.decisive_accuracy is not None else "N/A"
         out_content = f"""# Research Campaign Report: {camp.campaign_id}
 
 - **Protocol Version:** {camp.protocol.protocol_version}
@@ -471,7 +490,7 @@ def export_campaign_command(
 - **Verdict:** `{rep.verdict}`
 - **Verdict Rationale:** {rep.verdict_rationale}
 - **Decisive Observations:** {rep.decisive_observations_count}
-- **Candidate Decisive Accuracy:** {rep.decisive_accuracy:.4f}
+- **Candidate Decisive Accuracy:** {cand_acc_md}
 - **Day-Block Bootstrap 95% CI:** {b_ci_md}
 - **Economic Hurdle (1/1.85):** {rep.break_even_hurdle:.4f} (Clears: {rep.clears_economic_hurdle})
 - **Paired Baseline Difference:** {paired_diff_str} (Beats Baseline: {rep.beats_paired_baseline})
@@ -485,3 +504,40 @@ def export_campaign_command(
         console.print(f"[bold green]Report exported successfully to {output_file}[/bold green]")
     else:
         console.print(out_content)
+
+
+@campaign_app.command(
+    "break-blind",
+    help="Irreversibly break confirmatory blinding on an active research campaign.",
+)
+def break_blind_command(
+    campaign_id: Annotated[str, typer.Argument(help="Campaign identifier to break blinding for.")],
+    reason: Annotated[
+        str,
+        typer.Option("--reason", "-r", help="Audited scientific rationale for breaking blinding."),
+    ],
+    operator: Annotated[
+        str, typer.Option("--operator", help="Supervised operator identity.")
+    ] = "SUPERVISED_OPERATOR",
+    root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
+) -> None:
+    repo_root = root or Path.cwd()
+    mgr = CampaignManager(root=repo_root)
+    try:
+        camp = mgr.break_blind(campaign_id, reason=reason, operator=operator)
+        console.print(
+            Panel(
+                f"[bold red]CONFIRMATORY BLINDING PERMANENTLY BROKEN[/bold red]\n\n"
+                f"Campaign ID: [cyan]{camp.campaign_id}[/cyan]\n"
+                f"New Scientific State: [bold red]{camp.state}[/bold red]\n"
+                f"Operator: {operator}\n"
+                f"Reason: {reason}\n\n"
+                "[yellow]This campaign has been permanently reclassified as exploratory/"
+                "non-confirmatory. It cannot be returned to confirmatory status.[/yellow]",
+                title="Blinding Broken (Audited)",
+                border_style="red",
+            )
+        )
+    except Exception as exc:
+        console.print(f"[bold red]Failed to break blind:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc

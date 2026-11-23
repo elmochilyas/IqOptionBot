@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from datetime import UTC, date, datetime
@@ -291,6 +292,7 @@ def test_campaign_evaluator_confirmatory_blinding_and_bootstrap(tmp_path: Path) 
         alpha=0.05,
         created_at_utc=now_utc,
     )
+    spec = dataclasses.replace(spec, protocol_sha256=spec.compute_sha256())
 
     camp = CampaignRecord(
         campaign_id="camp_eval_test",
@@ -327,8 +329,8 @@ def test_campaign_evaluator_confirmatory_blinding_and_bootstrap(tmp_path: Path) 
     assert report_blinded.is_blinded is True
     assert report_blinded.blinding_notice is not None
     assert "OUTCOME BLINDING ACTIVE" in report_blinded.blinding_notice
-    # Running win rate is masked to 0.0
-    assert report_blinded.decisive_accuracy == 0.0
+    # Running win rate is masked to None
+    assert report_blinded.decisive_accuracy is None
     assert report_blinded.day_block_bootstrap_ci_95 is None
 
     # 2. Unblinded Statistical Evaluation
@@ -397,6 +399,7 @@ def test_cli_campaign_analyze(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         alpha=0.05,
         created_at_utc=now_utc,
     )
+    spec = dataclasses.replace(spec, protocol_sha256=spec.compute_sha256())
     camp = CampaignRecord(
         campaign_id="camp_cli_eval",
         state=CampaignState.ACTIVE.value,

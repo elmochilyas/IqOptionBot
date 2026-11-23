@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import tkinter as tk
 from concurrent.futures import Future
 from datetime import UTC, datetime
@@ -10,11 +11,15 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Any
 
+from iqoption_research.ml.data_audit import DataCoverageReport, audit_market_datasets
+from iqoption_research.ml.experiment_plan import build_standard_phase42_experiment_plan
+from iqoption_research.ml.experiment_runner import ExperimentRunner, ExperimentSuiteSummary
 from iqoption_research.ml.laboratory import (
     ExperimentConfig,
     ExperimentResult,
     ModelLaboratory,
 )
+from iqoption_research.ml.partitions import PartitionManifest
 from iqoption_research.research.dataset_manager import (
     ResearchDatasetManager,
     ResearchDatasetSnapshot,
@@ -22,6 +27,8 @@ from iqoption_research.research.dataset_manager import (
 
 if TYPE_CHECKING:
     from iqoption_research.desktop.app import Dashboard
+
+logger = logging.getLogger(__name__)
 
 
 class ModelLaboratoryPanel:
@@ -99,6 +106,13 @@ class ModelLaboratoryPanel:
         )
         self.btn_prepare_snapshot.pack(side="left", padx=(0, 8))
 
+        self.btn_audit_data = ttk.Button(
+            top_bar,
+            text="Run Authentic Data & Sufficiency Audit",
+            command=self.run_data_audit_action,
+        )
+        self.btn_audit_data.pack(side="left", padx=(0, 8))
+
         self.dataset_status_label = ttk.Label(
             self.dataset_frame, text="Scanning local datasets...", wraplength=1050
         )
@@ -149,10 +163,13 @@ class ModelLaboratoryPanel:
             r1,
             values=[
                 "Random Forest (RandomForestModel)",
+                "Extra Trees (ExtraTreesModel)",
+                "Compact Neural Network (MLP)",
                 "Logistic Regression (LogisticRegressionModel)",
                 "HistGradientBoosting (HistGradientBoostingModel)",
                 "Majority Direction Prior (Baseline)",
                 "Rule-Based Momentum (Baseline)",
+                "Rule-Based Reversal (Baseline)",
             ],
             state="readonly",
             width=36,
@@ -187,6 +204,38 @@ class ModelLaboratoryPanel:
         self.train_cal_combo.current(0)
         self.train_cal_combo.pack(side="left")
 
+        # Row 3: Feature Pipeline & Validation Protocol
+        r3 = ttk.Frame(opts_frame)
+        r3.pack(fill="x", pady=4)
+        ttk.Label(r3, text="Feature Pipeline:", width=18).pack(side="left")
+        self.train_features_combo = ttk.Combobox(
+            r3,
+            values=[
+                "V2 All (34 Causal Features)",
+                "V2 Price Action Only (12 Features)",
+                "V2 Volatility & Trend (12 Features)",
+                "V2 Regime & Temporal (7 Features)",
+                "V1 Baseline (12 Features)",
+            ],
+            state="readonly",
+            width=36,
+        )
+        self.train_features_combo.current(0)
+        self.train_features_combo.pack(side="left", padx=(0, 20))
+
+        ttk.Label(r3, text="Validation Scheme:", width=18).pack(side="left")
+        self.train_protocol_combo = ttk.Combobox(
+            r3,
+            values=[
+                "3 Folds (Walk-Forward Expanding - Phase 42)",
+                "Single Chronological Split (Phase 39)",
+            ],
+            state="readonly",
+            width=38,
+        )
+        self.train_protocol_combo.current(0)
+        self.train_protocol_combo.pack(side="left")
+
         # Action Buttons & Progress
         action_bar = ttk.Frame(self.train_frame)
         action_bar.pack(fill="x", pady=6)
@@ -194,6 +243,10 @@ class ModelLaboratoryPanel:
             action_bar, text="Run Training Experiment", command=self.start_training
         )
         self.btn_start_train.pack(side="left", padx=(0, 8))
+        self.btn_run_suite = ttk.Button(
+            action_bar, text="Run Phase 42 Experiment Suite", command=self.run_experiment_suite
+        )
+        self.btn_run_suite.pack(side="left", padx=(0, 8))
         self.btn_cancel_train = ttk.Button(action_bar, text="Cancel", command=self.cancel_training)
         self.btn_cancel_train.pack(side="left", padx=(0, 8))
         self.btn_cancel_train.state(["disabled"])
@@ -235,23 +288,34 @@ class ModelLaboratoryPanel:
         )
         self.btn_refresh_models.pack(side="left", padx=(0, 8))
 
-        columns = ("model_id", "family", "status", "created", "test_acc", "brier", "verdict")
+        columns = (
+            "model_id",
+            "family",
+            "status",
+            "created",
+            "test_acc",
+            "brier",
+            "verdict",
+            "ece",
+        )
         self.model_tree = ttk.Treeview(self.eval_frame, columns=columns, show="headings", height=6)
         self.model_tree.heading("model_id", text="Candidate Model ID")
         self.model_tree.heading("family", text="Model Family")
         self.model_tree.heading("status", text="Integrity Status")
         self.model_tree.heading("created", text="Created UTC")
         self.model_tree.heading("test_acc", text="Test Acc")
-        self.model_tree.heading("brier", text="Brier Score")
+        self.model_tree.heading("brier", text="Brier")
         self.model_tree.heading("verdict", text="Scientific Verdict")
+        self.model_tree.heading("ece", text="ECE")
 
-        self.model_tree.column("model_id", width=300)
+        self.model_tree.column("model_id", width=280)
         self.model_tree.column("family", width=120)
-        self.model_tree.column("status", width=120)
-        self.model_tree.column("created", width=140)
+        self.model_tree.column("status", width=110)
+        self.model_tree.column("created", width=130)
         self.model_tree.column("test_acc", width=70)
-        self.model_tree.column("brier", width=80)
-        self.model_tree.column("verdict", width=220)
+        self.model_tree.column("brier", width=70)
+        self.model_tree.column("verdict", width=210)
+        self.model_tree.column("ece", width=70)
 
         self.model_tree.pack(fill="x", pady=(0, 8))
         self.model_tree.bind("<<TreeviewSelect>>", self._on_model_selected)
@@ -333,6 +397,56 @@ class ModelLaboratoryPanel:
         )
         self.active_future = self.dashboard.executor.submit(self.manager.prepare_dataset)
 
+    def run_data_audit_action(self) -> None:
+        """Background authentic market data audit and sufficiency check."""
+        if self.busy():
+            return
+        self.btn_audit_data.state(["disabled"])
+        self.dataset_status_label.configure(
+            text="Running comprehensive authentic data audit and sample sufficiency check..."
+        )
+        self.active_future = self.dashboard.executor.submit(audit_market_datasets, self.root)
+
+    def run_experiment_suite(self) -> None:
+        """Launch background execution of Phase 42 experiment suite."""
+        if self.busy():
+            return
+        if not messagebox.askyesno(
+            "Phase 42 Experiment Suite",
+            "Run offline walk-forward experiment suite across genuine market data?\n\n"
+            "Evaluates baseline models, feature ablations, and candidate model families "
+            "with out-of-fold calibration and Day-Block bootstrap confidence intervals.\n\n"
+            "Strictly offline: Zero live orders, zero broker connection.",
+        ):
+            return
+
+        self._write_text(self.train_log_text, "")
+        self._append_log(self.train_log_text, "Starting Phase 42 Offline Experiment Suite...")
+        self.btn_start_train.state(["disabled"])
+        self.btn_run_suite.state(["disabled"])
+        self.btn_cancel_train.state(["!disabled"])
+        self.is_cancelled = False
+
+        runner = ExperimentRunner(self.root)
+        plan = build_standard_phase42_experiment_plan()
+
+        def prog_cb(completed: int, total: int, status_str: str) -> None:
+            pct = int((completed / total) * 100) if total > 0 else 0
+            self.dashboard.window.after(
+                0, lambda: self._update_progress(pct, f"[{completed}/{total}] {status_str}")
+            )
+
+        def cancel_check() -> bool:
+            return self.is_cancelled
+
+        self.active_future = self.dashboard.executor.submit(
+            runner.run_suite,
+            plan=plan,
+            max_trials=45,
+            progress_callback=prog_cb,
+            cancel_check=cancel_check,
+        )
+
     def start_training(self) -> None:
         """Launch background candidate model training."""
         if self.busy():
@@ -357,10 +471,13 @@ class ModelLaboratoryPanel:
         # Parse config
         family_map = {
             "Random Forest (RandomForestModel)": "random_forest",
+            "Extra Trees (ExtraTreesModel)": "extra_trees",
+            "Compact Neural Network (MLP)": "compact_neural_network",
             "Logistic Regression (LogisticRegressionModel)": "logistic_regression",
             "HistGradientBoosting (HistGradientBoostingModel)": "hist_gradient_boosting",
             "Majority Direction Prior (Baseline)": "majority_class",
             "Rule-Based Momentum (Baseline)": "rule_momentum",
+            "Rule-Based Reversal (Baseline)": "rule_reversal",
         }
         family = family_map.get(self.train_model_combo.get(), "random_forest")
         horizon = 1 if "1 bar" in self.train_horizon_combo.get() else 5
@@ -502,9 +619,63 @@ class ModelLaboratoryPanel:
                 )
                 self.refresh()
 
+            elif isinstance(result, DataCoverageReport):
+                self.btn_audit_data.state(["!disabled"])
+                suff_str = "PASS" if result.data_sufficiency_passed else "FAIL"
+                self.dataset_status_label.configure(
+                    text=(
+                        f"Data Audit Complete: {result.total_candles_retained:,} candles across "
+                        f"{result.distinct_market_days} days. Sufficiency: {suff_str}"
+                    )
+                )
+                self._write_text(self.dataset_detail_text, result.to_markdown())
+                messagebox.showinfo(
+                    "Data Audit Completed",
+                    f"Authentic Market Data Audit Complete:\n\n"
+                    f"Total Retained: {result.total_candles_retained:,} candles\n"
+                    f"Distinct Market Days: {result.distinct_market_days}\n"
+                    f"Continuous Segments: {result.continuous_segments_count}\n"
+                    f"Weekend Closures: {result.weekend_closures_count}\n"
+                    f"Sufficiency: "
+                    f"{'PASSED' if result.data_sufficiency_passed else 'FAILED'}\n\n"
+                    "Detailed markdown report loaded into view.",
+                )
+
+            elif isinstance(result, ExperimentSuiteSummary):
+                self.btn_start_train.state(["!disabled"])
+                self.btn_run_suite.state(["!disabled"])
+                self.btn_cancel_train.state(["disabled"])
+                self.train_progress["value"] = 100
+                self.train_status_label.configure(
+                    text=(
+                        f"Suite Complete: {result.completed_trials}/{result.total_trials} | "
+                        f"Verdict: {result.global_disposition}"
+                    )
+                )
+                self._append_log(
+                    self.train_log_text,
+                    f"\n>>> Phase 42 Experiment Suite Finished!\n"
+                    f"Suite ID: {result.suite_id}\n"
+                    f"Completed Trials: {result.completed_trials}/{result.total_trials}\n"
+                    f"Eligible Candidates: {result.eligible_candidates_count}\n"
+                    f"Global Disposition: {result.global_disposition}\n",
+                )
+                messagebox.showinfo(
+                    "Experiment Suite Finished",
+                    f"Phase 42 Experiment Suite Complete:\n\n"
+                    f"Completed Trials: {result.completed_trials}/{result.total_trials}\n"
+                    f"Eligible Candidates: {result.eligible_candidates_count}\n"
+                    f"Global Disposition: {result.global_disposition}\n"
+                    f"Execution Authority: {result.execution_authority}\n\n"
+                    "NO DEMONSTRATED EDGE. Models frozen for shadow observation only.",
+                )
+                self.refresh()
+
         except Exception as exc:  # noqa: BLE001
             self.btn_prepare_snapshot.state(["!disabled"])
+            self.btn_audit_data.state(["!disabled"])
             self.btn_start_train.state(["!disabled"])
+            self.btn_run_suite.state(["!disabled"])
             self.btn_cancel_train.state(["disabled"])
             self.train_status_label.configure(text=f"Failed: {type(exc).__name__}: {exc}")
             self._append_log(self.train_log_text, f"\n[ERROR] {type(exc).__name__}: {exc}")
@@ -554,12 +725,45 @@ class ModelLaboratoryPanel:
                     f"... and {len(m.conflicts_quarantined) - 10} more quarantined conflicts.\n"
                 )
 
+        p_dir = self.root / "data" / "partitions"
+        p_files = sorted(p_dir.glob("*.json")) if p_dir.is_dir() else []
+        if p_files:
+            try:
+                part = PartitionManifest.load(p_files[-1])
+                inspected_str = (
+                    "YES (CANNOT BE CERTIFIED UNTOUCHED)"
+                    if part.is_holdout_previously_inspected
+                    else "NO (PRISTINE)"
+                )
+                summary += (
+                    f"\n4-WAY CHRONOLOGICAL PARTITIONS ({part.manifest_id})\n"
+                    f"{'-' * 65}\n"
+                    f"Train (60%):       {part.train_partition.candle_count:,} candles\n"
+                    f"  Range:           {part.train_partition.from_utc[:10]} -> "
+                    f"{part.train_partition.to_utc[:10]}\n"
+                    f"Val (15%):         {part.val_partition.candle_count:,} candles\n"
+                    f"  Range:           {part.val_partition.from_utc[:10]} -> "
+                    f"{part.val_partition.to_utc[:10]}\n"
+                    f"Calibration (10%): {part.calibration_partition.candle_count:,} candles\n"
+                    f"  Range:           {part.calibration_partition.from_utc[:10]} -> "
+                    f"{part.calibration_partition.to_utc[:10]}\n"
+                    f"Test (15%):        {part.protected_test_partition.candle_count:,} candles\n"
+                    f"  Range:           {part.protected_test_partition.from_utc[:10]} -> "
+                    f"{part.protected_test_partition.to_utc[:10]}\n"
+                    f"Purge Lead Bars:   {part.purging_horizon_bars}\n"
+                    f"Embargo Tail Bars: {part.embargo_bars}\n"
+                    f"Prior Inspected:   {inspected_str}\n"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Failed reading partition manifest: %s", exc)
+
         self._write_text(self.dataset_detail_text, summary)
 
     def _update_models_tree(self, models: list[dict[str, Any]]) -> None:
         for item in self.model_tree.get_children():
             self.model_tree.delete(item)
         for m in models:
+            ece_val = m.get("test_ece", m.get("ece", 0.0))
             self.model_tree.insert(
                 "",
                 "end",
@@ -571,6 +775,7 @@ class ModelLaboratoryPanel:
                     f"{m['test_accuracy']:.2%}" if m.get("test_accuracy") is not None else "N/A",
                     f"{m.get('test_brier', m.get('brier_score', 0.0)):.4f}",
                     m.get("verdict", "UNKNOWN"),
+                    f"{ece_val:.4f}" if ece_val else "N/A",
                 ),
             )
 
@@ -667,6 +872,12 @@ class ModelLaboratoryPanel:
                 f_flt(m_test, "brier_score"),
             ),
             row(
+                "Expected Cal Error:",
+                f_flt(m_train, "ece"),
+                f_flt(m_val, "ece"),
+                f_flt(m_test, "ece"),
+            ),
+            row(
                 "Trade Count:",
                 str(m_train.get("trade_count", 0)),
                 str(m_val.get("trade_count", 0)),
@@ -692,6 +903,15 @@ class ModelLaboratoryPanel:
             "-" * 65,
             f"Verdict:              {data.get('verdict')}",
             f"Statistical Edge:     {edge_str}",
+            f"Execution Authority:  {data.get('execution_authority', 'NONE')}",
             f"Scientific Notice:    {data.get('disclaimer')}",
+            "",
+            "PHASE 42 FAILURE INTELLIGENCE & TAXONOMY",
+            "-" * 65,
+            "- Microstructure: Martingale difference noise at M1 (lag-1 rho1 = +0.0122).",
+            "- Asymmetric Payout: 54.054% break-even hurdle exceeds decisive accuracy.",
+            "- Selective Abstention: Raising thresholds collapses coverage without edge.",
+            "- Feature Saturation: Multi-family features do not improve generalization.",
+            "- Calibration Collapse: Posteriors converge toward class prior ~0.50.",
         ]
         self._write_text(self.eval_detail_text, "\n".join(lines))

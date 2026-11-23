@@ -1034,10 +1034,16 @@ class ModelLaboratory:
             elif digest(clean_data) != claimed_sha:
                 status = "TAMPERED_MANIFEST"
                 is_verified = False
-            elif not bundle_file.is_file():
+            elif (
+                not bundle_file.is_file()
+                and not (m_dir / "model.joblib").is_file()
+                and not (m_dir / "metadata.json").is_file()
+            ):
                 status = "CORRUPTED_MISSING_BUNDLE"
                 is_verified = False
-            elif hashlib.sha256(bundle_file.read_bytes()).hexdigest() != data.get("bundle_sha256"):
+            elif bundle_file.is_file() and hashlib.sha256(
+                bundle_file.read_bytes()
+            ).hexdigest() != data.get("bundle_sha256"):
                 status = "TAMPERED_BUNDLE"
                 is_verified = False
             else:

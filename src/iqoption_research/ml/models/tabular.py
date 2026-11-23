@@ -13,7 +13,12 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    HistGradientBoostingClassifier,
+    RandomForestClassifier,
+)
+from sklearn.neural_network import MLPClassifier
 
 from iqoption_research.ml.models.base import (
     BaseMLModel,
@@ -360,6 +365,325 @@ class HistGradientBoostingModel(BaseMLModel):
             monotonic_cst=hp.get("monotonic_cst"),
             random_state=hp.get("random_state", 42),
             class_weight=hp.get("class_weight"),
+        )
+        model._single_class = meta.get("single_class")
+        model_file = dir_path / "model.joblib"
+        if model_file.exists():
+            model._sklearn_model = joblib.load(model_file)
+
+        model._set_fitted_state(
+            feature_names=tuple(meta["feature_names"]),
+            classes=np.array(meta["classes"], dtype=np.int64),
+        )
+        return model
+
+
+class ExtraTreesModel(BaseMLModel):
+    """Extremely Randomized Trees ensemble wrapping scikit-learn ExtraTreesClassifier.
+
+    Parameters:
+        n_estimators: Number of randomized trees (default 100).
+        max_depth: Maximum tree depth (default 8).
+        min_samples_split: Minimum samples required to split node (default 20).
+        min_samples_leaf: Minimum samples at leaf (default 10).
+        max_features: Features to evaluate per split (default "sqrt").
+        bootstrap: Whether to bootstrap samples (default False for standard ExtraTrees).
+        random_state: PRNG seed for reproducibility (default 42).
+        n_jobs: Number of parallel CPU workers (default 1).
+        class_weight: Balanced weighting strategy (default "balanced").
+    """
+
+    def __init__(
+        self,
+        *,
+        n_estimators: int = 100,
+        max_depth: int | None = 8,
+        min_samples_split: int = 20,
+        min_samples_leaf: int = 10,
+        max_features: str | float | None = "sqrt",
+        bootstrap: bool = False,
+        random_state: int = 42,
+        n_jobs: int = 1,
+        class_weight: str | dict[int, float] | None = "balanced",
+    ) -> None:
+        super().__init__(
+            name="extra_trees",
+            version="1.0.0",
+            model_type="tabular",
+            hyperparameters={
+                "n_estimators": int(n_estimators),
+                "max_depth": max_depth,
+                "min_samples_split": int(min_samples_split),
+                "min_samples_leaf": int(min_samples_leaf),
+                "max_features": max_features,
+                "bootstrap": bootstrap,
+                "random_state": int(random_state),
+                "n_jobs": n_jobs,
+                "class_weight": class_weight,
+            },
+        )
+        self.n_estimators = int(n_estimators)
+        self.max_depth = max_depth
+        self.min_samples_split = int(min_samples_split)
+        self.min_samples_leaf = int(min_samples_leaf)
+        self.max_features = max_features
+        self.bootstrap = bootstrap
+        self.random_state = int(random_state)
+        self.n_jobs = n_jobs
+        self.class_weight = class_weight
+        self._sklearn_model: ExtraTreesClassifier | None = None
+        self._single_class: int | None = None
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: Sequence[str] | None = None,
+    ) -> ExtraTreesModel:
+        """Fit ExtraTrees ensemble, handling single-class slices safely."""
+        X_arr, y_arr, f_names = self._validate_and_prepare_inputs(X, y, feature_names)
+        unique_classes = np.unique(y_arr)
+
+        if len(unique_classes) == 1:
+            self._single_class = int(unique_classes[0])
+            self._sklearn_model = None
+        else:
+            self._single_class = None
+            self._sklearn_model = ExtraTreesClassifier(
+                n_estimators=self.n_estimators,
+                max_depth=self.max_depth,
+                min_samples_split=self.min_samples_split,
+                min_samples_leaf=self.min_samples_leaf,
+                max_features=self.max_features,
+                bootstrap=self.bootstrap,
+                random_state=self.random_state,
+                n_jobs=self.n_jobs,
+                class_weight=self.class_weight,
+            )
+            self._sklearn_model.fit(X_arr, y_arr)
+
+        self._set_fitted_state(feature_names=f_names, classes=np.array([0, 1], dtype=np.int64))
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """Predict calibrated directional probabilities of shape (N, 2)."""
+        X_arr = self._validate_inference_input(X)
+        if self._single_class is not None:
+            p1 = 1.0 if self._single_class == 1 else 0.0
+            return np.column_stack([np.full(len(X_arr), 1.0 - p1), np.full(len(X_arr), p1)])
+
+        if self._sklearn_model is None:
+            raise NotFittedError(f"Model '{self.name}' is not fitted.")
+
+        probs = self._sklearn_model.predict_proba(X_arr)
+        row_sums = probs.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1.0
+        return probs / row_sums
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Predict directional class labels {0, 1}."""
+        probs = self.predict_proba(X)
+        return np.argmax(probs, axis=1).astype(np.int64)
+
+    def save(self, directory: Path | str) -> Path:
+        """Serialize model metadata and ExtraTrees weights."""
+        if not self.is_fitted:
+            raise NotFittedError(f"Cannot save unfitted model '{self.name}'.")
+        dir_path = Path(directory)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "name": self.name,
+            "version": self.version,
+            "model_type": self.model_type,
+            "class_name": self.__class__.__name__,
+            "hyperparameters": self.hyperparameters,
+            "feature_names": list(self.feature_names),
+            "classes": self.classes_.tolist(),
+            "single_class": self._single_class,
+            "is_fitted": self.is_fitted,
+        }
+        with (dir_path / self.METADATA_FILENAME).open("w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
+        if self._sklearn_model is not None:
+            joblib.dump(self._sklearn_model, dir_path / "model.joblib")
+        return dir_path
+
+    @classmethod
+    def load(cls, directory: Path | str) -> ExtraTreesModel:
+        """Load ExtraTrees model state and weights."""
+        dir_path = Path(directory)
+        meta = cls._load_metadata(dir_path)
+        hp = meta.get("hyperparameters", {})
+        model = cls(
+            n_estimators=hp.get("n_estimators", 100),
+            max_depth=hp.get("max_depth", 8),
+            min_samples_split=hp.get("min_samples_split", 20),
+            min_samples_leaf=hp.get("min_samples_leaf", 10),
+            max_features=hp.get("max_features", "sqrt"),
+            bootstrap=hp.get("bootstrap", False),
+            random_state=hp.get("random_state", 42),
+            n_jobs=hp.get("n_jobs", 1),
+            class_weight=hp.get("class_weight", "balanced"),
+        )
+        model._single_class = meta.get("single_class")
+        model_file = dir_path / "model.joblib"
+        if model_file.exists():
+            model._sklearn_model = joblib.load(model_file)
+
+        model._set_fitted_state(
+            feature_names=tuple(meta["feature_names"]),
+            classes=np.array(meta["classes"], dtype=np.int64),
+        )
+        return model
+
+
+class CompactNeuralNetModel(BaseMLModel):
+    """Compact Multi-Layer Perceptron (MLP) classifier wrapping scikit-learn MLPClassifier.
+
+    Designed for CPU-efficient, leak-free tabular market forecasting.
+
+    Parameters:
+        hidden_layer_sizes: Tuple of layer units (default (32, 16)).
+        activation: Activation function (default "relu").
+        solver: Optimizer (default "adam").
+        alpha: L2 penalty parameter (default 0.01).
+        batch_size: Minibatch size (default 64).
+        learning_rate_init: Initial learning rate (default 0.001).
+        max_iter: Maximum epochs (default 200).
+        random_state: PRNG seed for reproducibility (default 42).
+    """
+
+    def __init__(
+        self,
+        *,
+        hidden_layer_sizes: tuple[int, ...] = (32, 16),
+        activation: str = "relu",
+        solver: str = "adam",
+        alpha: float = 0.01,
+        batch_size: int = 64,
+        learning_rate_init: float = 0.001,
+        max_iter: int = 200,
+        random_state: int = 42,
+    ) -> None:
+        super().__init__(
+            name="compact_neural_network",
+            version="1.0.0",
+            model_type="neural",
+            hyperparameters={
+                "hidden_layer_sizes": list(hidden_layer_sizes),
+                "activation": activation,
+                "solver": solver,
+                "alpha": float(alpha),
+                "batch_size": int(batch_size),
+                "learning_rate_init": float(learning_rate_init),
+                "max_iter": int(max_iter),
+                "random_state": int(random_state),
+                "early_stopping": False,  # Strict: no random train/val split leakage
+            },
+        )
+        self.hidden_layer_sizes = tuple(hidden_layer_sizes)
+        self.activation = activation
+        self.solver = solver
+        self.alpha = float(alpha)
+        self.batch_size = int(batch_size)
+        self.learning_rate_init = float(learning_rate_init)
+        self.max_iter = int(max_iter)
+        self.random_state = int(random_state)
+        self._sklearn_model: MLPClassifier | None = None
+        self._single_class: int | None = None
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: Sequence[str] | None = None,
+    ) -> CompactNeuralNetModel:
+        """Fit compact neural network, handling single-class slices safely."""
+        X_arr, y_arr, f_names = self._validate_and_prepare_inputs(X, y, feature_names)
+        unique_classes = np.unique(y_arr)
+
+        if len(unique_classes) == 1:
+            self._single_class = int(unique_classes[0])
+            self._sklearn_model = None
+        else:
+            self._single_class = None
+            self._sklearn_model = MLPClassifier(
+                hidden_layer_sizes=self.hidden_layer_sizes,
+                activation=self.activation,
+                solver=self.solver,
+                alpha=self.alpha,
+                batch_size=self.batch_size,
+                learning_rate_init=self.learning_rate_init,
+                max_iter=self.max_iter,
+                random_state=self.random_state,
+                early_stopping=False,
+            )
+            self._sklearn_model.fit(X_arr, y_arr)
+
+        self._set_fitted_state(feature_names=f_names, classes=np.array([0, 1], dtype=np.int64))
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """Predict calibrated directional probabilities of shape (N, 2)."""
+        X_arr = self._validate_inference_input(X)
+        if self._single_class is not None:
+            p1 = 1.0 if self._single_class == 1 else 0.0
+            return np.column_stack([np.full(len(X_arr), 1.0 - p1), np.full(len(X_arr), p1)])
+
+        if self._sklearn_model is None:
+            raise NotFittedError(f"Model '{self.name}' is not fitted.")
+
+        probs = self._sklearn_model.predict_proba(X_arr)
+        row_sums = probs.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1.0
+        return probs / row_sums
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Predict directional class labels {0, 1}."""
+        probs = self.predict_proba(X)
+        return np.argmax(probs, axis=1).astype(np.int64)
+
+    def save(self, directory: Path | str) -> Path:
+        """Serialize model metadata and MLP weights."""
+        if not self.is_fitted:
+            raise NotFittedError(f"Cannot save unfitted model '{self.name}'.")
+        dir_path = Path(directory)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "name": self.name,
+            "version": self.version,
+            "model_type": self.model_type,
+            "class_name": self.__class__.__name__,
+            "hyperparameters": self.hyperparameters,
+            "feature_names": list(self.feature_names),
+            "classes": self.classes_.tolist(),
+            "single_class": self._single_class,
+            "is_fitted": self.is_fitted,
+        }
+        with (dir_path / self.METADATA_FILENAME).open("w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
+        if self._sklearn_model is not None:
+            joblib.dump(self._sklearn_model, dir_path / "model.joblib")
+        return dir_path
+
+    @classmethod
+    def load(cls, directory: Path | str) -> CompactNeuralNetModel:
+        """Load compact neural network state and weights."""
+        dir_path = Path(directory)
+        meta = cls._load_metadata(dir_path)
+        hp = meta.get("hyperparameters", {})
+        h_sizes = tuple(hp.get("hidden_layer_sizes", [32, 16]))
+        model = cls(
+            hidden_layer_sizes=h_sizes,
+            activation=hp.get("activation", "relu"),
+            solver=hp.get("solver", "adam"),
+            alpha=hp.get("alpha", 0.01),
+            batch_size=hp.get("batch_size", 64),
+            learning_rate_init=hp.get("learning_rate_init", 0.001),
+            max_iter=hp.get("max_iter", 200),
+            random_state=hp.get("random_state", 42),
         )
         model._single_class = meta.get("single_class")
         model_file = dir_path / "model.joblib"

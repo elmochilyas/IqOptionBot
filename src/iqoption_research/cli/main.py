@@ -21,6 +21,7 @@ from iqoption_research.cli.commands.execution_cmd import (
     practice_select_command,
     practice_test_command,
 )
+from iqoption_research.cli.commands.lab_cmd import lab_app
 from iqoption_research.cli.commands.ml_cmd import ml_app
 from iqoption_research.cli.commands.observation_cmd import app as observation_app
 from iqoption_research.cli.commands.paper_cmd import paper_app
@@ -87,6 +88,8 @@ app.add_typer(data_app, name="data")
 app.add_typer(execution_app, name="execution")
 app.add_typer(timing_app, name="timing")
 app.add_typer(workstation_app, name="workstation")
+app.add_typer(lab_app, name="laboratory")
+app.add_typer(lab_app, name="lab")
 
 
 @app.callback()

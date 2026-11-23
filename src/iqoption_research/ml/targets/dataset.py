@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -37,6 +38,34 @@ class DatasetAlignmentError(MLDatasetError):
 
 
 @dataclass(frozen=True, slots=True)
+class ContinuityReport:
+    """Detailed audit of temporal continuity, continuous segments, and sample exclusions."""
+
+    total_candles: int
+    retained_samples: int
+    continuous_segments_count: int
+    excluded_lookback_warmup: int
+    excluded_gap_horizon: int
+    excluded_weekend_closure_horizon: int
+    excluded_tail_horizon: int
+    gaps_detected: list[dict[str, Any]]
+    policy_description: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total_candles": self.total_candles,
+            "retained_samples": self.retained_samples,
+            "continuous_segments_count": self.continuous_segments_count,
+            "excluded_lookback_warmup": self.excluded_lookback_warmup,
+            "excluded_gap_horizon": self.excluded_gap_horizon,
+            "excluded_weekend_closure_horizon": self.excluded_weekend_closure_horizon,
+            "excluded_tail_horizon": self.excluded_tail_horizon,
+            "gaps_detected": self.gaps_detected,
+            "policy_description": self.policy_description,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class MLDataset:
     """Immutable point-in-time machine learning dataset container.
 
@@ -49,6 +78,7 @@ class MLDataset:
         target_spec: Specification of the forward target formulation.
         row_count: Number of aligned samples M.
         feature_dim: Number of feature columns D.
+        continuity_report: Optional temporal continuity and gap audit report.
     """
 
     symbol: str
@@ -59,6 +89,7 @@ class MLDataset:
     target_spec: TargetSpec
     row_count: int = -1
     feature_dim: int = -1
+    continuity_report: ContinuityReport | None = None
 
     def __post_init__(self) -> None:
         """Validate shapes, types, finite constraints, and enforce array immutability."""
@@ -330,6 +361,8 @@ def build_ml_dataset(
     *,
     targets: np.ndarray | None = None,
     valid_mask: np.ndarray | None = None,
+    enforce_temporal_continuity: bool = False,
+    timeframe_seconds: int | None = None,
 ) -> MLDataset:
     """Align historical candles, causal FeatureDataset, and target labels into an MLDataset.
 
@@ -339,6 +372,10 @@ def build_ml_dataset(
         target_spec: Target formulation specification.
         targets: Optional precomputed target array of shape (N,). If None, generated automatically.
         valid_mask: Optional precomputed mask of shape (N,). If None, generated automatically.
+        enforce_temporal_continuity: If True, enforces strict chronological continuity. Rejects
+                                     targets spanning missing minutes or market closures and
+                                     prevents feature lookbacks across gaps.
+        timeframe_seconds: Expected duration of one candle in seconds (defaults to 60 for M1).
 
     Returns:
         MLDataset with aligned X, y, timestamps, and metadata. Drops warmup bars (is_warmup=True)
@@ -380,11 +417,39 @@ def build_ml_dataset(
             )
         prev_from = c.from_ts
 
+    # Detect gaps and segments
+    gaps_detected: list[dict[str, Any]] = []
+    segments_count = 1
+    for i in range(1, n):
+        if candles[i].from_ts != candles[i - 1].to_ts:
+            segments_count += 1
+            gap_dur = candles[i].from_ts - candles[i - 1].to_ts
+            dt_start = datetime.fromtimestamp(candles[i - 1].to_ts, UTC)
+            dt_end = datetime.fromtimestamp(candles[i].from_ts, UTC)
+            from iqoption_research.market_data.sessions import (
+                EURUSD_FOREX_SCHEDULE,
+            )
+
+            classification = EURUSD_FOREX_SCHEDULE.classify_gap(dt_start, dt_end)
+            gaps_detected.append({
+                "from_ts": candles[i - 1].to_ts,
+                "to_ts": candles[i].from_ts,
+                "duration_seconds": gap_dur,
+                "gap_type": classification.value,
+                "from_index": i - 1,
+                "to_index": i,
+            })
+
     # 2. Compute targets if not provided
     if targets is None or valid_mask is None:
         from iqoption_research.ml.targets.generator import generate_targets
 
-        targets, valid_mask = generate_targets(candles, target_spec)
+        targets, valid_mask = generate_targets(
+            candles,
+            target_spec,
+            enforce_temporal_continuity=enforce_temporal_continuity,
+            timeframe_seconds=timeframe_seconds,
+        )
 
     if len(targets) != n:
         raise DatasetAlignmentError(
@@ -403,6 +468,11 @@ def build_ml_dataset(
     x_rows: list[list[float]] = []
     y_vals: list[int | float] = []
     ts_vals: list[int] = []
+
+    excluded_warmup = 0
+    excluded_tail = 0
+    excluded_gap_horizon = 0
+    excluded_weekend_horizon = 0
 
     # 4. Row-for-row alignment
     for row in feature_dataset.rows:
@@ -424,12 +494,25 @@ def build_ml_dataset(
                 f"Symbol mismatch at index {t}: row symbol={row.symbol} != candle symbol={c.symbol}"
             )
 
-        # Drop warmup rows (insufficient historical lookback)
+        # Drop warmup rows (insufficient historical lookback or discontinuous lookback)
         if row.is_warmup:
+            excluded_warmup += 1
             continue
 
-        # Drop invalid target horizon rows (tail H bars)
+        # Drop invalid target horizon rows (tail H bars or pre-gap bars)
         if not valid_mask[t]:
+            if t >= (n - target_spec.horizon_bars):
+                excluded_tail += 1
+            else:
+                is_weekend = any(
+                    t < g["to_index"] <= (t + target_spec.horizon_bars)
+                    and g["gap_type"] == "scheduled_weekend_closure"
+                    for g in gaps_detected
+                )
+                if is_weekend:
+                    excluded_weekend_horizon += 1
+                else:
+                    excluded_gap_horizon += 1
             continue
 
         # Extract feature vector in deterministic order
@@ -470,6 +553,26 @@ def build_ml_dataset(
 
     ts_arr = np.array(ts_vals, dtype=np.int64)
 
+    report = (
+        ContinuityReport(
+            total_candles=n,
+            retained_samples=len(x_rows),
+            continuous_segments_count=segments_count,
+            excluded_lookback_warmup=excluded_warmup,
+            excluded_gap_horizon=excluded_gap_horizon,
+            excluded_weekend_closure_horizon=excluded_weekend_horizon,
+            excluded_tail_horizon=excluded_tail,
+            gaps_detected=gaps_detected,
+            policy_description=(
+                "Temporal continuity enforced: rolling features require continuous lookback "
+                "without bridging gaps, and target labels require complete forward observation "
+                "windows without crossing intraday gaps or weekend closures."
+            ),
+        )
+        if enforce_temporal_continuity
+        else None
+    )
+
     return MLDataset(
         symbol=symbol,
         feature_names=feat_names,
@@ -477,6 +580,7 @@ def build_ml_dataset(
         y=y_arr,
         timestamps=ts_arr,
         target_spec=target_spec,
+        continuity_report=report,
     )
 
 

@@ -938,6 +938,21 @@ def test_cli_allows_shortened_session_with_explicit_flag(
         lambda _now, mins: real_fit(pre_close, mins),
     )
 
+    # Mock ExtendedCollection to use tmp_path so repo data/ is never touched
+    from iqoption_research.cli.commands import workstation_cmd
+
+    factory = ExtendedCollection
+
+    def make_session(_root, minutes, account_id, *, status_path=None):
+        return factory(
+            tmp_path,
+            minutes,
+            account_id,
+            status_path=status_path,
+        )
+
+    monkeypatch.setattr(workstation_cmd, "ExtendedCollection", make_session)
+
     # Mock ExtendedCollection.run to avoid real broker connection
     async def fake_run(_self, _cancel=None):
         _self.state["termination_reason"] = "SCHEDULED_MARKET_CLOSURE"

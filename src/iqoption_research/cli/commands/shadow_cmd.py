@@ -18,6 +18,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from iqoption_research.campaign.registry import CampaignRegistry
+from iqoption_research.cli.commands.campaign_cmd import campaign_app
 from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.research.dataset_manager import ResearchDatasetManager
 from iqoption_research.shadow.journal import (
@@ -31,6 +33,7 @@ from iqoption_research.shadow.observer import (
 )
 from iqoption_research.shadow.registry import ShadowModelRegistry
 from iqoption_research.shadow.replay import HistoricalReplayEngine, ReplayConfig
+from iqoption_research.shadow.replay_engine import EvidenceReplayEngine
 from iqoption_research.shadow.streaming import (
     LiveCollectorStream,
     MarketStreamProtocol,
@@ -43,6 +46,7 @@ shadow_app = typer.Typer(
     help="Offline Shadow Evaluation: candidate registration, replay, and evaluation.",
     no_args_is_help=True,
 )
+shadow_app.add_typer(campaign_app, name="campaign")
 
 
 @shadow_app.command("register-candidate", help="Register a verified candidate model as frozen.")
@@ -381,6 +385,16 @@ def observe_command(
         float,
         typer.Option("--payout", help="Simulated binary option payout rate."),
     ] = 0.85,
+    campaign_id: Annotated[
+        str | None,
+        typer.Option(
+            "--campaign-id", help="Preregistered research campaign ID to bind this session."
+        ),
+    ] = None,
+    slot_id: Annotated[
+        str | None,
+        typer.Option("--slot-id", help="Preregistered observation slot ID to fulfill."),
+    ] = None,
     cancel_file: Annotated[
         Path | None,
         typer.Option("--cancel-file", hidden=True),
@@ -477,6 +491,8 @@ def observe_command(
         allow_shortened_session=allow_shortened_session,
         status_path=status_file,
         cancel_file=cancel_file,
+        campaign_id=campaign_id,
+        slot_id=slot_id,
     )
 
     observer = ProspectiveShadowObserver(cfg, registry, root=repo_root)
@@ -500,6 +516,24 @@ def observe_command(
     except Exception as exc:
         console.print(f"[bold red]Observation session terminated with error:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
+
+    if campaign_id is not None and slot_id is not None:
+        try:
+            camp_reg = CampaignRegistry(repo_root)
+            camp_reg.link_session_to_slot(
+                campaign_id=campaign_id,
+                slot_id=slot_id,
+                session_id=result.session_id,
+                session_dir=observer.session_dir,
+            )
+            console.print(
+                f"[bold green]Session linked to Campaign '{campaign_id}' "
+                f"Slot '{slot_id}'.[/bold green]"
+            )
+        except Exception as camp_exc:  # noqa: BLE001
+            console.print(
+                f"[yellow]Warning: Could not link session to campaign slot:[/yellow] {camp_exc}"
+            )
 
     console.print(
         Panel(
@@ -610,12 +644,26 @@ def verify_session_command(
 
     result = verify_session_integrity(session_dir)
     if result["is_valid"]:
+        s3_extra = ""
+        if result.get("schema_version", 2) >= 3:
+            s3_v = result.get("is_schema3_verified")
+            s3_extra = (
+                f"Schema Version: {result['schema_version']} (Schema 3 Verified: {s3_v})\n"
+                f"Diagnostics SHA-256: {result['checksums'].get('diagnostics_sha256', 'N/A')}\n"
+                f"Inputs SHA-256: {result['checksums'].get('inputs_sha256', 'N/A')}\n"
+            )
+            if result.get("campaign_id"):
+                cid = result["campaign_id"]
+                slot_id = result.get("slot_id", "N/A")
+                s3_extra += f"Campaign ID: [cyan]{cid}[/cyan] (Slot: {slot_id})\n"
+
         console.print(
             Panel(
                 f"[bold green]Session integrity verified successfully.[/bold green]\n\n"
                 f"Session ID: [cyan]{result['session_id']}[/cyan]\n"
                 f"Evidence Class: [bold]{result.get('evidence_classification', 'N/A')}[/bold] "
                 f"(Prospective Verified: {result.get('is_prospective_verified')})\n"
+                f"{s3_extra}"
                 f"Manifest SHA-256: {result['checksums'].get('manifest_sha256')}\n"
                 f"Predictions SHA-256: {result['checksums'].get('predictions_sha256')}\n"
                 f"Outcomes SHA-256: {result['checksums'].get('outcomes_sha256')}\n"
@@ -634,6 +682,121 @@ def verify_session_command(
                 f"{err_lines}\n\n"
                 f"Session Directory: {session_dir}",
                 title="Integrity Verification Failure",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@shadow_app.command(
+    "verify-inputs",
+    help="Verify candle input integrity and canonical hashes of a shadow session.",
+)
+def verify_inputs_command(
+    session_target: Annotated[
+        str,
+        typer.Argument(help="Session ID or direct path to session directory."),
+    ],
+    root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
+) -> None:
+    repo_root = root or Path.cwd()
+    engine = EvidenceReplayEngine(session_target, root=repo_root)
+    res = engine.verify_inputs()
+    if res["is_valid"]:
+        console.print(
+            Panel(
+                f"[bold green]Inputs Journal Verified Successfully.[/bold green]\n\n"
+                f"Session ID: [cyan]{res['session_id']}[/cyan]\n"
+                f"Candle Count: {res['candle_count']:,}\n"
+                f"Inputs SHA-256: {res['inputs_sha256']}\n\n"
+                f"[dim]All individual candle SHA-256 digests and sequence numbers match.[/dim]",
+                title="Input Provenance Verified",
+                border_style="green",
+            )
+        )
+    else:
+        err_lines = "\n".join(f"- {e}" for e in res["errors"])
+        console.print(
+            Panel(
+                f"[bold red]Inputs verification FAILED:[/bold red]\n\n{err_lines}",
+                title="Input Verification Failure",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@shadow_app.command(
+    "replay-evidence",
+    help="Execute deterministic offline replay of recorded inputs to verify predictions.",
+)
+def replay_evidence_command(
+    session_target: Annotated[
+        str,
+        typer.Argument(help="Session ID or direct path to session directory."),
+    ],
+    tolerance: Annotated[
+        float,
+        typer.Option("--tolerance", "-t", help="Probability tolerance atol."),
+    ] = 1e-5,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output result as JSON."),
+    ] = False,
+    root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
+) -> None:
+    repo_root = root or Path.cwd()
+    engine = EvidenceReplayEngine(session_target, root=repo_root, tolerance_atol=tolerance)
+    rep = engine.replay()
+
+    if json_output:
+        console.print(json.dumps(rep.to_dict(), indent=2))
+        return
+
+    if rep.is_replay_identical:
+        pred_match_str = (
+            f"Predictions Matched: [bold green]{rep.predictions_matched}[/bold green] "
+            f"(Mismatched: {rep.predictions_mismatched})"
+        )
+        fp_match_str = (
+            f"Feature Fingerprints Matched: [bold green]{rep.features_matched}[/bold green] "
+            f"(Mismatched: {rep.features_mismatched})"
+        )
+        out_match_str = (
+            f"Outcomes Matched: [bold green]{rep.outcomes_matched}[/bold green] "
+            f"(Mismatched: {rep.outcomes_mismatched})"
+        )
+        comm_str = (
+            f"Commitments: {rep.commitments_timely_count} timely, "
+            f"{rep.commitments_late_quarantined_count} quarantined"
+        )
+        console.print(
+            Panel(
+                f"[bold green]Offline Evidence Replay: 100% Deterministic Match.[/bold green]\n\n"
+                f"Session ID: [cyan]{rep.session_id}[/cyan]\n"
+                f"Candles Replayed: {rep.total_candles_replayed:,}\n"
+                f"Predictions Evaluated: {rep.total_predictions_evaluated:,}\n"
+                f"{pred_match_str}\n"
+                f"Max Probability Delta: {rep.max_probability_delta:.8f} (atol={tolerance})\n"
+                f"{fp_match_str}\n"
+                f"{out_match_str}\n"
+                f"{comm_str}\n\n"
+                f"[dim]{rep.disclaimer}[/dim]",
+                title="Deterministic Evidence Replay Verified",
+                border_style="green",
+            )
+        )
+    else:
+        mismatch_str = "\n".join(str(m) for m in rep.mismatch_details[:10])
+        eval_ratio = f"{rep.predictions_matched} / {rep.total_predictions_evaluated}"
+        console.print(
+            Panel(
+                f"[bold red]Evidence Replay Detected Discrepancies:[/bold red]\n\n"
+                f"Predictions Matched: {eval_ratio}\n"
+                f"Predictions Mismatched: {rep.predictions_mismatched}\n"
+                f"Max Probability Delta: {rep.max_probability_delta:.8f}\n\n"
+                f"Sample Discrepancies:\n{mismatch_str}",
+                title="Evidence Replay Mismatch",
                 border_style="red",
             )
         )

@@ -25,10 +25,17 @@ from typing import Any, Final
 
 from iqoption_research.models.market import Candle
 from iqoption_research.shadow.baseline import resolve_majority_benchmark
+from iqoption_research.shadow.diagnostics_journal import (
+    DiagnosticEventType,
+    ShadowDiagnosticsJournal,
+)
 from iqoption_research.shadow.engine import EngineError, ShadowPredictionEngine
 from iqoption_research.shadow.evaluator import (
     EvaluationSummary,
     ShadowOutcomeEvaluator,
+)
+from iqoption_research.shadow.inputs_journal import (
+    ShadowInputsJournal,
 )
 from iqoption_research.shadow.journal import (
     DEFAULT_SHADOW_SESSIONS_DIR,
@@ -46,6 +53,9 @@ from iqoption_research.shadow.registry import (
 from iqoption_research.shadow.streaming import (
     MarketStreamProtocol,
     StreamingCandleEvent,
+)
+from iqoption_research.shadow.timing_diagnostics import (
+    ShadowTimingDiagnosticsCoordinator,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,6 +88,13 @@ class ObservationSessionConfig:
     status_path: Path | None = None
     cancel_file: Path | None = None
     notes: str = ""
+    schema_version: int = 3
+    campaign_id: str | None = None
+    slot_id: str | None = None
+    protocol_sha256: str | None = None
+    capture_diagnostics: bool = True
+    capture_inputs: bool = True
+    max_local_drift_step_ms: float = 50.0
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -187,6 +204,8 @@ class ObservationSessionResult:
     synthetic_observations_count: int = 0
     warmup_state: str = "WARMED_UP"
     consecutive_valid_candles: int = 0
+    diagnostics_sha256: str | None = None
+    inputs_sha256: str | None = None
     disclaimer: str = DISCLAIMER
 
     def to_dict(self) -> dict[str, Any]:
@@ -212,6 +231,8 @@ class ObservationSessionResult:
             "clock_disagreements_count": self.clock_disagreements_count,
             "genuine_observations_count": self.genuine_observations_count,
             "synthetic_observations_count": self.synthetic_observations_count,
+            "diagnostics_sha256": self.diagnostics_sha256,
+            "inputs_sha256": self.inputs_sha256,
             "summaries": {m: s.to_dict() for m, s in self.summaries.items()},
             "manifest_sha256": self.manifest_sha256,
             "disclaimer": self.disclaimer,
@@ -246,6 +267,8 @@ def verify_session_integrity(session_dir: Path) -> dict[str, Any]:
     predictions_file = session_dir / "predictions.jsonl"
     outcomes_file = session_dir / "outcomes.jsonl"
     commitments_file = session_dir / "commitments.jsonl"
+    diagnostics_file = session_dir / "diagnostics.jsonl"
+    inputs_file = session_dir / "inputs.jsonl"
 
     if not manifest_file.is_file():
         return {
@@ -320,6 +343,45 @@ def verify_session_integrity(session_dir: Path) -> dict[str, Any]:
                 f"commitments.jsonl checksum mismatch: expected={recorded_comm_sha}, "
                 f"actual={actual_comm_sha}"
             )
+
+    # Check diagnostics.jsonl digest
+    recorded_diag_sha = manifest.get("diagnostics_sha256")
+    if recorded_diag_sha is not None:
+        actual_diag_sha = _compute_file_sha256(diagnostics_file)
+        if recorded_diag_sha != actual_diag_sha:
+            errors.append(
+                f"diagnostics.jsonl checksum mismatch: expected={recorded_diag_sha}, "
+                f"actual={actual_diag_sha}"
+            )
+        try:
+            diag_j = ShadowDiagnosticsJournal(session_id, session_dir=session_dir)
+            expected_diag_count = manifest.get("diagnostics_count")
+            if expected_diag_count is not None and diag_j.count() != expected_diag_count:
+                errors.append(
+                    f"diagnostics count mismatch: expected={expected_diag_count}, "
+                    f"actual={diag_j.count()}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Diagnostics journal integrity check failed: {exc}")
+
+    # Check inputs.jsonl digest
+    recorded_inputs_sha = manifest.get("inputs_sha256")
+    if recorded_inputs_sha is not None:
+        actual_inputs_sha = _compute_file_sha256(inputs_file)
+        if recorded_inputs_sha != actual_inputs_sha:
+            errors.append(
+                f"inputs.jsonl checksum mismatch: expected={recorded_inputs_sha}, "
+                f"actual={actual_inputs_sha}"
+            )
+        try:
+            inp_j = ShadowInputsJournal(session_id, session_dir=session_dir)
+            expected_inp_count = manifest.get("inputs_count")
+            if expected_inp_count is not None and inp_j.count() != expected_inp_count:
+                errors.append(
+                    f"inputs count mismatch: expected={expected_inp_count}, actual={inp_j.count()}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Inputs journal integrity check failed: {exc}")
 
     # Session metadata inspection
     session_meta: dict[str, Any] = {}
@@ -451,11 +513,39 @@ def verify_session_integrity(session_dir: Path) -> dict[str, Any]:
         # but legacy evidence must never be silently labeled as prospective verified.
         is_prospective_verified = False
 
+    schema_version = int(
+        manifest.get("schema_version", 1 if "predictions_sha256" not in manifest else 2)
+    )
+    if schema_version >= 3 and is_prospective_session:
+        diag_count = manifest.get("diagnostics_count", 0)
+        inp_count = manifest.get("inputs_count", 0)
+        if not diagnostics_file.is_file() and (diag_count > 0 or len(predictions) > 0):
+            errors.append(
+                f"Missing diagnostics.jsonl journal in Schema {schema_version} session {session_id}"
+            )
+        if not inputs_file.is_file() and (inp_count > 0 or len(predictions) > 0):
+            errors.append(
+                f"Missing inputs.jsonl journal in Schema {schema_version} session {session_id}"
+            )
+
+    is_schema3_verified = (
+        len(errors) == 0
+        and schema_version >= 3
+        and is_prospective_verified
+        and recorded_diag_sha is not None
+        and recorded_inputs_sha is not None
+    )
+
     return {
         "is_valid": len(errors) == 0,
         "session_id": session_id,
         "errors": errors,
         "is_prospective_verified": is_prospective_verified,
+        "is_schema3_verified": is_schema3_verified,
+        "schema_version": schema_version,
+        "campaign_id": manifest.get("campaign_id"),
+        "slot_id": manifest.get("slot_id"),
+        "protocol_sha256": manifest.get("protocol_sha256"),
         "evidence_classification": (
             evidence_class
             if evidence_class
@@ -467,6 +557,8 @@ def verify_session_integrity(session_dir: Path) -> dict[str, Any]:
             "outcomes_sha256": recorded_outcomes_sha,
             "commitments_sha256": recorded_comm_sha,
             "session_json_sha256": recorded_session_sha,
+            "diagnostics_sha256": recorded_diag_sha,
+            "inputs_sha256": recorded_inputs_sha,
         },
     }
 
@@ -507,6 +599,23 @@ class ProspectiveShadowObserver:
             else ShadowPredictionJournal(
                 config.session_id, root=self.root, session_dir=self.session_dir
             )
+        )
+        self.diagnostics_journal: ShadowDiagnosticsJournal | None = (
+            ShadowDiagnosticsJournal(
+                config.session_id, root=self.root, session_dir=self.session_dir
+            )
+            if config.capture_diagnostics
+            else None
+        )
+        self.inputs_journal: ShadowInputsJournal | None = (
+            ShadowInputsJournal(config.session_id, root=self.root, session_dir=self.session_dir)
+            if config.capture_inputs
+            else None
+        )
+        self.timing_coordinator = ShadowTimingDiagnosticsCoordinator(
+            config.session_id,
+            diagnostics_journal=self.diagnostics_journal,
+            max_clock_drift_step_ms=config.max_local_drift_step_ms,
         )
 
         # Pre-flight candidate model verification
@@ -599,6 +708,32 @@ class ProspectiveShadowObserver:
         self._deadline_mono: float = 0.0
         self._is_cancelled = False
 
+        # Record initial history into inputs_journal if present
+        if initial_history and self.inputs_journal is not None:
+            for c in initial_history:
+                self.inputs_journal.record_candle(
+                    c,
+                    candle_source="WARMUP",
+                    symbol="EURUSD",
+                    timeframe=60,
+                )
+
+        if self.diagnostics_journal is not None:
+            self.diagnostics_journal.record_event(
+                event_type=DiagnosticEventType.SESSION_STARTED,
+                event_source="OBSERVER_ENGINE",
+                anchor_utc_ns=self.timing_coordinator.anchor_utc_ns,
+                disposition="STARTED",
+                details={
+                    "schema_version": config.schema_version,
+                    "model_ids": list(config.model_ids),
+                    "duration_minutes": config.duration_minutes,
+                    "is_synthetic": config.is_synthetic,
+                    "campaign_id": config.campaign_id,
+                    "slot_id": config.slot_id,
+                },
+            )
+
         if len(self._candle_buffer) >= config.min_warmup_bars:
             self._warmup_state = "WARMED_UP"
             self._fsm_state = "OBSERVING"
@@ -612,8 +747,11 @@ class ProspectiveShadowObserver:
         """Write initial tamper-evident session.json file."""
         now_utc = datetime.now(UTC).isoformat()
         session_meta = {
-            "schema_version": 2,
+            "schema_version": self.config.schema_version,
             "session_id": self.config.session_id,
+            "campaign_id": self.config.campaign_id,
+            "slot_id": self.config.slot_id,
+            "protocol_sha256": self.config.protocol_sha256,
             "evidence_class": (
                 "SYNTHETIC_STREAMING_TEST" if self.config.is_synthetic else "PROSPECTIVE_SHADOW"
             ),
@@ -687,6 +825,7 @@ class ProspectiveShadowObserver:
             return
 
         # Staleness check
+        self.timing_coordinator.check_local_clock_stability()
         age = event.received_at_utc_ts - c.to_ts
         if age > self.config.max_data_age_seconds:
             self._stale_candles_count += 1
@@ -700,6 +839,12 @@ class ProspectiveShadowObserver:
         # Deduplication check
         if c.to_ts in self._seen_boundaries:
             self._duplicate_boundaries_count += 1
+            if self.diagnostics_journal is not None:
+                self.diagnostics_journal.record_event(
+                    event_type=DiagnosticEventType.DUPLICATE_BOUNDARY,
+                    event_source="OBSERVER_ENGINE",
+                    details={"to_ts": c.to_ts},
+                )
             return
 
         # Continuity check against buffer tail
@@ -713,6 +858,16 @@ class ProspectiveShadowObserver:
                     prev_to,
                     c.from_ts,
                 )
+                if self.diagnostics_journal is not None:
+                    self.diagnostics_journal.record_event(
+                        event_type=DiagnosticEventType.CONTINUITY_GAP,
+                        event_source="OBSERVER_ENGINE",
+                        details={
+                            "prev_to": prev_to,
+                            "current_from": c.from_ts,
+                            "gap_seconds": c.from_ts - prev_to,
+                        },
+                    )
                 # Invalidate pending predictions affected by missing settlement evidence
                 self.evaluator.resolve_pending(self._candle_buffer, current_time_ts=c.from_ts)
 
@@ -736,6 +891,22 @@ class ProspectiveShadowObserver:
         self._consecutive_valid_candles += 1
         self._valid_candles_count += 1
         self._last_verified_candle_ts = c.to_ts
+
+        if self.inputs_journal is not None:
+            self.inputs_journal.record_candle(
+                c,
+                candle_source="STREAM_BAR",
+                symbol=c.symbol,
+                timeframe=c.size.value,
+                receipt_wall_epoch=event.received_at_utc_ts,
+                is_complete=c.is_complete,
+            )
+        if self.diagnostics_journal is not None:
+            self.diagnostics_journal.record_event(
+                event_type=DiagnosticEventType.CANDLE_RECORDED,
+                event_source="STREAM_CONNECTOR",
+                details={"from_ts": c.from_ts, "to_ts": c.to_ts, "close": c.close},
+            )
 
         # 2. Delayed outcome resolution
         self.evaluator.resolve_pending(self._candle_buffer, current_time_ts=c.to_ts)
@@ -769,6 +940,17 @@ class ProspectiveShadowObserver:
                 event.received_at_utc_ts,
                 cutoff_ts,
             )
+            if self.diagnostics_journal is not None:
+                self.diagnostics_journal.record_event(
+                    event_type=DiagnosticEventType.OPPORTUNITY_REJECTED_CLOCK,
+                    event_source="BROKER_CLOCK",
+                    disposition="REJECTED",
+                    details={
+                        "reason": "CLOCK_DISAGREEMENT",
+                        "receipt_ts": event.received_at_utc_ts,
+                        "cutoff_ts": cutoff_ts,
+                    },
+                )
             self._update_model_states()
             self.publish_progress()
             return
@@ -784,6 +966,17 @@ class ProspectiveShadowObserver:
                 event.clock_uncertainty_ms,
                 event.clock_status,
             )
+            if self.diagnostics_journal is not None:
+                self.diagnostics_journal.record_event(
+                    event_type=DiagnosticEventType.OPPORTUNITY_REJECTED_CLOCK,
+                    event_source="BROKER_CLOCK",
+                    disposition="REJECTED",
+                    details={
+                        "reason": "CLOCK_UNCERTAINTY",
+                        "clock_uncertainty_ms": event.clock_uncertainty_ms,
+                        "clock_status": event.clock_status,
+                    },
+                )
             self._update_model_states()
             self.publish_progress()
             return
@@ -799,6 +992,16 @@ class ProspectiveShadowObserver:
                 self.config.commitment_safety_margin_seconds,
                 event.clock_uncertainty_ms,
             )
+            if self.diagnostics_journal is not None:
+                self.diagnostics_journal.record_event(
+                    event_type=DiagnosticEventType.OPPORTUNITY_REJECTED_LATE,
+                    event_source="OBSERVER_ENGINE",
+                    disposition="REJECTED",
+                    details={
+                        "receipt_ts": event.received_at_utc_ts,
+                        "deadline_ts": deadline_ts,
+                    },
+                )
             self._update_model_states()
             self.publish_progress()
             return
@@ -898,6 +1101,21 @@ class ProspectiveShadowObserver:
                     self._last_commitment_latency_ms = max(
                         0.0, (post_fsync_ts - event.received_at_utc_ts) * 1000.0
                     )
+                    if self.diagnostics_journal is not None:
+                        self.diagnostics_journal.record_event(
+                            event_type=DiagnosticEventType.PREDICTION_COMMITTED,
+                            event_source="OBSERVER_ENGINE",
+                            prediction_id=pred_rec.prediction_id,
+                            disposition="COMMITTED",
+                            details={
+                                "model_id": model_id,
+                                "decision": pred_out.decision.value,
+                                "cutoff_ts": cutoff_ts,
+                                "post_fsync_ts": post_fsync_ts,
+                                "deadline_ts": deadline_ts,
+                                "latency_ms": self._last_commitment_latency_ms,
+                            },
+                        )
                 else:
                     # Late commitment quarantine
                     quarantine_out = OutcomeEventRecord(
@@ -920,6 +1138,18 @@ class ProspectiveShadowObserver:
                     self.journal.record_outcome(quarantine_out)
                     self._quarantined_late_count += 1
                     self._late_opportunities_rejected_count += 1
+                    if self.diagnostics_journal is not None:
+                        self.diagnostics_journal.record_event(
+                            event_type=DiagnosticEventType.COMMITMENT_DEADLINE_VIOLATION,
+                            event_source="OBSERVER_ENGINE",
+                            prediction_id=pred_rec.prediction_id,
+                            disposition="QUARANTINED",
+                            details={
+                                "model_id": model_id,
+                                "post_fsync_ts": post_fsync_ts,
+                                "deadline_ts": deadline_ts,
+                            },
+                        )
                     logger.warning(
                         "Prediction %s for model %s committed late "
                         "(post_fsync=%.3f >= deadline=%.3f). Quarantined.",
@@ -1085,12 +1315,26 @@ class ProspectiveShadowObserver:
 
         try:
             await stream.connect()
+            if self.diagnostics_journal is not None:
+                self.diagnostics_journal.record_event(
+                    event_type=DiagnosticEventType.STREAM_CONNECTED,
+                    event_source="STREAM_CONNECTOR",
+                    disposition="CONNECTED",
+                    details={"is_synthetic": self.config.is_synthetic},
+                )
             # Verified live warmup acquisition if buffer lacks minimum history
             if len(self._candle_buffer) < self.config.min_warmup_bars:
                 needed = self.config.min_warmup_bars - len(self._candle_buffer)
                 warmup_candles = await stream.get_warmup_candles(needed)
                 if warmup_candles:
                     for wc in warmup_candles:
+                        if self.inputs_journal is not None:
+                            self.inputs_journal.record_candle(
+                                wc,
+                                candle_source="WARMUP",
+                                symbol="EURUSD",
+                                timeframe=60,
+                            )
                         if self._candle_buffer:
                             if wc.from_ts != self._candle_buffer[-1].to_ts:
                                 self._candle_buffer = [wc]
@@ -1101,6 +1345,16 @@ class ProspectiveShadowObserver:
                         self._seen_boundaries.add(wc.to_ts)
                     self._consecutive_valid_candles = len(self._candle_buffer)
                     self._last_verified_candle_ts = self._candle_buffer[-1].to_ts
+                    if self.diagnostics_journal is not None:
+                        self.diagnostics_journal.record_event(
+                            event_type=DiagnosticEventType.WARMUP_ACQUIRED,
+                            event_source="OBSERVER_ENGINE",
+                            disposition="WARMED_UP",
+                            details={
+                                "warmup_count": len(warmup_candles),
+                                "total_buffer": len(self._candle_buffer),
+                            },
+                        )
 
             if len(self._candle_buffer) >= self.config.min_warmup_bars:
                 self._warmup_state = "WARMED_UP"
@@ -1108,6 +1362,16 @@ class ProspectiveShadowObserver:
             else:
                 self._warmup_state = "INSUFFICIENT_VERIFIED_HISTORY"
                 self._fsm_state = "WARMING_UP"
+                if self.diagnostics_journal is not None:
+                    self.diagnostics_journal.record_event(
+                        event_type=DiagnosticEventType.WARMUP_INSUFFICIENT,
+                        event_source="OBSERVER_ENGINE",
+                        disposition="INSUFFICIENT_WARMUP",
+                        details={
+                            "current_buffer": len(self._candle_buffer),
+                            "required": self.config.min_warmup_bars,
+                        },
+                    )
 
             self.publish_progress()
 
@@ -1140,6 +1404,13 @@ class ProspectiveShadowObserver:
             original_exc = exc
             termination_reason = f"FAILED_{type(exc).__name__}"
             self._fsm_state = "FAILED"
+            if self.diagnostics_journal is not None:
+                self.diagnostics_journal.record_event(
+                    event_type=DiagnosticEventType.SESSION_FAILED,
+                    event_source="OBSERVER_ENGINE",
+                    disposition="FAILED",
+                    details={"error_type": type(exc).__name__, "error_msg": str(exc)},
+                )
             logger.error(
                 "Observation session encountered failure: %s",
                 exc,
@@ -1148,6 +1419,13 @@ class ProspectiveShadowObserver:
         finally:
             try:
                 await stream.disconnect()
+                if self.diagnostics_journal is not None:
+                    self.diagnostics_journal.record_event(
+                        event_type=DiagnosticEventType.STREAM_DISCONNECTED,
+                        event_source="STREAM_CONNECTOR",
+                        disposition="DISCONNECTED",
+                        details={"termination_reason": termination_reason},
+                    )
             except Exception as teardown_exc:
                 logger.error(
                     "Error during stream disconnect teardown: %s",
@@ -1168,6 +1446,19 @@ class ProspectiveShadowObserver:
         ended_wall = time.time()
         ended_iso = datetime.fromtimestamp(ended_wall, UTC).isoformat()
         actual_duration = max(0.0, ended_wall - self._started_at_wall)
+
+        # Record session finalized diagnostic event
+        if self.diagnostics_journal is not None:
+            self.diagnostics_journal.record_event(
+                event_type=DiagnosticEventType.SESSION_FINALIZED,
+                event_source="OBSERVER_ENGINE",
+                disposition="FINALIZED",
+                details={
+                    "termination_reason": termination_reason,
+                    "is_interrupted": session_failed,
+                    "actual_duration_seconds": round(actual_duration, 2),
+                },
+            )
 
         # Build final evaluation summaries per model
         summaries: dict[str, EvaluationSummary] = {}
@@ -1191,8 +1482,11 @@ class ProspectiveShadowObserver:
 
         # Generate cryptographic manifest sealing session.json, predictions, and outcomes
         manifest_data = {
-            "schema_version": 2,
+            "schema_version": self.config.schema_version,
             "session_id": self.config.session_id,
+            "campaign_id": self.config.campaign_id,
+            "slot_id": self.config.slot_id,
+            "protocol_sha256": self.config.protocol_sha256,
             "started_at_utc": started_iso,
             "ended_at_utc": ended_iso,
             "actual_duration_seconds": round(actual_duration, 2),
@@ -1220,6 +1514,23 @@ class ProspectiveShadowObserver:
             "outcomes_sha256": _compute_file_sha256(self.journal.outcomes_file),
             "commitments_sha256": _compute_file_sha256(self.journal.commitments_file),
             "session_json_sha256": _compute_file_sha256(meta_file),
+            "diagnostics_sha256": (
+                self.diagnostics_journal.compute_sha256()
+                if self.diagnostics_journal is not None
+                else None
+            ),
+            "diagnostics_count": (
+                self.diagnostics_journal.count() if self.diagnostics_journal is not None else 0
+            ),
+            "diagnostics_latency_stats": (
+                self.diagnostics_journal.get_latency_stats()
+                if self.diagnostics_journal is not None
+                else {}
+            ),
+            "inputs_sha256": (
+                self.inputs_journal.compute_sha256() if self.inputs_journal is not None else None
+            ),
+            "inputs_count": (self.inputs_journal.count() if self.inputs_journal is not None else 0),
             "models_sha256": {m: r.bundle_sha256 for m, r in self.records.items()},
             "summaries": {m: s.to_dict() for m, s in summaries.items()},
             "disclaimer": DISCLAIMER,
@@ -1262,5 +1573,15 @@ class ProspectiveShadowObserver:
             synthetic_observations_count=self._synthetic_observations_count,
             warmup_state=self._warmup_state,
             consecutive_valid_candles=self._consecutive_valid_candles,
+            diagnostics_sha256=(
+                str(manifest_data["diagnostics_sha256"])
+                if manifest_data.get("diagnostics_sha256") is not None
+                else None
+            ),
+            inputs_sha256=(
+                str(manifest_data["inputs_sha256"])
+                if manifest_data.get("inputs_sha256") is not None
+                else None
+            ),
             disclaimer=DISCLAIMER,
         )

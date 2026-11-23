@@ -153,6 +153,8 @@ class SessionProcess:
         *,
         synthetic: bool = False,
         allow_shortened: bool = False,
+        campaign_id: str | None = None,
+        slot_id: str | None = None,
     ) -> None:
         self.require_idle()
         validate_duration(minutes)
@@ -201,6 +203,11 @@ class SessionProcess:
         ]
         for mid in model_ids:
             args.extend(["--model-id", mid])
+
+        if campaign_id:
+            args.extend(["--campaign-id", campaign_id])
+        if slot_id:
+            args.extend(["--slot-id", slot_id])
 
         if synthetic:
             args.append("--synthetic")

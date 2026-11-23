@@ -654,8 +654,11 @@ def test_historical_replay_cancellation(
 
 @pytest.fixture(scope="module")
 def tk_root():
-    root = tk.Tk()
-    root.withdraw()
+    try:
+        root = tk.Tk()
+        root.withdraw()
+    except (tk.TclError, Exception) as exc:  # noqa: BLE001
+        pytest.skip(f"Tkinter not available in environment: {exc}")
     yield root
     with contextlib.suppress(Exception):
         root.destroy()

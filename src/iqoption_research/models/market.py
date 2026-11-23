@@ -65,7 +65,7 @@ class Candle:
     high: float
     low: float
     close: float
-    volume: int
+    volume: int | float
 
     # Bid/Ask (IQ Option specific)
     bid: float

@@ -1183,8 +1183,11 @@ def test_scientific_verdict_matches_manifest_tracker_and_desktop(tmp_path: Path)
     assert matching_rec.verdict == result.verdict
 
     # 3. Desktop Laboratory panel presentation
-    root = tk.Tk()
-    root.withdraw()
+    try:
+        root = tk.Tk()
+        root.withdraw()
+    except (tk.TclError, RuntimeError, OSError, Exception) as exc:  # noqa: BLE001
+        pytest.skip(f"Tkinter/Tcl not available in test environment: {exc}")
     try:
         dashboard = MagicMock()
         dashboard.root = tmp_path

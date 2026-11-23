@@ -9,6 +9,7 @@ from concurrent.futures import Future
 from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Any
 
+from iqoption_research.campaign.registry import CampaignRegistry
 from iqoption_research.research.dataset_manager import ResearchDatasetManager
 from iqoption_research.shadow.journal import (
     DEFAULT_SHADOW_SESSIONS_DIR,
@@ -23,6 +24,7 @@ from iqoption_research.shadow.replay import (
     ReplayConfig,
     ReplayResult,
 )
+from iqoption_research.shadow.replay_engine import EvidenceReplayEngine
 
 if TYPE_CHECKING:
     from iqoption_research.desktop.app import Dashboard
@@ -37,6 +39,8 @@ class ShadowEvaluationPanel:
         self.registry = ShadowModelRegistry(self.root)
         self.dataset_manager = ResearchDatasetManager(self.root)
         self.replay_engine = HistoricalReplayEngine(self.registry, root=self.root)
+        self.campaign_registry = CampaignRegistry(self.root)
+        self.evidence_replay_engine = EvidenceReplayEngine(self.root)
 
         self.candidates: list[FrozenRegistrationRecord] = []
         self.active_future: Future[Any] | None = None
@@ -263,6 +267,18 @@ class ShadowEvaluationPanel:
             if cand_ids and not self.combo_obs_model.get():
                 self.combo_obs_model.current(0)
 
+        if hasattr(self, "combo_obs_campaign"):
+            with contextlib.suppress(Exception):
+                camps = self.campaign_registry.list_campaigns()
+                camp_ids = ["(None - Ad-hoc)", *[c.campaign_id for c in camps]]
+                curr_camp = self.combo_obs_campaign.get()
+                self.combo_obs_campaign["values"] = camp_ids
+                if curr_camp in camp_ids:
+                    self.combo_obs_campaign.set(curr_camp)
+                else:
+                    self.combo_obs_campaign.current(0)
+                self._on_campaign_selected()
+
         if hasattr(self, "combo_obs_account"):
             with contextlib.suppress(Exception):
                 from iqoption_research.auth.vault import WindowsCredentialVault
@@ -458,6 +474,21 @@ class ShadowEvaluationPanel:
         self.combo_obs_model = ttk.Combobox(r1, state="readonly", width=45)
         self.combo_obs_model.pack(side="left", padx=4)
 
+        # Row 1b: Campaign & Slot Selection
+        r1b = ttk.Frame(controls_frame)
+        r1b.pack(fill="x", pady=2)
+        ttk.Label(r1b, text="Research Campaign:", width=24).pack(side="left")
+        self.combo_obs_campaign = ttk.Combobox(r1b, state="readonly", width=22)
+        self.combo_obs_campaign.pack(side="left", padx=4)
+        self.combo_obs_campaign.bind("<<ComboboxSelected>>", self._on_campaign_selected)
+        ttk.Label(r1b, text="Slot:", width=6).pack(side="left", padx=(8, 2))
+        self.combo_obs_slot = ttk.Combobox(r1b, state="readonly", width=16)
+        self.combo_obs_slot.pack(side="left", padx=4)
+        self.lbl_campaign_blinding = ttk.Label(
+            r1b, text="Ad-hoc (Unblinded)", font=("Segoe UI", 9, "italic"), foreground="#476582"
+        )
+        self.lbl_campaign_blinding.pack(side="left", padx=(10, 4))
+
         # Row 2: Mode Selection (Synthetic Simulator vs Live Supervised)
         r2 = ttk.Frame(controls_frame)
         r2.pack(fill="x", pady=2)
@@ -504,6 +535,16 @@ class ShadowEvaluationPanel:
             r4, text="Stop / Cancel", command=self.cancel_observation, state="disabled"
         )
         self.btn_cancel_obs.pack(side="left", padx=4)
+
+        self.btn_replay_evidence = ttk.Button(
+            r4, text="Replay Session Evidence", command=self._prompt_replay_evidence
+        )
+        self.btn_replay_evidence.pack(side="left", padx=(12, 4))
+
+        self.btn_verify_inputs = ttk.Button(
+            r4, text="Verify Session Inputs", command=self._prompt_verify_inputs
+        )
+        self.btn_verify_inputs.pack(side="left", padx=4)
 
         # Session Health & Continuity Status
         health_frame = ttk.LabelFrame(
@@ -597,6 +638,107 @@ class ShadowEvaluationPanel:
                 return acc_id
         return val
 
+    def _on_campaign_selected(self, _event: Any = None) -> None:
+        if not hasattr(self, "combo_obs_campaign"):
+            return
+        camp_id = self.combo_obs_campaign.get()
+        if not camp_id or camp_id == "(None - Ad-hoc)":
+            if hasattr(self, "combo_obs_slot"):
+                self.combo_obs_slot["values"] = []
+                self.combo_obs_slot.set("")
+            if hasattr(self, "lbl_campaign_blinding"):
+                self.lbl_campaign_blinding.config(text="Ad-hoc (Unblinded)", foreground="#476582")
+            return
+
+        camp = self.campaign_registry.get_campaign(camp_id)
+        if camp is None:
+            return
+
+        cand_id = camp.protocol.candidate_model_id
+        if cand_id and cand_id in self.combo_obs_model["values"]:
+            self.combo_obs_model.set(cand_id)
+
+        slots = self.campaign_registry.list_slots(camp_id)
+        slot_values = [s.slot_id for s in slots if s.slot_state in ("PENDING", "OPEN")]
+        if not slot_values:
+            slot_values = [s.slot_id for s in slots]
+        self.combo_obs_slot["values"] = slot_values
+        if slot_values:
+            self.combo_obs_slot.current(0)
+
+        completed = sum(1 for s in slots if s.slot_state.startswith("COMPLETED"))
+        total = len(slots)
+        blind_state = "Blinded" if camp.state == "ACTIVE" else "Unblinded"
+        self.lbl_campaign_blinding.config(
+            text=f"Campaign: {camp.state} ({blind_state}) · {completed}/{total} slots",
+            foreground="#9c3414" if camp.state == "ACTIVE" else "#1b4d3e",
+        )
+
+    def _prompt_replay_evidence(self) -> None:
+        """Run deterministic offline evidence replay on the selected session."""
+        session_id = self.combo_sessions.get().strip() if hasattr(self, "combo_sessions") else ""
+        if not session_id:
+            messagebox.showinfo(
+                "Session Required",
+                "Please select a session in the Prediction Journal tab first.",
+            )
+            return
+
+        try:
+            report = self.evidence_replay_engine.replay_session(session_id)
+            lines = [
+                f"=== EVIDENCE REPLAY REPORT: {session_id} ===",
+                f"Status: {report.status}",
+                f"Model: {report.model_id}",
+                f"Candidate Digest Match: {report.candidate_digest_matches}",
+                f"Input Candles Verified: {report.inputs_count}",
+                f"Predictions Replayed: {report.predictions_replayed}",
+                (
+                    f"Probabilities Matched: {report.probabilities_matched} "
+                    f"(Max diff: {report.max_probability_diff:.2e})"
+                ),
+                f"Feature Fingerprints Matched: {report.features_matched}",
+                f"Outcome Resolutions Matched: {report.outcomes_matched}",
+                f"Is Reproducible: {report.is_reproducible}",
+            ]
+            if report.errors:
+                lines.append("\nErrors:")
+                lines.extend(f"  - {err}" for err in report.errors)
+            self._write_text(self.obs_log_text, "\n".join(lines))
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Replay Error", f"Failed to replay evidence: {exc}")
+
+    def _prompt_verify_inputs(self) -> None:
+        """Verify inputs.jsonl digest and record integrity for the selected session."""
+        session_id = self.combo_sessions.get().strip() if hasattr(self, "combo_sessions") else ""
+        if not session_id:
+            messagebox.showinfo(
+                "Session Required",
+                "Please select a session in the Prediction Journal tab first.",
+            )
+            return
+
+        session_dir = self.root / DEFAULT_SHADOW_SESSIONS_DIR / session_id
+        try:
+            from iqoption_research.shadow.inputs_journal import verify_session_inputs
+
+            verification = verify_session_inputs(session_dir)
+            lines = [
+                f"=== INPUTS INTEGRITY VERIFICATION: {session_id} ===",
+                f"Valid: {verification.get('is_valid')}",
+                f"Candles Count: {verification.get('candles_count')}",
+                f"Manifest SHA-256: {verification.get('manifest_sha256')}",
+                f"Computed SHA-256: {verification.get('computed_sha256')}",
+                f"First Candle: {verification.get('first_candle_utc')}",
+                f"Last Candle: {verification.get('last_candle_utc')}",
+            ]
+            if verification.get("errors"):
+                lines.append("\nErrors:")
+                lines.extend(f"  - {err}" for err in verification["errors"])
+            self._write_text(self.obs_log_text, "\n".join(lines))
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Verification Error", f"Failed to verify inputs: {exc}")
+
     def start_observation(self) -> None:
         model_id = self.combo_obs_model.get()
         if not model_id:
@@ -605,6 +747,15 @@ class ShadowEvaluationPanel:
 
         minutes = int(self.combo_obs_duration.get() or "15")
         mode = self.var_obs_mode.get()
+
+        camp_id = (
+            self.combo_obs_campaign.get().strip() if hasattr(self, "combo_obs_campaign") else ""
+        )
+        if camp_id == "(None - Ad-hoc)":
+            camp_id = ""
+        slot_id = self.combo_obs_slot.get().strip() if hasattr(self, "combo_obs_slot") else ""
+        if not camp_id:
+            slot_id = ""
 
         if mode == "live":
             acc_id = self._resolve_selected_account_id()
@@ -616,37 +767,50 @@ class ShadowEvaluationPanel:
                 return
 
             display_acc = self.combo_obs_account.get() or acc_id
+            camp_note = f"\nCampaign: {camp_id} (Slot: {slot_id})" if camp_id else ""
             if not messagebox.askyesno(
                 "Authorize Supervised Live Observation?",
                 f"You are about to launch a supervised read-only observation session for "
                 f"{minutes} minutes.\n\n"
                 f"Model: {model_id}\n"
-                f"Account: {display_acc}\n\n"
+                f"Account: {display_acc}{camp_note}\n\n"
                 "Orders remain strictly disabled (Authority NONE).\n"
                 "Do you authorize this session?",
                 parent=self.dashboard.window,
             ):
                 return
 
+            kwargs: dict[str, Any] = {
+                "model_ids": [model_id],
+                "minutes": minutes,
+                "account_id": acc_id,
+                "synthetic": False,
+            }
+            if camp_id:
+                kwargs["campaign_id"] = camp_id
+            if slot_id:
+                kwargs["slot_id"] = slot_id
+
             try:
-                self.dashboard.process.start_prospective_shadow(
-                    model_ids=[model_id],
-                    minutes=minutes,
-                    account_id=acc_id,
-                    synthetic=False,
-                )
+                self.dashboard.process.start_prospective_shadow(**kwargs)
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror(
                     "Observation Error", f"Failed to start live observation: {exc}"
                 )
                 return
         else:
+            synth_kwargs: dict[str, Any] = {
+                "model_ids": [model_id],
+                "minutes": minutes,
+                "synthetic": True,
+            }
+            if camp_id:
+                synth_kwargs["campaign_id"] = camp_id
+            if slot_id:
+                synth_kwargs["slot_id"] = slot_id
+
             try:
-                self.dashboard.process.start_prospective_shadow(
-                    model_ids=[model_id],
-                    minutes=minutes,
-                    synthetic=True,
-                )
+                self.dashboard.process.start_prospective_shadow(**synth_kwargs)
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror("Observation Error", f"Failed to start simulator: {exc}")
                 return

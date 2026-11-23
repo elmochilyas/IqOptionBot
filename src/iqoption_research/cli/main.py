@@ -12,6 +12,7 @@ import typer
 from iqoption_research.cli.commands.aligned_cmd import app as aligned_app
 from iqoption_research.cli.commands.auth_cmd import auth_app
 from iqoption_research.cli.commands.bot_cmd import bot_app
+from iqoption_research.cli.commands.campaign_cmd import campaign_app
 from iqoption_research.cli.commands.data_cmd import app as data_app
 from iqoption_research.cli.commands.diagnostics_cmd import diagnostics_app
 from iqoption_research.cli.commands.execution_cmd import (
@@ -93,6 +94,7 @@ app.add_typer(workstation_app, name="workstation")
 app.add_typer(lab_app, name="laboratory")
 app.add_typer(lab_app, name="lab")
 app.add_typer(shadow_app, name="shadow")
+app.add_typer(campaign_app, name="campaign")
 app.add_typer(diagnostics_app, name="diagnostics")
 
 

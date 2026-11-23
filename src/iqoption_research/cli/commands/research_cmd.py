@@ -1134,7 +1134,7 @@ def candidate_evaluate_command(
     ] = "candidate_reversal_phase42_ref",
 ) -> None:
     repo_root = root or Path.cwd()
-    eval_res = evaluate_frozen_candidate(model_id, repo_root)
+    eval_res = evaluate_frozen_candidate(model_id=model_id, repo_root=repo_root)
 
     status_str = (
         "[bold green]VERIFIED (MATCH)[/bold green]"

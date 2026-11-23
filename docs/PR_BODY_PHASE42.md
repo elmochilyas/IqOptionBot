@@ -17,15 +17,17 @@ Phase 42 implements a comprehensive, rigorous quantitative machine-learning rese
   - Zero iterative tuning or hyperparameter optimization on protected independent holdout data.
 
 ### Empirical Reality Check
-At typical binary option broker payouts ($P = 0.85$), the mathematical break-even win rate is:
+Under the hypothetical modeling assumption of typical retail binary option payouts ($P = 0.85$), the mathematical break-even win rate is:
 $$W_{\text{be}} = \frac{1}{1 + P} = \frac{1}{1.85} \approx 54.054\%$$
+This payout condition reflects assumed commercial broker terms rather than an inherent market law.
 
 Across 45 pre-registered trials spanning 9 distinct model families evaluated on 66,464 authentic EURUSD M1 candles:
-1. **Martingale Difference Noise**: EURUSD M1 price innovations exhibit near-zero lag-1 return autocorrelation ($\rho_1 = +0.0122$), behaving statistically as an unforecastable noise process.
-2. **Universal Break-Even Deficit**: Full-coverage models achieved decisive accuracies between $50.15\%$ and $50.83\%$, all substantially below the $54.054\%$ break-even hurdle with strictly negative hypothetical expectancy.
-3. **Threshold Filtering Failure**: Attempting to isolate edge via confidence thresholds ($T = 0.60$) collapsed coverage to $1.34\%$ (469 samples), where Day-Block Bootstrap lower confidence bound ($50.32\%$) remains far below break-even.
+1. **Autocorrelation Consistent with High Efficiency**: EURUSD M1 return autocorrelation is near zero ($\rho_1 = +0.0122$), providing empirical evidence consistent with high informational efficiency and low linear predictability on this dataset.
+2. **Universal Break-Even Deficit across Full 35,006 Opportunities**: All full-coverage models evaluated on the entire $N=35,006$ decisive opportunity set achieved accuracies between $50.15\%$ and $50.83\%$, all failing the $54.054\%$ break-even hurdle with strictly negative hypothetical expectancy.
+3. **Trial 19 Coverage Collapse**: Trial 19 achieved $55.65\%$ point accuracy (Wins: 261, Losses: 208) on only $469$ selected trades out of $35,006$ total opportunities (**$1.34\%$ coverage**). Because its Day-Block Bootstrap 95% CI lower bound ($50.59\%$) fails the $54.054\%$ break-even hurdle, this high-abstention subset variance cannot support a general predictive claim.
 4. **Probability Calibration Flattening**: Rigorous out-of-fold Isotonic and Platt calibration compressed predicted probabilities to the unconditional prior ($\approx 0.50$), proving apparent high-confidence predictions were uncalibrated score artifacts.
-5. **Definitive Scientific Verdict**: No candidate model satisfied the scientific deployment criteria. Trading-safety disposition remains `NO_DEMONSTRATED_EDGE` with execution authority `NONE`.
+5. **Historical Reused Evaluation Partition**: The November 12–20 partition was classified as `HISTORICAL_REUSED` (50.38% accuracy). While the negative result is fully preserved, independent verification strictly requires new prospective collection.
+6. **Definitive Scientific Verdict**: Directional edge was not detected using these causal representations on this dataset. Trading-safety disposition strictly remains `NO_DEMONSTRATED_EDGE` with execution authority `NONE`.
 
 ---
 

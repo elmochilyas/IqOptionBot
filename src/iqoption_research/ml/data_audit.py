@@ -31,6 +31,8 @@ from iqoption_research.research.dataset_manager import (
 logger = logging.getLogger(__name__)
 
 # Minimum sample requirements for Phase 42 scientific rigor
+MIN_BASELINE_TRAIN_SAMPLES: Final[int] = 500
+MIN_LINEAR_TRAIN_SAMPLES: Final[int] = 1000
 MIN_EXPLORATORY_TRAIN_SAMPLES: Final[int] = 5000
 MIN_WALK_FORWARD_FOLDS: Final[int] = 3
 MIN_SAMPLES_PER_FOLD: Final[int] = 1000
@@ -47,6 +49,8 @@ MIN_SAMPLES_PER_FEATURE_NN: Final[int] = 500
 class DataSufficiencyPolicy:
     """Scientific data sufficiency thresholds for experimental validity."""
 
+    min_baseline_train_samples: int = MIN_BASELINE_TRAIN_SAMPLES
+    min_linear_train_samples: int = MIN_LINEAR_TRAIN_SAMPLES
     min_train_samples: int = MIN_EXPLORATORY_TRAIN_SAMPLES
     min_walk_forward_folds: int = MIN_WALK_FORWARD_FOLDS
     min_samples_per_fold: int = MIN_SAMPLES_PER_FOLD
@@ -63,6 +67,34 @@ class DataSufficiencyPolicy:
         feature_count: int,
     ) -> tuple[bool, str]:
         """Check whether sample size is sufficient for a given model family."""
+        family_norm = family.lower()
+
+        # Baselines have lower minimum threshold (500 samples)
+        if any(b in family_norm for b in ("majority", "momentum", "reversal", "seeded")):
+            if available_train_samples < self.min_baseline_train_samples:
+                return (
+                    False,
+                    f"Available samples ({available_train_samples:,}) below baseline "
+                    f"minimum ({self.min_baseline_train_samples:,})",
+                )
+            return True, "SUFFICIENT"
+
+        # Linear / Regularized models require at least 1,000 samples
+        if "logistic" in family_norm or "linear" in family_norm:
+            if available_train_samples < self.min_linear_train_samples:
+                return (
+                    False,
+                    f"Available samples ({available_train_samples:,}) below linear "
+                    f"minimum ({self.min_linear_train_samples:,})",
+                )
+            required = feature_count * self.min_samples_per_feature_linear
+            if available_train_samples < required:
+                return (
+                    False,
+                    f"Samples ({available_train_samples:,}) < linear requirement ({required:,})",
+                )
+            return True, "SUFFICIENT"
+
         if available_train_samples < self.min_train_samples:
             return (
                 False,

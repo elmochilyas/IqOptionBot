@@ -17,10 +17,11 @@ Phase 42 implements a comprehensive, rigorous quantitative machine-learning rese
   - Zero iterative tuning or hyperparameter optimization on protected independent holdout data.
 
 ### Empirical Reality Check
-At typical binary option broker payouts ($P = 0.85$), the mathematical break-even win rate is:
+Under the hypothetical modeling assumption of typical retail binary option broker payouts ($P = 0.85$), the mathematical break-even win rate is:
 $$W_{\text{be}} = \frac{1}{1 + P} = \frac{1}{1.85} \approx 54.054\%$$
+This payout level reflects assumed commercial broker conditions rather than an inherent market law.
 
-Extensive walk-forward cross-validation across 45 pre-registered trials spanning 9 distinct model families revealed that EURUSD returns at the 1-minute granularity behave as an unforecastable martingale difference sequence with near-zero lag-1 autocorrelation ($\rho_1 = +0.0122$). While certain uncalibrated models appeared to produce high confidence predictions, rigorous out-of-fold probability calibration compressed all posterior probabilities to the unconditional prior ($\approx 0.50$). Threshold filtering collapsed coverage to under $2\%$ without producing statistically significant out-of-sample edge. Consequently, no candidate model satisfied the scientific deployment criteria.
+Extensive walk-forward cross-validation across 45 pre-registered trials spanning 9 distinct model families revealed that EURUSD returns at the 1-minute granularity exhibit near-zero lag-1 autocorrelation ($\rho_1 = +0.0122$), empirical evidence consistent with high informational efficiency and low linear predictability on this historical period. While certain uncalibrated models appeared to produce higher confidence predictions, rigorous out-of-fold probability calibration compressed posterior probabilities toward the empirical base rate ($\approx 0.50$). Selective threshold filtering collapsed coverage to $1.34\%$ without demonstrating a statistically significant out-of-sample edge. Consequently, no directional predictive edge was detected using these causal representations on this dataset, and no candidate model satisfied deployment criteria.
 
 ---
 
@@ -229,7 +230,7 @@ xychart-beta
 A critical discovery in Phase 42 is the behavior of probability calibration on high-frequency financial time series.
 
 ### Uncalibrated Score Artifacts vs Calibrated Probabilities
-In uncalibrated models (e.g., Logistic Regression or HistGradientBoosting), the model outputs raw sigmoid or margin scores that frequently range between $0.30$ and $0.70$. When filtering for high-confidence predictions (e.g., $P \ge 0.60$), the point accuracy in small subsets appeared to reach $55.65\%$ (as in `trial_042`).
+In uncalibrated models (e.g., Logistic Regression or HistGradientBoosting), the model outputs raw sigmoid or margin scores that frequently range between $0.30$ and $0.70$. When filtering for high-confidence predictions (e.g., $P \ge 0.60$), the point accuracy in small subsets appeared to reach $55.65\%$ (as in `trial_019`).
 
 However, when these models underwent out-of-fold probability calibration using Isotonic Regression or Platt Sigmoid scaling fitted strictly on prior folds:
 1. **Reliability Diagram Convergence**: The calibrated mapping flattened drastically.
@@ -246,28 +247,28 @@ The Phase 42 Model Failure Intelligence analysis (`reports/model_failure_intelli
 ```mermaid
 graph TD
     M1["EURUSD M1 Price Action"]
-    M1 --> F1["Finding 1: Martingale Difference Noise (rho_1 = +0.0122)"]
-    M1 --> F2["Finding 2: Asymmetric Break-Even Hurdle (54.054%)"]
-    M1 --> F3["Finding 3: Abstention / Coverage Collapse (< 2% at T=0.60)"]
-    M1 --> F4["Finding 4: Feature Collinearity & Delta Saturation (< 0.50%)"]
+    M1 --> F1["Finding 1: Empirical Return Autocorrelation Near Zero (rho_1 = +0.0122)"]
+    M1 --> F2["Finding 2: Assumed Commercial Payout Hurdle (54.054%)"]
+    M1 --> F3["Finding 3: Trial 19 Coverage Collapse (1.34% at T=0.60)"]
+    M1 --> F4["Finding 4: Empirical Feature Group Collinearity (< 0.50% Delta)"]
     M1 --> F5["Finding 5: Probability Calibration Flattening (~0.50 Prior)"]
 ```
 
-### Finding 1: Efficient Market Microstructure Noise (Microstructure)
+### Finding 1: Empirical Return Autocorrelation Consistent with High Informational Efficiency (Microstructure)
 - **Empirical Metric**: $\rho_1 = +0.0122$ (Lag-1 autocorrelation).
-- **Analysis**: Linear return autocorrelation is statistically indistinguishable from zero ($p > 0.05$). Minute-level price innovations are dominated by market maker bid/ask inventory adjustments and order-flow noise rather than persistent directional momentum.
+- **Analysis**: At 1-minute intervals, EURUSD price return autocorrelation is near zero (+0.0122). This constitutes empirical evidence consistent with high informational efficiency and low linear predictability on this dataset. It does not mathematically prove an unforecastable martingale difference process or inherent market unforecastability, but confirms that linear and momentum predictability is absent using these causal representations on this historical period.
 
-### Finding 2: Insurmountable Binary Payout Hurdle (Economics)
-- **Empirical Metric**: Break-even gap of $+3.22\%$ to $+3.90\%$ across all full-coverage models.
-- **Analysis**: At $P=0.85$ payout, models must achieve $> 54.054\%$ win rate to break even. The best full-coverage model (Random Forest) achieved $50.83\%$ (Day-Block 95% CI $[49.48\%, 52.16\%]$). The entire confidence interval lies strictly below the break-even hurdle.
+### Finding 2: Assumed Broker Payoff Asymmetry Deficit (Economics)
+- **Empirical Metric**: Break-even gap of $+3.22\%$ to $+3.90\%$ across all full-coverage models under assumed $P=0.85$.
+- **Analysis**: Under typical retail binary broker conditions ($P=0.85$), models must achieve $> 54.054\%$ win rate to break even. This is an assumed commercial broker condition rather than an inherent market law. However, under this assumption, all full-coverage models ($N=35,006$) achieved between $50.15\%$ and $50.83\%$ (Random Forest: $50.83\%$, Day-Block 95% CI $[49.48\%, 52.16\%]$), yielding strictly negative hypothetical expectancy.
 
-### Finding 3: Threshold Filtering Induces Coverage Collapse (Abstention)
-- **Empirical Metric**: Coverage decayed from $100.0\%$ at $T=0.50$ to $1.34\%$ at $T=0.60$.
-- **Analysis**: Raising confidence thresholds filters out nearly all trading opportunities. The small remaining sample (469 candles) exhibits wide confidence bounds ($[50.32\%, 60.91\%]$), failing to demonstrate a robust statistical edge while rendering trade frequency practically negligible.
+### Finding 3: Threshold Filtering Induces Coverage Collapse (Abstention & Trial 19 Audit)
+- **Empirical Metric**: Coverage decayed from $100.0\%$ at $T=0.50$ to $1.34\%$ at $T=0.60$ (469 selected trades out of 35,006 total opportunities).
+- **Analysis**: In Trial 19 (`trial_019_logistic_regression_price_action_only_isotonic_0.6`), raising the threshold to 0.60 produced an apparent point accuracy of $55.65\%$ (Wins: 261, Losses: 208). However, this represents severe coverage collapse to only $1.34\%$ of opportunities across 58 market days (fewer than 9 trades per day). Because its Day-Block bootstrap 95% CI lower bound ($50.59\%$) falls well below the $54.054\%$ hurdle, this subset variance fails to support any general predictive claim.
 
-### Finding 4: Feature Collinearity & Incremental Delta Saturation (Feature Engineering)
-- **Empirical Metric**: Incremental cross-fold accuracy gain from adding 24 technical indicators was $< 0.40\%$.
-- **Analysis**: Price action, volatility, and trend indicators derive from the same underlying 4-tuple $(O, H, L, C)$. High collinearity saturates the informational capacity, causing tree ensembles and neural nets to overfit without boosting generalization.
+### Finding 4: Empirical Feature Collinearity & Incremental Delta Saturation (Feature Engineering)
+- **Empirical Metric**: Incremental cross-fold accuracy gain from adding technical indicators was $< 0.50\%$.
+- **Analysis**: On this dataset, adding volatility, trend, and activity indicator groups to raw price action features yielded negligible out-of-fold improvement. This is an empirical observation of these specific engineered causal features on this historical dataset, not a mathematical proof that all future or alternative feature formulations must fail.
 
 ### Finding 5: Calibration Flattens Directional Decisions (Probability Calibration)
 - **Empirical Metric**: Isotonic calibrated probabilities cluster in $[0.485, 0.515]$.
@@ -286,12 +287,14 @@ Phase 42 formalizes the Candidate Freeze protocol (`src/iqoption_research/ml/fre
 - **Bundle SHA-256**: `d3a436940d9b15e4fce9d34311029c9c4db2bb21bbd84f88e612c62c954e6fe4`
 - **Registration**: Recorded in `data/shadow_eval/registry.json` under `registered_candidates`.
 
-### Stage C Independent Holdout Evaluation Protocol
-The protected independent evaluation partition (9,970 candles, 2026-11-12 to 2026-11-20) was evaluated strictly out-of-sample:
+### Stage C Independent Holdout Evaluation Protocol & Provenance Audit
+The evaluation partition (9,970 candles, 2026-11-12 to 2026-11-20) was evaluated strictly out-of-sample:
 - **Test Observations**: 9,970 candles.
-- **Candidate Accuracy**: $50.38\%$ ($[49.40\%, 51.36\%]$).
+- **Candidate Accuracy**: $50.38\%$ (Wins: 4,737, Losses: 4,666, Ties: 567 on reference reversal model; 95% CI $[49.40\%, 51.36\%]$).
 - **Break-Even Hurdle**: $54.054\%$.
 - **Hurdle Clearance**: **FAILED** (Deficit: $-3.67\%$).
+- **Provenance Classification**: **`HISTORICAL_REUSED`** (`INDEPENDENCE_NOT_VERIFIED`).
+- **Evidence Audit**: Although chronologically isolated within the Phase 42 partition manifest, this interval overlaps historical dataset collections audited during Phases 39–41. The negative result ($50.38\%$) is fully preserved and scientifically valid, but the partition cannot serve as an untouched prospective evaluation. Independent scientific verification strictly requires new prospective collection.
 - **Scientific Disposition**: Candidate model rejected for deployment. Execution authority locked at `NONE`.
 
 ---
@@ -358,7 +361,7 @@ A dedicated test suite validates all Phase 42 guarantees:
 ## 12. Final Scientific Verdict & Future Research Directions
 
 ### Final Scientific Verdict
-1. **No Market Inefficiency at M1**: After exhaustive exploration across 9 model families, 34 causal features, and 45 pre-registered trials, EURUSD M1 price action demonstrates no statistically reliable directional predictability.
+1. **Directional Edge Not Detected at M1**: After exhaustive exploration across 9 model families, 34 causal features, and 45 pre-registered trials on 66,464 authentic EURUSD M1 candles, directional predictive edge was not detected using these causal representations on this dataset.
 2. **Economic Barrier**: Even marginal directional accuracies ($50.5\% - 50.8\%$) cannot overcome the $54.054\%$ binary option payout penalty.
 3. **Trading Safety Preserved**: Global trading disposition remains **`NO_DEMONSTRATED_EDGE`** and execution authority remains **`NONE`**.
 

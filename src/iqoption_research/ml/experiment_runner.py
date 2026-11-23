@@ -41,6 +41,15 @@ from iqoption_research.research.dataset_manager import (
     ResearchDatasetSnapshot,
 )
 
+
+class SnapshotNotFoundError(ValueError):
+    """Raised when an explicitly requested snapshot does not exist."""
+
+
+class ExperimentRunnerError(Exception):
+    """Base exception for experiment execution errors."""
+
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_EXPERIMENTS_DIR: Final[Path] = Path("data/experiments")
@@ -243,27 +252,46 @@ class ExperimentRunner:
         if not snapshots:
             raise ValueError("No research dataset snapshots found in data/research_datasets/")
 
-        target_snap: ResearchDatasetSnapshot = snapshots[0]
+        target_snap: ResearchDatasetSnapshot | None = None
         if snapshot_id is not None:
             for s in snapshots:
                 if s.manifest.snapshot_id == snapshot_id:
                     target_snap = s
                     break
+            if target_snap is None:
+                raise SnapshotNotFoundError(f"Requested snapshot '{snapshot_id}' does not exist.")
+        else:
+            target_snap = snapshots[0]
+
+        if not target_snap.verify_integrity():
+            sid = target_snap.manifest.snapshot_id
+            raise ValueError(f"Snapshot '{sid}' failed cryptographic integrity check.")
 
         all_candles = target_snap.load_candles()
 
-        # 2. Build or load 4-way chronological partition manifest
+        # 2. Build and verify 4-way chronological partition manifest
         manifest = create_partition_manifest(
             all_candles,
             target_snap.manifest.snapshot_id,
             target_snap.manifest.parquet_sha256,
+            is_synthetic=bool(getattr(target_snap.manifest, "is_synthetic", False)),
         )
+        from iqoption_research.ml.partitions import verify_partition_integrity
+
+        is_part_ok, part_msg = verify_partition_integrity(manifest, all_candles)
+        if not is_part_ok:
+            raise ValueError(f"Partition integrity verification failed: {part_msg}")
+
         # Extract development data (train + validation partition)
         partition_dict = extract_partition_candles(all_candles, manifest)
         dev_candles = partition_dict["train"] + partition_dict["val"]
 
-        # 3. Resolve experiment plan
+        # 3. Resolve and validate experiment plan
         exp_plan = plan or build_standard_phase42_experiment_plan()
+        is_plan_valid, plan_errs = exp_plan.validate()
+        if not is_plan_valid:
+            raise ValueError(f"Experiment plan validation failed: {'; '.join(plan_errs)}")
+
         trials_to_run = list(exp_plan.trials)
         if max_trials is not None:
             trials_to_run = trials_to_run[:max_trials]
@@ -330,9 +358,13 @@ class ExperimentRunner:
 
         end_utc = datetime.now(UTC).isoformat()
 
-        # Check for qualifying candidates
-        eligible_candidates = [
-            r for r in reports if r.research_disposition == "ELIGIBLE_FOR_PROSPECTIVE_RESEARCH"
+        # Development results may only receive exploratory dispositions.
+        # They must NEVER directly grant ELIGIBLE_FOR_PROSPECTIVE_RESEARCH.
+        promising_candidates = [
+            r
+            for r in reports
+            if r.research_disposition
+            in ("PROMISING_EXPLORATORY", "ELIGIBLE_FOR_PROSPECTIVE_RESEARCH")
         ]
 
         best_trial_id = None
@@ -348,9 +380,7 @@ class ExperimentRunner:
                 best_trial_id = valid_reps[0].trial_id
 
         global_disp = "NO_DEMONSTRATED_EDGE"
-        if eligible_candidates:
-            global_disp = "ELIGIBLE_FOR_PROSPECTIVE_RESEARCH"
-        elif any(r.research_disposition == "PROMISING_EXPLORATORY" for r in reports):
+        if promising_candidates:
             global_disp = "PROMISING_EXPLORATORY"
 
         summary = ExperimentSuiteSummary(
@@ -363,7 +393,7 @@ class ExperimentRunner:
             total_trials=total,
             completed_trials=completed,
             failed_trials=failed,
-            eligible_candidates_count=len(eligible_candidates),
+            eligible_candidates_count=len(promising_candidates),
             reports=tuple(reports),
             global_disposition=global_disp,
             best_candidate_trial_id=best_trial_id,

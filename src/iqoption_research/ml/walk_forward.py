@@ -60,6 +60,65 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BOOTSTRAP_REPLICATES: Final[int] = 10000
 DEFAULT_BOOTSTRAP_SEED: Final[int] = 42
+
+
+def compute_day_block_bootstrap_ci(
+    y_true: Sequence[int] | np.ndarray,
+    y_pred: Sequence[int] | np.ndarray,
+    timestamps: Sequence[int] | np.ndarray,
+    selected_mask: Sequence[bool] | np.ndarray | None = None,
+    replicates: int = DEFAULT_BOOTSTRAP_REPLICATES,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+) -> tuple[float | None, float | None]:
+    """Compute dependence-aware Day-Block bootstrap 95% confidence interval."""
+    y_t = np.asarray(y_true)
+    y_p = np.asarray(y_pred)
+    ts = np.asarray(timestamps)
+    mask = (
+        np.asarray(selected_mask, dtype=bool)
+        if selected_mask is not None
+        else np.ones(len(y_t), dtype=bool)
+    )
+
+    if not np.any(mask):
+        return None, None
+
+    y_t_sel = y_t[mask]
+    y_p_sel = y_p[mask]
+    ts_sel = ts[mask]
+
+    day_dict: dict[str, list[tuple[int, int]]] = {}
+    for yt, yp, t in zip(y_t_sel, y_p_sel, ts_sel, strict=False):
+        day_str = datetime.fromtimestamp(t, tz=UTC).strftime("%Y-%m-%d")
+        w = 1 if yt == yp else 0
+        loss_cnt = 1 - w
+        if day_str not in day_dict:
+            day_dict[day_str] = []
+        day_dict[day_str].append((w, loss_cnt))
+
+    days_list = sorted(day_dict.keys())
+    d_count = len(days_list)
+    if d_count < 2:
+        return None, None
+
+    rng = np.random.default_rng(seed)
+    day_wins = np.array([sum(x[0] for x in day_dict[d]) for d in days_list])
+    day_losses = np.array([sum(x[1] for x in day_dict[d]) for d in days_list])
+
+    sample_day_idx = rng.integers(0, d_count, size=(replicates, d_count))
+    resampled_w = np.sum(day_wins[sample_day_idx], axis=1)
+    resampled_l = np.sum(day_losses[sample_day_idx], axis=1)
+    tot_b = resampled_w + resampled_l
+    valid_b = tot_b > 0
+
+    boot_accs = np.where(valid_b, resampled_w / np.maximum(tot_b, 1), 0.5)
+    sorted_accs = np.sort(boot_accs)
+    low_idx = int(replicates * 0.025)
+    high_idx = int(replicates * 0.975)
+
+    return float(sorted_accs[low_idx]), float(sorted_accs[high_idx])
+
+
 BREAK_EVEN_PAYOUT_85: Final[float] = 1.0 / (1.0 + 0.85)  # 0.54054054...
 
 

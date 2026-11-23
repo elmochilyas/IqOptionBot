@@ -55,9 +55,138 @@ class DataPartition:
     sha256_hash: str
     purged_lead_bars: int = 0
     embargo_tail_bars: int = 0
+    provenance_status: str = "HISTORICAL_REUSED"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalEvidenceRecord:
+    """Immutable record of previously inspected or utilized historical market data."""
+
+    record_id: str
+    phase: str
+    from_ts: int
+    to_ts: int
+    from_utc: str
+    to_utc: str
+    role: str  # "TRAINING" | "VALIDATION" | "HISTORICAL_HOLDOUT" | "PROSPECTIVE_PILOT"
+    description: str
+
+
+# Authoritative registry of all previously studied market intervals across repository history
+HISTORICAL_EVIDENCE_REGISTRY: Final[tuple[HistoricalEvidenceRecord, ...]] = (
+    HistoricalEvidenceRecord(
+        record_id="hist_phase38_pilot",
+        phase="Phase 38",
+        from_ts=1726358400,  # 2026-09-15 00:00:00 UTC
+        to_ts=1795046400,  # 2026-11-19 00:00:00 UTC
+        from_utc="2026-09-15T00:00:00+00:00",
+        to_utc="2026-11-19T00:00:00+00:00",
+        role="PROSPECTIVE_PILOT",
+        description="Phase 38 prospective observation pilot sessions and benchmark data",
+    ),
+    HistoricalEvidenceRecord(
+        record_id="hist_phase39_laboratory",
+        phase="Phase 39",
+        from_ts=1725310800,  # 2026-09-02 21:00:00 UTC
+        to_ts=1795046400,  # 2026-11-19 00:00:00 UTC
+        from_utc="2026-09-02T21:00:00+00:00",
+        to_utc="2026-11-19T00:00:00+00:00",
+        role="TRAINING",
+        description="Phase 39 Model Laboratory offline dataset and candidate models",
+    ),
+    HistoricalEvidenceRecord(
+        record_id="hist_phase40a_shadow",
+        phase="Phase 40A",
+        from_ts=1725310800,  # 2026-09-02 21:00:00 UTC
+        to_ts=1795046400,  # 2026-11-19 00:00:00 UTC
+        from_utc="2026-09-02T21:00:00+00:00",
+        to_utc="2026-11-19T00:00:00+00:00",
+        role="HISTORICAL_HOLDOUT",
+        description="Phase 40A offline shadow evaluation holdout interval",
+    ),
+    HistoricalEvidenceRecord(
+        record_id="hist_phase40b_pilot",
+        phase="Phase 40B",
+        from_ts=1794960000,  # 2026-11-18 00:00:00 UTC
+        to_ts=1795046400,  # 2026-11-19 00:00:00 UTC
+        from_utc="2026-11-18T00:00:00+00:00",
+        to_utc="2026-11-19T00:00:00+00:00",
+        role="PROSPECTIVE_PILOT",
+        description="Phase 40B prospective shadow pilot sessions",
+    ),
+    HistoricalEvidenceRecord(
+        record_id="hist_phase41_intelligence",
+        phase="Phase 41",
+        from_ts=1725310800,  # 2026-09-02 21:00:00 UTC
+        to_ts=1795190400,  # 2026-11-20 16:00:00 UTC
+        from_utc="2026-09-02T21:00:00+00:00",
+        to_utc="2026-11-20T16:00:00+00:00",
+        role="HISTORICAL_HOLDOUT",
+        description="Phase 41 failure intelligence historical dataset eurusd_m1_202609_202611",
+    ),
+)
+
+
+def check_interval_overlap(
+    start_a: int,
+    end_a: int,
+    start_b: int,
+    end_b: int,
+) -> bool:
+    """Determine whether two intervals [start_a, end_a] and [start_b, end_b] overlap.
+
+    Two intervals overlap if and only if max(start_a, start_b) <= min(end_a, end_b).
+    """
+    return max(start_a, start_b) <= min(end_a, end_b)
+
+
+def audit_holdout_independence(
+    test_from_ts: int,
+    test_to_ts: int,
+    is_synthetic: bool = False,
+    historical_registry: Sequence[HistoricalEvidenceRecord] = HISTORICAL_EVIDENCE_REGISTRY,
+) -> tuple[bool, str, str]:
+    """Audit candidate holdout interval for independence against previously inspected evidence.
+
+    Returns:
+        tuple[is_previously_inspected: bool, provenance_status: str, audit_notes: str]
+    """
+    if is_synthetic:
+        return (
+            True,
+            "SYNTHETIC_TEST_FIXTURE",
+            (
+                "Holdout is synthetic test fixture. Engineering valid; "
+                "produces ZERO scientific acceptance."
+            ),
+        )
+
+    overlapping_records: list[HistoricalEvidenceRecord] = []
+    for rec in historical_registry:
+        if check_interval_overlap(test_from_ts, test_to_ts, rec.from_ts, rec.to_ts):
+            overlapping_records.append(rec)
+
+    if overlapping_records:
+        phases_str = ", ".join(sorted({r.phase for r in overlapping_records}))
+        from_dt = datetime.fromtimestamp(test_from_ts, tz=UTC).strftime("%Y-%m-%d")
+        to_dt = datetime.fromtimestamp(test_to_ts, tz=UTC).strftime("%Y-%m-%d")
+        notes = (
+            f"Holdout interval ({from_dt} .. {to_dt}) overlaps with previously studied "
+            f"evidence from {phases_str}. Population classified as HISTORICAL_REUSED "
+            "(INDEPENDENCE_NOT_VERIFIED). Cannot be certified as genuinely untouched "
+            "prospective data. Independent scientific acceptance strictly requires "
+            "new prospective collection."
+        )
+        return True, "HISTORICAL_REUSED", notes
+
+    return (
+        False,
+        "GENUINELY_INDEPENDENT_PROSPECTIVE",
+        "Holdout interval is strictly disjoint from all previously studied historical evidence.",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +207,7 @@ class PartitionManifest:
     is_holdout_previously_inspected: bool
     holdout_audit_notes: str
     manifest_sha256: str
+    provenance_status: str = "HISTORICAL_REUSED"
     disclaimer: str = (
         "OFFLINE RESEARCH PARTITION MANIFEST. ZERO TEST LEAKAGE. "
         "PROTECTED HOLDOUT EVALUATION OCCURS STRICTLY AT STAGE C AFTER CANDIDATE FREEZE."
@@ -98,6 +228,7 @@ class PartitionManifest:
             "protected_test_partition": self.protected_test_partition.to_dict(),
             "is_holdout_previously_inspected": self.is_holdout_previously_inspected,
             "holdout_audit_notes": self.holdout_audit_notes,
+            "provenance_status": self.provenance_status,
             "manifest_sha256": self.manifest_sha256,
             "disclaimer": self.disclaimer,
         }
@@ -150,6 +281,7 @@ class PartitionManifest:
             is_holdout_previously_inspected=data["is_holdout_previously_inspected"],
             holdout_audit_notes=data["holdout_audit_notes"],
             manifest_sha256=saved_sha,
+            provenance_status=data.get("provenance_status", "HISTORICAL_REUSED"),
             disclaimer=data.get("disclaimer", ""),
         )
 
@@ -174,7 +306,8 @@ def create_partition_manifest(
     test_ratio: float = 0.15,
     purging_horizon_bars: int = DEFAULT_PURGING_HORIZON_BARS,
     embargo_bars: int = DEFAULT_EMBARGO_BARS,
-    previously_inspected_holdout_cutoff_ts: int | None = 1793275380,
+    is_synthetic: bool = False,
+    historical_registry: Sequence[HistoricalEvidenceRecord] = HISTORICAL_EVIDENCE_REGISTRY,
 ) -> PartitionManifest:
     """Create a 4-way chronological partition manifest with strict purging and embargo.
 
@@ -188,7 +321,8 @@ def create_partition_manifest(
         test_ratio: Ratio for protected evaluation (default 0.15).
         purging_horizon_bars: Horizon bars purged at boundary (default 1).
         embargo_bars: Bars embargoed after boundary to prevent target leakage (default 5).
-        previously_inspected_holdout_cutoff_ts: Known prior cutoff timestamp (from Phase 39/40A).
+        is_synthetic: Whether candle series is from a synthetic fixture.
+        historical_registry: Known previously inspected historical evidence intervals.
     """
     total = len(candles)
     if total < 1000:
@@ -205,12 +339,6 @@ def create_partition_manifest(
     raw_train_end = int(total * train_ratio)
     raw_val_end = raw_train_end + int(total * val_ratio)
     raw_cal_end = raw_val_end + int(total * cal_ratio)
-
-    # Apply purging and embargo gaps:
-    # Train: [0 .. raw_train_end]
-    # Val: [raw_train_end + buffer_bars .. raw_val_end]
-    # Cal: [raw_val_end + buffer_bars .. raw_cal_end]
-    # Test: [raw_cal_end + buffer_bars .. total]
 
     val_start = raw_train_end + buffer_bars
     if val_start >= raw_val_end:
@@ -234,6 +362,7 @@ def create_partition_manifest(
         slice_candles: Sequence[Candle],
         purged: int,
         embargo: int,
+        prov_status: str,
     ) -> DataPartition:
         c_from = slice_candles[0].from_ts
         c_to = slice_candles[-1].to_ts
@@ -247,28 +376,25 @@ def create_partition_manifest(
             sha256_hash=_compute_candle_slice_sha256(slice_candles),
             purged_lead_bars=purged,
             embargo_tail_bars=embargo,
+            provenance_status=prov_status,
         )
 
-    part_train = _make_partition("train", train_candles, 0, embargo_bars)
-    part_val = _make_partition("val", val_candles, purging_horizon_bars, embargo_bars)
-    part_cal = _make_partition("calibration", cal_candles, purging_horizon_bars, embargo_bars)
-    part_test = _make_partition("protected_test", test_candles, purging_horizon_bars, 0)
+    base_prov = "SYNTHETIC_TEST_FIXTURE" if is_synthetic else "GENUINE_HISTORICAL"
+    part_train = _make_partition("train", train_candles, 0, embargo_bars, base_prov)
+    part_val = _make_partition("val", val_candles, purging_horizon_bars, embargo_bars, base_prov)
+    part_cal = _make_partition(
+        "calibration", cal_candles, purging_horizon_bars, embargo_bars, base_prov
+    )
 
-    # Check if test partition overlaps with previously inspected historical data
-    is_inspected = False
-    audit_notes = "Protected holdout is fully isolated and unseen."
-    if previously_inspected_holdout_cutoff_ts is not None and (
-        part_test.from_ts <= previously_inspected_holdout_cutoff_ts
-        or part_test.to_ts >= previously_inspected_holdout_cutoff_ts
-    ):
-        is_inspected = True
-        audit_notes = (
-            f"Historical test partition ({part_test.from_utc[:10]} .. {part_test.to_utc[:10]}) "
-            f"overlaps with previously evaluated Phase 39/40A test intervals "
-            f"(cutoff {previously_inspected_holdout_cutoff_ts}). "
-            "Cannot be certified as genuinely untouched prospective data. "
-            "Independent prospective acceptance requires new collection."
-        )
+    # Audit holdout independence using exact interval overlap against historical registry
+    is_inspected, test_prov, audit_notes = audit_holdout_independence(
+        test_from_ts=test_candles[0].from_ts,
+        test_to_ts=test_candles[-1].to_ts,
+        is_synthetic=is_synthetic,
+        historical_registry=historical_registry,
+    )
+
+    part_test = _make_partition("protected_test", test_candles, purging_horizon_bars, 0, test_prov)
 
     now_utc = datetime.now(UTC).isoformat()
     part_hash = hashlib.sha256(f"{part_train.from_ts}_{part_test.to_ts}".encode()).hexdigest()[:12]
@@ -288,6 +414,7 @@ def create_partition_manifest(
         "protected_test_partition": part_test.to_dict(),
         "is_holdout_previously_inspected": is_inspected,
         "holdout_audit_notes": audit_notes,
+        "provenance_status": test_prov,
         "manifest_sha256": "",
         "disclaimer": (
             "OFFLINE RESEARCH PARTITION MANIFEST. ZERO TEST LEAKAGE. "
@@ -312,6 +439,8 @@ def create_partition_manifest(
         is_holdout_previously_inspected=is_inspected,
         holdout_audit_notes=audit_notes,
         manifest_sha256=manifest_sha,
+        provenance_status=test_prov,
+        disclaimer=raw_dict["disclaimer"],
     )
 
 

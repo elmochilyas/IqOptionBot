@@ -202,3 +202,43 @@ def test_verify_partition_integrity_catches_missing_candle() -> None:
     ok, msg = verify_partition_integrity(manifest, corrupted_candles)
     assert ok is False
     assert "count mismatch" in msg
+
+
+def test_interval_overlap_logic() -> None:
+    """Verify mathematical correctness of interval overlap: max(A1, B1) <= min(A2, B2)."""
+    from iqoption_research.ml.partitions import (
+        audit_holdout_independence,
+        check_interval_overlap,
+    )
+
+    # Disjoint intervals
+    assert check_interval_overlap(100, 200, 250, 300) is False
+    assert check_interval_overlap(250, 300, 100, 200) is False
+
+    # Overlapping intervals
+    assert check_interval_overlap(100, 200, 150, 250) is True
+    assert check_interval_overlap(150, 250, 100, 200) is True
+    assert check_interval_overlap(100, 300, 150, 200) is True
+    assert check_interval_overlap(150, 200, 100, 300) is True
+
+    # Boundary touch (closed interval)
+    assert check_interval_overlap(100, 200, 200, 300) is True
+
+    # Audit historical holdout: November 12-20, 2026 (approx 1794500000 to 1795190400)
+    # overlaps with Phase 41 registry (up to 1795190400)
+    is_inspected, prov, notes = audit_holdout_independence(1794500000, 1795190000)
+    assert is_inspected is True
+    assert prov == "HISTORICAL_REUSED"
+    assert "HISTORICAL_REUSED" in notes
+
+    # Far future interval (year 2027+) is genuinely independent prospective
+    is_inspected_fut, prov_fut, _notes_fut = audit_holdout_independence(1850000000, 1850100000)
+    assert is_inspected_fut is False
+    assert prov_fut == "GENUINELY_INDEPENDENT_PROSPECTIVE"
+
+    # Synthetic fixture is classified as synthetic
+    is_inspected_syn, prov_syn, _notes_syn = audit_holdout_independence(
+        1850000000, 1850100000, is_synthetic=True
+    )
+    assert is_inspected_syn is True
+    assert prov_syn == "SYNTHETIC_TEST_FIXTURE"

@@ -16,8 +16,11 @@ from iqoption_research.desktop.laboratory_panel import ModelLaboratoryPanel
 
 @pytest.fixture(scope="module")
 def tk_root():
-    root = tk.Tk()
-    root.withdraw()
+    try:
+        root = tk.Tk()
+        root.withdraw()
+    except (tk.TclError, RuntimeError, OSError, Exception) as exc:  # noqa: BLE001
+        pytest.skip(f"Tkinter/Tcl not available in environment: {exc}")
     yield root
     with contextlib.suppress(Exception):
         root.destroy()

@@ -79,20 +79,20 @@ Evaluated across 3 expanding chronological development walk-forward folds ($H=1$
 | `exp_F2_threshold_55_selective` | F | Threshold 0.55 (SKIP) | 25.00% | 0.2500 |   0.02% | 4 / 25,332 | +0.00% | -29.05% | FAIL_TO_BEAT_MAJORITY_BASELINE |
 | `exp_F3_threshold_60_conservative` | F | Threshold 0.60 (SKIP) | N/A | 0.2500 |   0.00% | 0 / 25,332 | N/A | N/A | ZERO_COVERAGE_NO_PREDICTIONS |
 
-**Universal Economic Invariant**: Across all 14 trials, the break-even gap remains strictly negative ($-2.92\%$ to $-29.05\%$, where break-even hurdle is $51.57\%$ to $54.05\%$ depending on tie refund treatment). `NO_DEMONSTRATED_EDGE` is strictly verified.
+**Universal Economic Invariant**: Across the 14 trials, exactly 13 evaluable trials have strictly negative break-even gaps ($-2.92\%$ to $-29.05\%$, where break-even hurdle is $51.57\%$ to $54.05\%$ depending on tie refund treatment); the 14th trial (`exp_F3_threshold_60_conservative`) produced zero selected observations (0.00% coverage) with all performance, break-even gap, and expectancy metrics cleanly marked `N/A`. `NO_DEMONSTRATED_EDGE` is strictly verified across all trials.
 
 ---
 
-## Modeled Research Assumptions vs. Verified Broker Reality
-1. **Payout Rate**: Fixed 85.0% payout ($W_{\text{be}} \approx 54.05\%$) is an idealized baseline. Live broker payouts fluctuate continuously (50% to 90%+) and can collapse during low-liquidity periods.
-2. **Entry Timing & Slippage**: Historical evaluation models instantaneous entry at bar close ($0.0\text{s}$ latency). Live execution encounters network, client, and matching delays (~200–500ms), filling at broker spot quotes rather than bar close $C_t$.
+## Modeled Research Assumptions vs. Documented Operational Assumptions and Evidence Gaps
+1. **Payout Rate**: Fixed 85.0% payout ($W_{\text{be}} \approx 54.05\%$) is an idealized baseline. Live broker payouts fluctuate dynamically (50% to 90%+) and can collapse during low-liquidity periods, representing an empirical evidence gap.
+2. **Entry Timing & Slippage**: Historical evaluation models instantaneous entry at bar close ($0.0\text{s}$ latency). Operational live execution encounters network, client, and matching delays (~200–500ms), filling at broker spot quotes rather than bar close $C_t$.
 3. **Expiry Duration**: Research assumes exact 60-second horizon ($H=1$). Live broker binary options expire at fixed wall-clock round minute boundaries, truncating the effective duration of delayed entries.
-4. **Tie Settlement**: Modeled ATM tie refund/loss rules assume discrete price equality. Live broker spot quotes operate with high tick precision (5–6 decimal places), making exact ties rare in practice.
+4. **Tie Settlement**: Modeled ATM tie refund/loss rules assume discrete price equality. Live broker spot quotes operate with high tick precision (5–6 decimal places), making exact ties rare in live execution.
 
 ---
 
 ## Qualification of Scientific Claims
-- **Hypothesis H-1 (Tie-Purged Training & Directional Balance)**: Purging exact ties from training sets eliminates the artificial downward bias induced by legacy binary target definitions. However, zero directional asymmetry under future live market regimes is an empirical hypothesis to be tested prospectively, not a guaranteed property.
+- **Hypothesis H-1 (Tie-Purged Training & Directional Balance)**: Purging exact ties from training sets eliminates the artificial downward bias induced by legacy binary target definitions (though natural market drift retains a residual 0.690% empirical imbalance; tie exclusion does not guarantee exactly equal UP/DOWN classes). Zero directional asymmetry under future live market regimes is an empirical hypothesis to be tested prospectively, not a guaranteed property. For example, in the sealed Phase 40B pilot audit, the frozen logistic regression model exhibited pronounced empirical directional skew: S15 LR = 7 UP / 3 DOWN / 5 SKIP; S60 LR = 4 UP / 34 DOWN / 21 SKIP; pooled LR = 11 UP / 37 DOWN / 26 SKIP.
 - **Serial Dependence & Effective Sample Size**: EURUSD returns exhibit non-zero residual autocorrelation. The diagnostic pipeline instruments Bartlett's AR(1) formula ($N_{\text{eff}} = N \cdot \frac{1 - \hat{\rho}_1}{1 + \hat{\rho}_1}$). Fixed 10–15% sample size discount claims are unverified rules-of-thumb; confirmatory evaluations must compute empirical dependence corrections via block bootstrapping or cluster-robust standard errors.
 
 ---
@@ -102,7 +102,7 @@ Evaluated across 3 expanding chronological development walk-forward folds ($H=1$
 - **Ledger SHA-256 Checksum**: `5f15ea535055a48baf3266c6d91dc40106e13eed0c017140b8282554d8b1245e`
 - **Source Snapshot Checksum**: `6398befe8e0da71a27d27c1f6e4b147e8e8ef612d474de7ec9fd168eb2ac3071`
 - **Reproduction**: Run `python -m iqoption_research.cli.main diagnostics experiment-matrix --output data/experiments/phase41_experiment_ledger_v3.json` across 3 expanding chronological walk-forward folds ($H=1$ purge, 5 bars embargo, $N_{\text{test}} = 0$).
-- **Privacy & Security Boundaries**: Raw market snapshots, private account identifiers, and session credentials reside strictly in untracked local storage. No credentials or private records are tracked in version control or stored in ledgers. External reproducibility of algorithms is verified via offline unit test suites without exposing proprietary data.
+- **Privacy & Security Boundaries**: Raw market snapshots, private account identifiers, and session credentials reside strictly in untracked local storage. No credentials or private records are tracked in version control or stored in ledgers. Deterministic offline unit test suites verify algorithmic correctness against synthetic fixtures, but cannot independently reproduce private experiment results without the original source dataset snapshot (`snapshot_20261015_001900_20261015_165700`). External auditability relies on the immutable ledger checksum.
 
 ---
 

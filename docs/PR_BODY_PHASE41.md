@@ -83,6 +83,35 @@ Evaluated across 3 expanding chronological development walk-forward folds ($H=1$
 
 ---
 
+## Modeled Research Assumptions vs. Verified Broker Reality
+1. **Payout Rate**: Fixed 85.0% payout ($W_{\text{be}} \approx 54.05\%$) is an idealized baseline. Live broker payouts fluctuate continuously (50% to 90%+) and can collapse during low-liquidity periods.
+2. **Entry Timing & Slippage**: Historical evaluation models instantaneous entry at bar close ($0.0\text{s}$ latency). Live execution encounters network, client, and matching delays (~200–500ms), filling at broker spot quotes rather than bar close $C_t$.
+3. **Expiry Duration**: Research assumes exact 60-second horizon ($H=1$). Live broker binary options expire at fixed wall-clock round minute boundaries, truncating the effective duration of delayed entries.
+4. **Tie Settlement**: Modeled ATM tie refund/loss rules assume discrete price equality. Live broker spot quotes operate with high tick precision (5–6 decimal places), making exact ties rare in practice.
+
+---
+
+## Qualification of Scientific Claims
+- **Hypothesis H-1 (Tie-Purged Training & Directional Balance)**: Purging exact ties from training sets eliminates the artificial downward bias induced by legacy binary target definitions. However, zero directional asymmetry under future live market regimes is an empirical hypothesis to be tested prospectively, not a guaranteed property.
+- **Serial Dependence & Effective Sample Size**: EURUSD returns exhibit non-zero residual autocorrelation. The diagnostic pipeline instruments Bartlett's AR(1) formula ($N_{\text{eff}} = N \cdot \frac{1 - \hat{\rho}_1}{1 + \hat{\rho}_1}$). Fixed 10–15% sample size discount claims are unverified rules-of-thumb; confirmatory evaluations must compute empirical dependence corrections via block bootstrapping or cluster-robust standard errors.
+
+---
+
+## Private Experiment Ledger Reproducibility Policy
+- **Ledger Artifact Path**: `data/experiments/phase41_experiment_ledger_v3.json`
+- **Ledger SHA-256 Checksum**: `5f15ea535055a48baf3266c6d91dc40106e13eed0c017140b8282554d8b1245e`
+- **Source Snapshot Checksum**: `6398befe8e0da71a27d27c1f6e4b147e8e8ef612d474de7ec9fd168eb2ac3071`
+- **Reproduction**: Run `python -m iqoption_research.cli.main diagnostics experiment-matrix --output data/experiments/phase41_experiment_ledger_v3.json` across 3 expanding chronological walk-forward folds ($H=1$ purge, 5 bars embargo, $N_{\text{test}} = 0$).
+- **Privacy & Security Boundaries**: Raw market snapshots, private account identifiers, and session credentials reside strictly in untracked local storage. No credentials or private records are tracked in version control or stored in ledgers. External reproducibility of algorithms is verified via offline unit test suites without exposing proprietary data.
+
+---
+
+## Operational Boundary: Research Code vs. Live Trading Authorization
+- **Research Code Integration**: Merge approval into `main` permits inclusion of offline failure intelligence algorithms, diagnostic tools, and test suites strictly for retrospective research.
+- **Strictly Unauthorized**: No live broker connection, no order execution, no wallet mutation, no autonomous operation, and no claims of profitable trading edge (`execution_authority = NONE`, `NO_DEMONSTRATED_EDGE`).
+
+---
+
 ## Verification & Testing Evidence
 - Regression test suite: `tests/unit/test_phase41_remediation.py` (11 passed).
 - Failure intelligence test suite: `tests/unit/test_phase41_failure_intelligence.py` (17 passed).

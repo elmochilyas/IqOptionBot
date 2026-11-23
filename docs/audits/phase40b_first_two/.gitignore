@@ -1,0 +1,4 @@
+# Local derived private evidence. Publish the aggregate report and code only.
+/audit_results.json
+/joined_observations.csv
+/calculation_log.txt

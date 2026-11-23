@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import tkinter as tk
 from concurrent.futures import Future
@@ -41,6 +42,7 @@ class ShadowEvaluationPanel:
         self.active_future: Future[Any] | None = None
         self.is_cancelled = False
         self.current_journal: ShadowPredictionJournal | None = None
+        self._obs_accounts_map: dict[str, str] = {}
 
         # Main Tab Frame
         self.frame = ttk.Frame(notebook, padding=12)
@@ -84,6 +86,11 @@ class ShadowEvaluationPanel:
         self.journal_frame = ttk.Frame(self.sub_notebook, padding=10)
         self.sub_notebook.add(self.journal_frame, text="Prediction Journal")
         self._build_journal_tab()
+
+        # Tab 4: Prospective Observation
+        self.obs_frame = ttk.Frame(self.sub_notebook, padding=10)
+        self.sub_notebook.add(self.obs_frame, text="Prospective Observation")
+        self._build_observation_tab()
 
         # Initial refresh
         self.refresh()
@@ -250,6 +257,34 @@ class ShadowEvaluationPanel:
         if snap_ids and not self.combo_replay_snapshot.get():
             self.combo_replay_snapshot.current(0)
 
+        # Update prospective observation comboboxes
+        if hasattr(self, "combo_obs_model"):
+            self.combo_obs_model["values"] = cand_ids
+            if cand_ids and not self.combo_obs_model.get():
+                self.combo_obs_model.current(0)
+
+        if hasattr(self, "combo_obs_account"):
+            with contextlib.suppress(Exception):
+                from iqoption_research.auth.vault import WindowsCredentialVault
+
+                store = WindowsCredentialVault().account_store()
+                accounts = store.list_accounts()
+                self._obs_accounts_map.clear()
+                acc_labels: list[str] = []
+                for a in accounts:
+                    masked_id = (
+                        f"{a.account_id[:4]}...{a.account_id[-4:]}"
+                        if len(a.account_id) > 8
+                        else a.account_id
+                    )
+                    label = f"{a.label} [{masked_id}]"
+                    self._obs_accounts_map[label] = a.account_id
+                    self._obs_accounts_map[a.account_id] = a.account_id
+                    acc_labels.append(label)
+                self.combo_obs_account["values"] = acc_labels
+                if acc_labels and not self.combo_obs_account.get():
+                    self.combo_obs_account.current(0)
+
         self._refresh_session_list()
 
     def _update_candidate_tree(self) -> None:
@@ -402,6 +437,227 @@ class ShadowEvaluationPanel:
         self.is_cancelled = True
         self.lbl_replay_status.config(text="Cancelling replay...")
 
+    def _build_observation_tab(self) -> None:
+        controls_frame = ttk.LabelFrame(
+            self.obs_frame, text="Supervised Prospective Observation Setup", padding=10
+        )
+        controls_frame.pack(fill="x", pady=(0, 8))
+
+        self.obs_safety_label = ttk.Label(
+            controls_frame,
+            text="EXECUTION_AUTHORITY: NONE · NO DEMONSTRATED EDGE · STRICTLY READ-ONLY",
+            font=("Segoe UI", 9, "bold"),
+            foreground="#9c3414",
+        )
+        self.obs_safety_label.pack(anchor="w", pady=(0, 6))
+
+        # Row 1: Candidate Model Selection
+        r1 = ttk.Frame(controls_frame)
+        r1.pack(fill="x", pady=2)
+        ttk.Label(r1, text="Frozen Candidate Model:", width=24).pack(side="left")
+        self.combo_obs_model = ttk.Combobox(r1, state="readonly", width=45)
+        self.combo_obs_model.pack(side="left", padx=4)
+
+        # Row 2: Mode Selection (Synthetic Simulator vs Live Supervised)
+        r2 = ttk.Frame(controls_frame)
+        r2.pack(fill="x", pady=2)
+        ttk.Label(r2, text="Observation Feed Mode:", width=24).pack(side="left")
+        self.var_obs_mode = tk.StringVar(value="synthetic")
+        ttk.Radiobutton(
+            r2,
+            text="Offline Simulator (Synthetic Streaming)",
+            variable=self.var_obs_mode,
+            value="synthetic",
+            command=self._on_obs_mode_changed,
+        ).pack(side="left", padx=4)
+        ttk.Radiobutton(
+            r2,
+            text="Supervised Live (Windows Vault)",
+            variable=self.var_obs_mode,
+            value="live",
+            command=self._on_obs_mode_changed,
+        ).pack(side="left", padx=8)
+
+        # Row 3: Account & Duration
+        r3 = ttk.Frame(controls_frame)
+        r3.pack(fill="x", pady=2)
+        ttk.Label(r3, text="Vault Account (Live Mode):", width=24).pack(side="left")
+        self.combo_obs_account = ttk.Combobox(r3, state="disabled", width=30)
+        self.combo_obs_account.pack(side="left", padx=4)
+
+        ttk.Label(r3, text="Duration (Minutes):", width=18).pack(side="left", padx=(16, 4))
+        self.combo_obs_duration = ttk.Combobox(
+            r3, state="readonly", width=8, values=["15", "30", "60", "120"]
+        )
+        self.combo_obs_duration.set("15")
+        self.combo_obs_duration.pack(side="left", padx=4)
+
+        # Row 4: Action Buttons
+        r4 = ttk.Frame(controls_frame)
+        r4.pack(fill="x", pady=(6, 2))
+        self.btn_start_obs = ttk.Button(
+            r4, text="Start Observation Session", command=self.start_observation
+        )
+        self.btn_start_obs.pack(side="left", padx=(0, 6))
+
+        self.btn_cancel_obs = ttk.Button(
+            r4, text="Stop / Cancel", command=self.cancel_observation, state="disabled"
+        )
+        self.btn_cancel_obs.pack(side="left", padx=4)
+
+        # Session Health & Continuity Status
+        health_frame = ttk.LabelFrame(
+            self.obs_frame, text="Session Health & Feed Continuity", padding=8
+        )
+        health_frame.pack(fill="x", pady=4)
+        self.obs_progress_bar = ttk.Progressbar(health_frame, mode="determinate")
+        self.obs_progress_bar.pack(fill="x", pady=2)
+        self.lbl_obs_status = ttk.Label(
+            health_frame,
+            text=(
+                "Status: IDLE    |    Feed: Disconnected    |    "
+                "Valid: 0    |    Duplicates: 0    |    Gaps: 0    |    Elapsed: 0s"
+            ),
+            font=("Segoe UI", 9, "bold"),
+            foreground="#20364a",
+        )
+        self.lbl_obs_status.pack(anchor="w", pady=2)
+
+        # Real-time Metrics Table
+        tree_frame = ttk.LabelFrame(
+            self.obs_frame, text="Real-Time Streaming Model Evidence", padding=6
+        )
+        tree_frame.pack(fill="both", expand=True, pady=4)
+
+        cols = (
+            "model_id",
+            "predictions",
+            "pending",
+            "trades",
+            "win_rate",
+            "matched_maj",
+            "ci_95",
+            "exp_bin",
+            "exp_dig",
+            "be_gap",
+        )
+        self.obs_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=5)
+        self.obs_tree.heading("model_id", text="Model ID")
+        self.obs_tree.heading("predictions", text="Total Preds")
+        self.obs_tree.heading("pending", text="Pending")
+        self.obs_tree.heading("trades", text="Trades (W/L/T)")
+        self.obs_tree.heading("win_rate", text="Decisive Win%")
+        self.obs_tree.heading("matched_maj", text="Frozen label%")
+        self.obs_tree.heading("ci_95", text="Wilson 95% CI")
+        self.obs_tree.heading("exp_bin", text="Exp Binary")
+        self.obs_tree.heading("exp_dig", text="Exp Digital")
+        self.obs_tree.heading("be_gap", text="BE Gap")
+
+        self.obs_tree.column("model_id", width=220)
+        self.obs_tree.column("predictions", width=90, anchor="e")
+        self.obs_tree.column("pending", width=80, anchor="e")
+        self.obs_tree.column("trades", width=110, anchor="center")
+        self.obs_tree.column("win_rate", width=100, anchor="e")
+        self.obs_tree.column("matched_maj", width=100, anchor="e")
+        self.obs_tree.column("ci_95", width=130, anchor="center")
+        self.obs_tree.column("exp_bin", width=90, anchor="e")
+        self.obs_tree.column("exp_dig", width=90, anchor="e")
+        self.obs_tree.column("be_gap", width=80, anchor="e")
+
+        sb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.obs_tree.yview)
+        self.obs_tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.obs_tree.pack(fill="both", expand=True)
+
+        # Log details
+        self.obs_log_text = tk.Text(
+            self.obs_frame, height=5, wrap="word", font=("Consolas", 9), state="disabled"
+        )
+        self.obs_log_text.pack(fill="both", expand=True, pady=(4, 0))
+
+    def _on_obs_mode_changed(self) -> None:
+        if self.var_obs_mode.get() == "live":
+            self.combo_obs_account.config(state="readonly")
+        else:
+            self.combo_obs_account.config(state="disabled")
+
+    def _resolve_selected_account_id(self) -> str | None:
+        """Resolve full opaque account UUID from combobox selection or private mapping."""
+        val = (
+            (self.combo_obs_account.get() or "").strip()
+            if hasattr(self, "combo_obs_account")
+            else ""
+        )
+        if not val:
+            return None
+        if val in self._obs_accounts_map:
+            return self._obs_accounts_map[val]
+        for label, acc_id in self._obs_accounts_map.items():
+            if val in (label, acc_id):
+                return acc_id
+        return val
+
+    def start_observation(self) -> None:
+        model_id = self.combo_obs_model.get()
+        if not model_id:
+            messagebox.showwarning("Selection Required", "Please select a frozen model to observe.")
+            return
+
+        minutes = int(self.combo_obs_duration.get() or "15")
+        mode = self.var_obs_mode.get()
+
+        if mode == "live":
+            acc_id = self._resolve_selected_account_id()
+            if not acc_id:
+                messagebox.showwarning(
+                    "Account Required",
+                    "Please select a Windows Vault account for live observation.",
+                )
+                return
+
+            display_acc = self.combo_obs_account.get() or acc_id
+            if not messagebox.askyesno(
+                "Authorize Supervised Live Observation?",
+                f"You are about to launch a supervised read-only observation session for "
+                f"{minutes} minutes.\n\n"
+                f"Model: {model_id}\n"
+                f"Account: {display_acc}\n\n"
+                "Orders remain strictly disabled (Authority NONE).\n"
+                "Do you authorize this session?",
+                parent=self.dashboard.window,
+            ):
+                return
+
+            try:
+                self.dashboard.process.start_prospective_shadow(
+                    model_ids=[model_id],
+                    minutes=minutes,
+                    account_id=acc_id,
+                    synthetic=False,
+                )
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror(
+                    "Observation Error", f"Failed to start live observation: {exc}"
+                )
+                return
+        else:
+            try:
+                self.dashboard.process.start_prospective_shadow(
+                    model_ids=[model_id],
+                    minutes=minutes,
+                    synthetic=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("Observation Error", f"Failed to start simulator: {exc}")
+                return
+
+        self.btn_start_obs.config(state="disabled")
+        self.btn_cancel_obs.config(state="normal")
+
+    def cancel_observation(self) -> None:
+        self.dashboard.process.stop()
+        self.btn_cancel_obs.config(state="disabled")
+
     def busy(self) -> bool:
         """Return True if an offline replay task is currently active."""
         return self.active_future is not None
@@ -436,6 +692,95 @@ class ShadowEvaluationPanel:
             except Exception as exc:  # noqa: BLE001
                 self.lbl_replay_status.config(text=f"Replay failed: {exc}")
                 messagebox.showerror("Replay Error", f"Replay failed: {exc}")
+
+        # Update prospective shadow observation progress if active
+        if (
+            self.dashboard.process.child is not None
+            and self.dashboard.process.kind == "prospective-shadow"
+        ):
+            live = self.dashboard.process.live_state()
+            conn = live.get("connection_status", "OBSERVING")
+            fsm = live.get("fsm_state", conn)
+            warmup = live.get("warmup_state", "WARMING_UP")
+            consec = live.get("consecutive_valid_candles", 0)
+            elapsed = live.get("elapsed_seconds", 0.0)
+            valid = live.get("valid_candles_count", 0)
+            gaps = live.get("continuity_gaps_count", 0)
+            acc_opps = live.get("accepted_opportunities_count", 0)
+            late_opps = live.get("late_opportunities_rejected_count", 0)
+            genuine = live.get("genuine_observations_count", 0)
+            synth = live.get("synthetic_observations_count", 0)
+            latency = live.get("last_commitment_latency_ms")
+            lat_str = f"{latency:.1f}ms" if latency is not None else "N/A"
+
+            status_txt = (
+                f"FSM: {fsm}  |  Warmup: {warmup} ({consec} bars)  |  "
+                f"Opps: {acc_opps} acc / {late_opps} late  |  "
+                f"Feed: {conn} ({genuine} live / {synth} synth)  |  "
+                f"Lat: {lat_str}  |  Valid: {valid}  |  Gaps: {gaps}  |  Elapsed: {elapsed:.0f}s"
+            )
+            self.lbl_obs_status.config(text=status_txt)
+            models_data = live.get("models", {})
+            for item in self.obs_tree.get_children():
+                self.obs_tree.delete(item)
+            for mid, mstate in models_data.items():
+                w = mstate.get("wins_count", 0)
+                loss = mstate.get("losses_count", 0)
+                tie = mstate.get("ties_count", 0)
+                wlt = f"{w}/{loss}/{tie}"
+                trades = mstate.get("trades_taken", 0)
+
+                if trades > 0:
+                    win_dec = mstate.get("win_rate_decisive", 0.0) * 100.0
+                    win_str = f"{win_dec:.2f}%"
+                    ci = mstate.get("wilson_ci_decisive", (0.0, 1.0))
+                    ci_str = f"[{ci[0] * 100:.1f}%, {ci[1] * 100:.1f}%]"
+                    exp_b = mstate.get("expectancy_binary_pct", 0.0)
+                    exp_b_str = f"{exp_b:+.2f}%"
+                    exp_d = mstate.get("expectancy_digital_pct", 0.0)
+                    exp_d_str = f"{exp_d:+.2f}%"
+                    be_gap = mstate.get("break_even_gap_binary", 0.0) * 100.0
+                    be_gap_str = f"{be_gap:+.2f}%"
+                else:
+                    win_str = "N/A"
+                    ci_str = "N/A"
+                    exp_b_str = "N/A"
+                    exp_d_str = "N/A"
+                    be_gap_str = "N/A"
+
+                maj = mstate.get("matched_baseline_accuracy")
+                maj_str = (
+                    f"{maj * 100:.2f}%"
+                    if (maj is not None and trades > 0)
+                    else "UNAVAILABLE"
+                    if mstate.get("matched_baseline_status") == "UNAVAILABLE"
+                    else "N/A"
+                )
+
+                self.obs_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        mid,
+                        mstate.get("total_predictions", 0),
+                        mstate.get("pending_predictions", 0),
+                        wlt,
+                        win_str,
+                        maj_str,
+                        ci_str,
+                        exp_b_str,
+                        exp_d_str,
+                        be_gap_str,
+                    ),
+                )
+        elif (
+            self.dashboard.process.child is None
+            and getattr(self, "btn_start_obs", None) is not None
+            and self.btn_start_obs["state"] == "disabled"
+            and not self.busy()
+        ):
+            self.btn_start_obs.config(state="normal")
+            self.btn_cancel_obs.config(state="disabled")
 
     @staticmethod
     def _write_text(widget: tk.Text, text: str) -> None:

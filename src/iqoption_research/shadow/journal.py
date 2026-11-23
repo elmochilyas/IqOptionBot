@@ -30,6 +30,7 @@ class OutcomeStatus(StrEnum):
     RESOLVED_TIE = "RESOLVED_TIE"
     SKIPPED_ABSTAIN = "SKIPPED_ABSTAIN"
     INVALID_DISCONTINUITY = "INVALID_DISCONTINUITY"
+    QUARANTINED_LATE_COMMITMENT = "QUARANTINED_LATE_COMMITMENT"
 
 
 class JournalError(ValueError):
@@ -54,6 +55,18 @@ class ConflictingOutcomeError(JournalIntegrityError):
 
 class DuplicateOutcomeError(JournalIntegrityError):
     """Raised when duplicate outcome records exist for the same prediction."""
+
+
+class OrphanedCommitmentError(JournalIntegrityError):
+    """Raised when a commitment attestation references a non-existent prediction ID."""
+
+
+class DuplicateCommitmentError(JournalIntegrityError):
+    """Raised when duplicate commitment attestations exist for the same prediction."""
+
+
+class CommitmentIntegrityError(JournalIntegrityError):
+    """Raised when a commitment attestation fails cryptographic or deadline integrity."""
 
 
 class DuplicatePredictionError(JournalError):
@@ -159,6 +172,35 @@ class OutcomeEventRecord:
         return cls(**data)
 
 
+@dataclass(frozen=True, slots=True)
+class CommitmentAttestationRecord:
+    """Immutable record of post-fsync durable prediction commitment attestation."""
+
+    session_id: str
+    prediction_id: str
+    model_id: str
+    prediction_fingerprint: str
+    feature_cutoff_ts: int
+    expected_maturity_ts: int
+    post_fsync_completion_ts: float
+    post_fsync_completion_utc: str
+    commitment_deadline_ts: float
+    clock_uncertainty_ms: float
+    commitment_safety_margin_seconds: float
+    is_timely: bool
+    evidence_class: str  # "PROSPECTIVE_SHADOW" or "SYNTHETIC_STREAMING_TEST"
+    notes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert attestation record to dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CommitmentAttestationRecord:
+        """Construct attestation record from dictionary."""
+        return cls(**data)
+
+
 class ShadowPredictionJournal:
     """Manages an append-only journal of point-in-time predictions and delayed outcome events."""
 
@@ -180,18 +222,20 @@ class ShadowPredictionJournal:
 
         self.predictions_file = self.session_dir / "predictions.jsonl"
         self.outcomes_file = self.session_dir / "outcomes.jsonl"
+        self.commitments_file = self.session_dir / "commitments.jsonl"
         self.session_file = self.session_dir / "session.json"
 
         # In-memory indices
         self._predictions: dict[str, ShadowPredictionRecord] = {}
         self._cutoff_index: set[tuple[str, int]] = set()  # (model_id, feature_cutoff_ts)
         self._outcomes: dict[str, OutcomeEventRecord] = {}
+        self._commitments: dict[str, CommitmentAttestationRecord] = {}
 
         # Recover historical records if journal files already exist
         self._recover_state()
 
     def _recover_state(self) -> None:
-        """Read existing prediction and outcome files to reconstruct in-memory state.
+        """Read existing prediction, outcome, and commitment files to reconstruct in-memory state.
 
         Fails closed on corrupt, malformed, duplicate, or orphaned records.
         """
@@ -275,6 +319,59 @@ class ShadowPredictionJournal:
                     p.is_winning_trade = out_rec.is_winning_trade
                     p.simulated_payout_pnl = out_rec.simulated_payout_pnl
                     p.outcome_note = out_rec.outcome_note
+
+        if self.commitments_file.is_file():
+            with self.commitments_file.open("r", encoding="utf-8") as f:
+                for line_no, line in enumerate(f, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        if not isinstance(data, dict):
+                            raise JournalCorruptionError(
+                                f"Commitment line {line_no} is not a valid JSON dict"
+                            )
+                        comm_rec = CommitmentAttestationRecord.from_dict(data)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                        raise JournalCorruptionError(
+                            f"Malformed commitment attestation at line {line_no} in "
+                            f"{self.commitments_file}: {exc}"
+                        ) from exc
+
+                    if comm_rec.prediction_id not in self._predictions:
+                        raise OrphanedCommitmentError(
+                            f"Orphaned commitment attestation at line {line_no} in "
+                            f"{self.commitments_file}: prediction_id={comm_rec.prediction_id} "
+                            "has no matching prediction"
+                        )
+
+                    if comm_rec.prediction_id in self._commitments:
+                        raise DuplicateCommitmentError(
+                            f"Duplicate commitment attestation at line {line_no} in "
+                            f"{self.commitments_file} for prediction_id={comm_rec.prediction_id}"
+                        )
+
+                    pred = self._predictions[comm_rec.prediction_id]
+                    if comm_rec.prediction_fingerprint != pred.prediction_fingerprint:
+                        raise CommitmentIntegrityError(
+                            f"Fingerprint mismatch in commitment attestation at line {line_no} in "
+                            f"{self.commitments_file} for prediction_id={comm_rec.prediction_id}: "
+                            f"attestation={comm_rec.prediction_fingerprint}, "
+                            f"prediction={pred.prediction_fingerprint}"
+                        )
+
+                    self._commitments[comm_rec.prediction_id] = comm_rec
+                    pred.runtime_diagnostics["post_fsync_completion_ts"] = (
+                        comm_rec.post_fsync_completion_ts
+                    )
+                    pred.runtime_diagnostics["post_fsync_completion_utc"] = (
+                        comm_rec.post_fsync_completion_utc
+                    )
+                    pred.runtime_diagnostics["commitment_deadline_ts"] = (
+                        comm_rec.commitment_deadline_ts
+                    )
+                    pred.runtime_diagnostics["is_timely"] = comm_rec.is_timely
 
     def record_prediction(self, record: ShadowPredictionRecord) -> None:
         """Append a newly generated prediction to the immutable predictions.jsonl log.
@@ -412,6 +509,61 @@ class ShadowPredictionJournal:
         return [
             p for p in self.list_predictions() if p.outcome_status != OutcomeStatus.PENDING.value
         ]
+
+    def list_outcomes(self) -> list[OutcomeEventRecord]:
+        """Return all outcome event records committed to the journal."""
+        return list(self._outcomes.values())
+
+    def record_commitment(self, attestation: CommitmentAttestationRecord) -> None:
+        """Append a commitment attestation record to the immutable commitments.jsonl log.
+
+        Fails closed on unknown prediction, duplicate attestation, or fingerprint mismatch.
+        """
+        if attestation.prediction_id not in self._predictions:
+            raise OrphanedCommitmentError(
+                f"Cannot record commitment attestation for unknown prediction: "
+                f"{attestation.prediction_id}"
+            )
+
+        if attestation.prediction_id in self._commitments:
+            raise DuplicateCommitmentError(
+                f"Commitment attestation already recorded for prediction: "
+                f"{attestation.prediction_id}"
+            )
+
+        pred = self._predictions[attestation.prediction_id]
+        if attestation.prediction_fingerprint != pred.prediction_fingerprint:
+            raise CommitmentIntegrityError(
+                f"Prediction fingerprint mismatch for {attestation.prediction_id}: "
+                f"expected={pred.prediction_fingerprint}, got={attestation.prediction_fingerprint}"
+            )
+
+        # Append to log with immediate durability flush
+        line = json.dumps(attestation.to_dict(), sort_keys=True)
+        with self.commitments_file.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+        self._commitments[attestation.prediction_id] = attestation
+        pred.runtime_diagnostics["post_fsync_completion_ts"] = attestation.post_fsync_completion_ts
+        pred.runtime_diagnostics["post_fsync_completion_utc"] = (
+            attestation.post_fsync_completion_utc
+        )
+        pred.runtime_diagnostics["commitment_deadline_ts"] = attestation.commitment_deadline_ts
+        pred.runtime_diagnostics["is_timely"] = attestation.is_timely
+
+    def get_commitment(self, prediction_id: str) -> CommitmentAttestationRecord | None:
+        """Retrieve commitment attestation for a prediction ID if present."""
+        return self._commitments.get(prediction_id)
+
+    def list_commitments(self) -> list[CommitmentAttestationRecord]:
+        """Return all commitment attestation records committed to the journal."""
+        return list(self._commitments.values())
+
+    @property
+    def commitment_count(self) -> int:
+        return len(self._commitments)
 
     @property
     def total_count(self) -> int:

@@ -101,6 +101,12 @@ class EvaluationSummary:
     baseline_source_id: str | None = None
     baseline_source_sha256: str | None = None
     exposure_overlap_classification: str = "UNKNOWN"
+    expectancy_binary_pct: float = 0.0
+    expectancy_digital_pct: float = 0.0
+    break_even_win_rate_digital: float = 0.0
+    opportunity_count: int = 0
+    quarantined_late_count: int = 0
+    commitments_verified_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -123,7 +129,9 @@ class ShadowOutcomeEvaluator:
         baseline_source_id: str | None = None,
         baseline_source_sha256: str | None = None,
         exposure_overlap_classification: str = "UNKNOWN",
+        baseline_frozen_at_ts: float | None = None,
     ) -> None:
+        self.baseline_frozen_at_ts = baseline_frozen_at_ts
         self.journal = journal
         self.assumed_payout = assumed_payout
         self.min_qualifying_trades = min_qualifying_trades
@@ -175,12 +183,94 @@ class ShadowOutcomeEvaluator:
             maturity_candle = by_to_ts.get(pred.expected_maturity_ts)
 
             if maturity_candle is None:
-                # Candle at maturity has not arrived yet in the feed
+                # If market has advanced past expected maturity, settlement evidence was missed/gap
+                if effective_now > pred.expected_maturity_ts:
+                    out_event = OutcomeEventRecord(
+                        session_id=pred.session_id,
+                        prediction_id=pred.prediction_id,
+                        evaluated_at_utc=now_iso,
+                        outcome_status=OutcomeStatus.INVALID_DISCONTINUITY.value,
+                        cutoff_candle_close=(
+                            cutoff_candle.close if cutoff_candle is not None else 0.0
+                        ),
+                        maturity_candle_close=0.0,
+                        actual_return=0.0,
+                        market_direction="MISSING_SETTLEMENT_EVIDENCE",
+                        was_trade_taken=False,
+                        is_winning_trade=None,
+                        simulated_payout_pnl=None,
+                        outcome_note="Maturity candle missing due to market gap or discontinuity",
+                    )
+                    self.journal.record_outcome(out_event)
+                    resolved_count += 1
                 continue
 
             if cutoff_candle is None:
-                # Cutoff candle missing from available set
+                if effective_now > pred.expected_maturity_ts:
+                    out_event = OutcomeEventRecord(
+                        session_id=pred.session_id,
+                        prediction_id=pred.prediction_id,
+                        evaluated_at_utc=now_iso,
+                        outcome_status=OutcomeStatus.INVALID_DISCONTINUITY.value,
+                        cutoff_candle_close=0.0,
+                        maturity_candle_close=maturity_candle.close,
+                        actual_return=0.0,
+                        market_direction="MISSING_SETTLEMENT_EVIDENCE",
+                        was_trade_taken=False,
+                        is_winning_trade=None,
+                        simulated_payout_pnl=None,
+                        outcome_note="Cutoff candle missing from available candle buffer",
+                    )
+                    self.journal.record_outcome(out_event)
+                    resolved_count += 1
                 continue
+
+            # Prospective commitment attestation verification
+            if pred.evidence_class in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST"):
+                comm = (
+                    self.journal.get_commitment(pred.prediction_id)
+                    if hasattr(self.journal, "get_commitment")
+                    else None
+                )
+                if comm is None:
+                    out_event = OutcomeEventRecord(
+                        session_id=pred.session_id,
+                        prediction_id=pred.prediction_id,
+                        evaluated_at_utc=now_iso,
+                        outcome_status=OutcomeStatus.INVALID_DISCONTINUITY.value,
+                        cutoff_candle_close=cutoff_candle.close,
+                        maturity_candle_close=maturity_candle.close,
+                        actual_return=0.0,
+                        market_direction="UNVERIFIED_PROSPECTIVE",
+                        was_trade_taken=False,
+                        is_winning_trade=None,
+                        simulated_payout_pnl=None,
+                        outcome_note=(
+                            "Missing durable commitment attestation: "
+                            "unverified prospective prediction"
+                        ),
+                    )
+                    self.journal.record_outcome(out_event)
+                    resolved_count += 1
+                    continue
+                if not comm.is_timely:
+                    out_event = OutcomeEventRecord(
+                        session_id=pred.session_id,
+                        prediction_id=pred.prediction_id,
+                        evaluated_at_utc=now_iso,
+                        outcome_status=OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value,
+                        cutoff_candle_close=cutoff_candle.close,
+                        maturity_candle_close=maturity_candle.close,
+                        actual_return=0.0,
+                        market_direction="LATE_COMMITMENT",
+                        was_trade_taken=False,
+                        is_winning_trade=None,
+                        simulated_payout_pnl=None,
+                        outcome_note="Late commitment quarantined from prospective scoring",
+                    )
+                    self.journal.record_outcome(out_event)
+                    resolved_count += 1
+                    continue
 
             # Continuity check: maturity candle must be consecutive to cutoff
             # For H=1 bar (60s), maturity_candle.from_ts must equal cutoff_candle.to_ts
@@ -276,6 +366,8 @@ class ShadowOutcomeEvaluator:
     ) -> EvaluationSummary:
         """Compute comprehensive statistical metrics over all predictions in the journal."""
         all_preds = self.journal.list_predictions()
+        if model_id is not None:
+            all_preds = [p for p in all_preds if p.model_id == model_id]
         total_predictions = len(all_preds)
 
         resolved_preds = [p for p in all_preds if p.outcome_status != OutcomeStatus.PENDING.value]
@@ -287,10 +379,37 @@ class ShadowOutcomeEvaluator:
         invalid_count = sum(
             1
             for p in resolved_preds
-            if p.outcome_status == OutcomeStatus.INVALID_DISCONTINUITY.value
+            if p.outcome_status
+            in (
+                OutcomeStatus.INVALID_DISCONTINUITY.value,
+                OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value,
+            )
+        )
+        quarantined_late_count = sum(
+            1
+            for p in resolved_preds
+            if p.outcome_status == OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value
         )
 
-        trade_preds = [p for p in resolved_preds if p.was_trade_taken]
+        trade_preds = [
+            p
+            for p in resolved_preds
+            if p.was_trade_taken
+            and p.outcome_status
+            in (
+                OutcomeStatus.RESOLVED_WIN.value,
+                OutcomeStatus.RESOLVED_LOSS.value,
+                OutcomeStatus.RESOLVED_TIE.value,
+            )
+            and (
+                p.evidence_class not in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST")
+                or (
+                    hasattr(self.journal, "get_commitment")
+                    and self.journal.get_commitment(p.prediction_id) is not None
+                    and self.journal.get_commitment(p.prediction_id).is_timely  # type: ignore[union-attr]
+                )
+            )
+        ]
         trade_count = len(trade_preds)
         win_count = sum(1 for p in trade_preds if p.is_winning_trade is True)
         loss_count = sum(
@@ -340,20 +459,46 @@ class ShadowOutcomeEvaluator:
         ci_low = ci_low_decisive
         ci_high = ci_high_decisive
 
-        # Simulated Expectancy: E = (Wins * payout - Losses * 1.0 + Ties * 0.0) / Total trades
+        # Simulated Expectancy:
+        # Binary options: ATM ties refund 100% of stake (net PnL multiplier 0.0).
+        # Digital options: ATM ties forfeit 100% of stake (net PnL multiplier -1.0).
         if trade_count > 0:
             total_simulated_pnl = (win_count * self.assumed_payout) - (loss_count * 1.0)
             exp_pct = (total_simulated_pnl / trade_count) * 100.0
+            digital_simulated_pnl = total_simulated_pnl - (tie_count * 1.0)
+            exp_digital_pct = (digital_simulated_pnl / trade_count) * 100.0
         else:
             exp_pct = 0.0
+            exp_digital_pct = 0.0
+        break_even_digital = 1.0 / (1.0 + self.assumed_payout)
 
         # Full-partition directional accuracy & Brier score (on all non-discontinuous observations)
         evaluable = [
             p
             for p in resolved_preds
-            if p.outcome_status != OutcomeStatus.INVALID_DISCONTINUITY.value
+            if p.outcome_status
+            not in (
+                OutcomeStatus.INVALID_DISCONTINUITY.value,
+                OutcomeStatus.QUARANTINED_LATE_COMMITMENT.value,
+            )
             and p.market_direction in ("UP", "DOWN")
+            and (
+                p.evidence_class not in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST")
+                or (
+                    hasattr(self.journal, "get_commitment")
+                    and self.journal.get_commitment(p.prediction_id) is not None
+                    and self.journal.get_commitment(p.prediction_id).is_timely  # type: ignore[union-attr]
+                )
+            )
         ]
+        commitments_verified_count = len([
+            p
+            for p in resolved_preds
+            if p.evidence_class in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST")
+            and hasattr(self.journal, "get_commitment")
+            and self.journal.get_commitment(p.prediction_id) is not None
+            and self.journal.get_commitment(p.prediction_id).is_timely  # type: ignore[union-attr]
+        ])
         if evaluable:
             y_true = [1 if p.market_direction == "UP" else 0 for p in evaluable]
             correct_dirs = sum(
@@ -368,13 +513,19 @@ class ShadowOutcomeEvaluator:
             dir_acc = 0.0
             brier = 0.25
 
+        # A frozen constant classifier is evaluated on exactly the candidate's
+        # eligible selected timestamps, not on the baseline's SKIP policy mask.
+        baseline_available = self.baseline_comparison_available and (
+            self.baseline_frozen_at_ts is None
+            or all(p.feature_cutoff_ts > self.baseline_frozen_at_ts for p in trade_preds)
+        )
         # Reference baselines evaluated on matched population (trade_preds)
         base_comps: list[BaselineComparison] = []
         if trade_preds:
             decisive_preds = [p for p in trade_preds if p.market_direction in ("UP", "DOWN")]
 
             # 1. Majority Class Baseline
-            if self.baseline_comparison_available and self.frozen_majority_direction in (
+            if baseline_available and self.frozen_majority_direction in (
                 "UP",
                 "DOWN",
             ):
@@ -475,10 +626,13 @@ class ShadowOutcomeEvaluator:
         if is_functional_test:
             has_edge = False
             verdict = "FUNCTIONAL_REPLAY_TEST_ONLY_NO_EDGE"
+        elif total_predictions == 0 or len(resolved_preds) == 0:
+            has_edge = False
+            verdict = "INSUFFICIENT_EVALUATED_OBSERVATIONS_NO_VERDICT"
         elif trade_count < self.min_qualifying_trades:
             has_edge = False
             verdict = "INSUFFICIENT_SAMPLE_SIZE_NO_EDGE"
-        elif not self.baseline_comparison_available:
+        elif not baseline_available:
             has_edge = False
             verdict = "BASELINE_COMPARISON_UNAVAILABLE_NO_EDGE"
         elif (ci_low_decisive <= break_even_decisive) or (ci_low_all <= break_even_all):
@@ -507,10 +661,11 @@ class ShadowOutcomeEvaluator:
 
         disclaimer = (
             "OFFLINE RESEARCH SHADOW EVALUATION. NO LIVE EXECUTION AUTHORITY. "
-            "NO DEMONSTRATED EDGE. ASSUMED PAYOUT SIMULATIONS DO NOT CONSTITUTE "
-            "PROOF OF PROSPECTIVE PROFITABILITY. WILSON SCORE INTERVALS ASSUME "
-            "I.I.D. BERNOULLI TRIALS AND REPRESENT AN OPTIMAL BOUND UNDER "
-            "TEMPORAL SERIAL DEPENDENCE AND HISTORICAL MODEL SELECTION. "
+            "NO DEMONSTRATED EDGE. CANDLE-CLOSE COMPARISONS ARE HYPOTHETICAL "
+            "RESEARCH BENCHMARKS AND NEVER OBSERVED BROKER ORDER SETTLEMENTS. "
+            "ASSUMED PAYOUT SIMULATIONS DO NOT CONSTITUTE PROOF OF PROSPECTIVE "
+            "PROFITABILITY. WILSON SCORE INTERVALS ASSUME I.I.D. BERNOULLI TRIALS "
+            "AND REPRESENT AN OPTIMAL BOUND UNDER TEMPORAL SERIAL DEPENDENCE. "
             "PHASE 38 MODEL REMAINS FROZEN."
         )
 
@@ -550,8 +705,14 @@ class ShadowOutcomeEvaluator:
             baseline_comparisons=base_comps,
             scientific_disclaimer=disclaimer,
             evaluation_timestamp_utc=datetime.now(UTC).isoformat(),
-            baseline_comparison_available=self.baseline_comparison_available,
+            baseline_comparison_available=baseline_available,
             baseline_source_id=self.baseline_source_id,
             baseline_source_sha256=self.baseline_source_sha256,
             exposure_overlap_classification=self.exposure_overlap_classification,
+            expectancy_binary_pct=round(exp_pct, 2),
+            expectancy_digital_pct=round(exp_digital_pct, 2),
+            break_even_win_rate_digital=round(break_even_digital, 4),
+            opportunity_count=total_predictions,
+            quarantined_late_count=quarantined_late_count,
+            commitments_verified_count=commitments_verified_count,
         )

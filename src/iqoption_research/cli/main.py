@@ -30,6 +30,7 @@ from iqoption_research.cli.commands.probe import probe_command
 from iqoption_research.cli.commands.prospective_cmd import app as prospective_app
 from iqoption_research.cli.commands.research_cmd import research_app
 from iqoption_research.cli.commands.security_check_cmd import security_check_command
+from iqoption_research.cli.commands.shadow_cmd import shadow_app
 from iqoption_research.cli.commands.simulate import simulate_command
 from iqoption_research.cli.commands.timing_cmd import app as timing_app
 from iqoption_research.cli.commands.validate_data import validate_command
@@ -90,6 +91,7 @@ app.add_typer(timing_app, name="timing")
 app.add_typer(workstation_app, name="workstation")
 app.add_typer(lab_app, name="laboratory")
 app.add_typer(lab_app, name="lab")
+app.add_typer(shadow_app, name="shadow")
 
 
 @app.callback()

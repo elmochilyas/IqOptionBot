@@ -749,7 +749,7 @@ class ProspectiveShadowObserver:
         # 4b. Clock uncertainty / synchronization check
         if (
             event.clock_uncertainty_ms > self.config.max_clock_uncertainty_ms
-            or event.clock_status not in ("SYNCHRONIZED", "VERIFIED")
+            or event.clock_status not in ("SYNCHRONIZED", "VERIFIED", "SYNCHRONIZED_AND_FRESH")
         ):
             self._clock_uncertainty_rejections_count += 1
             logger.warning(

@@ -196,12 +196,14 @@ class LiveCollectorStream:
         *,
         allow_shortened_session: bool = False,
         status_path: Path | None = None,
+        sync_timeout: float = 15.0,
     ) -> None:
         self.root = root
         self.minutes = minutes
         self.account_id = account_id
         self.allow_shortened_session = allow_shortened_session
         self.status_path = status_path
+        self.sync_timeout = sync_timeout
 
         self._connected = False
         self._client: Any = None
@@ -212,6 +214,8 @@ class LiveCollectorStream:
     async def connect(self) -> None:
         """Establish single supervised read-only broker session."""
         from iqoption_research.market_data.extended import (
+            BrokerClockUnavailableError,
+            CollectorError,
             ExtendedCollection,
             assess_duration_market_fit,
             require_regular_market,
@@ -240,19 +244,68 @@ class LiveCollectorStream:
             provenance="OPERATOR_PROSPECTIVE_SHADOW",
             is_synthetic=False,
         )
-        self._client = await supervised_client(recorder, account_id=self.account_id)
-        await self._client.__aenter__()
-        self._client.assert_read_only()
-        self._connected = True
+        try:
+            self._client = await supervised_client(recorder, account_id=self.account_id)
+            await self._client.__aenter__()
+            self._client.assert_read_only()
+            if hasattr(self._client, "measurement_wallet_status"):
+                self._collection.state["wallet_classification"] = (
+                    self._client.measurement_wallet_status().name
+                )
+            self._collection.state["connection"] = "CONNECTING"
+            self._collection.publish_state()
+
+            if not await self._client.wait_for_server_time_sync(timeout=self.sync_timeout):
+                raise BrokerClockUnavailableError("BROKER_CLOCK_UNAVAILABLE")
+
+            self._collection.state["connection"] = "CONNECTED"
+            self._collection.connected_at = self._collection.mono()
+            self._collection.publish_state()
+            self._connected = True
+        except BaseException as exc:
+            self._connected = False
+            if (
+                self._collection is not None
+                and self._collection.state.get("termination_reason") == "IN_PROGRESS"
+            ):
+                if isinstance(exc, CollectorError):
+                    self._collection.state["termination_reason"] = exc.TERMINATION_REASON
+                else:
+                    self._collection.state["termination_reason"] = f"FAILED_{type(exc).__name__}"
+            try:
+                await self.disconnect()
+            except Exception as teardown_exc:  # noqa: BLE001
+                logger.error("Error during connect failure teardown: %s", teardown_exc)
+            raise
 
     async def disconnect(self) -> None:
         """Cleanly tear down broker session."""
         self._connected = False
-        if self._collection is not None:
-            self._collection.finalize()
-        if self._client is not None:
-            await self._client.__aexit__(None, None, None)
-            self._client = None
+        col = self._collection
+        self._collection = None
+        client = self._client
+        self._client = None
+
+        col_exc: BaseException | None = None
+        if col is not None:
+            try:
+                col.finalize()
+            except BaseException as exc:  # noqa: BLE001
+                col_exc = exc
+                logger.error("Error finalizing collection during stream disconnect: %s", exc)
+
+        client_exc: BaseException | None = None
+        if client is not None:
+            try:
+                await client.__aexit__(None, None, None)
+            except BaseException as exc:  # noqa: BLE001
+                client_exc = exc
+                logger.error("Error closing client during stream disconnect: %s", exc)
+
+        if col_exc is not None:
+            raise col_exc
+        if client_exc is not None:
+            raise client_exc
 
     @property
     def is_connected(self) -> bool:
@@ -326,6 +379,7 @@ class LiveCollectorStream:
 
         while col.mono() < col.deadline:
             if not client.is_authenticated or client.is_failed:
+                col.state["termination_reason"] = "BROKER_DISCONNECTED"
                 raise BrokerDisconnectedError("BROKER_DISCONNECTED")
 
             now_utc = datetime.fromtimestamp(col.wall(), UTC)
@@ -338,9 +392,11 @@ class LiveCollectorStream:
 
             clock = client.clock_diagnostics
             if not clock.is_fresh or clock.step_detected:
+                col.state["termination_reason"] = "STALE_OR_INVALID_BROKER_CLOCK"
                 raise StaleOrInvalidBrokerClockError("STALE_OR_INVALID_BROKER_CLOCK")
 
             if clock.server_time_ns is None or clock.total_uncertainty_ms is None:
+                col.state["termination_reason"] = "UNVERIFIED_BROKER_CLOCK"
                 raise UnverifiedBrokerClockError("UNVERIFIED_BROKER_CLOCK")
 
             completed = min(col.wall(), clock.server_time_ns / 1e9) - (

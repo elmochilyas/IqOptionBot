@@ -133,6 +133,23 @@ Crucially, in V3, the evaluation opportunity population includes all eligible de
 | **IQ Option Digital** | Strike Grid | ~0.35s | Round minute | **ATM LOSS (-100%)** | 51.28% - 55.56% | **EVIDENCE_GAP** |
 | **Forex / CFD** | Ask/Bid | ~0.20s | Continuous | Spread Breakeven | Variable | **EVIDENCE_GAP** |
 
+### Modeled Research Assumptions vs. Verified Broker Reality
+
+To prevent unwarranted extrapolation from offline research to live financial contracts, research assumptions must be rigorously distinguished from verified live broker behavior:
+
+1. **Fixed 85% Payout Assumption vs. Dynamic Broker Payouts**:
+   - *Modeled Research Assumption*: Break-even analyses assume a constant payout rate of 85.0% ($W_{\text{be}} = \frac{1}{1 + 0.85} \approx 54.05\%$).
+   - *Verified Broker Reality*: Live broker payouts vary dynamically between 50% and 90%+ depending on time of day, asset liquidity, current volatility, and account tier. Payouts can drop sharply during illiquid market sessions. Historical M1 candles do not record the broker payout schedule at bar close.
+2. **Instantaneous Candle-Close Entry vs. Real Execution Latency**:
+   - *Modeled Research Assumption*: Models assume order entry occurs instantaneously at candle close $C_t$ with zero fill delay ($0.0\text{s}$).
+   - *Verified Broker Reality*: Live order routing encounters client serialization, network transit, broker API validation, and engine matching delays (~200–500ms). The execution price is the broker's real-time spot quote at match time, which frequently diverges from the finalized M1 bar close $C_t$ due to slippage and spread.
+3. **Contract Expiry Duration vs. Fixed-Interval Round Minute Expiry**:
+   - *Modeled Research Assumption*: Models assume expiry occurs exactly $H=1$ minute (60 seconds) after entry.
+   - *Verified Broker Reality*: Broker binary options expire at fixed wall-clock round minute boundaries. An order accepted 5 seconds into a minute bar has only 55 seconds to expiry, altering the return distribution and time-decay properties.
+4. **Idealized Tie Settlement vs. Spot Quote Precision**:
+   - *Modeled Research Assumption*: Modeled contracts assume exact equality of price at close constitutes an At-The-Money (ATM) event (refunded in Binary, lost in Digital).
+   - *Verified Broker Reality*: Live spot quotes operate with 5 to 6 decimal places of precision, and broker quote feeds may reflect internal synthetic liquidity filtering. Exact ties are rare in live broker execution compared to discrete historical bar closes.
+
 ### Payout Sensitivity Table (Binary Options with ATM Refund)
 - **75% Payout**: Break-even Win Rate = **57.14%** | Expectancy @ 52% = -9.00% | Expectancy @ 55% = -3.75%
 - **80% Payout**: Break-even Win Rate = **55.56%** | Expectancy @ 52% = -6.40% | Expectancy @ 55% = -1.00%
@@ -172,7 +189,7 @@ poetry run iqresearch diagnostics report --output reports/model_failure_intellig
 
 The following hypotheses are grounded in Phase 41 findings and are preserved exclusively for prospective shadow observation:
 
-1. **Hypothesis H-1 (Tie-Purged Training)**: Models trained on datasets excluding exact ties will exhibit zero directional prediction asymmetry on future unobserved market data.
+1. **Hypothesis H-1 (Tie-Purged Training & Directional Balance Hypothesis)**: Models trained on datasets excluding exact ties will substantially mitigate the artificial downward prediction skew induced by legacy binary target collapsing (which misclassified all ties as DOWN). Zero directional asymmetry under future live market regimes is an empirical hypothesis to be tested under prospective observation, not an established mathematical guarantee, as non-stationary market regimes, volatility shocks, and feature drift can create empirical directional imbalances.
 2. **Hypothesis H-2 (Compact Stationary Features)**: The 8-feature compact stationary representation will show significantly lower performance decay across market regime transitions than the 17-feature full indicator set.
 3. **Hypothesis H-3 (Session-Specific Volatility Filtering)**: Applying selective confidence thresholds ($\ge 0.55$) strictly during London-New York session overlap (12:00–16:00 UTC) will yield the narrowest negative break-even gap.
 
@@ -182,4 +199,48 @@ The following hypotheses are grounded in Phase 41 findings and are preserved exc
 
 1. **Execution Latency Evidence Gap**: Historical M1 candle data records finalized minute boundaries. Tick-level broker quote slippage between order submission ($t + 350\text{ms}$) and broker match timestamp cannot be evaluated without live quote stream archives.
 2. **Broker Payout Variance**: Payout percentages fluctuate dynamically (e.g., from 88% down to 55% during low liquidity). Historical M1 candles do not record the broker payout schedule at bar close.
-3. **Serial Dependence**: EURUSD returns exhibit non-zero residual autocorrelation, reducing effective independent sample size by ~10–15%. Statistical confidence intervals must continue using conservative effective sample size adjustments.
+3. **Serial Dependence & Effective Sample Size**: EURUSD returns and rolling feature lookbacks exhibit residual autocorrelation and temporal dependence. While the diagnostic pipeline instruments Bartlett's AR(1) formula ($N_{\text{eff}} = N \cdot \frac{1 - \hat{\rho}_1}{1 + \hat{\rho}_1}$), the claim of a fixed 10–15% effective sample size reduction is an unverified rule-of-thumb rather than an empirical constant. Confirmatory prospective evaluations must compute empirical dependence corrections via block bootstrapping, stationary bootstrap, or cluster-robust standard errors rather than applying heuristic sample-size discounts.
+
+---
+
+## 9. Private Experiment Ledger Reproducibility & Privacy Policy
+
+The controlled research matrix (Areas A through F, 14 trials) was executed and recorded under a strict reproducibility and privacy protocol:
+
+### Immutable Evidence Checksums & Provenance
+- **Ledger Artifact Path**: `data/experiments/phase41_experiment_ledger_v3.json`
+- **Ledger SHA-256 Checksum**: `5f15ea535055a48baf3266c6d91dc40106e13eed0c017140b8282554d8b1245e`
+- **Source Dataset Snapshot ID**: `snapshot_20261015_001900_20261015_165700`
+- **Source Dataset Manifest Checksum**: `6398befe8e0da71a27d27c1f6e4b147e8e8ef612d474de7ec9fd168eb2ac3071`
+- **Source Population Reconciliation**:
+  - Total candidate pairs: 66,463
+  - Quarantined / excluded pairs: 13 (11 scheduled weekend closures, 2 intraday missing candle gaps)
+  - Valid evaluated pairs: 66,450 (31,292 UP [47.091%], 31,727 DOWN [47.746%], 3,431 TIE [5.163%])
+
+### Controlled Experiment Reproduction Protocol
+To reproduce the 14-trial matrix from an authorized research workstation:
+1. Ensure the authentic source dataset snapshot `snapshot_20261015_001900_20261015_165700` is present with matching SHA-256 checksum `6398befe...`.
+2. Run the offline diagnostic experiment runner:
+   ```bash
+   python -m iqoption_research.cli.main diagnostics experiment-matrix --output data/experiments/phase41_experiment_ledger_v3.json
+   ```
+3. The runner executes 14 trials across 3 expanding chronological walk-forward folds ($H=1$ horizon purge, 5 bars embargo, $N_{\text{test}} = 0$ holdout isolation).
+4. Verify that the output ledger matches the canonical hash `5f15ea53...`.
+
+### Privacy Boundaries & Data Protection
+- **No Private Data in Version Control**: Raw market data snapshots, broker practice account identifiers, session authentication tokens, and user credentials reside strictly in local, untracked directories (`data/`, `logs/`, Windows Credential Vault). They are excluded from git by `.gitignore`.
+- **No Credentials in Code or Ledgers**: Experiment ledgers store purely aggregate mathematical metrics (accuracies, Brier scores, sample counts, coverage ratios, and economic deltas). No credentials or private account numbers are recorded.
+- **External Auditability without Private Artifacts**: When private source snapshots are unavailable to external parties, algorithmic correctness, opportunity set accounting, tie handling, prefix invariance, and calibration logic are completely verified through the deterministic offline test suite (`tests/unit/test_phase41_remediation.py` and `tests/unit/test_phase41_failure_intelligence.py`).
+
+---
+
+## 10. Research Code Release vs. Live Trading Authorization
+
+To eliminate any ambiguity regarding the operational scope of this pull request:
+
+- **Permission to Merge Research Code**: Merge approval into `main` solely authorizes the inclusion of offline failure intelligence algorithms, diagnostic tools, and test suites into the codebase for retrospective research.
+- **Strictly Prohibited & Unauthorized**:
+  - No authorization for live broker connections or credentials usage.
+  - No authorization for live order routing, trade execution, or wallet balance mutation.
+  - No claim of a demonstrated predictive edge or commercially profitable trading strategy (`execution_authority = NONE`, `NO_DEMONSTRATED_EDGE`).
+  - No promotion of candidate models to unattended or autonomous live operation.

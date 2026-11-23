@@ -16,7 +16,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from iqoption_research.ml.targets.specs import TargetSpec, TargetType
+from iqoption_research.ml.targets.specs import TargetSpec, TargetType, TiePolicy
 from iqoption_research.models.market import Candle
 
 
@@ -136,7 +136,17 @@ def generate_targets(
                 valid_mask[t] = False
 
     if spec.target_type == TargetType.DIRECTION_BINARY:
-        # 1 if future price exceeds current price by strictly more than threshold, else 0
+        tie_policy = getattr(spec, "tie_policy", TiePolicy.LEGACY_DOWN)
+        if tie_policy == TiePolicy.EXCLUDE:
+            # Mask out ties: |diffs| <= threshold are invalidated to eliminate directional bias
+            is_tie = np.abs(diffs) <= threshold
+            valid_mask[:valid_len] = valid_mask[:valid_len] & (~is_tie)
+            targets_bin = np.zeros(n, dtype=np.int64)
+            raw_bin = np.where(diffs > threshold, 1, 0).astype(np.int64)
+            targets_bin[:valid_len] = np.where(valid_mask[:valid_len], raw_bin, 0)
+            return targets_bin, valid_mask
+
+        # Legacy behavior: 1 if future price exceeds current price by > threshold, else 0
         targets_bin = np.zeros(n, dtype=np.int64)
         raw_bin = np.where(diffs > threshold, 1, 0).astype(np.int64)
         targets_bin[:valid_len] = np.where(valid_mask[:valid_len], raw_bin, 0)

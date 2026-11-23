@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from iqoption_research.ml.targets.specs import TargetSpec, TargetType
+from iqoption_research.ml.targets.specs import TargetSpec, TargetType, TiePolicy
 from iqoption_research.models.market import Candle
 from iqoption_research.research.datasets.splitter import ChronologicalSplitter, DatasetSplits
 from iqoption_research.research.features.pipeline import FeatureDataset
@@ -50,6 +50,7 @@ class ContinuityReport:
     excluded_tail_horizon: int
     gaps_detected: list[dict[str, Any]]
     policy_description: str
+    excluded_ties: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -60,6 +61,7 @@ class ContinuityReport:
             "excluded_gap_horizon": self.excluded_gap_horizon,
             "excluded_weekend_closure_horizon": self.excluded_weekend_closure_horizon,
             "excluded_tail_horizon": self.excluded_tail_horizon,
+            "excluded_ties": self.excluded_ties,
             "gaps_detected": self.gaps_detected,
             "policy_description": self.policy_description,
         }
@@ -473,6 +475,7 @@ def build_ml_dataset(
     excluded_tail = 0
     excluded_gap_horizon = 0
     excluded_weekend_horizon = 0
+    excluded_ties = 0
 
     # 4. Row-for-row alignment
     for row in feature_dataset.rows:
@@ -499,7 +502,7 @@ def build_ml_dataset(
             excluded_warmup += 1
             continue
 
-        # Drop invalid target horizon rows (tail H bars or pre-gap bars)
+        # Drop invalid target horizon rows (tail H bars, pre-gap bars, or excluded ties)
         if not valid_mask[t]:
             if t >= (n - target_spec.horizon_bars):
                 excluded_tail += 1
@@ -512,7 +515,15 @@ def build_ml_dataset(
                 if is_weekend:
                     excluded_weekend_horizon += 1
                 else:
-                    excluded_gap_horizon += 1
+                    fut_idx = t + target_spec.horizon_bars
+                    if (
+                        getattr(target_spec, "tie_policy", None) == TiePolicy.EXCLUDE
+                        and fut_idx < n
+                        and abs(candles[fut_idx].close - c.close) <= target_spec.threshold_price
+                    ):
+                        excluded_ties += 1
+                    else:
+                        excluded_gap_horizon += 1
             continue
 
         # Extract feature vector in deterministic order
@@ -562,6 +573,7 @@ def build_ml_dataset(
             excluded_gap_horizon=excluded_gap_horizon,
             excluded_weekend_closure_horizon=excluded_weekend_horizon,
             excluded_tail_horizon=excluded_tail,
+            excluded_ties=excluded_ties,
             gaps_detected=gaps_detected,
             policy_description=(
                 "Temporal continuity enforced: rolling features require continuous lookback "

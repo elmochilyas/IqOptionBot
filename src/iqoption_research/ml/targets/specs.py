@@ -25,6 +25,24 @@ class TargetType(StrEnum):
     RETURN_CONTINUOUS = "return_continuous"
 
 
+class TiePolicy(StrEnum):
+    """Policy for handling exact price ties (|diff| <= threshold).
+
+    Attributes:
+        LEGACY_DOWN: Map exact ties to 0 (DOWN). Preserves Phase 4-40A backward compatibility.
+        EXCLUDE: Invalidate exact ties (valid_mask=False). Pure directional movement.
+        SEPARATE_CLASS: Exact ties encoded as distinct neutral class (0 in ternary).
+        EXPIRY_ATM_REFUND: Model as Binary Option contract (ties refund stake, return 0.0).
+        EXPIRY_ATM_LOSS: Model as Digital Option contract (ties lose 100% of stake, return -1.0).
+    """
+
+    LEGACY_DOWN = "legacy_down"
+    EXCLUDE = "exclude"
+    SEPARATE_CLASS = "separate_class"
+    EXPIRY_ATM_REFUND = "expiry_atm_refund"
+    EXPIRY_ATM_LOSS = "expiry_atm_loss"
+
+
 @dataclass(frozen=True, slots=True)
 class TargetSpec:
     """Specification of a forward-looking prediction target.
@@ -35,12 +53,14 @@ class TargetSpec:
         flat_threshold_pips: Minimum price movement in pips required to trigger
             a directional label. Movements within this threshold are treated as flat.
         pip_size: Price value of one pip (default 1e-4 = 0.0001 for EUR/USD).
+        tie_policy: Policy for handling exact price ties (default LEGACY_DOWN).
     """
 
     target_type: TargetType = TargetType.DIRECTION_BINARY
     horizon_bars: int = 1
     flat_threshold_pips: float = 0.0
     pip_size: float = 1e-4
+    tie_policy: TiePolicy = TiePolicy.LEGACY_DOWN
 
     def __post_init__(self) -> None:
         """Validate target specification parameters."""
@@ -51,6 +71,14 @@ class TargetSpec:
                 raise ValueError(f"Invalid target_type: {self.target_type!r}") from e
         elif not isinstance(self.target_type, TargetType):
             raise ValueError(f"target_type must be a TargetType enum, got {self.target_type!r}")
+
+        if isinstance(self.tie_policy, str) and not isinstance(self.tie_policy, TiePolicy):
+            try:
+                object.__setattr__(self, "tie_policy", TiePolicy(self.tie_policy))
+            except ValueError as e:
+                raise ValueError(f"Invalid tie_policy: {self.tie_policy!r}") from e
+        elif not isinstance(self.tie_policy, TiePolicy):
+            raise ValueError(f"tie_policy must be a TiePolicy enum, got {self.tie_policy!r}")
 
         if (
             not isinstance(self.horizon_bars, int)
@@ -87,6 +115,7 @@ class TargetSpec:
         horizon_bars: int = 1,
         flat_threshold_pips: float = 0.0,
         pip_size: float = 1e-4,
+        tie_policy: TiePolicy = TiePolicy.LEGACY_DOWN,
     ) -> TargetSpec:
         """Create a binary directional target specification."""
         return cls(
@@ -94,6 +123,23 @@ class TargetSpec:
             horizon_bars=horizon_bars,
             flat_threshold_pips=flat_threshold_pips,
             pip_size=pip_size,
+            tie_policy=tie_policy,
+        )
+
+    @classmethod
+    def binary_strict(
+        cls,
+        horizon_bars: int = 1,
+        flat_threshold_pips: float = 0.0,
+        pip_size: float = 1e-4,
+    ) -> TargetSpec:
+        """Create a strict binary directional target specification with exact ties excluded."""
+        return cls(
+            target_type=TargetType.DIRECTION_BINARY,
+            horizon_bars=horizon_bars,
+            flat_threshold_pips=flat_threshold_pips,
+            pip_size=pip_size,
+            tie_policy=TiePolicy.EXCLUDE,
         )
 
     @classmethod
@@ -132,6 +178,7 @@ class TargetSpec:
             "horizon_bars": self.horizon_bars,
             "flat_threshold_pips": self.flat_threshold_pips,
             "pip_size": self.pip_size,
+            "tie_policy": self.tie_policy.value,
         }
 
     @classmethod
@@ -142,4 +189,5 @@ class TargetSpec:
             horizon_bars=int(data["horizon_bars"]),
             flat_threshold_pips=float(data.get("flat_threshold_pips", 0.0)),
             pip_size=float(data.get("pip_size", 1e-4)),
+            tie_policy=TiePolicy(data.get("tie_policy", TiePolicy.LEGACY_DOWN.value)),
         )

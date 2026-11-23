@@ -93,7 +93,7 @@ from iqoption_research.shadow.observer import (
 from iqoption_research.shadow.registry import FrozenRegistrationRecord, ShadowModelRegistry
 from iqoption_research.shadow.replay_engine import EvidenceReplayEngine
 from iqoption_research.shadow.streaming import SyntheticMarketStream
-from tests.unit.test_phase40c_replay import _reseal_manifest, replay_workspace
+from tests.unit.test_phase40c_replay import _reseal_manifest
 
 # ---------------------------------------------------------------------------
 # Test Helpers

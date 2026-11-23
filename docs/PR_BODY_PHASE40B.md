@@ -1,89 +1,102 @@
-# PR: Phase 40B — Prospective AI Shadow Observation & Live Readiness Gate
+# PR #55: Phase 40B — Prospective AI Shadow Observation & Live Readiness Gate
 
-## Overview
+## Overview & Stack Disposition
 
-Stacked on `codex/model-failure-intelligence` (PR #54), this PR integrates Market Collector V2, the frozen candidate model registry, the immutable two-phase prediction journal, and Phase 41 decision/evaluation rules into a single supervised read-only prospective observation workflow for EURUSD M1 candidate models.
+- **Base Branch**: `main` (Prerequisites PR #51, #52, #53, and #54 are fully **MERGED** into `main` at `b28850f05a9b9ff7bda76c9f6f111182a3700895`)
+- **Head Branch**: `codex/prospective-shadow-observation` (Commit: `ae93882`)
+- **Governance Status**: **OPEN / ON HOLD** (Pending Separate Explicit Owner Approval)
+- **Safety Disposition**: Strictly read-only observation; `execution_authority = NONE`; `NO_DEMONSTRATED_EDGE`.
 
-It resolves all prospective-time integrity and session-lifecycle readiness risks prior to supervised live broker acceptance:
-- Enforces strict real prospective commitment deadlines ($t_{\text{deadline}} = t_{\text{maturity}} - \text{margin} - \text{clock\_uncertainty}$).
-- Provides verified live warmup history acquisition while preventing retroactive predictions.
-- Implements market-data gap detection, invalidation of missing maturity evidence, and safe warmup rebuilding.
-- Implements cryptographic session sealing (`predictions_sha256`, `outcomes_sha256`, `session_json_sha256`, `manifest_sha256`) and anti-overwrite protection.
-- Hardens synthetic vs. prospective mode isolation.
-- Enriches dashboard acceptance diagnostics and adds `shadow verify-session` CLI verification.
-
-All functionality has been developed, tested, and verified offline first using deterministic tests and a synthetic streaming harness without broker connection or live order routing.
-
-## Key Changes
-
-### 1. Streaming Infrastructure (`src/iqoption_research/shadow/streaming.py`)
-- `StreamingCandleEvent`: Strongly typed container capturing candle payload, UTC receipt timestamps, latency, clock diagnostics, and cryptographic provenance.
-- `MarketStreamProtocol`: Clean async protocol for streaming market observations (`connect`, `disconnect`, `get_next_event`, `get_warmup_candles`, `is_connected`, `is_synthetic`).
-- `SyntheticMarketStream`: Deterministic offline streaming harness with configurable latency, clock uncertainties, and step arrivals for offline unit testing and dry runs.
-- `LiveCollectorStream`: Supervised adapter over `ExtendedCollection` and `supervised_client` for operator-controlled foreground observation sessions with Windows Vault account selection and verified pre-session regular M1 candle warmup.
-
-### 2. Contract Economics & Delayed Evaluator (`src/iqoption_research/shadow/evaluator.py`)
-- Distinguishes generic research directional accuracy from financial contract mechanics:
-  - **Binary Option**: At-The-Money (ATM) ties refund principal without profit or loss ($\text{PnL} = 0.0$), $W_{\text{be, decisive}} = 1 / (1 + P)$, $W_{\text{be, all}} = (1 - T_{\text{rate}}) / (1 + P)$.
-  - **Digital Option**: At-The-Money (ATM) ties lose principal ($\text{PnL} = -1.0$), $W_{\text{be, digital}} = 1 / (1 + P)$.
-- Missing settlement evidence due to market gaps resolved as `INVALID_DISCONTINUITY` with `MISSING_SETTLEMENT_EVIDENCE`.
-- Added `expectancy_binary_pct`, `expectancy_digital_pct`, and `break_even_win_rate_digital` to `EvaluationSummary`.
-- Extended `compute_summary` to support multi-model filtering by `model_id` and zero-prediction safety (`INSUFFICIENT_EVALUATED_OBSERVATIONS_NO_VERDICT`).
-- Mandatory scientific disclaimer: *"CANDLE-CLOSE COMPARISONS ARE HYPOTHETICAL RESEARCH BENCHMARKS AND NEVER OBSERVED BROKER ORDER SETTLEMENTS. NO_DEMONSTRATED_EDGE."*
-
-### 3. Prospective Shadow Observer & Sealing (`src/iqoption_research/shadow/observer.py`)
-- `ProspectiveShadowObserver`: Core engine coordinating real-time prospective observation.
-- Real prospective commitment deadline enforcement:
-  $$t_{\text{deadline}} = t_{\text{maturity}} - \text{margin} - (\text{clock\_uncertainty\_ms} / 1000.0)$$
-  Late observations and late commitments are rejected from emitting predictions, retaining candles for lookback and delayed outcome evaluation.
-- Clock disagreement ($t_{\text{recv}} < t_{\text{cutoff}}$) and excessive clock uncertainty ($>5000\text{ms}$) explicitly rejected.
-- Market gap recovery FSM: `OBSERVING` -> `GAP_DETECTED` -> `REBUILDING_WARMUP` -> `OBSERVING`.
-- Anti-overwrite protection: Fails closed (`ValueError`) if target session directory already contains `session.json` or `manifest.json`.
-- Complete cryptographic sealing: Manifest seals `predictions_sha256`, `outcomes_sha256`, `session_json_sha256`, `models_sha256`, and its own canonical `manifest_sha256`.
-- `verify_session_integrity(session_dir)`: Standalone programmatic and CLI verification function.
-
-### 4. Desktop Research Workstation Panel (`src/iqoption_research/desktop/shadow_panel.py`)
-- Added 4th subtab "Prospective Observation" to Shadow Evaluation panel.
-- Operator controls: candidate model dropdown, mode radio buttons (Offline Simulator vs Supervised Live), Windows Vault account selector, bounded duration selector (15, 30, 60, 120 min), and Start/Stop buttons.
-- Real-time streaming metrics table: Total Preds, Pending, Trades (W/L/T), Decisive Win%, Matched Maj%, Wilson 95% CI, Exp Binary, Exp Digital, BE Gap. Shows `N/A` when zero active trades exist.
-- Session Health & Continuity status bar: FSM state, warmup status, accepted/late opportunities, genuine/synthetic counts, commitment latency.
-- Visible zero-order execution safety banner: `EXECUTION_AUTHORITY: NONE · NO DEMONSTRATED EDGE · STRICTLY READ-ONLY`.
-
-### 5. CLI Command & Session Process (`src/iqoption_research/cli/commands/shadow_cmd.py`, `src/iqoption_research/desktop/process.py`)
-- Added `shadow observe` command supporting `--synthetic` (offline), `--live` (supervised broker), bounded `--minutes`, and multi-model `--model-id`.
-- Added `shadow verify-session <SESSION_DIR_OR_ID>` command.
-- Added `start_prospective_shadow` to desktop session process runner.
-
-### 6. Comprehensive Test Suite (`tests/unit/test_phase40b_prospective_shadow.py`)
-- 16 comprehensive unit tests verifying:
-  1. Streaming candle event serialization roundtrip.
-  2. Synthetic stream sequential playback and connection handling.
-  3. Binary vs. Digital contract economics and break-even math.
-  4. End-to-end prospective observation with delayed outcome resolution and point-in-time pre-outcome commitment.
-  5. Evidence rejection (incomplete, discontinuous, duplicate).
-  6. Operator cancellation and sealed manifest publication.
-  7. Pre-flight candidate integrity and tamper rejection (`execution_authority = NONE`).
-  8. Desktop panel prospective tab initialization and safety labels.
-  9. Real prospective commitment deadline enforcement across arrival variations (shortly after close, near deadline, past deadline, at maturity, after maturity, excessive clock uncertainty, clock disagreement).
-  10. Pre-session live warmup acquisition from stream (zero retroactive predictions).
-  11. Insufficient warmup live accumulation without pre-history.
-  12. Market gap detection, pending outcome invalidation (`INVALID_DISCONTINUITY`), and safe post-gap warmup rebuilding.
-  13. Duplicate session ID anti-overwrite rejection.
-  14. Manifest cryptographic sealing and multi-point tamper detection.
-  15. Mode isolation between synthetic and live configurations.
-  16. CLI `shadow verify-session` verification command.
+This PR integrates Market Collector V2, the frozen candidate model registry, the immutable two-phase prediction and commitment journals, and Phase 41 decision/evaluation policies into a single operator-supervised read-only prospective shadow observation workflow for EURUSD M1 candidate models.
 
 ---
 
-## Invariant Verification
+## Key Changes & Live-Readiness Corrections
 
-- [x] `execution_authority = NONE` enforced across all engines and manifests.
-- [x] Zero trade execution, order routing, or wallet mutation capability.
-- [x] Candle-close comparisons explicitly disclaimed as hypothetical research benchmarks.
-- [x] All 16 Phase 40B unit tests pass.
-- [x] All 23 Phase 40A shadow evaluation tests pass.
-- [x] Full repository offline test suite (2,044+ tests) passes.
-- [x] MyPy: 0 errors across 251 source files.
-- [x] Ruff check: All checks passed.
-- [x] Ruff format: Clean across all 399 repository files.
-- [x] CLI Security Check: All 7 checks passed.
+### 1. Broker Clock Startup Synchronization Fix (`src/iqoption_research/shadow/streaming.py`)
+- In `LiveCollectorStream.connect()`, passively awaits `client.wait_for_server_time_sync(timeout=15.0)` immediately after authenticated connection before marking the stream connected or admitting warmup candles.
+- Fails closed with `BrokerClockUnavailableError` if timeSync frames are not received within timeout, preventing startup crashes from uninitialized clock state.
+- Idempotent cleanup handles partly initialized connection state and seals interrupted sessions without fabricating outcomes.
+- Supported by 7 deterministic regression tests in `tests/unit/test_phase40b_live_collector_stream.py`.
+
+### 2. Verified Frozen Baseline Reporting (`src/iqoption_research/shadow/baseline.py`, `evaluator.py`, `observer.py`)
+- Resolves an immutable `FrozenMajorityBenchmark` before observation begins, linking candidates strictly to verified pre-observation baseline artifacts.
+- Distinguishes the majority baseline's frozen training-majority label (`DOWN`, raw training frequency) from its selective trading policy (`SKIP`).
+- Refuses unverified comparison (returning `UNAVAILABLE` and `null` values rather than deceptive placeholder zeros).
+- Evaluates the constant majority classifier strictly on the candidate's selected decision timestamps.
+- Supported by 20 deterministic regression tests in `tests/unit/test_phase40b_baseline_reporting.py`.
+
+### 3. Durable Commitment Attestation Journal (`commitments.jsonl`, `src/iqoption_research/shadow/journal.py`)
+- Implements a separate, append-only, fsynced `commitments.jsonl` log in `ShadowPredictionJournal`.
+- Attestations capture session ID, prediction ID, model ID, fingerprint, feature cutoff, expected maturity, post-fsync completion timestamp, deadline, clock uncertainty, safety margin, and timeliness boolean.
+- Written immediately after prediction write and `os.fsync`, preserving immutable physical journal ordering.
+- Strictly separates timely prospective predictions (`is_timely == True`) from quarantined late commitments (`OutcomeStatus.QUARANTINED_LATE_COMMITMENT`).
+
+### 4. Windows Vault Full 32-Character UUID Selection (`src/iqoption_research/desktop/shadow_panel.py`)
+- Resolves combobox account entries directly to opaque 32-character hex UUIDs via a private mapping.
+- Displays friendly masked labels while passing validated full UUIDs to `SessionProcess.start_prospective_shadow()`.
+
+### 5. Contract Economics & Delayed Evaluator (`src/iqoption_research/shadow/evaluator.py`)
+- Distinguishes generic research accuracy from financial contract settlement:
+  - **Binary Option**: At-The-Money (ATM) ties refund principal ($0\text{ PnL}$), $W_{\text{be}} = 1 / (1 + P)$.
+  - **Digital Option**: At-The-Money (ATM) ties lose principal ($-100\%\text{ PnL}$), $W_{\text{be}} = 1 / (1 + P)$.
+- Market gaps with missing maturity evidence resolved as `INVALID_DISCONTINUITY` with `MISSING_SETTLEMENT_EVIDENCE`.
+
+### 6. Desktop Research Workstation Panel (`src/iqoption_research/desktop/shadow_panel.py`)
+- Adds 4th subtab "Prospective Observation" to Shadow Evaluation panel.
+- Operator controls: candidate model selector, mode selection (Offline Simulator vs Supervised Live), Windows Vault account selector, bounded duration (15, 30, 60, 120 min), and Start/Stop buttons.
+- Real-time streaming metrics table and prominent zero-order execution safety banner: `EXECUTION_AUTHORITY: NONE · NO DEMONSTRATED EDGE · STRICTLY READ-ONLY`.
+
+---
+
+## Genuine Prospective Pilot Acceptance & Verification
+
+Both genuine live prospective shadow observation sessions independently pass cryptographic verification via `iqresearch shadow verify-session`:
+
+1. **Session S15 (`pobs_d2d1a79b15d8`)**:
+   - Integrity: **VALID** · Classification: `PROSPECTIVE_SHADOW` · Prospective Verified: **True**
+   - Manifest SHA-256: `29789d0d3988366f93b72a1248fab01fb2277ad50b1bda8d8380cf2a9b224e3d`
+   - Scored Observations: 14 resolved eligible (2 wins, 8 losses, 0 ties, 4 resolved skips, 1 pending)
+   - Decisive Accuracy: 20.00% (Wilson 95% CI: 5.67%–50.98%)
+2. **Session S60 (`pobs_7843aa5dbb1c`)**:
+   - Integrity: **VALID** · Classification: `PROSPECTIVE_SHADOW` · Prospective Verified: **True**
+   - Manifest SHA-256: `92ab03bf7a2607b3226dea5de4541391de4d5a570170f86d77765afb1a17b127`
+   - Scored Observations: 58 resolved eligible (15 wins, 22 losses, 0 ties, 21 resolved skips, 1 pending)
+   - Decisive Accuracy: 40.54% (Wilson 95% CI: 26.35%–56.51%)
+3. **Pooled Evidence**:
+   - 72 resolved eligible observations: 17 wins, 30 losses, 0 ties, 25 resolved skips (2 pending).
+   - Pooled Decisive Accuracy: 36.17% (Wilson 95% CI: 23.97%–50.46%).
+   - Break-Even Hurdle (85% payout): 54.05%. Break-even gap: strictly negative ($-17.88\%$).
+
+---
+
+## Remaining Scientific Limitations & Scope Boundary
+
+- **Pilot Evidence is Exploratory**: 72 resolved observations across two sessions on a single trading day represent pilot feasibility evidence, not confirmatory proof of predictive edge.
+- **Unmeasured Execution Factors**: Tick-level broker quote slippage, broker API queue delays, and dynamic payout schedules cannot be evaluated without tick quote telemetry.
+- **Future Instrumentation Planned Separately**: Session-linked clock warning chronologies and replayable input candle provenance are scoped for a separate versioned PR (`docs/audits/phase40b_first_two/INSTRUMENTATION_PROPOSAL.md`), not added to PR #55.
+
+---
+
+## Verification & Testing Evidence
+
+- **Phase 40B Prospective Shadow Suite**: `tests/unit/test_phase40b_prospective_shadow.py` (23 passed).
+- **Phase 40B Baseline Reporting Suite**: `tests/unit/test_phase40b_baseline_reporting.py` (20 passed).
+- **Phase 40B Live Collector Stream Suite**: `tests/unit/test_phase40b_live_collector_stream.py` (7 passed).
+- **Phase 41 Diagnostics Suites**: `test_phase41_remediation.py` (11 passed), `test_phase41_failure_intelligence.py` (17 passed).
+- **Static Analysis**: `ruff check src tests` (0 errors, 100-character line limit enforced).
+- **Formatting**: `ruff format src tests --check` (402 files clean).
+- **Type Safety**: `mypy src` (Success: 0 errors across 252 source files).
+- **Dependency Consistency**: `pip check` (No broken requirements).
+- **Security Check**: `python -m iqoption_research.cli.main security-check --json` (All 7 checks passed).
+- **Official GitHub Actions CI**: Safe Offline CI run [45212083566](https://github.com/elmochilyas/IqOptionBot/actions/runs/45212083566) passed in 7m 58s on head commit `ae93882`.
+
+---
+
+## Operational Boundary & Governance Invariant
+
+- [x] Base branch retargeted to updated `main` (`b28850f05a9b9ff7bda76c9f6f111182a3700895`).
+- [x] Zero live broker connections, zero trade execution, zero order routing, zero wallet mutation capability.
+- [x] `execution_authority = NONE` enforced across all engines, session configs, and manifests.
+- [x] `NO_DEMONSTRATED_EDGE` strictly maintained.
+- [x] PR #55 remains **UNMERGED** and on explicit hold pending project owner release authorization.

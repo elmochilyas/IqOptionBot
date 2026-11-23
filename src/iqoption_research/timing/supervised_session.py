@@ -373,12 +373,20 @@ class SupervisedSessionRunner:
 
 
 async def supervised_client(
-    recorder: TimingRecorder, *, use_saved_credentials: bool = False
+    recorder: TimingRecorder,
+    *,
+    use_saved_credentials: bool = False,
+    account_id: str | None = None,
 ) -> AsyncIQOption:
-    if use_saved_credentials:
+    if use_saved_credentials or account_id is not None:
         from iqoption_research.auth.vault import WindowsCredentialVault
 
-        creds = WindowsCredentialVault().load_saved_credentials()
+        vault = WindowsCredentialVault()
+        creds = (
+            vault.account_store().load(account_id)
+            if account_id is not None
+            else vault.load_saved_credentials()
+        )
         if creds is None:
             print("No saved credentials; falling back to interactive entry.")
             return await supervised_client(recorder)

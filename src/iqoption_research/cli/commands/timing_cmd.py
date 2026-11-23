@@ -714,6 +714,8 @@ def shadow_trial_command(
     use_saved_credentials: bool = typer.Option(False, "--use-saved-credentials"),
     study: Path | None = typer.Option(None, "--study"),
     cancel_file: Path | None = typer.Option(None, "--cancel-file", hidden=True),
+    account_id: str | None = typer.Option(None, "--account-id"),
+    status_file: Path | None = typer.Option(None, "--status-file", hidden=True),
 ) -> None:
     """Preflight offline or run one foreground read-only EURUSD shadow trial."""
     import sys
@@ -762,6 +764,7 @@ def shadow_trial_command(
         Path("data/phase34"),
         MODEL_PATH,
         use_saved_credentials=use_saved_credentials,
+        account_id=account_id if isinstance(account_id, str) else None,
         live_guard=guard,
     )
 
@@ -769,6 +772,20 @@ def shadow_trial_command(
         task = asyncio.create_task(trial.run_live())
         try:
             while not task.done():
+                if isinstance(status_file, Path):
+                    from iqoption_research.market_data.extended_store import atomic_json
+
+                    atomic_json(
+                        status_file,
+                        {
+                            "connection": "CONNECTED"
+                            if "observation_started_utc_ns" in trial.metadata
+                            else "CONNECTING",
+                            "wallet_classification": trial.metadata.get(
+                                "wallet_classification_at_start", "UNKNOWN"
+                            ),
+                        },
+                    )
                 if cancel_file is not None and await asyncio.to_thread(cancel_file.exists):
                     task.cancel()
                     break

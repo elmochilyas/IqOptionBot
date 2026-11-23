@@ -126,15 +126,17 @@ def is_valid_candle_ohlcv(candle: Any) -> tuple[bool, list[str]]:
         return False, [f"Unexpected validation error: {exc}"]
 
 
-def format_canonical_float(val: float, max_decimals: int = 10) -> str:
-    """Deterministic, lossless normalized string formatting for float values.
+def format_canonical_float(val: float | int, max_decimals: int = 10) -> str:
+    """Deterministic, lossless normalized string formatting for numeric values.
 
     Preserves sub-six-decimal precision (up to 10 decimal digits) and fractional volume
     while remaining fully deterministic across platforms and stripping noisy trailing zeros.
+    Note: The IQ Option live broker WebSocket contract specifies integer tick volume.
+    For research datasets and synthetic feeds, fractional volume is preserved without quantization.
     """
     if not math.isfinite(val):
-        raise CandleValidationError(f"Cannot format non-finite float: {val}")
-    formatted = f"{val:.{max_decimals}f}".rstrip("0")
+        raise CandleValidationError(f"Cannot format non-finite numeric value: {val}")
+    formatted = f"{float(val):.{max_decimals}f}".rstrip("0")
     if formatted.endswith("."):
         formatted += "0"
     if formatted == "-0.0":
@@ -264,8 +266,15 @@ class NormalizedCandleRecord:
         return cls(**d)
 
     def to_candle(self) -> Candle:
-        """Convert to standard research domain Candle object."""
+        """Convert to standard research domain Candle object.
+
+        Preserves exact volume: converts to int if volume represents an exact integer,
+        otherwise retains exact float without lossy rounding or silent quantization.
+        """
         size_enum = CandleSize.from_seconds(self.timeframe)
+        vol: int | float = (
+            int(self.volume) if float(self.volume).is_integer() else float(self.volume)
+        )
         return Candle(
             active_id=1,
             symbol=self.symbol,
@@ -277,7 +286,7 @@ class NormalizedCandleRecord:
             high=self.high,
             low=self.low,
             close=self.close,
-            volume=round(self.volume),
+            volume=vol,
             bid=self.bid if self.bid is not None else self.close,
             ask=self.ask if self.ask is not None else self.close,
             is_complete=self.is_complete,

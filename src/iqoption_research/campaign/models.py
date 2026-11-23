@@ -67,10 +67,28 @@ class ObservationWindowSlot:
         """Convert slot to dictionary."""
         return asdict(self)
 
+    def calendar_dict(self) -> dict[str, Any]:
+        """Extract immutable calendar schedule definition."""
+        return {
+            "slot_id": self.slot_id,
+            "day_index": self.day_index,
+            "window_index": self.window_index,
+            "scheduled_date": self.scheduled_date,
+            "scheduled_start_utc": self.scheduled_start_utc,
+            "scheduled_start_local": self.scheduled_start_local,
+            "duration_minutes": self.duration_minutes,
+        }
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ObservationWindowSlot:
         """Construct slot from dictionary."""
         return cls(**data)
+
+
+def compute_calendar_sha256(slots: list[ObservationWindowSlot]) -> str:
+    """Compute canonical SHA-256 digest of an ordered list of scheduled observation slots."""
+    canon = [s.calendar_dict() for s in slots]
+    return hashlib.sha256(json.dumps(canon, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +118,7 @@ class CampaignProtocolSpec:
     created_at_utc: str
     registered_at_utc: str | None = None
     protocol_sha256: str = ""
+    calendar_sha256: str = ""
     candidate_artifact_hash: str = ""
     baseline_artifact_hash: str = ""
     statistical_analysis_version: str = "DAY_BLOCK_BOOTSTRAP_V1"
@@ -138,6 +157,7 @@ class CampaignProtocolSpec:
             "is_confirmatory": self.is_confirmatory,
             "created_at_utc": self.created_at_utc,
             "registered_at_utc": self.registered_at_utc or "",
+            "calendar_sha256": self.calendar_sha256,
         }
         return hashlib.sha256(json.dumps(canon, sort_keys=True).encode("utf-8")).hexdigest()
 

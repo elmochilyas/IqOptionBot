@@ -88,8 +88,14 @@ class CampaignManager:
                 "Baseline candidate '%s' registered as frozen comparator", baseline_model_id
             )
 
-        cand_hash = getattr(cand_rec, "model_sha256", "") or ""
-        base_hash = getattr(base_rec, "model_sha256", "") if base_rec is not None else ""
+        cand_hash = (
+            getattr(cand_rec, "bundle_sha256", "") or getattr(cand_rec, "model_sha256", "") or ""
+        )
+        base_hash = (
+            getattr(base_rec, "bundle_sha256", "") or getattr(base_rec, "model_sha256", "")
+            if base_rec is not None
+            else ""
+        )
 
         now_utc = datetime.now(UTC).isoformat()
         slots = generate_campaign_slots(

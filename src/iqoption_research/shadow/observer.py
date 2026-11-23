@@ -89,6 +89,8 @@ class ObservationSessionConfig:
     cancel_file: Path | None = None
     notes: str = ""
     schema_version: int = 3
+    symbol: str = "EURUSD"
+    timeframe: int = 60
     campaign_id: str | None = None
     slot_id: str | None = None
     protocol_sha256: str | None = None
@@ -752,13 +754,20 @@ class ProspectiveShadowObserver:
             "campaign_id": self.config.campaign_id,
             "slot_id": self.config.slot_id,
             "protocol_sha256": self.config.protocol_sha256,
+            "symbol": self.config.symbol,
+            "timeframe": self.config.timeframe,
             "evidence_class": (
                 "SYNTHETIC_STREAMING_TEST" if self.config.is_synthetic else "PROSPECTIVE_SHADOW"
             ),
             "created_at_utc": now_utc,
+            "started_at_utc": now_utc,
             "authorized_duration_minutes": self.config.duration_minutes,
             "account_id": self.config.account_id,
             "model_ids": list(self.config.model_ids),
+            "model_thresholds": {m: r.confidence_threshold for m, r in self.records.items()},
+            "terminal_status": "RUNNING",
+            "termination_reason": "RUNNING",
+            "is_interrupted": False,
             "assumed_payout": self.config.assumed_payout,
             "is_synthetic": self.config.is_synthetic,
             "execution_authority": "NONE",
@@ -1477,7 +1486,14 @@ class ProspectiveShadowObserver:
                 meta["ended_at_utc"] = ended_iso
                 meta["actual_duration_seconds"] = round(actual_duration, 2)
                 meta["termination_reason"] = termination_reason
+                meta["terminal_status"] = termination_reason
                 meta["is_interrupted"] = session_failed
+                meta["symbol"] = self.config.symbol
+                meta["timeframe"] = self.config.timeframe
+                meta["model_ids"] = list(self.config.model_ids)
+                meta["model_thresholds"] = {
+                    m: r.confidence_threshold for m, r in self.records.items()
+                }
                 meta_file.write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
 
         # Generate cryptographic manifest sealing session.json, predictions, and outcomes
@@ -1487,11 +1503,17 @@ class ProspectiveShadowObserver:
             "campaign_id": self.config.campaign_id,
             "slot_id": self.config.slot_id,
             "protocol_sha256": self.config.protocol_sha256,
+            "symbol": self.config.symbol,
+            "timeframe": self.config.timeframe,
+            "model_ids": list(self.config.model_ids),
+            "model_thresholds": {m: r.confidence_threshold for m, r in self.records.items()},
             "started_at_utc": started_iso,
+            "session_start_utc": started_iso,
             "ended_at_utc": ended_iso,
             "actual_duration_seconds": round(actual_duration, 2),
             "requested_minutes": self.config.duration_minutes,
             "termination_reason": termination_reason,
+            "terminal_status": termination_reason,
             "is_interrupted": session_failed,
             "is_synthetic": self.config.is_synthetic,
             "evidence_class": (

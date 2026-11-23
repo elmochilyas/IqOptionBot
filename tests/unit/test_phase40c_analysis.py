@@ -74,12 +74,19 @@ def _create_mock_session(
     wins: int,
     losses: int,
     ties: int = 0,
+    *,
+    campaign_id: str = "camp_eval_test",
+    slot_id: str = "slot_d01_w1_0800utc",
+    protocol_sha256: str = "",
+    start_utc: str | None = None,
+    candidate_threshold: float = 0.55,
 ) -> Path:
     session_dir = root / DEFAULT_SHADOW_SESSIONS_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
 
     journal = ShadowPredictionJournal(session_id, session_dir=session_dir)
-    cutoff_base = int(datetime.fromisoformat(f"{scheduled_date}T08:00:00+00:00").timestamp())
+    effective_start_utc = start_utc or f"{scheduled_date}T08:00:00+00:00"
+    cutoff_base = int(datetime.fromisoformat(effective_start_utc).timestamp())
 
     seq = 0
     # Create predictions, commitments, and outcomes
@@ -233,6 +240,20 @@ def _create_mock_session(
         "session_id": session_id,
         "schema_version": 3,
         "is_prospective": True,
+        "campaign_id": campaign_id,
+        "slot_id": slot_id,
+        "protocol_sha256": protocol_sha256,
+        "symbol": "EURUSD",
+        "timeframe": 60,
+        "model_ids": [model_id],
+        "model_thresholds": {model_id: candidate_threshold},
+        "started_at_utc": effective_start_utc,
+        "session_start_utc": effective_start_utc,
+        "terminal_status": "CLEAN_COMPLETED",
+        "termination_reason": "CLEAN_COMPLETED",
+        "is_interrupted": False,
+        "is_synthetic": False,
+        "evidence_class": "PROSPECTIVE_SHADOW",
         "predictions_sha256": p_sha,
         "predictions_count": seq,
         "outcomes_sha256": o_sha,
@@ -251,8 +272,21 @@ def _create_mock_session(
     (session_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     session_meta = {
+        "schema_version": 3,
         "session_id": session_id,
+        "campaign_id": campaign_id,
+        "slot_id": slot_id,
+        "protocol_sha256": protocol_sha256,
+        "symbol": "EURUSD",
+        "timeframe": 60,
         "model_ids": [model_id],
+        "model_thresholds": {model_id: candidate_threshold},
+        "started_at_utc": effective_start_utc,
+        "terminal_status": "CLEAN_COMPLETED",
+        "termination_reason": "CLEAN_COMPLETED",
+        "is_interrupted": False,
+        "is_synthetic": False,
+        "evidence_class": "PROSPECTIVE_SHADOW",
         "assumed_payout": 0.85,
     }
     (session_dir / "session.json").write_text(json.dumps(session_meta), encoding="utf-8")
@@ -305,21 +339,76 @@ def test_campaign_evaluator_confirmatory_blinding_and_bootstrap(tmp_path: Path) 
 
     # Populate 3 days of sessions (6 windows)
     # Day 1: 15 wins, 10 losses (60.0% win rate)
-    s1 = _create_mock_session(tmp_path, "sess_d1_w1", "2026-12-01", "cand_lr_001", 15, 10)
+    s1 = _create_mock_session(
+        tmp_path,
+        "sess_d1_w1",
+        "2026-12-01",
+        "cand_lr_001",
+        15,
+        10,
+        campaign_id="camp_eval_test",
+        slot_id=slots[0].slot_id,
+        protocol_sha256=spec.protocol_sha256,
+        start_utc=slots[0].scheduled_start_utc,
+    )
     registry.link_session_to_slot("camp_eval_test", slots[0].slot_id, "sess_d1_w1", s1)
 
-    s2 = _create_mock_session(tmp_path, "sess_d1_w2", "2026-12-01", "cand_lr_001", 12, 13)
+    s2 = _create_mock_session(
+        tmp_path,
+        "sess_d1_w2",
+        "2026-12-01",
+        "cand_lr_001",
+        12,
+        13,
+        campaign_id="camp_eval_test",
+        slot_id=slots[1].slot_id,
+        protocol_sha256=spec.protocol_sha256,
+        start_utc=slots[1].scheduled_start_utc,
+    )
     registry.link_session_to_slot("camp_eval_test", slots[1].slot_id, "sess_d1_w2", s2)
 
     # Day 2: 14 wins, 11 losses (56.0% win rate)
-    s3 = _create_mock_session(tmp_path, "sess_d2_w1", "2026-12-02", "cand_lr_001", 14, 11)
+    s3 = _create_mock_session(
+        tmp_path,
+        "sess_d2_w1",
+        "2026-12-02",
+        "cand_lr_001",
+        14,
+        11,
+        campaign_id="camp_eval_test",
+        slot_id=slots[2].slot_id,
+        protocol_sha256=spec.protocol_sha256,
+        start_utc=slots[2].scheduled_start_utc,
+    )
     registry.link_session_to_slot("camp_eval_test", slots[2].slot_id, "sess_d2_w1", s3)
 
-    s4 = _create_mock_session(tmp_path, "sess_d2_w2", "2026-12-02", "cand_lr_001", 13, 12)
+    s4 = _create_mock_session(
+        tmp_path,
+        "sess_d2_w2",
+        "2026-12-02",
+        "cand_lr_001",
+        13,
+        12,
+        campaign_id="camp_eval_test",
+        slot_id=slots[3].slot_id,
+        protocol_sha256=spec.protocol_sha256,
+        start_utc=slots[3].scheduled_start_utc,
+    )
     registry.link_session_to_slot("camp_eval_test", slots[3].slot_id, "sess_d2_w2", s4)
 
     # Day 3: 16 wins, 9 losses (64.0% win rate)
-    s5 = _create_mock_session(tmp_path, "sess_d3_w1", "2026-12-03", "cand_lr_001", 16, 9)
+    s5 = _create_mock_session(
+        tmp_path,
+        "sess_d3_w1",
+        "2026-12-03",
+        "cand_lr_001",
+        16,
+        9,
+        campaign_id="camp_eval_test",
+        slot_id=slots[4].slot_id,
+        protocol_sha256=spec.protocol_sha256,
+        start_utc=slots[4].scheduled_start_utc,
+    )
     registry.link_session_to_slot("camp_eval_test", slots[4].slot_id, "sess_d3_w1", s5)
 
     evaluator = CampaignEvaluator("camp_eval_test", root=tmp_path)
@@ -409,7 +498,18 @@ def test_cli_campaign_analyze(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     )
     registry.save(camp)
 
-    s1 = _create_mock_session(tmp_path, "sess_cli_1", "2026-12-01", "cand_cli_001", 10, 10)
+    s1 = _create_mock_session(
+        tmp_path,
+        "sess_cli_1",
+        "2026-12-01",
+        "cand_cli_001",
+        10,
+        10,
+        campaign_id="camp_cli_eval",
+        slot_id=slots[0].slot_id,
+        protocol_sha256=spec.protocol_sha256,
+        start_utc=slots[0].scheduled_start_utc,
+    )
     registry.link_session_to_slot("camp_cli_eval", slots[0].slot_id, "sess_cli_1", s1)
 
     runner = CliRunner()

@@ -950,6 +950,7 @@ def test_17_bootstrap_samples_with_empty_eligible_populations(tmp_path: Path) ->
         "sess_17_d1",
         campaign_id="camp_adv_17",
         slot_id=camp.slots[0].slot_id,
+        protocol_sha256=camp.protocol.protocol_sha256,
         n_wins=0,
         n_losses=0,
         n_skips=5,
@@ -962,6 +963,9 @@ def test_17_bootstrap_samples_with_empty_eligible_populations(tmp_path: Path) ->
         "sess_17_d2",
         campaign_id="camp_adv_17",
         slot_id=camp.slots[2].slot_id,
+        protocol_sha256=camp.protocol.protocol_sha256,
+        start_utc=camp.slots[2].scheduled_start_utc,
+        end_utc="2026-12-02T09:00:00+00:00",
         n_wins=6,
         n_losses=4,
     )
@@ -1179,6 +1183,9 @@ def test_25_entire_virtual_time_multiday_campaign_verified_statistical_output(
         "sess_25_d1_w1",
         campaign_id="camp_adv_25",
         slot_id=camp.slots[0].slot_id,
+        protocol_sha256=camp.protocol.protocol_sha256,
+        start_utc=camp.slots[0].scheduled_start_utc,
+        end_utc="2026-12-01T09:00:00+00:00",
         n_wins=16,
         n_losses=9,
     )
@@ -1188,6 +1195,9 @@ def test_25_entire_virtual_time_multiday_campaign_verified_statistical_output(
         "sess_25_d1_w2",
         campaign_id="camp_adv_25",
         slot_id=camp.slots[1].slot_id,
+        protocol_sha256=camp.protocol.protocol_sha256,
+        start_utc=camp.slots[1].scheduled_start_utc,
+        end_utc="2026-12-01T15:00:00+00:00",
         n_wins=15,
         n_losses=10,
     )
@@ -1199,6 +1209,9 @@ def test_25_entire_virtual_time_multiday_campaign_verified_statistical_output(
         "sess_25_d2_w1",
         campaign_id="camp_adv_25",
         slot_id=camp.slots[2].slot_id,
+        protocol_sha256=camp.protocol.protocol_sha256,
+        start_utc=camp.slots[2].scheduled_start_utc,
+        end_utc="2026-12-02T09:00:00+00:00",
         n_wins=13,
         n_losses=12,
     )
@@ -1208,6 +1221,9 @@ def test_25_entire_virtual_time_multiday_campaign_verified_statistical_output(
         "sess_25_d2_w2",
         campaign_id="camp_adv_25",
         slot_id=camp.slots[3].slot_id,
+        protocol_sha256=camp.protocol.protocol_sha256,
+        start_utc=camp.slots[3].scheduled_start_utc,
+        end_utc="2026-12-02T15:00:00+00:00",
         n_wins=11,
         n_losses=14,
     )

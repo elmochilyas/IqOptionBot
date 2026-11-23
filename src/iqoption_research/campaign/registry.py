@@ -25,6 +25,7 @@ from iqoption_research.campaign.models import (
     CampaignState,
     ObservationWindowSlot,
     SlotState,
+    compute_calendar_sha256,
 )
 from iqoption_research.shadow.journal import (
     validate_storage_identifier,
@@ -179,6 +180,13 @@ def verify_session_slot_eligibility(
     except Exception as exc:  # noqa: BLE001
         return False, [f"Unparseable manifest.json: {exc}"]
 
+    # Load session.json metadata if present
+    session_file = session_dir / "session.json"
+    session_meta: dict[str, Any] = {}
+    if session_file.is_file():
+        with contextlib.suppress(Exception):
+            session_meta = json.loads(session_file.read_text(encoding="utf-8"))
+
     session_id = manifest.get("session_id", session_dir.name)
 
     # 1. Reject imported exploratory pilot sessions
@@ -212,19 +220,18 @@ def verify_session_slot_eligibility(
                         f"'{other.campaign_id}', slot '{s.slot_id}'"
                     )
 
-    # Confirmatory campaign strict checks
+    # 4. Confirmatory campaign strict checks
     if campaign.protocol.is_confirmatory:
-        # 4. Provenance: Confirmatory campaigns require genuine prospective evidence
-        if manifest.get("is_synthetic") is True:
+        # Provenance: Confirmatory campaigns require genuine non-synthetic evidence
+        if manifest.get("is_synthetic") is True or session_meta.get("is_synthetic") is True:
             errors.append(
                 f"Synthetic evidence rejected for confirmatory campaign '{campaign.campaign_id}'."
             )
-        evidence_class = manifest.get("evidence_class", "")
+        evidence_class = manifest.get("evidence_class") or session_meta.get("evidence_class", "")
         if evidence_class not in ("PROSPECTIVE_SHADOW", "GENUINE_OBSERVATION", "GENUINE"):
             errors.append(f"Invalid evidence class '{evidence_class}' for confirmatory campaign.")
 
-        # 5. Schema 3 requirement: diagnostics and inputs journals must be present and verified
-        schema_ver = manifest.get("schema_version", 1)
+        schema_ver = manifest.get("schema_version") or session_meta.get("schema_version", 1)
         if schema_ver < 3:
             errors.append(
                 f"Schema {schema_ver} evidence rejected; Schema 3 required for "
@@ -238,87 +245,149 @@ def verify_session_slot_eligibility(
         ):
             errors.append("Schema 3 diagnostics.jsonl journal missing or not recorded in manifest.")
 
-        # 6. Exact Campaign ID match
-        manifest_camp_id = manifest.get("campaign_id")
-        if manifest_camp_id != campaign.campaign_id:
+    # 5. Exact Campaign ID match
+    manifest_camp_id = manifest.get("campaign_id") or session_meta.get("campaign_id")
+    if manifest_camp_id != campaign.campaign_id:
+        errors.append(
+            f"Campaign ID mismatch: session='{manifest_camp_id}', campaign='{campaign.campaign_id}'"
+        )
+
+    # 6. Exact Slot ID match
+    manifest_slot_id = manifest.get("slot_id") or session_meta.get("slot_id")
+    if manifest_slot_id != slot_id:
+        errors.append(f"Slot ID mismatch: session='{manifest_slot_id}', slot='{slot_id}'")
+
+    # 7. Exact Protocol SHA-256 match
+    manifest_proto_sha = manifest.get("protocol_sha256") or session_meta.get("protocol_sha256")
+    if manifest_proto_sha != campaign.protocol.protocol_sha256:
+        errors.append(
+            f"Protocol SHA-256 mismatch: session='{manifest_proto_sha}', "
+            f"campaign='{campaign.protocol.protocol_sha256}'"
+        )
+
+    # 8. Exact candidate model ID, threshold, and artifact hash match
+    cand_mid = campaign.protocol.candidate_model_id
+    manifest_models = (
+        manifest.get("model_ids")
+        or session_meta.get("model_ids")
+        or list(manifest.get("models_sha256", {}).keys())
+    )
+    if not manifest_models:
+        errors.append(f"Missing model IDs in session metadata for '{session_id}'.")
+    elif cand_mid not in manifest_models:
+        errors.append(
+            f"Candidate model '{cand_mid}' not executed in session models: {manifest_models}"
+        )
+
+    manifest_thresholds = (
+        manifest.get("model_thresholds")
+        or session_meta.get("model_thresholds")
+        or {
+            m: meta.get("threshold")
+            for m, meta in session_meta.get("models_metadata", {}).items()
+            if isinstance(meta, dict)
+        }
+    )
+    if not manifest_thresholds or cand_mid not in manifest_thresholds:
+        errors.append(
+            f"Missing threshold for candidate model '{cand_mid}' "
+            f"in session metadata for '{session_id}'."
+        )
+    else:
+        rec_thresh = float(manifest_thresholds[cand_mid])
+        if abs(rec_thresh - campaign.protocol.candidate_threshold) > 1e-5:
             errors.append(
-                f"Campaign ID mismatch: manifest='{manifest_camp_id}', "
-                f"campaign='{campaign.campaign_id}'"
+                f"Candidate threshold mismatch: session={rec_thresh}, "
+                f"protocol={campaign.protocol.candidate_threshold}"
             )
 
-        # 7. Exact Slot ID match
-        manifest_slot_id = manifest.get("slot_id")
-        if manifest_slot_id != slot_id:
-            errors.append(f"Slot ID mismatch: manifest='{manifest_slot_id}', slot='{slot_id}'")
-
-        # 8. Exact Protocol SHA-256 match
-        manifest_proto_sha = manifest.get("protocol_sha256")
-        if manifest_proto_sha != campaign.protocol.protocol_sha256:
+    if campaign.protocol.candidate_artifact_hash:
+        models_sha = manifest.get("models_sha256") or {
+            m: meta.get("bundle_sha256")
+            for m, meta in session_meta.get("models_metadata", {}).items()
+            if isinstance(meta, dict)
+        }
+        cand_bundle_sha = models_sha.get(cand_mid) if isinstance(models_sha, dict) else None
+        if cand_bundle_sha and cand_bundle_sha != campaign.protocol.candidate_artifact_hash:
             errors.append(
-                f"Protocol SHA-256 mismatch: manifest='{manifest_proto_sha}', "
-                f"campaign='{campaign.protocol.protocol_sha256}'"
+                f"Candidate model bundle SHA-256 mismatch: session='{cand_bundle_sha}', "
+                f"protocol='{campaign.protocol.candidate_artifact_hash}'"
             )
 
-        # 9. Exact model IDs and thresholds match
-        cand_mid = campaign.protocol.candidate_model_id
-        manifest_models = manifest.get("model_ids", [])
-        if cand_mid not in manifest_models:
-            errors.append(
-                f"Candidate model '{cand_mid}' not executed in session models: {manifest_models}"
-            )
-        manifest_thresholds = manifest.get("model_thresholds", {})
-        if cand_mid in manifest_thresholds:
-            rec_thresh = float(manifest_thresholds[cand_mid])
-            if abs(rec_thresh - campaign.protocol.candidate_threshold) > 1e-5:
-                errors.append(
-                    f"Candidate threshold mismatch: manifest={rec_thresh}, "
-                    f"protocol={campaign.protocol.candidate_threshold}"
-                )
+    # 9. Exact symbol and timeframe (zero silent defaults)
+    sym = manifest.get("symbol") or session_meta.get("symbol")
+    if not sym:
+        errors.append(f"Missing required 'symbol' in session metadata for '{session_id}'.")
+    elif sym != campaign.protocol.symbol:
+        errors.append(f"Symbol mismatch: session='{sym}', protocol='{campaign.protocol.symbol}'")
 
-        # 10. Exact symbol, timeframe
-        sym = manifest.get("symbol", "EURUSD")
-        if sym != campaign.protocol.symbol:
-            errors.append(
-                f"Symbol mismatch: manifest='{sym}', protocol='{campaign.protocol.symbol}'"
-            )
-        tf = manifest.get("timeframe", 60)
-        if tf != campaign.protocol.timeframe:
-            errors.append(
-                f"Timeframe mismatch: manifest={tf}, protocol={campaign.protocol.timeframe}"
-            )
+    tf = manifest.get("timeframe") or session_meta.get("timeframe")
+    if tf is None:
+        errors.append(f"Missing required 'timeframe' in session metadata for '{session_id}'.")
+    elif int(tf) != campaign.protocol.timeframe:
+        errors.append(f"Timeframe mismatch: session={tf}, protocol={campaign.protocol.timeframe}")
 
-        # 11. Observation slot window timing consistency
+    # 10. Observation slot window timing consistency (fails closed on missing timestamp)
+    sess_start_str = (
+        manifest.get("started_at_utc")
+        or manifest.get("session_start_utc")
+        or manifest.get("start_time_utc")
+        or session_meta.get("started_at_utc")
+        or session_meta.get("created_at_utc")
+    )
+    if not sess_start_str:
+        errors.append(
+            f"Missing required start timestamp in session evidence for '{session_id}'. "
+            "Scheduling validation cannot be bypassed."
+        )
+    else:
         matching_slot = next((s for s in campaign.slots if s.slot_id == slot_id), None)
         if matching_slot is not None:
             try:
                 sched_start = datetime.fromisoformat(
                     matching_slot.scheduled_start_utc.replace("Z", "+00:00")
                 )
-                sess_start_str = manifest.get("session_start_utc") or manifest.get("start_time_utc")
-                if sess_start_str:
-                    sess_start = datetime.fromisoformat(sess_start_str.replace("Z", "+00:00"))
-                    drift_sec = abs((sess_start - sched_start).total_seconds())
-                    if drift_sec > slot_grace_period_seconds:
-                        errors.append(
-                            f"Session start ({sess_start_str}) outside slot window grace period "
-                            f"({matching_slot.scheduled_start_utc} +/- "
-                            f"{slot_grace_period_seconds}s, diff={drift_sec:.1f}s)"
-                        )
+                sess_start = datetime.fromisoformat(sess_start_str.replace("Z", "+00:00"))
+                drift_sec = abs((sess_start - sched_start).total_seconds())
+                if drift_sec > slot_grace_period_seconds:
+                    errors.append(
+                        f"Session start ({sess_start_str}) outside slot window grace period "
+                        f"({matching_slot.scheduled_start_utc} +/- "
+                        f"{slot_grace_period_seconds}s, diff={drift_sec:.1f}s)"
+                    )
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"Timestamp comparison error: {exc}")
 
-        # 12. Valid terminal session status
-        term_status = manifest.get("terminal_status", "")
-        if term_status not in ("TERMINATED_CLEAN_COMPLETED", "CLEAN_COMPLETED"):
-            errors.append(
-                f"Invalid terminal session status '{term_status}'; clean completion required."
-            )
+    # 11. Genuine completion using observer termination semantics
+    is_interrupted = manifest.get("is_interrupted")
+    if is_interrupted is None:
+        is_interrupted = session_meta.get("is_interrupted", False)
+    if is_interrupted is True:
+        errors.append(f"Session '{session_id}' was interrupted or failed before clean completion.")
 
-        # 13. Late / quarantined commitments check
-        quarantined = manifest.get("commitments_late_quarantined_count", 0)
-        timely = manifest.get("commitments_timely_count", 0)
-        if timely == 0 and quarantined > 0:
-            errors.append("All predictions in session had late/quarantined commitments.")
+    term_status = (
+        manifest.get("terminal_status")
+        or manifest.get("termination_reason")
+        or session_meta.get("terminal_status")
+        or session_meta.get("termination_reason")
+    )
+    valid_clean_reasons = {
+        "CLEAN_COMPLETED",
+        "TERMINATED_CLEAN_COMPLETED",
+        "DURATION_LIMIT",
+        "STREAM_EOF",
+        "STREAM_COMPLETED_EOF",
+    }
+    if not term_status or term_status not in valid_clean_reasons:
+        errors.append(
+            f"Invalid terminal session status '{term_status}'; clean completion required."
+        )
+
+    # 12. Late / quarantined commitments check
+    quarantined = manifest.get("commitments_late_quarantined_count", 0)
+    timely = manifest.get("commitments_timely_count", 0)
+    if timely == 0 and quarantined > 0:
+        errors.append("All predictions in session had late/quarantined commitments.")
 
     return len(errors) == 0, errors
 
@@ -352,6 +421,15 @@ class CampaignRegistry:
                     existing = None
 
                 if existing is not None and existing.state != CampaignState.DRAFT.value:
+                    # Calendar immutability check: scheduled calendar cannot change
+                    existing_cal_sha = compute_calendar_sha256(existing.slots)
+                    attempted_cal_sha = compute_calendar_sha256(campaign.slots)
+                    if existing_cal_sha != attempted_cal_sha:
+                        raise ProtocolImmutabilityError(
+                            f"Calendar modification forbidden on registered campaign "
+                            f"'{campaign.campaign_id}'. "
+                            "Scheduled slots cannot be inserted, deleted, modified, or reordered."
+                        )
                     # Immutability check: once registered, protocol cannot change
                     if existing.protocol.protocol_sha256 != campaign.protocol.protocol_sha256:
                         raise ProtocolImmutabilityError(
@@ -366,8 +444,19 @@ class CampaignRegistry:
                             f"'{campaign.campaign_id}'."
                         )
 
-            # Protocol digest verification on save if not DRAFT
+            # Protocol and calendar digest verification on save if not DRAFT
             if campaign.state != CampaignState.DRAFT.value:
+                computed_cal_hash = compute_calendar_sha256(campaign.slots)
+                if (
+                    campaign.protocol.calendar_sha256
+                    and campaign.protocol.calendar_sha256 != computed_cal_hash
+                ):
+                    raise ProtocolImmutabilityError(
+                        "Scheduled slots do not match registered calendar_sha256 "
+                        f"for campaign '{campaign.campaign_id}': "
+                        f"computed={computed_cal_hash}, "
+                        f"recorded={campaign.protocol.calendar_sha256}"
+                    )
                 computed_hash = campaign.protocol.compute_sha256()
                 if campaign.protocol.protocol_sha256 != computed_hash:
                     raise ProtocolImmutabilityError(
@@ -433,8 +522,17 @@ class CampaignRegistry:
                     f"Corrupted campaign JSON at {camp_file}: {exc}"
                 ) from exc
 
-            # Verify protocol integrity on every load if campaign is registered or later
+            # Verify protocol and calendar integrity on every load if campaign
+            # is registered or later
             if camp.state != CampaignState.DRAFT.value:
+                if camp.protocol.calendar_sha256:
+                    computed_cal_hash = compute_calendar_sha256(camp.slots)
+                    if camp.protocol.calendar_sha256 != computed_cal_hash:
+                        raise CampaignIntegrityError(
+                            f"Calendar SHA-256 mismatch for campaign '{campaign_id}': "
+                            f"recorded={camp.protocol.calendar_sha256}, "
+                            f"computed={computed_cal_hash}"
+                        )
                 computed_hash = camp.protocol.compute_sha256()
                 if camp.protocol.protocol_sha256 != computed_hash:
                     raise CampaignIntegrityError(
@@ -478,8 +576,10 @@ class CampaignRegistry:
             )
 
         now_utc = datetime.now(UTC).isoformat()
+        cal_hash = compute_calendar_sha256(camp.slots)
         proto_dict = camp.protocol.to_dict()
         proto_dict["registered_at_utc"] = now_utc
+        proto_dict["calendar_sha256"] = cal_hash
         updated_proto = CampaignProtocolSpec.from_dict(proto_dict)
         proto_hash = updated_proto.compute_sha256()
 

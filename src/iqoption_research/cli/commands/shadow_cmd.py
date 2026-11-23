@@ -772,7 +772,8 @@ def replay_evidence_command(
         )
         console.print(
             Panel(
-                f"[bold green]Offline Evidence Replay: 100% Deterministic Match.[/bold green]\n\n"
+                f"[bold green]Offline Evidence Replay: "
+                f"100% Bit-for-Bit Deterministic Match.[/bold green]\n\n"
                 f"Session ID: [cyan]{rep.session_id}[/cyan]\n"
                 f"Candles Replayed: {rep.total_candles_replayed:,}\n"
                 f"Predictions Evaluated: {rep.total_predictions_evaluated:,}\n"

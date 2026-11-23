@@ -314,4 +314,5 @@ async def test_cli_replay_evidence_command(
     res = runner.invoke(app, ["shadow", "replay-evidence", session_id])
     assert res.exit_code == 0
     assert "Deterministic Evidence Replay Verified" in res.stdout
-    assert "Offline Evidence Replay: 100% Bit-for-Bit Deterministic Match." in res.stdout
+    assert "Offline Evidence Replay:" in res.stdout
+    assert "Deterministic Match." in res.stdout

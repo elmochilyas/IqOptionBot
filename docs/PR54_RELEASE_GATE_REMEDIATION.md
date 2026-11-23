@@ -37,7 +37,11 @@ An audit of the Phase 41 documentation (`docs/PHASE41_MODEL_FAILURE_INTELLIGENCE
 
 ### 2.2. Directional Prediction Symmetry
 - **Prior Claim**: Asserted that models trained on tie-purged datasets "will exhibit zero directional prediction asymmetry on future unobserved market data".
-- **Audit Finding**: Purging exact ties from training sets successfully eliminates the artificial downward training bias induced by legacy binary target generation (which collapsed ties into Class 0 / DOWN). However, real financial time series in future prospective observation may exhibit genuine market trends, asymmetric volatility, or regime shifts (as observed in Pilot S60, which produced 15 UP vs 37 DOWN decisions). Claiming "zero directional asymmetry" as a certainty conflates training-bias removal with future empirical invariance.
+- **Audit Finding**: Purging exact ties from training sets successfully eliminates the artificial downward training bias induced by legacy binary target generation (which collapsed ties into Class 0 / DOWN). However, natural market movements retain a residual 0.690% empirical imbalance (31,727 DOWN vs 31,292 UP); tie exclusion does not guarantee exactly equal UP/DOWN classes. Furthermore, real financial time series in future prospective observation may exhibit genuine market trends, asymmetric volatility, or regime shifts. In the sealed Phase 40B pilot audit, the frozen logistic regression model exhibited pronounced empirical directional skew across unobserved market windows:
+  - **S15 (15 min)**: LR produced 7 UP / 3 DOWN / 5 SKIP.
+  - **S60 (60 min)**: LR produced 4 UP / 34 DOWN / 21 SKIP.
+  - **Pooled (75 min)**: LR produced 11 UP / 37 DOWN / 26 SKIP.
+  Claiming "zero directional asymmetry" as a certainty conflates training-bias mitigation with future empirical invariance.
 - **Remediation**: The assertion was reclassified as **Hypothesis H-1 (Tie-Purged Training & Directional Balance Hypothesis)**. Documentation now explicitly qualifies this as an empirical hypothesis to be evaluated prospectively, acknowledging that future market regimes and feature drift may exhibit directional asymmetry.
 
 ---
@@ -68,7 +72,7 @@ All 14 trials in `phase41_experiment_ledger_v3.json` were audited for internal m
 - $N_{\text{selected}} + N_{\text{skip}} = N_{\text{opp}}$ ($25,328$ for LR, $25,332$ for RF).
 - Selective models ($\tau = 0.55$) evaluated on matched baseline masks ($N = 4$, $\Delta_{\text{maj}} = +0.00\%$, break-even gap $-29.05\%$).
 - Conservative model ($\tau = 0.60$) produced $0$ predictions, cleanly marked `ZERO_COVERAGE_NO_PREDICTIONS` with accuracy and expectancy marked `N/A`.
-- Across all 14 trials, break-even gap is strictly negative ($-2.92\%$ to $-29.05\%$).
+- Across the 14 trials, exactly 13 evaluable trials exhibit strictly negative break-even gaps ($-2.92\%$ to $-29.05\%$), while the 14th trial (`exp_F3_threshold_60_conservative`) produced zero selected observations ($0 / 25,332$, $0.00\%$ coverage) with all performance, break-even gap, and expectancy metrics cleanly marked `N/A`.
 - Universal disposition: `NO_DEMONSTRATED_EDGE`.
 
 ### 3.4. Reproduction Protocol
@@ -81,15 +85,15 @@ All 14 trials in `phase41_experiment_ledger_v3.json` were audited for internal m
 
 ### 3.5. Privacy Boundaries & Data Protection
 - **No Raw Data or Credentials in Git**: Raw market tick/candle archives, practice trading history, session authentication tokens, and user credentials reside strictly in local, untracked storage (`data/`, `logs/`, Windows Credential Vault) and are excluded by `.gitignore`.
-- **External Auditability**: When proprietary raw data is not accessible, algorithmic correctness is fully verifiable via deterministic offline unit tests (`tests/unit/test_phase41_remediation.py` and `tests/unit/test_phase41_failure_intelligence.py`), which mock candle sequences and verify mathematical invariants without external data dependencies.
+- **External Auditability & Reproduction Limits**: Deterministic offline unit test suites (`tests/unit/test_phase41_remediation.py` and `tests/unit/test_phase41_failure_intelligence.py`) verify the algorithmic correctness of data transformations, opportunity population accounting, tie handling, prefix invariance, matched baseline comparisons, and calibration logic against synthetic mock fixtures. However, unit tests alone cannot independently reproduce the private experiment results (the numerical trial outcomes recorded in the 14-trial ledger) without access to the authentic underlying source dataset snapshot (`snapshot_20261015_001900_20261015_165700`, SHA-256 `6398befe...`). External verification of private ledger results relies on the immutable ledger checksum (`5f15ea53...`).
 
 ---
 
 ## 4. Market Microstructure & Trading Economics Disclosures
 
-To prevent conflating offline research proxies with real broker execution, the following boundaries are established:
+To prevent conflating offline research proxies with real broker execution, the following boundaries are established between modeled assumptions and operational realities:
 
-| Dimension | Modeled Research Assumption | Verified Live Broker Reality | Status |
+| Dimension | Modeled Research Assumption | Documented Operational Assumptions / Evidence Gaps | Status |
 | :--- | :--- | :--- | :--- |
 | **Payout Rate** | Constant 85.0% ($W_{\text{be}} \approx 54.05\%$) | Fluctuates dynamically (50%–90%+); drops sharply during illiquidity | **EVIDENCE_GAP** |
 | **Entry Timing** | Instantaneous at bar close ($0.0\text{s}$ latency) | API serialization, network transit, matching delay (~200–500ms) | **EVIDENCE_GAP** |
@@ -118,13 +122,13 @@ To prevent conflating offline research proxies with real broker execution, the f
 | **G-11** | Prefix Invariance: Zero leakage from future candles | Static schema enforced; verified in deterministic parity test | **PASS** |
 | **G-12** | Model Integrity: Frozen models unmodified | Candidate bundle hashes match Phase 40A registry bit-for-bit | **PASS** |
 | **G-13** | Execution Authority: Permanently locked to NONE | `execution_authority = NONE` enforced across all engines | **PASS** |
-| **G-14** | Edge Claim Invariant: NO_DEMONSTRATED_EDGE strictly maintained | All 14 trials exhibit negative break-even gaps ($-2.92\%$ to $-29.05\%$) | **PASS** |
+| **G-14** | Edge Claim Invariant: NO_DEMONSTRATED_EDGE strictly maintained | 13 evaluable trials negative ($-2.92\%$ to $-29.05\%$); 14th trial 0 selections (N/A) | **PASS** |
 | **G-15** | Ledger Provenance: Immutable SHA-256 checksum verified | Ledger hash matches `5f15ea53...`; source hash matches `6398befe...` | **PASS** |
 | **G-16** | Scientific Qualification: Serial dependence qualified | Unsupported "10–15%" claim removed; Bartlett formula explained | **PASS** |
-| **G-17** | Scientific Qualification: Directional symmetry qualified | Reclassified as Hypothesis H-1; acknowledged non-stationary drift | **PASS** |
-| **G-18** | Microstructure Disclosures: Broker gaps documented | Modeled 85% payout and zero latency distinguished from live broker | **PASS** |
+| **G-17** | Scientific Qualification: Directional symmetry qualified | Reclassified as Hypothesis H-1; pilot counts reconciled (S15, S60) | **PASS** |
+| **G-18** | Microstructure Disclosures: Broker gaps documented | Modeled assumptions distinguished from operational realities/gaps | **PASS** |
 | **G-19** | Privacy Protection: Zero private data/credentials tracked | Verified `.gitignore` coverage; no credentials in ledgers or code | **PASS** |
-| **G-20** | CI Verification: Head commit CI passed | Remote GitHub Actions run `44963785560` passed on branch head | **PASS** |
+| **G-20** | CI Verification: Official GitHub Actions CI passed | Remote run `45210231544` passed in 5m34s on head commit `d35d8db` | **PASS** |
 | **G-21** | Owner Release Authorization: Explicit approval obtained | Pending Project Owner Sign-Off | **HOLD** |
 
 ---

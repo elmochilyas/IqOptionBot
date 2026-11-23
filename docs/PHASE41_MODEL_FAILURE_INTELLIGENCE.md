@@ -32,7 +32,7 @@ While existing AI and shadow-evaluation infrastructure functions reliably, no tr
   - The legacy `DIRECTION_BINARY` target generation evaluated `targets = (diffs > threshold).astype(np.int64)`. When threshold was 0.0, all 3,431 exact ties were encoded as `0` (DOWN).
   - This artificially inflated Class 0 to 52.909% while Class 1 was 47.091%, inducing a **+5.818% artifact imbalance**.
   - Models trained on legacy binary targets learned to overpredict DOWN as an artifact of tie collapsing.
-- **Correction**: Introduced `TiePolicy` (`LEGACY_DOWN`, `EXCLUDE`, `SEPARATE_CLASS`, `EXPIRY_ATM_REFUND`, `EXPIRY_ATM_LOSS`). Under `TiePolicy.EXCLUDE`, exact ties have `valid_mask=False` and are purged from training sets, ensuring directional training is strictly balanced.
+- **Correction**: Introduced `TiePolicy` (`LEGACY_DOWN`, `EXCLUDE`, `SEPARATE_CLASS`, `EXPIRY_ATM_REFUND`, `EXPIRY_ATM_LOSS`). Under `TiePolicy.EXCLUDE`, exact ties have `valid_mask=False` and are purged from training sets, removing the artificial +5.818% tie-induced downward bias and training directional models strictly on genuine price movements (though natural market drift retains a residual 0.690% empirical imbalance; tie exclusion does not guarantee exactly equal UP/DOWN classes).
 
 ### Root Cause 2: Settlement Contract Mismatch (Confirmed)
 - **Investigation**: Compared generic close-to-close academic assumptions against IQ Option Binary and Digital contract settlement rules.
@@ -120,7 +120,7 @@ Crucially, in V3, the evaluation opportunity population includes all eligible de
 2. **Selective Thresholds & Matched Baselines**: At threshold 0.55, exactly 4 observations qualify out of 25,332 opportunities (0.02% coverage). On those exact 4 observations, candidate win rate is 25.00%, matching the majority baseline on those identical timestamps ($\\Delta = +0.00\%$) and falling -29.05% short of break-even. At threshold 0.60, zero observations qualify (0.00% coverage), cleanly marked ZERO_COVERAGE_NO_PREDICTIONS with accuracy and expectancy marked N/A.
 3. **Out-of-Fold Calibration Integrity**: Sigmoid (0.2521) and isotonic (0.2502) calibration show no out-of-fold generalization gain over raw uncalibrated probabilities (0.2499).
 4. **Holdout Protection**: The test partition was completely quarantined and excluded from all development trials ({\\text{test}} = 0$).
-5. **Universal Economic Invariant**: Every evaluated candidate configuration falls short of the break-even hurdle ( - W_{\\text{be}} < 0$). Scientific disposition strictly preserved: NO_DEMONSTRATED_EDGE.
+5. **Universal Economic Invariant**: Across the 14 trials, exactly 13 evaluable trials exhibit strictly negative break-even gaps ($-2.92\%$ to $-29.05\%$), while the 14th trial (`exp_F3_threshold_60_conservative`) produced zero selected observations ($0 / 25,332$, $0.00\%$ coverage) with all performance, break-even gap, and expectancy metrics cleanly marked `N/A`. Scientific disposition strictly preserved across all trials: `NO_DEMONSTRATED_EDGE`.
 
 ---
 
@@ -133,22 +133,22 @@ Crucially, in V3, the evaluation opportunity population includes all eligible de
 | **IQ Option Digital** | Strike Grid | ~0.35s | Round minute | **ATM LOSS (-100%)** | 51.28% - 55.56% | **EVIDENCE_GAP** |
 | **Forex / CFD** | Ask/Bid | ~0.20s | Continuous | Spread Breakeven | Variable | **EVIDENCE_GAP** |
 
-### Modeled Research Assumptions vs. Verified Broker Reality
+### Modeled Research Assumptions vs. Documented Operational Assumptions and Evidence Gaps
 
-To prevent unwarranted extrapolation from offline research to live financial contracts, research assumptions must be rigorously distinguished from verified live broker behavior:
+To prevent unwarranted extrapolation from offline research to live financial contracts, research assumptions must be rigorously distinguished from operational realities and unobserved execution factors:
 
-1. **Fixed 85% Payout Assumption vs. Dynamic Broker Payouts**:
+1. **Fixed 85% Payout Assumption vs. Operational Payout Variability and Low-Liquidity Evidence Gaps**:
    - *Modeled Research Assumption*: Break-even analyses assume a constant payout rate of 85.0% ($W_{\text{be}} = \frac{1}{1 + 0.85} \approx 54.05\%$).
-   - *Verified Broker Reality*: Live broker payouts vary dynamically between 50% and 90%+ depending on time of day, asset liquidity, current volatility, and account tier. Payouts can drop sharply during illiquid market sessions. Historical M1 candles do not record the broker payout schedule at bar close.
-2. **Instantaneous Candle-Close Entry vs. Real Execution Latency**:
+   - *Documented Operational Assumptions & Evidence Gaps*: Live broker payouts vary dynamically between 50% and 90%+ depending on time of day, asset liquidity, current volatility, and account tier. Payouts can drop sharply during illiquid market sessions. Historical M1 candles do not record the broker payout schedule at bar close, representing an empirical evidence gap.
+2. **Instantaneous Candle-Close Entry vs. Operational Execution Latency and Quote Slippage**:
    - *Modeled Research Assumption*: Models assume order entry occurs instantaneously at candle close $C_t$ with zero fill delay ($0.0\text{s}$).
-   - *Verified Broker Reality*: Live order routing encounters client serialization, network transit, broker API validation, and engine matching delays (~200–500ms). The execution price is the broker's real-time spot quote at match time, which frequently diverges from the finalized M1 bar close $C_t$ due to slippage and spread.
-3. **Contract Expiry Duration vs. Fixed-Interval Round Minute Expiry**:
+   - *Documented Operational Assumptions & Evidence Gaps*: Live order routing encounters client serialization, network transit, broker API validation, and engine matching delays (~200–500ms). The execution price is the broker's real-time spot quote at match time, which frequently diverges from the finalized M1 bar close $C_t$ due to slippage and spread, which cannot be measured from historical bar closes alone.
+3. **Contract Expiry Duration vs. Operational Wall-Clock Round Minute Expiry**:
    - *Modeled Research Assumption*: Models assume expiry occurs exactly $H=1$ minute (60 seconds) after entry.
-   - *Verified Broker Reality*: Broker binary options expire at fixed wall-clock round minute boundaries. An order accepted 5 seconds into a minute bar has only 55 seconds to expiry, altering the return distribution and time-decay properties.
-4. **Idealized Tie Settlement vs. Spot Quote Precision**:
+   - *Documented Operational Assumptions & Evidence Gaps*: Broker binary options expire at fixed wall-clock round minute boundaries. An order accepted 5 seconds into a minute bar has only 55 seconds to expiry, altering the return distribution and time-decay properties.
+4. **Idealized Tie Settlement vs. Spot Quote Precision Evidence Gaps**:
    - *Modeled Research Assumption*: Modeled contracts assume exact equality of price at close constitutes an At-The-Money (ATM) event (refunded in Binary, lost in Digital).
-   - *Verified Broker Reality*: Live spot quotes operate with 5 to 6 decimal places of precision, and broker quote feeds may reflect internal synthetic liquidity filtering. Exact ties are rare in live broker execution compared to discrete historical bar closes.
+   - *Documented Operational Assumptions & Evidence Gaps*: Live spot quotes operate with 5 to 6 decimal places of precision, and broker quote feeds may reflect internal synthetic liquidity filtering. Exact ties are rare in live execution compared to discrete historical bar closes.
 
 ### Payout Sensitivity Table (Binary Options with ATM Refund)
 - **75% Payout**: Break-even Win Rate = **57.14%** | Expectancy @ 52% = -9.00% | Expectancy @ 55% = -3.75%
@@ -189,7 +189,7 @@ poetry run iqresearch diagnostics report --output reports/model_failure_intellig
 
 The following hypotheses are grounded in Phase 41 findings and are preserved exclusively for prospective shadow observation:
 
-1. **Hypothesis H-1 (Tie-Purged Training & Directional Balance Hypothesis)**: Models trained on datasets excluding exact ties will substantially mitigate the artificial downward prediction skew induced by legacy binary target collapsing (which misclassified all ties as DOWN). Zero directional asymmetry under future live market regimes is an empirical hypothesis to be tested under prospective observation, not an established mathematical guarantee, as non-stationary market regimes, volatility shocks, and feature drift can create empirical directional imbalances.
+1. **Hypothesis H-1 (Tie-Purged Training & Directional Balance Hypothesis)**: Models trained on datasets excluding exact ties will substantially mitigate the artificial downward prediction skew induced by legacy binary target collapsing (which misclassified all ties as DOWN). Zero directional asymmetry under future live market regimes is an empirical hypothesis to be tested under prospective observation, not an established mathematical guarantee, as non-stationary market regimes, volatility shocks, and feature drift can create empirical directional imbalances. For example, in the sealed Phase 40B prospective pilot audit, the frozen logistic regression model exhibited pronounced empirical directional skew across unobserved market windows: in S15 (15 min), LR produced 7 UP / 3 DOWN / 5 SKIP; in S60 (60 min), LR produced 4 UP / 34 DOWN / 21 SKIP; and pooled across both sessions, LR produced 11 UP / 37 DOWN / 26 SKIP.
 2. **Hypothesis H-2 (Compact Stationary Features)**: The 8-feature compact stationary representation will show significantly lower performance decay across market regime transitions than the 17-feature full indicator set.
 3. **Hypothesis H-3 (Session-Specific Volatility Filtering)**: Applying selective confidence thresholds ($\ge 0.55$) strictly during London-New York session overlap (12:00–16:00 UTC) will yield the narrowest negative break-even gap.
 
@@ -230,7 +230,7 @@ To reproduce the 14-trial matrix from an authorized research workstation:
 ### Privacy Boundaries & Data Protection
 - **No Private Data in Version Control**: Raw market data snapshots, broker practice account identifiers, session authentication tokens, and user credentials reside strictly in local, untracked directories (`data/`, `logs/`, Windows Credential Vault). They are excluded from git by `.gitignore`.
 - **No Credentials in Code or Ledgers**: Experiment ledgers store purely aggregate mathematical metrics (accuracies, Brier scores, sample counts, coverage ratios, and economic deltas). No credentials or private account numbers are recorded.
-- **External Auditability without Private Artifacts**: When private source snapshots are unavailable to external parties, algorithmic correctness, opportunity set accounting, tie handling, prefix invariance, and calibration logic are completely verified through the deterministic offline test suite (`tests/unit/test_phase41_remediation.py` and `tests/unit/test_phase41_failure_intelligence.py`).
+- **External Auditability without Private Artifacts**: When private source snapshots are unavailable to external parties, deterministic offline unit test suites (`tests/unit/test_phase41_remediation.py` and `tests/unit/test_phase41_failure_intelligence.py`) verify the algorithmic correctness of data transformations, opportunity population accounting, tie handling, prefix invariance, matched baseline comparisons, and calibration logic against synthetic mock fixtures. However, unit tests alone cannot independently reproduce the private experiment results (the numerical trial outcomes recorded in the 14-trial ledger) without access to the authentic underlying source dataset snapshot (`snapshot_20261015_001900_20261015_165700`, SHA-256 `6398befe...`). External verification of private ledger results relies on the immutable ledger checksum (`5f15ea53...`).
 
 ---
 

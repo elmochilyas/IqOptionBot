@@ -547,7 +547,7 @@ class ShadowEvaluationPanel:
         self.obs_tree.heading("pending", text="Pending")
         self.obs_tree.heading("trades", text="Trades (W/L/T)")
         self.obs_tree.heading("win_rate", text="Decisive Win%")
-        self.obs_tree.heading("matched_maj", text="Matched Maj%")
+        self.obs_tree.heading("matched_maj", text="Frozen label%")
         self.obs_tree.heading("ci_95", text="Wilson 95% CI")
         self.obs_tree.heading("exp_bin", text="Exp Binary")
         self.obs_tree.heading("exp_dig", text="Exp Digital")
@@ -749,7 +749,13 @@ class ShadowEvaluationPanel:
                     be_gap_str = "N/A"
 
                 maj = mstate.get("matched_baseline_accuracy")
-                maj_str = f"{maj * 100:.2f}%" if (maj is not None and trades > 0) else "N/A"
+                maj_str = (
+                    f"{maj * 100:.2f}%"
+                    if (maj is not None and trades > 0)
+                    else "UNAVAILABLE"
+                    if mstate.get("matched_baseline_status") == "UNAVAILABLE"
+                    else "N/A"
+                )
 
                 self.obs_tree.insert(
                     "",

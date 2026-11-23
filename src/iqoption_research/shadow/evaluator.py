@@ -129,7 +129,9 @@ class ShadowOutcomeEvaluator:
         baseline_source_id: str | None = None,
         baseline_source_sha256: str | None = None,
         exposure_overlap_classification: str = "UNKNOWN",
+        baseline_frozen_at_ts: float | None = None,
     ) -> None:
+        self.baseline_frozen_at_ts = baseline_frozen_at_ts
         self.journal = journal
         self.assumed_payout = assumed_payout
         self.min_qualifying_trades = min_qualifying_trades
@@ -393,6 +395,12 @@ class ShadowOutcomeEvaluator:
             p
             for p in resolved_preds
             if p.was_trade_taken
+            and p.outcome_status
+            in (
+                OutcomeStatus.RESOLVED_WIN.value,
+                OutcomeStatus.RESOLVED_LOSS.value,
+                OutcomeStatus.RESOLVED_TIE.value,
+            )
             and (
                 p.evidence_class not in ("PROSPECTIVE_SHADOW", "SYNTHETIC_STREAMING_TEST")
                 or (
@@ -505,13 +513,19 @@ class ShadowOutcomeEvaluator:
             dir_acc = 0.0
             brier = 0.25
 
+        # A frozen constant classifier is evaluated on exactly the candidate's
+        # eligible selected timestamps, not on the baseline's SKIP policy mask.
+        baseline_available = self.baseline_comparison_available and (
+            self.baseline_frozen_at_ts is None
+            or all(p.feature_cutoff_ts > self.baseline_frozen_at_ts for p in trade_preds)
+        )
         # Reference baselines evaluated on matched population (trade_preds)
         base_comps: list[BaselineComparison] = []
         if trade_preds:
             decisive_preds = [p for p in trade_preds if p.market_direction in ("UP", "DOWN")]
 
             # 1. Majority Class Baseline
-            if self.baseline_comparison_available and self.frozen_majority_direction in (
+            if baseline_available and self.frozen_majority_direction in (
                 "UP",
                 "DOWN",
             ):
@@ -618,7 +632,7 @@ class ShadowOutcomeEvaluator:
         elif trade_count < self.min_qualifying_trades:
             has_edge = False
             verdict = "INSUFFICIENT_SAMPLE_SIZE_NO_EDGE"
-        elif not self.baseline_comparison_available:
+        elif not baseline_available:
             has_edge = False
             verdict = "BASELINE_COMPARISON_UNAVAILABLE_NO_EDGE"
         elif (ci_low_decisive <= break_even_decisive) or (ci_low_all <= break_even_all):
@@ -691,7 +705,7 @@ class ShadowOutcomeEvaluator:
             baseline_comparisons=base_comps,
             scientific_disclaimer=disclaimer,
             evaluation_timestamp_utc=datetime.now(UTC).isoformat(),
-            baseline_comparison_available=self.baseline_comparison_available,
+            baseline_comparison_available=baseline_available,
             baseline_source_id=self.baseline_source_id,
             baseline_source_sha256=self.baseline_source_sha256,
             exposure_overlap_classification=self.exposure_overlap_classification,

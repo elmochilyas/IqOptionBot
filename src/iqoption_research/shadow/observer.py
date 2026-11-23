@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from iqoption_research.models.market import Candle
+from iqoption_research.shadow.baseline import resolve_majority_benchmark
 from iqoption_research.shadow.engine import EngineError, ShadowPredictionEngine
 from iqoption_research.shadow.evaluator import (
     EvaluationSummary,
@@ -113,6 +114,7 @@ class ModelObservationState:
     coverage: float = 0.0
     abstention_rate: float = 0.0
     matched_baseline_accuracy: float | None = None
+    matched_baseline_status: str = "UNAVAILABLE"
     wilson_ci_decisive: tuple[float, float] = (0.0, 1.0)
     expectancy_binary_pct: float = 0.0
     expectancy_digital_pct: float = 0.0
@@ -547,6 +549,30 @@ class ProspectiveShadowObserver:
             journal=self.journal,
             assumed_payout=config.assumed_payout,
         )
+        # Freeze reporting linkage before any stream connection or observation.
+        benchmark_start = time.time()
+        self.benchmarks = {
+            mid: resolve_majority_benchmark(
+                self.registry,
+                rec,
+                tuple(self.records.values()),
+                observation_start_ts=benchmark_start,
+            )
+            for mid, rec in self.records.items()
+        }
+        self.reporting_evaluators = {
+            mid: ShadowOutcomeEvaluator(
+                self.journal,
+                assumed_payout=config.assumed_payout,
+                frozen_majority_direction=b.direction,
+                frozen_majority_prob_up=b.probability_up,
+                baseline_comparison_available=b.status == "VERIFIED",
+                baseline_source_id=b.source_id,
+                baseline_source_sha256=b.source_sha256,
+                baseline_frozen_at_ts=b.frozen_at_ts,
+            )
+            for mid, b in self.benchmarks.items()
+        }
 
         # Operational tracking
         self._candle_buffer: list[Candle] = list(initial_history) if initial_history else []
@@ -607,6 +633,7 @@ class ProspectiveShadowObserver:
                     "bundle_sha256": r.bundle_sha256,
                     "is_baseline": r.is_baseline,
                     "data_cutoff_ts": r.data_cutoff_ts,
+                    "majority_label_benchmark": self.benchmarks[m].to_dict(),
                 }
                 for m, r in self.records.items()
             },
@@ -920,7 +947,7 @@ class ProspectiveShadowObserver:
     def _update_model_states(self) -> None:
         """Update metrics and counters for each model under observation."""
         for model_id, state in self.states.items():
-            summary = self.evaluator.compute_summary(
+            summary = self.reporting_evaluators[model_id].compute_summary(
                 model_id=model_id,
                 is_functional_test=self.config.is_synthetic,
             )
@@ -956,7 +983,19 @@ class ProspectiveShadowObserver:
                 None,
             )
             state.matched_baseline_accuracy = (
-                maj_comp.decisive_directional_accuracy if maj_comp is not None else None
+                maj_comp.decisive_directional_accuracy
+                if maj_comp is not None
+                and maj_comp.is_verified
+                and maj_comp.decisive_sample_count > 0
+                else None
+            )
+
+            state.matched_baseline_status = (
+                "VERIFIED"
+                if state.matched_baseline_accuracy is not None
+                else "NO_DECISIVE_MATCHES"
+                if summary.baseline_comparison_available
+                else "UNAVAILABLE"
             )
 
     def get_progress(self, *, connection_status: str | None = None) -> ObservationProgress:
@@ -1134,7 +1173,7 @@ class ProspectiveShadowObserver:
         summaries: dict[str, EvaluationSummary] = {}
         for m in self.config.model_ids:
             with contextlib.suppress(Exception):
-                summaries[m] = self.evaluator.compute_summary(
+                summaries[m] = self.reporting_evaluators[m].compute_summary(
                     model_id=m,
                     is_functional_test=self.config.is_synthetic,
                 )

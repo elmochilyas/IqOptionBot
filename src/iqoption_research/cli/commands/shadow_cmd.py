@@ -528,7 +528,7 @@ def observe_command(
     table.add_column("Predictions", justify="right")
     table.add_column("Trades (W/L/T)", justify="center")
     table.add_column("Decisive Win%", justify="right", style="green")
-    table.add_column("Matched Maj%", justify="right")
+    table.add_column("Frozen label%", justify="right")
     table.add_column("Wilson 95% CI", justify="center")
     table.add_column("Exp Binary", justify="right")
     table.add_column("Exp Digital", justify="right")
@@ -556,12 +556,12 @@ def observe_command(
             exp_dig_str = "N/A"
             be_str = "N/A"
 
-        maj_str = "N/A"
+        maj_str = "N/A" if s.baseline_comparison_available else "UNAVAILABLE"
         maj_comp = next(
             (b for b in s.baseline_comparisons if b.baseline_name == "majority_class"),
             None,
         )
-        if maj_comp is not None and maj_comp.is_verified and s.trade_count > 0:
+        if maj_comp is not None and maj_comp.is_verified and maj_comp.decisive_sample_count > 0:
             maj_str = f"{maj_comp.decisive_directional_accuracy * 100:.2f}%"
 
         table.add_row(

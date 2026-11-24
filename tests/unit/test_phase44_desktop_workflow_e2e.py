@@ -246,6 +246,7 @@ def test_desktop_two_account_workflow_start_cancel_reopen_resume_snapshot(
         assert aid2 in confirmations[1][1]
 
         panel._verify_and_snapshot()
+        _pump_until(root, lambda: panel._active_operation is None, after_queue=after_queue)
         root.update()
         assert any(title == "Snapshot Registered" for title, _ in dialogs)
 

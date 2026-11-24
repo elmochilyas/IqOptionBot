@@ -19,11 +19,13 @@ Enforces strict data integrity and operator governance:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import threading
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -72,6 +74,8 @@ PROVENANCE_LEGACY_UNSPECIFIED: Final[str] = "LEGACY_PROVENANCE_UNSPECIFIED"
 # processes.
 _ACTIVE_JOB_LOCKS: dict[str, str] = {}
 _ACTIVE_JOB_LOCK_GUARD: Final[threading.Lock] = threading.Lock()
+_ACTIVE_JOB_OPERATIONS: dict[str, tuple[int, str]] = {}
+_ACTIVE_JOB_OPERATIONS_GUARD: Final[threading.Lock] = threading.Lock()
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -325,6 +329,23 @@ class CollectionProgress:
         return d
 
 
+@dataclass(frozen=True, slots=True)
+class VerificationProgress:
+    """Live progress reported during cryptographic integrity verification."""
+
+    job_id: str
+    total_receipts: int
+    receipts_checked: int
+    files_checked: int
+    candles_verified: int
+    current_operation: str
+    elapsed_seconds: float = 0.0
+    percent_complete: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class CollectionCheckpoint:
     """Durable state saved to disk for crash recovery and continuation."""
@@ -451,6 +472,31 @@ class HistoricalCollectionCoordinator:
             failure_reason=ckpt.failure_reason,
             receipt_count=len(ckpt.receipt_ids),
         )
+
+    @contextlib.contextmanager
+    def job_operation(self, job_id: str, operation: str) -> Any:
+        """Prevent concurrent operations (collection, verification, snapshot) on the same job."""
+        thread_id = threading.get_ident()
+        with _ACTIVE_JOB_OPERATIONS_GUARD:
+            existing = _ACTIVE_JOB_OPERATIONS.get(job_id)
+            if existing is not None:
+                active_thread_id, active_op = existing
+                if active_thread_id != thread_id:
+                    raise RuntimeError(
+                        f"Job {job_id} is currently busy with '{active_op}' in another thread. "
+                        f"Concurrent '{operation}' is not permitted on the same job."
+                    )
+            _ACTIVE_JOB_OPERATIONS[job_id] = (thread_id, operation)
+        try:
+            yield
+        finally:
+            with _ACTIVE_JOB_OPERATIONS_GUARD:
+                current = _ACTIVE_JOB_OPERATIONS.get(job_id)
+                if current == (thread_id, operation):
+                    if existing is not None:
+                        _ACTIVE_JOB_OPERATIONS[job_id] = existing
+                    else:
+                        _ACTIVE_JOB_OPERATIONS.pop(job_id, None)
 
     def acquire_job_lock(self, job_id: str) -> Path:
         """Atomically acquire the single-worker lock for a collection job.
@@ -683,6 +729,9 @@ class HistoricalCollectionCoordinator:
         receipt_file: Path,
         rdata: dict[str, Any],
         ckpt: CollectionCheckpoint,
+        *,
+        file_sha_cache: dict[Path, str] | None = None,
+        parquet_candles_cache: dict[Path, list[Candle]] | None = None,
     ) -> tuple[dict[str, Any] | None, list[str]]:
         """Validate one receipt against its exact parquet file and candle population."""
         errors: list[str] = []
@@ -791,18 +840,34 @@ class HistoricalCollectionCoordinator:
         if parquet_path is None:
             return None, errors
 
-        actual_pq_sha = _compute_file_sha256(parquet_path)
+        if file_sha_cache is not None and parquet_path in file_sha_cache:
+            actual_pq_sha = file_sha_cache[parquet_path]
+        else:
+            actual_pq_sha = _compute_file_sha256(parquet_path)
+            if file_sha_cache is not None:
+                file_sha_cache[parquet_path] = actual_pq_sha
+
         if actual_pq_sha != rdata.get("parquet_sha256"):
             errors.append(
                 f"{name}: parquet checksum altered ({actual_pq_sha} != {rdata.get('parquet_sha256')})"
             )
             return None, errors
 
-        try:
-            batch_candles = read_candles_parquet(parquet_path, expected_symbol=ckpt.symbol)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"{name}: failed reading parquet at {parquet_path}: {exc}")
-            return None, errors
+        if parquet_candles_cache is not None and parquet_path in parquet_candles_cache:
+            batch_candles = parquet_candles_cache[parquet_path]
+        else:
+            try:
+                batch_candles = read_candles_parquet(
+                    parquet_path, expected_symbol=ckpt.symbol, verify_checksum=False
+                )
+                if parquet_candles_cache is not None:
+                    if len(parquet_candles_cache) >= 16:
+                        with contextlib.suppress(StopIteration, KeyError):
+                            del parquet_candles_cache[next(iter(parquet_candles_cache))]
+                    parquet_candles_cache[parquet_path] = batch_candles
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{name}: failed reading parquet at {parquet_path}: {exc}")
+                return None, errors
 
         timestamps = [c.from_ts for c in batch_candles]
         if len(timestamps) != len(set(timestamps)):
@@ -978,7 +1043,13 @@ class HistoricalCollectionCoordinator:
         rdata["commit_state"] = RECEIPT_COMMITTED
         _atomic_write_json(receipt_file, rdata)
 
-    def verify_job_integrity(self, job_id: str) -> dict[str, Any]:
+    def verify_job_integrity(
+        self,
+        job_id: str,
+        *,
+        cancel_token: Callable[[], bool] | None = None,
+        progress_cb: Callable[[VerificationProgress], None] | None = None,
+    ) -> dict[str, Any]:
         """Cryptographically verify receipts, parquet integrity, and job coverage.
 
         Guarantees:
@@ -990,184 +1061,282 @@ class HistoricalCollectionCoordinator:
         - Never promotes checkpoint completion flags into proof.
         - Supports legacy receipts without inventing missing provenance.
         """
-        ckpt_path = self.checkpoints_dir / f"{job_id}.json"
-        if not ckpt_path.is_file():
-            return {
-                "job_id": job_id,
-                "verified": False,
-                "status": "NOT_FOUND",
-                "reason": f"Checkpoint not found at {ckpt_path}",
-                "errors": [f"Checkpoint not found at {ckpt_path}"],
-            }
+        with self.job_operation(job_id, "verification"):
+            ckpt_path = self.checkpoints_dir / f"{job_id}.json"
+            if not ckpt_path.is_file():
+                return {
+                    "job_id": job_id,
+                    "verified": False,
+                    "status": "NOT_FOUND",
+                    "reason": f"Checkpoint not found at {ckpt_path}",
+                    "errors": [f"Checkpoint not found at {ckpt_path}"],
+                }
 
-        # Verify is exposed as a read command. When another worker owns the job,
-        # recovery/adoption must remain that owner's responsibility so a reader
-        # cannot mutate receipt or checkpoint state mid-flight.
-        job_lock_file = self.checkpoints_dir / f"{job_id}.lock"
-        skip_recovery = False
-        if job_lock_file.is_file() and not self._job_lock_owned_by_me(job_id):
-            try:
-                lock_data = json.loads(job_lock_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                lock_data = {}
-            # Only a live foreign worker owns recovery. A crashed owner's stale
-            # lock must not block ordinary offline crash recovery forever.
-            skip_recovery = _is_lock_owner_alive(lock_data)
-        if skip_recovery:
-            ckpt = CollectionCheckpoint.load(ckpt_path)
-        else:
-            ckpt = self._recover_job_commit_state(job_id)
-        receipt_files = sorted(self.receipts_dir.glob(f"rcpt_{job_id}_*.json"))
+            # Verify is exposed as a read command. When another worker owns the job,
+            # recovery/adoption must remain that owner's responsibility so a reader
+            # cannot mutate receipt or checkpoint state mid-flight.
+            job_lock_file = self.checkpoints_dir / f"{job_id}.lock"
+            skip_recovery = False
+            if job_lock_file.is_file() and not self._job_lock_owned_by_me(job_id):
+                try:
+                    lock_data = json.loads(job_lock_file.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    lock_data = {}
+                # Only a live foreign worker owns recovery. A crashed owner's stale
+                # lock must not block ordinary offline crash recovery forever.
+                skip_recovery = _is_lock_owner_alive(lock_data)
+            if skip_recovery:
+                ckpt = CollectionCheckpoint.load(ckpt_path)
+            else:
+                ckpt = self._recover_job_commit_state(job_id)
+            receipt_files = sorted(self.receipts_dir.glob(f"rcpt_{job_id}_*.json"))
 
-        if not receipt_files:
+            if not receipt_files:
+                return {
+                    "job_id": job_id,
+                    "symbol": ckpt.symbol,
+                    "status": ckpt.status,
+                    "verified": False,
+                    "reason": f"No cryptographic receipts found for job {job_id}",
+                    "receipt_count": 0,
+                    "verified_candles": 0,
+                    "unique_verified_candles": 0,
+                    "valid_receipt_ids": [],
+                    "verified_parquet_paths": [],
+                    "verified_parquet_hashes": [],
+                    "reconstructed_completed_indices": [],
+                    "coverage_gaps": [],
+                    "errors": [
+                        "Zero receipts found for job; missing receipts cannot produce COMPLETED_VERIFIED."
+                    ],
+                }
+
+            start_time = time.monotonic()
+
+            def _is_cancelled() -> bool:
+                return bool(cancel_token and cancel_token())
+
+            errors: list[str] = []
+            disk_ids = {rf.stem for rf in receipt_files}
+            recorded_ids = set(ckpt.receipt_ids)
+            missing_from_disk = recorded_ids - disk_ids
+            if missing_from_disk:
+                errors.append(f"Recorded receipts missing from disk: {sorted(missing_from_disk)}")
+            unregistered = disk_ids - recorded_ids
+            if unregistered:
+                errors.append(f"Disk receipts not registered in checkpoint: {sorted(unregistered)}")
+
+            verified_timestamps: set[int] = set()
+            timestamp_owner: dict[int, str] = {}
+            verified_parquet_paths: set[str] = set()
+            verified_parquet_hashes: set[str] = set()
+            valid_receipt_ids: list[str] = []
+            legacy_receipt_count = 0
+            provenance_statuses: set[str] = set()
+            receipt_candles_sum = 0
+
+            file_sha_cache: dict[Path, str] = {}
+            parquet_candles_cache: dict[Path, list[Candle]] = {}
+            checked_parquet_paths: set[str] = set()
+
+            def _build_cancelled_report() -> dict[str, Any]:
+                return {
+                    "job_id": job_id,
+                    "symbol": ckpt.symbol,
+                    "status": "CANCELLED",
+                    "verified": False,
+                    "reason": "Integrity verification cancelled by operator",
+                    "receipt_count": len(valid_receipt_ids),
+                    "verified_candles": len(verified_timestamps),
+                    "unique_verified_candles": len(verified_timestamps),
+                    "valid_receipt_ids": valid_receipt_ids,
+                    "verified_parquet_paths": sorted(verified_parquet_paths),
+                    "verified_parquet_hashes": sorted(verified_parquet_hashes),
+                    "reconstructed_completed_indices": [],
+                    "coverage_gaps": [],
+                    "errors": ["Integrity verification cancelled by operator"],
+                }
+
+            total_rcpts = len(receipt_files)
+            last_progress_emit = 0.0
+            for idx, receipt_file in enumerate(receipt_files):
+                if _is_cancelled():
+                    return _build_cancelled_report()
+
+                now_mono = time.monotonic()
+                if progress_cb and (
+                    now_mono - last_progress_emit >= 0.1 or idx == 0 or idx == total_rcpts - 1
+                ):
+                    last_progress_emit = now_mono
+                    elapsed = now_mono - start_time
+                    pct = round((idx / max(total_rcpts, 1)) * 90.0, 1)
+                    progress_cb(
+                        VerificationProgress(
+                            job_id=job_id,
+                            total_receipts=total_rcpts,
+                            receipts_checked=idx,
+                            files_checked=len(checked_parquet_paths),
+                            candles_verified=len(verified_timestamps),
+                            current_operation=f"Checking receipt {idx + 1}/{total_rcpts}: {receipt_file.name}",
+                            elapsed_seconds=elapsed,
+                            percent_complete=pct,
+                        )
+                    )
+
+                if receipt_file.stem not in recorded_ids:
+                    continue
+                try:
+                    rdata = json.loads(receipt_file.read_text(encoding="utf-8"))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{receipt_file.name}: unreadable receipt JSON: {exc}")
+                    continue
+                evidence, receipt_errors = self._verify_single_receipt(
+                    receipt_file,
+                    rdata,
+                    ckpt,
+                    file_sha_cache=file_sha_cache,
+                    parquet_candles_cache=parquet_candles_cache,
+                )
+                if evidence is None or receipt_errors:
+                    errors.extend(receipt_errors)
+                    continue
+
+                receipt_id = str(evidence["receipt_id"])
+                for timestamp in evidence["timestamps"]:
+                    owner = timestamp_owner.get(timestamp)
+                    if owner is not None and owner != receipt_id:
+                        errors.append(
+                            f"Duplicate verified candle {timestamp} across receipts "
+                            f"{owner} and {receipt_id}"
+                        )
+                        continue
+                    timestamp_owner[timestamp] = receipt_id
+                verified_timestamps.update(evidence["timestamps"])
+                parquet_rel = str(evidence["parquet_relative_path"])
+                verified_parquet_paths.add(parquet_rel)
+                checked_parquet_paths.add(parquet_rel)
+                verified_parquet_hashes.add(str(evidence["parquet_sha256"]))
+                valid_receipt_ids.append(receipt_id)
+                receipt_candles_sum += int(evidence["candle_count"])
+                if evidence["is_legacy"]:
+                    legacy_receipt_count += 1
+                provenance_statuses.add(str(evidence["provenance_status"]))
+
+            if _is_cancelled():
+                return _build_cancelled_report()
+
+            if progress_cb:
+                elapsed = time.monotonic() - start_time
+                progress_cb(
+                    VerificationProgress(
+                        job_id=job_id,
+                        total_receipts=total_rcpts,
+                        receipts_checked=total_rcpts,
+                        files_checked=len(checked_parquet_paths),
+                        candles_verified=len(verified_timestamps),
+                        current_operation="Checking session coverage intervals...",
+                        elapsed_seconds=elapsed,
+                        percent_complete=92.0,
+                    )
+                )
+
+            schedule = get_market_schedule(ckpt.symbol)
+            reconstructed_completed: list[int] = []
+            coverage_gaps: list[dict[str, Any]] = []
+            first_missing_by_interval: dict[int, int] = {}
+
+            for idx, interval in enumerate(ckpt.missing_intervals):
+                if _is_cancelled():
+                    return _build_cancelled_report()
+
+                interval_from = int(interval["from_ts"])
+                interval_to = int(interval["to_ts"])
+                uncovered_open_bars = 0
+                first_uncovered: int | None = None
+                missing_ranges: list[dict[str, int]] = []
+                cursor = interval_from
+                while cursor < interval_to:
+                    if cursor not in verified_timestamps:
+                        dt = datetime.fromtimestamp(cursor, UTC)
+                        if (not schedule.is_schedule_verified) or schedule.is_market_open(dt):
+                            if missing_ranges and missing_ranges[-1]["to_ts"] == cursor:
+                                missing_ranges[-1]["to_ts"] = cursor + ckpt.timeframe_seconds
+                            else:
+                                missing_ranges.append({
+                                    "from_ts": cursor,
+                                    "to_ts": cursor + ckpt.timeframe_seconds,
+                                })
+                            uncovered_open_bars += 1
+                            if first_uncovered is None:
+                                first_uncovered = cursor
+                    cursor += ckpt.timeframe_seconds
+                if uncovered_open_bars == 0:
+                    reconstructed_completed.append(idx)
+                else:
+                    if first_uncovered is not None:
+                        first_missing_by_interval[idx] = first_uncovered
+                    coverage_gaps.append({
+                        "interval_index": idx,
+                        "from_utc": interval.get("from_utc"),
+                        "to_utc": interval.get("to_utc"),
+                        "uncovered_open_bars": uncovered_open_bars,
+                        "unexplained_source_gaps": missing_ranges,
+                        "first_missing_utc": (
+                            datetime.fromtimestamp(first_uncovered, UTC).isoformat()
+                            if first_uncovered is not None
+                            else ""
+                        ),
+                    })
+
+            coverage_complete = len(reconstructed_completed) == len(ckpt.missing_intervals)
+            verified = (
+                not errors
+                and coverage_complete
+                and bool(valid_receipt_ids)
+                and bool(verified_timestamps)
+            )
+
+            if progress_cb:
+                elapsed = time.monotonic() - start_time
+                progress_cb(
+                    VerificationProgress(
+                        job_id=job_id,
+                        total_receipts=total_rcpts,
+                        receipts_checked=total_rcpts,
+                        files_checked=len(checked_parquet_paths),
+                        candles_verified=len(verified_timestamps),
+                        current_operation="Complete",
+                        elapsed_seconds=elapsed,
+                        percent_complete=100.0,
+                    )
+                )
+
             return {
                 "job_id": job_id,
                 "symbol": ckpt.symbol,
                 "status": ckpt.status,
-                "verified": False,
-                "reason": f"No cryptographic receipts found for job {job_id}",
-                "receipt_count": 0,
-                "verified_candles": 0,
-                "unique_verified_candles": 0,
-                "valid_receipt_ids": [],
-                "verified_parquet_paths": [],
-                "verified_parquet_hashes": [],
-                "reconstructed_completed_indices": [],
-                "coverage_gaps": [],
-                "errors": [
-                    "Zero receipts found for job; missing receipts cannot produce COMPLETED_VERIFIED."
-                ],
+                "verified": verified,
+                "requested_from_utc": datetime.fromtimestamp(
+                    ckpt.requested_from_ts, UTC
+                ).isoformat(),
+                "requested_to_utc": datetime.fromtimestamp(ckpt.requested_to_ts, UTC).isoformat(),
+                "total_intervals": len(ckpt.missing_intervals),
+                "completed_intervals": len(reconstructed_completed),
+                "reconstructed_completed_indices": reconstructed_completed,
+                "first_missing_by_interval": first_missing_by_interval,
+                "receipt_count": len(valid_receipt_ids),
+                "valid_receipt_ids": valid_receipt_ids,
+                "legacy_receipt_count": legacy_receipt_count,
+                "provenance_status": sorted(provenance_statuses),
+                "receipt_candles_sum": receipt_candles_sum,
+                "unique_verified_candles": len(verified_timestamps),
+                "verified_timestamps": sorted(verified_timestamps),
+                "verified_parquet_paths": sorted(verified_parquet_paths),
+                "verified_parquet_hashes": sorted(verified_parquet_hashes),
+                "coverage_gaps_count": len(coverage_gaps),
+                "coverage_gaps": coverage_gaps,
+                "errors": errors,
             }
-
-        errors: list[str] = []
-        disk_ids = {rf.stem for rf in receipt_files}
-        recorded_ids = set(ckpt.receipt_ids)
-        missing_from_disk = recorded_ids - disk_ids
-        if missing_from_disk:
-            errors.append(f"Recorded receipts missing from disk: {sorted(missing_from_disk)}")
-        unregistered = disk_ids - recorded_ids
-        if unregistered:
-            errors.append(f"Disk receipts not registered in checkpoint: {sorted(unregistered)}")
-
-        verified_timestamps: set[int] = set()
-        timestamp_owner: dict[int, str] = {}
-        verified_parquet_paths: set[str] = set()
-        verified_parquet_hashes: set[str] = set()
-        valid_receipt_ids: list[str] = []
-        legacy_receipt_count = 0
-        provenance_statuses: set[str] = set()
-        receipt_candles_sum = 0
-
-        for receipt_file in receipt_files:
-            if receipt_file.stem not in recorded_ids:
-                continue
-            try:
-                rdata = json.loads(receipt_file.read_text(encoding="utf-8"))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{receipt_file.name}: unreadable receipt JSON: {exc}")
-                continue
-            evidence, receipt_errors = self._verify_single_receipt(receipt_file, rdata, ckpt)
-            if evidence is None or receipt_errors:
-                errors.extend(receipt_errors)
-                continue
-
-            receipt_id = str(evidence["receipt_id"])
-            for timestamp in evidence["timestamps"]:
-                owner = timestamp_owner.get(timestamp)
-                if owner is not None and owner != receipt_id:
-                    errors.append(
-                        f"Duplicate verified candle {timestamp} across receipts "
-                        f"{owner} and {receipt_id}"
-                    )
-                    continue
-                timestamp_owner[timestamp] = receipt_id
-            verified_timestamps.update(evidence["timestamps"])
-            verified_parquet_paths.add(str(evidence["parquet_relative_path"]))
-            verified_parquet_hashes.add(str(evidence["parquet_sha256"]))
-            valid_receipt_ids.append(receipt_id)
-            receipt_candles_sum += int(evidence["candle_count"])
-            if evidence["is_legacy"]:
-                legacy_receipt_count += 1
-            provenance_statuses.add(str(evidence["provenance_status"]))
-
-        schedule = get_market_schedule(ckpt.symbol)
-        reconstructed_completed: list[int] = []
-        coverage_gaps: list[dict[str, Any]] = []
-        first_missing_by_interval: dict[int, int] = {}
-
-        for idx, interval in enumerate(ckpt.missing_intervals):
-            interval_from = int(interval["from_ts"])
-            interval_to = int(interval["to_ts"])
-            uncovered_open_bars = 0
-            first_uncovered: int | None = None
-            missing_ranges: list[dict[str, int]] = []
-            cursor = interval_from
-            while cursor < interval_to:
-                dt = datetime.fromtimestamp(cursor, UTC)
-                if (
-                    (not schedule.is_schedule_verified) or schedule.is_market_open(dt)
-                ) and cursor not in verified_timestamps:
-                    if missing_ranges and missing_ranges[-1]["to_ts"] == cursor:
-                        missing_ranges[-1]["to_ts"] = cursor + ckpt.timeframe_seconds
-                    else:
-                        missing_ranges.append({
-                            "from_ts": cursor,
-                            "to_ts": cursor + ckpt.timeframe_seconds,
-                        })
-                    uncovered_open_bars += 1
-                    if first_uncovered is None:
-                        first_uncovered = cursor
-                cursor += ckpt.timeframe_seconds
-            if uncovered_open_bars == 0:
-                reconstructed_completed.append(idx)
-            else:
-                if first_uncovered is not None:
-                    first_missing_by_interval[idx] = first_uncovered
-                coverage_gaps.append({
-                    "interval_index": idx,
-                    "from_utc": interval.get("from_utc"),
-                    "to_utc": interval.get("to_utc"),
-                    "uncovered_open_bars": uncovered_open_bars,
-                    "unexplained_source_gaps": missing_ranges,
-                    "first_missing_utc": (
-                        datetime.fromtimestamp(first_uncovered, UTC).isoformat()
-                        if first_uncovered is not None
-                        else ""
-                    ),
-                })
-
-        coverage_complete = len(reconstructed_completed) == len(ckpt.missing_intervals)
-        verified = (
-            not errors
-            and coverage_complete
-            and bool(valid_receipt_ids)
-            and bool(verified_timestamps)
-        )
-
-        return {
-            "job_id": job_id,
-            "symbol": ckpt.symbol,
-            "status": ckpt.status,
-            "verified": verified,
-            "requested_from_utc": datetime.fromtimestamp(ckpt.requested_from_ts, UTC).isoformat(),
-            "requested_to_utc": datetime.fromtimestamp(ckpt.requested_to_ts, UTC).isoformat(),
-            "total_intervals": len(ckpt.missing_intervals),
-            "completed_intervals": len(reconstructed_completed),
-            "reconstructed_completed_indices": reconstructed_completed,
-            "first_missing_by_interval": first_missing_by_interval,
-            "receipt_count": len(valid_receipt_ids),
-            "valid_receipt_ids": valid_receipt_ids,
-            "legacy_receipt_count": legacy_receipt_count,
-            "provenance_status": sorted(provenance_statuses),
-            "receipt_candles_sum": receipt_candles_sum,
-            "unique_verified_candles": len(verified_timestamps),
-            "verified_timestamps": sorted(verified_timestamps),
-            "verified_parquet_paths": sorted(verified_parquet_paths),
-            "verified_parquet_hashes": sorted(verified_parquet_hashes),
-            "coverage_gaps_count": len(coverage_gaps),
-            "coverage_gaps": coverage_gaps,
-            "errors": errors,
-        }
 
     def _reconcile_job_state_unlocked(self, job_id: str) -> CollectionCheckpoint:
         """Reconcile durable state assuming the caller already owns the job lock."""
@@ -1225,45 +1394,61 @@ class HistoricalCollectionCoordinator:
 
     def reconcile_job_state(self, job_id: str) -> CollectionCheckpoint:
         """Audit storage and receipts against checkpoint to reconcile durable progress."""
-        self.acquire_job_lock(job_id)
-        try:
-            return self._reconcile_job_state_unlocked(job_id)
-        finally:
-            self.release_job_lock(job_id)
-
-    def create_snapshot_for_job(self, job_id: str) -> Any:
-        """Create an immutable snapshot strictly from receipt-verified parquet files."""
-        integrity = self.verify_job_integrity(job_id)
-        if not integrity["verified"]:
-            err_msg = "; ".join(integrity.get("errors", [])) or "Coverage incomplete"
-            raise ValueError(f"Job {job_id} failed integrity verification: {err_msg}")
-
-        expected_paths = set(integrity.get("verified_parquet_paths", []))
-        expected_hashes = set(integrity.get("verified_parquet_hashes", []))
-        if not expected_paths or not expected_hashes:
-            raise ValueError(f"Job {job_id} has no verified parquet files to snapshot")
-
-        dataset_mgr = ResearchDatasetManager(self.repo_root)
-        discovered = dataset_mgr.discover_sources()
-        repo_resolved = self.repo_root.resolve()
-        job_sources: list[Any] = []
-        for source in discovered:
+        with self.job_operation(job_id, "reconcile"):
+            self.acquire_job_lock(job_id)
             try:
-                rel_path = str(source.path.resolve().relative_to(repo_resolved)).replace("\\", "/")
-            except ValueError:
-                continue
-            if (
-                source.is_eligible
-                and rel_path in expected_paths
-                and source.sha256_checksum in expected_hashes
-            ):
-                job_sources.append(source)
+                return self._reconcile_job_state_unlocked(job_id)
+            finally:
+                self.release_job_lock(job_id)
 
-        if not job_sources:
-            raise ValueError(
-                f"Job {job_id}: no discoverable sources match the receipt-verified parquet files"
-            )
-        return dataset_mgr.prepare_dataset(sources=job_sources)
+    def create_snapshot_for_job(
+        self, job_id: str, *, integrity: dict[str, Any] | None = None
+    ) -> Any:
+        """Create an immutable snapshot strictly from receipt-verified parquet files."""
+        with self.job_operation(job_id, "snapshot"):
+            self.acquire_job_lock(job_id)
+            try:
+                if (
+                    integrity is None
+                    or integrity.get("job_id") != job_id
+                    or not integrity.get("verified", False)
+                ):
+                    integrity = self.verify_job_integrity(job_id)
+
+                if not integrity.get("verified", False):
+                    err_msg = "; ".join(integrity.get("errors", [])) or "Coverage incomplete"
+                    raise ValueError(f"Job {job_id} failed integrity verification: {err_msg}")
+
+                expected_paths = set(integrity.get("verified_parquet_paths", []))
+                expected_hashes = set(integrity.get("verified_parquet_hashes", []))
+                if not expected_paths or not expected_hashes:
+                    raise ValueError(f"Job {job_id} has no verified parquet files to snapshot")
+
+                dataset_mgr = ResearchDatasetManager(self.repo_root)
+                discovered = dataset_mgr.discover_sources()
+                repo_resolved = self.repo_root.resolve()
+                job_sources: list[Any] = []
+                for source in discovered:
+                    try:
+                        rel_path = str(source.path.resolve().relative_to(repo_resolved)).replace(
+                            "\\", "/"
+                        )
+                    except ValueError:
+                        continue
+                    if (
+                        source.is_eligible
+                        and rel_path in expected_paths
+                        and source.sha256_checksum in expected_hashes
+                    ):
+                        job_sources.append(source)
+
+                if not job_sources:
+                    raise ValueError(
+                        f"Job {job_id}: no discoverable sources match the receipt-verified parquet files"
+                    )
+                return dataset_mgr.prepare_dataset(sources=job_sources)
+            finally:
+                self.release_job_lock(job_id)
 
     async def resume_collection(
         self,
@@ -1343,6 +1528,17 @@ class HistoricalCollectionCoordinator:
         # Reject an unauthorized client before acquiring ownership or mutating
         # any durable checkpoint/receipt state.
         verify_authorized_client(client)
+
+        # Acquire in-memory operation guard
+        thread_id = threading.get_ident()
+        with _ACTIVE_JOB_OPERATIONS_GUARD:
+            existing_op = _ACTIVE_JOB_OPERATIONS.get(job_id)
+            if existing_op is not None and existing_op[0] != thread_id:
+                raise RuntimeError(
+                    f"Job {job_id} is currently busy with '{existing_op[1]}' in another thread. "
+                    f"Concurrent 'collection' is not permitted on the same job."
+                )
+            _ACTIVE_JOB_OPERATIONS[job_id] = (thread_id, "collection")
 
         self.acquire_job_lock(job_id)
         try:
@@ -1603,6 +1799,12 @@ class HistoricalCollectionCoordinator:
             cancel_signal_file.unlink(missing_ok=True)
             return self._build_progress(fresh)
         finally:
+            with _ACTIVE_JOB_OPERATIONS_GUARD:
+                if _ACTIVE_JOB_OPERATIONS.get(job_id) == (thread_id, "collection"):
+                    if existing_op is not None:
+                        _ACTIVE_JOB_OPERATIONS[job_id] = existing_op
+                    else:
+                        _ACTIVE_JOB_OPERATIONS.pop(job_id, None)
             self.release_job_lock(job_id)
 
     def inspect_coverage(
@@ -1622,11 +1824,15 @@ class HistoricalCollectionCoordinator:
                 snap.manifest.symbol == symbol
                 and snap.manifest.candle_size_seconds == timeframe_seconds
             ):
+                if snap.manifest.to_ts <= start_ts or snap.manifest.from_ts >= end_ts:
+                    continue
                 try:
-                    candles = snap.load_candles()
-                    for c in candles:
-                        if start_ts <= c.from_ts < end_ts:
-                            existing_timestamps.add(c.from_ts)
+                    import pyarrow.parquet as pq
+
+                    table = pq.read_table(snap.parquet_path, columns=["from_ts"])
+                    for ts in table.column("from_ts").to_pylist():
+                        if start_ts <= ts < end_ts:
+                            existing_timestamps.add(ts)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(
                         "Could not inspect snapshot %s: %s", snap.manifest.snapshot_id, exc

@@ -284,6 +284,7 @@ class ShadowModelRegistry:
         confidence_threshold: float | None = None,
         baseline_model_id: str | None = None,
         notes: str = "",
+        verdict: str | None = None,
     ) -> FrozenRegistrationRecord:
         """Validate and register a candidate model as a frozen shadow evaluation artifact.
 
@@ -508,7 +509,7 @@ class ShadowModelRegistry:
             horizon_bars=int(manifest.get("horizon_bars", 1)),
             confidence_threshold=thresh,
             calibration_method=str(config_dict.get("calibration_method", "none")),
-            verdict=manifest.get("verdict", "NO_RELIABLE_EDGE_DETECTED"),
+            verdict=verdict or manifest.get("verdict", "NO_RELIABLE_EDGE_DETECTED"),
             wallet_classification=manifest.get("wallet_classification", "UNKNOWN_WALLET_EVIDENCE"),
             is_baseline=is_baseline,
             training_majority_direction=maj_dir,

@@ -261,6 +261,7 @@ def shadow_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[P
         res.model_id,
         confidence_threshold=0.52,
         notes="Candidate LR for live stream test",
+        verdict="ELIGIBLE_FOR_PROSPECTIVE_RESEARCH",
     )
     return tmp_path, res.model_id
 

@@ -194,11 +194,13 @@ def prospective_workspace(tmp_path: Path) -> tuple[Path, str, str, str]:
         res1.model_id,
         confidence_threshold=0.52,
         notes="Candidate 1 LR",
+        verdict="ELIGIBLE_FOR_PROSPECTIVE_RESEARCH",
     )
     reg.register_candidate(
         res2.model_id,
         confidence_threshold=0.55,
         notes="Candidate 2 RF",
+        verdict="ELIGIBLE_FOR_PROSPECTIVE_RESEARCH",
     )
 
     return tmp_path, snapshot_id, res1.model_id, res2.model_id

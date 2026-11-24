@@ -349,7 +349,8 @@ def test_zero_selected_samples_handled_cleanly(tmp_path: Path) -> None:
     tm = eval_res["test_metrics"]
     assert tm["selected_samples"] == 0
     assert tm["coverage"] == 0.0
-    assert tm["directional_accuracy"] == 0.0
+    assert tm["directional_accuracy"] is None
+    assert tm["expectancy_pct_85"] is None
     assert eval_res["verdict"] == "INSUFFICIENT_SAMPLE_SIZE_NO_EDGE"
     assert eval_res["research_disposition"] == CandidateLifecycleState.DATA_INSUFFICIENT.value
     assert eval_res["execution_authority"] == "NONE"

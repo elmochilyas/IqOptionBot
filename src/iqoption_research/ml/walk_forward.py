@@ -12,8 +12,8 @@ Enforces strict leak-free chronological evaluation:
 4. Matched baseline comparison: baseline evaluated on exact same selected mask.
 5. Hypothetical binary option economics across payouts (0.70, 0.75, 0.80, 0.85, 0.90).
 6. Dependence-aware Day-Block Bootstrap (10,000 replicates) and Wilson 95% confidence intervals.
-7. Conservative scientific verdicts: DATA_INSUFFICIENT, REJECTED, NO_DEMONSTRATED_EDGE,
-   PROMISING_EXPLORATORY, ELIGIBLE_FOR_PROSPECTIVE_RESEARCH.
+15: 7. Conservative scientific verdicts: DATA_INSUFFICIENT, REJECTED, NO_DEMONSTRATED_EDGE,
+   PROMISING_EXPLORATORY. (Development evidence NEVER grants ELIGIBLE_FOR_PROSPECTIVE_RESEARCH).
 """
 
 from __future__ import annotations
@@ -723,10 +723,12 @@ def run_walk_forward_evaluation(
             f"does not clear break-even ({BREAK_EVEN_PAYOUT_85:.2%})"
         )
     elif decisive_acc > BREAK_EVEN_PAYOUT_85:
-        # Edge detected
+        # Development evidence may qualify ONLY as exploratory or promising exploratory.
+        # It must NEVER directly emit ELIGIBLE_FOR_PROSPECTIVE_RESEARCH.
+        # Only verified independent evaluation of a previously frozen candidate can grant prospective eligibility.
         if day_bootstrap_ci is not None and day_bootstrap_ci.ci_lower > BREAK_EVEN_PAYOUT_85:
-            verdict = "STATISTICALLY_SIGNIFICANT_EDGE_DETECTED"
-            disposition = "ELIGIBLE_FOR_PROSPECTIVE_RESEARCH"
+            verdict = "PROMISING_EXPLORATORY_DEVELOPMENT_EDGE"
+            disposition = "PROMISING_EXPLORATORY"
         else:
             verdict = "PROMISING_EXPLORATORY_EDGE"
             disposition = "PROMISING_EXPLORATORY"

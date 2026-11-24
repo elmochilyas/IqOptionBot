@@ -254,7 +254,10 @@ class HistoricalReplayEngine:
         if config.max_candles is not None and config.max_candles > 0:
             total_candles = min(total_candles, config.max_candles)
 
-        lookback_bars = max(config.window_lookback_bars, engine.min_warmup_bars + 5)
+        lookback_bars = max(
+            config.window_lookback_bars,
+            engine.min_warmup_bars + 5 + int(frozen_record.horizon_bars),
+        )
         rolling_buffer: list[Candle] = []
         prediction_failures_count = 0
         prediction_failures: list[dict[str, Any]] = []

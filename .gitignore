@@ -40,7 +40,8 @@ htmlcov/
 # Logs and databases
 *.log
 *.sqlite3
-reports/
+reports/*
+!reports/phase43/
 
 # Generated research workspaces, agent state, and archives
 data/*

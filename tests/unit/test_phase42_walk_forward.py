@@ -210,7 +210,8 @@ def test_run_walk_forward_evaluation_execution() -> None:
         "NO_DEMONSTRATED_EDGE",
         "REJECTED",
         "DATA_INSUFFICIENT",
-        "ELIGIBLE_FOR_PROSPECTIVE_RESEARCH",
+        "PROMISING_EXPLORATORY",
     )
+    assert report.research_disposition != "ELIGIBLE_FOR_PROSPECTIVE_RESEARCH"
     assert report.total_selected_samples > 0
     assert report.pooled_decisive_accuracy is not None

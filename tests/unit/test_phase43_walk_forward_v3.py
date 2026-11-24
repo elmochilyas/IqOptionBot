@@ -78,3 +78,33 @@ def test_experiment_runner_v3_suite_execution(tmp_path: Path) -> None:
     with sqlite3.connect(runner.db_path) as conn:
         count = conn.execute("SELECT count(*) FROM experiment_trials_v3").fetchone()[0]
         assert count == 2
+
+
+def test_experiment_runner_v3_enforces_development_partition_and_exposure_logging(
+    tmp_path: Path,
+) -> None:
+    """ExperimentRunnerV3 enforces development partition and logs access in EvidenceExposureRegistry."""
+    candles = create_deterministic_synthetic_candles(count=2000)
+    runner = ExperimentRunnerV3(tmp_path)
+
+    plan = build_phase43_experiment_plan(max_search_budget=1)
+    summary = runner.run_suite(
+        candles=candles,
+        plan=plan,
+        max_trials=1,
+        bootstrap_replicates=50,
+        enforce_development_partition=True,
+        dataset_id="test_partition_dataset",
+    )
+
+    assert summary.total_completed_trials == 1
+    # Check exposure registry
+    _, records = runner.exposure_registry.check_interval_exposure(
+        from_ts=candles[0].from_ts, to_ts=candles[-1].to_ts
+    )
+    assert len(records) > 0
+    # First record should be FEATURE_DISCOVERY with sample_count == 1700 (85% of 2000)
+    rec = records[0]
+    assert rec.dataset_id == "test_partition_dataset"
+    assert rec.sample_count == 1700
+    assert "Enforced development partition" in rec.notes

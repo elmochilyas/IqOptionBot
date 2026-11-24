@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from iqoption_research.market_data.collection_engine import (
     CollectionStatus,
@@ -14,6 +18,7 @@ from iqoption_research.market_data.data_inventory import (
     audit_genuine_market_data,
     compute_horizon_readiness,
 )
+from iqoption_research.models.market import Candle
 from tests.fixtures.synthetic_market import (
     create_deterministic_synthetic_candles,
     setup_isolated_research_workspace,
@@ -100,4 +105,108 @@ def test_historical_collection_coordinator_plan_and_record(tmp_path: Path) -> No
     assert receipt.receipt_id.startswith("rcpt_collect_eurusd_")
     assert receipt.candle_count == 50
     assert receipt.parquet_sha256 != ""
+    assert receipt.source_provenance == "SYNTHETIC_TEST_FIXTURE"
     assert (coord.receipts_dir / f"{receipt.receipt_id}.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_historical_collection_coordinator_execute_collection(tmp_path: Path) -> None:
+    """HistoricalCollectionCoordinator executes collection via collector and supports cancellation."""
+    from datetime import UTC, datetime
+    from unittest.mock import AsyncMock, MagicMock
+
+    from iqoption_research.market_data.fetch import CandleFetchResult
+    from iqoption_research.market_data.validation import assess_data_quality
+    from iqoption_research.models.market import CandleSize
+
+    coord = HistoricalCollectionCoordinator(tmp_path)
+    job_id, _missing, _ = coord.plan_collection(
+        symbol="EURUSD",
+        start_utc="2026-11-01T00:00:00+00:00",
+        end_utc="2026-11-01T00:10:00+00:00",
+        timeframe_seconds=60,
+    )
+
+    # Build mock authentic candles
+    start_ts = int(datetime.fromisoformat("2026-11-01T00:00:00+00:00").timestamp())
+    mock_candles = create_deterministic_synthetic_candles(count=10, start_ts=start_ts)
+    auth_candles = [
+        Candle(
+            active_id=c.active_id,
+            symbol=c.symbol,
+            size=c.size,
+            from_ts=c.from_ts,
+            to_ts=c.to_ts,
+            open=c.open,
+            high=c.high,
+            low=c.low,
+            close=c.close,
+            volume=c.volume,
+            bid=c.bid,
+            ask=c.ask,
+            is_complete=c.is_complete,
+            at_ts=c.at_ts,
+            provenance="historical",
+            identity_provenance="explicit_broker_metadata",
+        )
+        for c in mock_candles
+    ]
+
+    quality = assess_data_quality(
+        auth_candles, expected_size=CandleSize(60), now_utc=datetime.now(UTC)
+    )
+    fetch_result = CandleFetchResult(
+        symbol="EURUSD",
+        size=CandleSize(60),
+        candles=tuple(auth_candles),
+        errors=(),
+        quality=quality,
+        fetched_at=datetime.now(UTC),
+        raw_count=len(auth_candles),
+        source="iqoption",
+    )
+
+    mock_client = MagicMock()
+    mock_client.assert_read_only = MagicMock()
+    mock_client.get_candles = AsyncMock(return_value=fetch_result)
+
+    progress_reports = []
+
+    def on_progress(p: Any) -> None:
+        progress_reports.append(p)
+
+    # 1. Execute collection
+    final_progress = await coord.execute_collection(
+        job_id=job_id,
+        client=mock_client,
+        progress_cb=on_progress,
+        chunk_size=10,
+        is_synthetic=False,
+    )
+
+    assert mock_client.assert_read_only.called
+    assert final_progress.status == CollectionStatus.COMPLETED
+    assert final_progress.candles_collected_this_session > 0
+    assert len(progress_reports) > 0
+
+    # Verify receipt provenance
+    receipts = list(coord.receipts_dir.glob("*.json"))
+    assert len(receipts) > 0
+    receipt_data = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert receipt_data["source_provenance"] == "AUTHENTIC_BROKER_COLLECTION"
+
+    # 2. Test Cancellation
+    job_id2, _, _ = coord.plan_collection(
+        symbol="EURUSD",
+        start_utc="2026-11-02T00:00:00+00:00",
+        end_utc="2026-11-02T01:00:00+00:00",
+        timeframe_seconds=60,
+    )
+
+    # Cancellation token that fires immediately
+    canc_progress = await coord.execute_collection(
+        job_id=job_id2,
+        client=mock_client,
+        cancel_token=lambda: True,
+    )
+    assert canc_progress.status == CollectionStatus.CANCELLED

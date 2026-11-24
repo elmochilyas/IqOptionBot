@@ -1125,10 +1125,14 @@ class ModelLaboratoryPanel:
         ):
             return
 
-        candles = read_candles_parquet(self.snapshots[-1].parquet_path)
+        snap = self.snapshots[-1]
+        candles = read_candles_parquet(snap.parquet_path)
         plan = build_phase43_experiment_plan(max_search_budget=10)
 
-        self._write_text(self.mh_log_text, "Starting Phase 43 Multi-Horizon Experiments...\n")
+        self._write_text(
+            self.mh_log_text,
+            "Starting Phase 43 Multi-Horizon Experiments (enforcing development partition, 85%)...\n",
+        )
         self.btn_run_mh_matrix.state(["disabled"])
 
         runner = ExperimentRunnerV3(repo_root=self.root)
@@ -1140,7 +1144,13 @@ class ModelLaboratoryPanel:
         def run_task() -> None:
             try:
                 summary = runner.run_suite(
-                    candles=candles, plan=plan, max_trials=10, progress_callback=prog_cb
+                    candles=candles,
+                    plan=plan,
+                    max_trials=10,
+                    progress_callback=prog_cb,
+                    enforce_development_partition=True,
+                    dataset_id=snap.manifest.snapshot_id,
+                    dataset_sha256=snap.manifest.parquet_sha256,
                 )
 
                 def on_done() -> None:

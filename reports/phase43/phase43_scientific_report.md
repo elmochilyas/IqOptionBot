@@ -132,6 +132,19 @@ The complete pre-registered 71-trial matrix was executed via `ExperimentRunnerV3
 - `STATISTICAL_UNCERTAINTY_CROSSES_BREAKEVEN`: 3 trials
 - `FAILS_BASELINE_SUPERIORITY`: 2 trials
 
+### Empirical Audit & Statistical Reconciliation
+1. **Authoritative Ledger Reconciliation**:
+   - The verified database record for `stgA_H15_logreg_v3` is: 48,929 valid opportunities, 1,389 selected predictions (776 wins, 613 losses), 55.8675% decisive accuracy, 2.8388% coverage, 45.0684% matched training baseline, +10.7991% excess accuracy, Day-Block bootstrap CI [49.6664%, 62.3010%] (500 replicates), and 82 non-overlapping selections (60.98% accuracy).
+   - An earlier prose estimate of 349 selections / 195 wins / 154 losses was traced to confusing the trial's coverage (2.84%) with the horizon-average coverage across all 11 H15 trials (2.15%). All reports are now verified against the raw database ledger.
+2. **Fold Geometry & Estimator Stability**:
+   - Fold 0 trained on only 444 samples (producing 32.99% accuracy across 97 selections), while Fold 1 trained on 16,719 samples (62.55% accuracy) and Fold 2 on 33,032 samples (54.43% accuracy).
+   - Fold 0 violated model-family sample sufficiency (~8.5 samples per feature for 52 features), severely underfitting. While temporal order and purging/embargo are strictly enforced, pooling folds with vastly differing training samples creates high variance. The historical numbers are preserved immutable.
+3. **Calibration Metric Audit**:
+   - The high pooled ECE (~0.48842) was identified as an argument transposition defect in `walk_forward_v3.py` and `freezer.py` (`evaluate_calibration(p_up, y_val)` instead of `(y_val, p_up)`), which cast float probabilities to integer 0 and caused the ECE calculation to collapse to the positive class base rate. Correct parameter ordering has been restored and verified with numerical fixtures.
+4. **Statistical Qualification Semantics**:
+   - Exploratory screening criteria ($\ge 30$ selections, $\ge 5$ market days) filter unviable development paths but never grant prospective eligibility. Independent prospective qualification strictly requires $\ge 200$ selections, $\ge 10$ market days, $\ge 5\%$ coverage, verified frozen training baselines, and lower confidence bounds clearing the $54.054\%$ break-even hurdle on untouched holdouts.
+   - Recomputing a 10,000-replicate bootstrap from historical JSON without per-prediction timestamps is explicitly classified as `NOT_VERIFIED`. Prediction-level serialization has been added for future evaluations.
+
 ---
 
 ## 8. Prospective Shadow Compatibility & Delayed Replay

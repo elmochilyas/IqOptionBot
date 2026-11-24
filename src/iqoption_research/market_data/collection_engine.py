@@ -19,13 +19,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
 
+from iqoption_research.market_data.collector import HistoricalDataCollector
 from iqoption_research.market_data.parquet_storage import (
     ParquetWriteResult,
     write_candles_parquet,
@@ -155,12 +156,150 @@ class DurableCollectionReceipt:
 class HistoricalCollectionCoordinator:
     """Manages planned historical market data expansion sessions."""
 
-    def __init__(self, repo_root: Path) -> None:
+    def __init__(
+        self,
+        repo_root: Path,
+        collector: HistoricalDataCollector | None = None,
+    ) -> None:
         self.repo_root = repo_root
+        self.collector = collector or HistoricalDataCollector(
+            storage_dir=repo_root / "data" / "parquet_candles"
+        )
         self.checkpoints_dir = repo_root / DEFAULT_CHECKPOINT_DIR
         self.receipts_dir = repo_root / DEFAULT_RECEIPTS_DIR
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
         self.receipts_dir.mkdir(parents=True, exist_ok=True)
+
+    def _build_progress(self, ckpt: CollectionCheckpoint) -> CollectionProgress:
+        tot_intervals = len(ckpt.missing_intervals)
+        pct = (
+            (len(ckpt.completed_interval_indices) / tot_intervals * 100.0)
+            if tot_intervals > 0
+            else 100.0
+        )
+        status_enum = CollectionStatus(ckpt.status)
+        return CollectionProgress(
+            job_id=ckpt.job_id,
+            symbol=ckpt.symbol,
+            timeframe_seconds=ckpt.timeframe_seconds,
+            status=status_enum,
+            requested_from_utc=datetime.fromtimestamp(ckpt.requested_from_ts, UTC).isoformat(),
+            requested_to_utc=datetime.fromtimestamp(ckpt.requested_to_ts, UTC).isoformat(),
+            existing_coverage_candles=0,
+            missing_intervals_count=tot_intervals,
+            current_interval_index=ckpt.current_interval_index,
+            total_intervals_count=tot_intervals,
+            candles_collected_this_session=ckpt.total_candles_collected,
+            duplicates_detected=ckpt.duplicates_count,
+            conflicts_quarantined=ckpt.conflicts_count,
+            quality_failures=0,
+            last_collected_utc=datetime.fromtimestamp(ckpt.last_cursor_ts, UTC).isoformat()
+            if ckpt.last_cursor_ts > 0
+            else None,
+            last_receipt_sha256=None,
+            percent_complete=round(pct, 2),
+        )
+
+    async def execute_collection(
+        self,
+        job_id: str,
+        client: Any,
+        *,
+        cancel_token: Callable[[], bool] | None = None,
+        progress_cb: Callable[[CollectionProgress], None] | None = None,
+        chunk_size: int = 500,
+        is_synthetic: bool = False,
+    ) -> CollectionProgress:
+        """Execute or resume an authorized historical collection job through the production collector.
+
+        Requires an explicit client implementing read-only historical collection.
+        Iterates over missing intervals in chronological chunks, writing verified parquet batches
+        and durable collection receipts, with checkpoint persistence at every page boundary.
+        """
+        ckpt_path = self.checkpoints_dir / f"{job_id}.json"
+        if not ckpt_path.is_file():
+            raise FileNotFoundError(f"Checkpoint for job {job_id} not found at {ckpt_path}")
+
+        ckpt = CollectionCheckpoint.load(ckpt_path)
+        if ckpt.status == CollectionStatus.COMPLETED.value:
+            logger.info("Job %s is already completed.", job_id)
+            return self._build_progress(ckpt)
+
+        if hasattr(client, "assert_read_only"):
+            client.assert_read_only()
+
+        ckpt.status = CollectionStatus.IN_PROGRESS.value
+        ckpt.updated_at_utc = datetime.now(UTC).isoformat()
+        ckpt.save(ckpt_path)
+
+        for idx in range(ckpt.current_interval_index, len(ckpt.missing_intervals)):
+            if cancel_token is not None and cancel_token():
+                logger.info("Collection job %s cancelled by operator token.", job_id)
+                ckpt.status = CollectionStatus.CANCELLED.value
+                ckpt.updated_at_utc = datetime.now(UTC).isoformat()
+                ckpt.save(ckpt_path)
+                return self._build_progress(ckpt)
+
+            interval_dict = ckpt.missing_intervals[idx]
+            from_ts = int(interval_dict["from_ts"])
+            to_ts = int(interval_dict["to_ts"])
+            cursor = to_ts
+
+            while cursor > from_ts:
+                if cancel_token is not None and cancel_token():
+                    ckpt.status = CollectionStatus.CANCELLED.value
+                    ckpt.updated_at_utc = datetime.now(UTC).isoformat()
+                    ckpt.save(ckpt_path)
+                    return self._build_progress(ckpt)
+
+                fetch_count = min(chunk_size, max(1, (cursor - from_ts) // ckpt.timeframe_seconds))
+                chunk_candles = await self.collector.collect_from_broker(
+                    client,
+                    symbol=ckpt.symbol,
+                    candle_size_seconds=ckpt.timeframe_seconds,
+                    end_time_ts=cursor,
+                    count=fetch_count,
+                    chunk_size=chunk_size,
+                    allow_partial=True,
+                )
+                if not chunk_candles:
+                    logger.warning(
+                        "No candles returned for cursor %d (interval %d..%d)",
+                        cursor,
+                        from_ts,
+                        to_ts,
+                    )
+                    break
+
+                valid_chunk = [c for c in chunk_candles if from_ts <= c.from_ts < to_ts]
+                if not valid_chunk:
+                    break
+
+                self.record_collected_batch(
+                    job_id=job_id,
+                    candles=valid_chunk,
+                    is_synthetic=is_synthetic,
+                )
+                ckpt = CollectionCheckpoint.load(ckpt_path)
+
+                earliest_ts = min(c.from_ts for c in valid_chunk)
+                if earliest_ts >= cursor:
+                    break
+                cursor = earliest_ts
+
+            if idx not in ckpt.completed_interval_indices:
+                ckpt.completed_interval_indices.append(idx)
+            ckpt.current_interval_index = idx + 1
+            ckpt.updated_at_utc = datetime.now(UTC).isoformat()
+            ckpt.save(ckpt_path)
+
+            if progress_cb is not None:
+                progress_cb(self._build_progress(ckpt))
+
+        ckpt.status = CollectionStatus.COMPLETED.value
+        ckpt.updated_at_utc = datetime.now(UTC).isoformat()
+        ckpt.save(ckpt_path)
+        return self._build_progress(ckpt)
 
     def inspect_coverage(
         self,
@@ -334,9 +473,19 @@ class HistoricalCollectionCoordinator:
             last_candle_close=candles[-1].close,
             raw_payload_sha256=raw_sha,
             parquet_sha256=res.sha256_checksum,
-            source_provenance="AUTHENTIC_BROKER_COLLECTION"
-            if not is_synthetic
-            else "SYNTHETIC_TEST_FIXTURE",
+            source_provenance=(
+                "AUTHENTIC_BROKER_COLLECTION"
+                if (
+                    not is_synthetic
+                    and all(
+                        getattr(c, "provenance", "") in ("historical", "streaming")
+                        and getattr(c, "identity_provenance", "")
+                        in ("explicit_broker_metadata", "verified_correlated_request")
+                        for c in candles
+                    )
+                )
+                else "SYNTHETIC_TEST_FIXTURE"
+            ),
         )
 
         receipt_path = self.receipts_dir / f"{receipt_id}.json"

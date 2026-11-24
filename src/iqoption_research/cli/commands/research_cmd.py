@@ -1443,7 +1443,8 @@ def horizons_run_command(
     if not snapshots:
         console.print("[red]No snapshots found.[/red]")
         raise typer.Exit(code=1)
-    candles = read_candles_parquet(snapshots[-1].parquet_path)
+    target_snap = snapshots[-1]
+    candles = read_candles_parquet(target_snap.parquet_path)
     trials = build_phase43_experiment_plan()
     if horizon:
         trials = [t for t in trials if t.horizon_name == horizon.upper()]
@@ -1455,10 +1456,16 @@ def horizons_run_command(
     console.print(
         f"[bold cyan]Starting Phase 43 Multi-Horizon Experiments (Limit: {limit}, Horizon: {horizon or 'ALL'})...[/bold cyan]"
     )
+    console.print(
+        "[dim]Enforcing protected research partition: strictly development candles utilized (85%).[/dim]"
+    )
     summary = runner.run_suite(
         candles=candles,
         plan=trials,
         max_trials=limit,
+        enforce_development_partition=True,
+        dataset_id=target_snap.manifest.snapshot_id,
+        dataset_sha256=target_snap.manifest.parquet_sha256,
     )
 
     table = Table(title="Executed Phase 43 Experiment Results", show_header=True)

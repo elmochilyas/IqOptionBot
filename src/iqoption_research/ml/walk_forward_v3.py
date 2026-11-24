@@ -122,6 +122,7 @@ class WalkForwardV3Report:
     regime_breakdown: dict[str, list[dict[str, Any]]]
     verdict: str
     research_disposition: str
+    prediction_records: tuple[dict[str, Any], ...] = ()
     execution_authority: str = "NONE"
     rejection_reason: str = ""
     disclaimer: str = (
@@ -315,7 +316,7 @@ def run_walk_forward_v3_evaluation(
         except Exception:  # noqa: BLE001
             fold_ll = 0.693
 
-        cal_eval = evaluate_calibration(p_up, y_val, n_bins=10)
+        cal_eval = evaluate_calibration(y_val, p_up, n_bins=10)
         fold_exp_85 = (fold_wins * 0.85 - fold_losses * 1.0) / fold_sel if fold_sel > 0 else None
         maj_acc = maj_wins / fold_sel if fold_sel > 0 else None
 
@@ -398,7 +399,7 @@ def run_walk_forward_v3_evaluation(
         pooled_ll = 0.693
 
     pooled_cal = (
-        evaluate_calibration(np.array(all_pooled_probs), np.array(all_pooled_targets), n_bins=10)
+        evaluate_calibration(np.array(all_pooled_targets), np.array(all_pooled_probs), n_bins=10)
         if tot_opps > 0
         else None
     )
@@ -527,6 +528,27 @@ def run_walk_forward_v3_evaluation(
 
     h_name = target_bundle.horizon_name
 
+    pred_recs = tuple(
+        {
+            "timestamp": int(ts),
+            "decision": str(dec),
+            "true_dir": str(td),
+            "win": bool(dec == td),
+            "is_non_overlapping": bool(no),
+            "probability_up": float(prob),
+        }
+        for sel, dec, td, no, prob, ts in zip(
+            all_pooled_selected_mask,
+            all_pooled_decisions,
+            all_pooled_true_dirs,
+            all_pooled_non_overlapping,
+            all_pooled_probs,
+            all_pooled_timestamps,
+            strict=False,
+        )
+        if sel
+    )
+
     return WalkForwardV3Report(
         trial_id=trial_id,
         model_family=model_family,
@@ -564,5 +586,59 @@ def run_walk_forward_v3_evaluation(
         regime_breakdown=regime_breakdown,
         verdict=verdict,
         research_disposition=disposition,
+        prediction_records=pred_recs,
         rejection_reason=rejection_reason,
+    )
+
+
+def recompute_uncertainty_from_prediction_records(
+    prediction_records: Sequence[dict[str, Any]],
+    *,
+    replicates: int = 10000,
+    alpha: float = 0.05,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    non_overlapping_only: bool = False,
+) -> BootstrapConfidenceInterval | None:
+    """Recompute day-block bootstrap uncertainty from preserved prediction-level evidence.
+
+    If prediction-level records are empty or missing, returns None (classified as NOT_VERIFIED).
+    Supports 10,000+ replications, alpha tuning, and non-overlapping filtering.
+    """
+    if not prediction_records:
+        return None
+
+    recs = (
+        [r for r in prediction_records if r.get("is_non_overlapping")]
+        if non_overlapping_only
+        else list(prediction_records)
+    )
+    if not recs:
+        return None
+
+    timestamps = [int(r["timestamp"]) for r in recs]
+    y_true = [1 if r.get("true_dir") == "UP" else (1 if r.get("win") else 0) for r in recs]
+    y_pred = [1 if r.get("decision") == "UP" else (1 if r.get("win") else 0) for r in recs]
+    selected_mask = [True] * len(recs)
+    wins_count = sum(1 for r in recs if r.get("win"))
+    point_acc = wins_count / len(recs) if recs else 0.5
+
+    ci_low, ci_high = compute_day_block_bootstrap_ci(
+        y_true=y_true,
+        y_pred=y_pred,
+        timestamps=timestamps,
+        selected_mask=selected_mask,
+        replicates=replicates,
+        seed=seed,
+    )
+    if ci_low is None or ci_high is None:
+        return None
+
+    return BootstrapConfidenceInterval(
+        point_estimate=point_acc,
+        bootstrap_mean=(ci_low + ci_high) / 2.0,
+        ci_lower=ci_low,
+        ci_upper=ci_high,
+        alpha=alpha,
+        replicates=replicates,
+        seed=seed,
     )

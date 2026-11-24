@@ -79,9 +79,12 @@ All investigations were conducted strictly offline against the genuine, audited 
 | **H60** | 4 | 50.81% | 52.06% | 2.05% | No Edge |
 
 **Top Performer Analysis (`stgA_H15_logreg_v3`):**
-- Point Accuracy: 55.87% (195 wins, 154 losses, coverage 2.15%)
-- Matched Baseline: 45.07% (Excess accuracy: +10.80%)
-- 95% Day-Block Bootstrap CI: **[49.67%, 62.30%]**
+- Point Accuracy: 55.87% (55.8675% | 776 wins, 613 losses across 1,389 selected predictions; 48,929 valid opportunities)
+- Coverage: 2.84% (2.8388% trial coverage vs. 2.15% horizon-average across all 11 H15 trials)
+- Matched Baseline: 45.07% (Excess accuracy: +10.80% over training majority direction)
+- 95% Day-Block Bootstrap CI: **[49.67%, 62.30%]** (500 replicates across 58 calendar days)
+- Non-Overlapping Subset: 82 selections, 60.98% decisive accuracy
+- Brier Score: 0.2513 | ECE Audit: Corrected metric argument transposition `(y_val, p_up)`
 - Verdict: `STATISTICAL_UNCERTAINTY_CROSSES_BREAKEVEN`
 
 ---

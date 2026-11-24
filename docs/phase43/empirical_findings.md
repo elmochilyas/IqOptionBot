@@ -40,6 +40,9 @@ All 6 horizons were evaluated under rigorous chronological walk-forward cross-va
 
 ## 3. Best Performing Trial Deep Dive: `stgA_H15_logreg_v3`
 
+### Exact Ledger Verification & Discrepancy Reconciliation
+In the committed SQLite ledger (`data/experiments_v3/phase43_ledger.sqlite`) and report artifacts (`reports/phase43/multi_horizon_experiment_matrix.json`, `reports/phase43/multi_horizon_performance_summary.csv`), the exact empirical record for `stgA_H15_logreg_v3` is:
+
 ```json
 {
   "trial_id": "stgA_H15_logreg_v3",
@@ -48,31 +51,75 @@ All 6 horizons were evaluated under rigorous chronological walk-forward cross-va
   "feature_preset": "full_v3 (52 features)",
   "confidence_threshold": 0.55,
   "calibration_method": "isotonic",
-  "total_valid_opportunities": 48964,
-  "total_selected_samples": 1390,
-  "coverage": "2.84%",
-  "pooled_decisive_accuracy": "55.87%",
-  "majority_baseline_on_mask": "45.07%",
-  "baseline_improvement": "+10.80%",
+  "total_valid_opportunities": 48929,
+  "total_selected_samples": 1389,
+  "wins": 776,
+  "losses": 613,
+  "pooled_decisive_accuracy": "55.8675%",
+  "pooled_coverage": "2.8388%",
+  "majority_baseline_on_mask": "45.0684%",
+  "baseline_improvement": "+10.7991%",
   "day_block_bootstrap_ci_95": {
-    "point_estimate": "55.87%",
-    "bootstrap_mean": "55.98%",
-    "ci_lower": "49.67%",
-    "ci_upper": "62.30%",
-    "replicates": 500
+    "point_estimate": "55.8675%",
+    "bootstrap_mean": "55.9837%",
+    "ci_lower": "49.6664%",
+    "ci_upper": "62.3010%",
+    "replicates": 500,
+    "seed": 42
   },
   "non_overlapping_selected_samples": 82,
-  "non_overlapping_accuracy": "60.98%",
+  "non_overlapping_accuracy": "60.9756%",
+  "pooled_brier_score": 0.25127,
+  "pooled_ece_raw": 0.48842,
   "scientific_verdict": "STATISTICAL_UNCERTAINTY_CROSSES_BREAKEVEN",
   "research_disposition": "NO_DEMONSTRATED_EDGE",
-  "rejection_reason": "Day-block lower CI (49.67%) does not clear break-even (54.05%)"
+  "rejection_reason": "Day-block lower CI (49.67%) does not clear break-even (54.054%)"
 }
 ```
 
-### Analysis of Failure to Clear Economic Hurdle:
-While a point estimate of $55.87\%$ exceeds the nominal $54.054\%$ threshold, Day-Block bootstrap resampling across the 58 distinct market days reveals that win rates vary significantly across days (from $38.5\%$ on high-volatility event days to $68.2\%$ on calm trending days). 
+> [!NOTE]
+> **Resolution of Completion Prose Discrepancy:**
+> An earlier completion summary reported 349 selections, 195 wins, 154 losses, and 2.15% coverage. 
+> Investigation confirms that the committed experiment ledger and JSON matrix have always stored **1,389 selected predictions (776 wins, 613 losses, 2.84% coverage across 48,929 opportunities)**.
+> The discrepancy arose because the author of the completion prose confused the **horizon-average coverage across all 11 H15 trials (2.15%)** with the single trial's coverage (2.84%), and erroneously estimated $16,200 \times 2.15\% \approx 349$ selections, deriving $349 \times 55.87\% \approx 195$ wins / 154 losses. All documentation has been programmatically reconciled against the authoritative database.
 
-Because financial returns exhibit day-level clustering and volatility shocks, independent day-block sampling yields a lower 95% confidence bound of $49.67\%$. We cannot reject the null hypothesis that true out-of-sample expectancy is $\le 54.054\%$.
+---
+
+### Fold Geometry & Estimator Instability Audit
+Per-fold breakdown for `stgA_H15_logreg_v3`:
+- **Fold 0**: 444 training samples, 8,135 calibration samples, 16,304 validation samples.
+  - Selected predictions: 97 | Wins: 32 | Losses: 65 | **Decisive Accuracy: 32.99%** | Coverage: 0.59%
+- **Fold 1**: 16,719 training samples, 8,163 calibration samples, 16,279 validation samples.
+  - Selected predictions: 502 | Wins: 314 | Losses: 188 | **Decisive Accuracy: 62.55%** | Coverage: 3.08%
+- **Fold 2**: 33,032 training samples, 8,130 calibration samples, 16,346 validation samples.
+  - Selected predictions: 790 | Wins: 430 | Losses: 360 | **Decisive Accuracy: 54.43%** | Coverage: 4.83%
+
+**Key Findings:**
+1. **Severe Sample Insufficiency in Fold 0**: Fold 0 initialized with an expanding window start of 500 bars, leaving only 444 training samples after feature pipeline warmup for a 52-feature model (~8.5 samples per feature). This violates standard model-family sample sufficiency (which requires $\ge 25\text{--}50$ samples per feature), causing severe underfitting and estimator collapse (32.99% accuracy).
+2. **Calibration Inversion**: Calibration partition size (8,135 samples) was 18 times larger than the training set (444 samples) in Fold 0.
+3. **Temporal Ordering & Purging**: Temporal sequence is strictly preserved (`train < cal < val`), and horizon-specific purging ($H = 15$ bars) and embargo (5 bars) are correctly enforced across boundaries.
+4. **Instability of Pooled Folds**: Pooling folds with vastly heterogeneous training populations (444 vs. 16,719 vs. 33,032 samples) introduces high estimator variance. The original results are preserved immutable; future investigations will adopt revised initial window geometries under a new experiment version identifier.
+
+---
+
+### Calibration Audit & ECE Metric Defect Analysis
+The reported pooled ECE of `0.48842` for an isotonically calibrated model was audited:
+1. **Metric Root Cause**: In `iqoption_research/ml/walk_forward_v3.py` and `iqoption_research/ml/freezer.py`, `evaluate_calibration` was invoked with inverted arguments `(p_up, y_val)` instead of `(y_true, y_prob)`.
+2. **Numerical Effect**: `_validate_inputs(y_true, y_prob)` casts `y_true` as integer array (`np.asarray(..., dtype=np.int64)`). Passing float probabilities `p_up` truncated all probabilities to `0`, causing the empirical positive class rate across all calibration bins to evaluate to `0.0`. Thus, ECE equaled $|0.0 - \text{base\_rate}| \approx 0.48842$.
+3. **Correction**: The parameter order has been corrected to `evaluate_calibration(y_val, p_up)`. The anomaly was purely a diagnostic metric transposition defect; isotonic probability mapping and model thresholding operated correctly.
+
+---
+
+### Statistical Acceptance & Uncertainty Recomputation Semantics
+1. **Exploratory Screening vs. Independent Qualification**:
+   - **Exploratory Screening** (in `walk_forward_v3.py`): Requires $\ge 30$ selected opportunities, $\ge 5$ distinct market days, and $\ge 1\%$ coverage. This serves only to filter non-viable configurations within development sweeps and emits at most `PROMISING_EXPLORATORY`. It never grants prospective eligibility.
+   - **Independent Final Qualification** (in `freezer.py`): Requires $\ge 200$ selected opportunities, $\ge 10$ market days, $\ge 5\%$ coverage, verified frozen training-derived majority baseline, and the lower bound of the dependence-aware 95% Day-Block bootstrap CI exceeding the $54.054\%$ break-even hurdle on genuinely untouched holdout evidence.
+2. **Recomputing Uncertainty from Historical JSON**:
+   - The historical summary JSON preserves aggregate metrics, fold results, and precomputed bootstrap CIs, but does not serialize per-prediction timestamps.
+   - Recomputing a 10,000-replicate bootstrap from historical JSON without per-prediction timestamps is impossible without fabricating data, and is therefore classified as `NOT_VERIFIED`.
+   - `WalkForwardV3Report` now records full `prediction_records: tuple[dict[str, Any], ...]`, enabling verified `recompute_uncertainty_from_prediction_records` with 10,000+ replications for all future evaluations.
+
+---
 
 ---
 

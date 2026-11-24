@@ -569,7 +569,7 @@ def evaluate_frozen_candidate(
     decisive_acc = (test_wins / test_selected) if test_selected > 0 else None
     coverage = (test_selected / n_test) if n_test > 0 else 0.0
     brier = float(np.mean((p_up - y_test_arr) ** 2))
-    cal_eval = evaluate_calibration(p_up, y_test_arr, n_bins=10)
+    cal_eval = evaluate_calibration(y_test_arr, p_up, n_bins=10)
     ece = float(cal_eval.ece)
     exp_85 = ((test_wins * 0.85 - test_losses * 1.0) / test_selected) if test_selected > 0 else None
 

@@ -21,6 +21,7 @@ Orchestrates the 4-stage bounded empirical research plan:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -30,6 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
+from iqoption_research.ml.exposure_registry import EvidenceExposureRegistry, ExposurePurpose
 from iqoption_research.ml.features_v3 import CausalFeaturePipelineV3
 from iqoption_research.ml.walk_forward_v3 import (
     WalkForwardV3Report,
@@ -264,10 +266,16 @@ def build_phase43_experiment_plan(
 class ExperimentRunnerV3:
     """Executes registered multi-horizon trials and records reports in SQLite ledger."""
 
-    def __init__(self, repo_root: Path, db_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        repo_root: Path,
+        db_path: Path | None = None,
+        exposure_registry: EvidenceExposureRegistry | None = None,
+    ) -> None:
         self.repo_root = repo_root
         self.db_path = db_path or (repo_root / DEFAULT_EXPERIMENTS_DB_V3)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.exposure_registry = exposure_registry or EvidenceExposureRegistry(repo_root)
         self._init_db()
 
     def _init_db(self) -> None:
@@ -364,8 +372,79 @@ class ExperimentRunnerV3:
         progress_callback: Callable[[int, int, str], None] | None = None,
         cancel_token: Callable[[], bool] | None = None,
         bootstrap_replicates: int = 1000,
+        enforce_development_partition: bool = True,
+        dataset_id: str = "dataset_candles",
+        dataset_sha256: str = "",
     ) -> ResearchSuiteSummaryV3:
-        """Execute the registered trial plan across candles."""
+        """Execute the registered trial plan across candles.
+
+        When enforce_development_partition is True (default), restricts exploratory
+        suite execution strictly to the development partition (first 85% of candles,
+        preserving the final 15% as protected test holdout) and logs exposure in the
+        EvidenceExposureRegistry.
+        """
+        if not candles:
+            raise ValueError("Candles sequence cannot be empty for experiment suite.")
+
+        if (
+            enforce_development_partition
+            and len(candles) >= 1000
+            and int(len(candles) * 0.85) >= 800
+        ):
+            dev_cutoff = int(len(candles) * 0.85)
+            effective_candles = candles[:dev_cutoff]
+            from_ts = effective_candles[0].from_ts
+            to_ts = effective_candles[-1].to_ts
+            d_sha = (
+                dataset_sha256
+                or hashlib.sha256(
+                    f"{from_ts}:{to_ts}:{len(effective_candles)}".encode()
+                ).hexdigest()
+            )
+            self.exposure_registry.record_exposure(
+                dataset_id=dataset_id,
+                dataset_sha256=d_sha,
+                from_ts=from_ts,
+                to_ts=to_ts,
+                purpose=ExposurePurpose.FEATURE_DISCOVERY,
+                actor_stage="multi_horizon_experiment_matrix",
+                sample_count=len(effective_candles),
+                plan_id="phase43_multi_horizon_plan",
+                notes=(
+                    f"Enforced development partition: {len(effective_candles)}/{len(candles)} "
+                    f"candles used (withheld {len(candles) - len(effective_candles)} protected holdout candles)."
+                ),
+            )
+            logger.info(
+                "Enforced development partition: using %d/%d candles (range %d to %d, withheld %d).",
+                len(effective_candles),
+                len(candles),
+                from_ts,
+                to_ts,
+                len(candles) - len(effective_candles),
+            )
+        else:
+            effective_candles = candles
+            from_ts = effective_candles[0].from_ts
+            to_ts = effective_candles[-1].to_ts
+            d_sha = (
+                dataset_sha256
+                or hashlib.sha256(
+                    f"{from_ts}:{to_ts}:{len(effective_candles)}".encode()
+                ).hexdigest()
+            )
+            self.exposure_registry.record_exposure(
+                dataset_id=dataset_id,
+                dataset_sha256=d_sha,
+                from_ts=from_ts,
+                to_ts=to_ts,
+                purpose=ExposurePurpose.FEATURE_DISCOVERY,
+                actor_stage="multi_horizon_experiment_matrix",
+                sample_count=len(effective_candles),
+                plan_id="phase43_multi_horizon_plan",
+                notes="Candles processed without additional slicing in experiment suite.",
+            )
+
         trials = plan or build_phase43_experiment_plan(max_search_budget=max_trials)
         trials = trials[:max_trials]
 
@@ -398,7 +477,7 @@ class ExperimentRunnerV3:
 
             try:
                 rep = run_walk_forward_v3_evaluation(
-                    candles=candles,
+                    candles=effective_candles,
                     pipeline=pipe,
                     horizon_bars=trial.horizon_bars,
                     model_family=trial.model_family,

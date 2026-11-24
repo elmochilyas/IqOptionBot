@@ -186,10 +186,13 @@ class EvidenceExposureRegistry:
         _dataset_sha256: str | None = None,
     ) -> tuple[ExposureClassification, list[EvidenceExposureRecord]]:
         """Check whether an interval overlaps previously inspected evidence."""
-        # Historical Phase 42 known interval: Nov 12 - Nov 20, 2026
-        # from_ts: 1731369600 to 1732147200
-        phase42_holdout_start = 1731369600
-        phase42_holdout_end = 1732147200
+        # Historical Phase 42 known interval: Nov 12 - Nov 20 (both 2026 and 2024 epochs)
+        # 2026 epoch: 1794441600 to 1795219200 (2026-11-12T00:00:00 to 2026-11-20T23:59:59 UTC)
+        # 2024 epoch: 1731369600 to 1732147200 (2024-11-12T00:00:00 to 2024-11-20T23:59:59 UTC)
+        phase42_holdout_start_2026 = 1794441600
+        phase42_holdout_end_2026 = 1795219200
+        phase42_holdout_start_2024 = 1731369600
+        phase42_holdout_end_2024 = 1732147200
 
         conn = sqlite3.connect(self.db_path)
         try:
@@ -240,7 +243,9 @@ class EvidenceExposureRegistry:
             return ExposureClassification.HISTORICAL_REUSED, records
 
         # Check hardcoded historical baseline intervals
-        if not (to_ts < phase42_holdout_start or from_ts > phase42_holdout_end):
+        if not (to_ts < phase42_holdout_start_2026 or from_ts > phase42_holdout_end_2026):
+            return ExposureClassification.HISTORICAL_REUSED, []
+        if not (to_ts < phase42_holdout_start_2024 or from_ts > phase42_holdout_end_2024):
             return ExposureClassification.HISTORICAL_REUSED, []
 
         return ExposureClassification.GENUINELY_UNTOUCHED, []

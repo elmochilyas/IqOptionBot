@@ -66,13 +66,18 @@ def run_genuine_phase43_experiments() -> None:
     db_path = repo_root / "data" / "experiments_v3" / "phase43_ledger.sqlite"
     runner = ExperimentRunnerV3(repo_root=repo_root, db_path=db_path)
 
-    # 4. Execute suite
-    logger.info("Starting execution of Phase 43 experiment suite...")
+    # 4. Execute suite with enforced development partition
+    logger.info(
+        "Starting execution of Phase 43 experiment suite with enforced development partition..."
+    )
     t0 = time.perf_counter()
     summary = runner.run_suite(
         candles=candles,
         plan=plan,
         bootstrap_replicates=500,
+        enforce_development_partition=True,
+        dataset_id=primary_snapshot.manifest.snapshot_id,
+        dataset_sha256=primary_snapshot.manifest.parquet_sha256,
     )
     t1 = time.perf_counter()
     logger.info(
@@ -119,13 +124,13 @@ def run_genuine_phase43_experiments() -> None:
         ])
         for rep in summary.reports:
             ci_low = (
-                f"{rep.day_block_bootstrap_ci.ci_lower * 100:.2f}"
-                if rep.day_block_bootstrap_ci
+                f"{rep.day_block_bootstrap_ci_95.ci_lower * 100:.2f}"
+                if rep.day_block_bootstrap_ci_95
                 else "N/A"
             )
             ci_high = (
-                f"{rep.day_block_bootstrap_ci.ci_upper * 100:.2f}"
-                if rep.day_block_bootstrap_ci
+                f"{rep.day_block_bootstrap_ci_95.ci_upper * 100:.2f}"
+                if rep.day_block_bootstrap_ci_95
                 else "N/A"
             )
             dec_acc = (
@@ -152,15 +157,15 @@ def run_genuine_phase43_experiments() -> None:
 
             writer.writerow([
                 rep.trial_id,
-                rep.stage,
+                rep.trial_id.split("_")[0],
                 rep.target_horizon_name,
                 rep.target_horizon_bars,
                 rep.model_family,
                 rep.feature_preset,
                 rep.calibration_method,
                 rep.confidence_threshold,
-                rep.pooled_total_opportunities,
-                rep.pooled_selected_samples,
+                rep.total_valid_opportunities,
+                rep.total_selected_samples,
                 cov,
                 dec_acc,
                 maj_acc,
@@ -178,18 +183,20 @@ def run_genuine_phase43_experiments() -> None:
     # 7. Print horizon comparison
     logger.info("\n--- HORIZON COMPARISON SUMMARY ---")
     comp = runner.compare_horizons()
-    for h, data in comp.items():
+    for item in comp:
         logger.info(
             "Horizon %s: Trials=%d, AvgAcc=%s, MaxAcc=%s, AvgCov=%s",
-            h,
-            data.get("trial_count", 0),
-            f"{data.get('avg_decisive_accuracy', 0.0) * 100:.2f}%"
-            if data.get("avg_decisive_accuracy")
+            item.get("horizon", ""),
+            item.get("completed_trials", 0),
+            f"{item.get('mean_accuracy', 0.0) * 100:.2f}%"
+            if item.get("mean_accuracy") is not None
             else "N/A",
-            f"{data.get('max_decisive_accuracy', 0.0) * 100:.2f}%"
-            if data.get("max_decisive_accuracy")
+            f"{item.get('best_accuracy', 0.0) * 100:.2f}%"
+            if item.get("best_accuracy") is not None
             else "N/A",
-            f"{data.get('avg_coverage', 0.0) * 100:.2f}%" if data.get("avg_coverage") else "N/A",
+            f"{item.get('mean_coverage', 0.0) * 100:.2f}%"
+            if item.get("mean_coverage") is not None
+            else "N/A",
         )
 
     logger.info("\nGlobal Research Disposition: %s", summary.global_disposition)

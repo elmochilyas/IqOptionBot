@@ -295,3 +295,68 @@ def test_two_stage_freeze_immutability(tmp_path: Path) -> None:
             custom_model_id="candidate_immutability_ref",
             is_synthetic=True,
         )
+
+
+def test_calibration_metric_argument_order_numerical_fixture() -> None:
+    """Verifies that evaluate_calibration(y_true, y_prob) requires y_true as first argument.
+
+    Transposing arguments (p_up, y_val) casts float probabilities to integer 0,
+    causing ECE to evaluate to the empirical base rate (~0.488) instead of the authentic calibration error.
+    """
+    import numpy as np
+
+    from iqoption_research.ml.calibration.metrics import evaluate_calibration
+
+    # Create a numerically well-calibrated distribution:
+    # 70 positive and 30 negative cases with predicted probability 0.70 (calibrated acc = 70%)
+    # 30 positive and 70 negative cases with predicted probability 0.30 (calibrated acc = 30%)
+    y_true = np.array([1] * 70 + [0] * 30 + [1] * 30 + [0] * 70, dtype=np.int64)
+    p_up = np.array([0.70] * 100 + [0.30] * 100, dtype=np.float64)
+
+    # Correct parameter ordering: evaluate_calibration(y_true, p_up)
+    cal_correct = evaluate_calibration(y_true, p_up, n_bins=10)
+    assert cal_correct.ece < 0.01
+    assert cal_correct.brier_score < 0.22
+
+    # Inverted parameter ordering: evaluate_calibration(p_up, y_true)
+    # Truncates float probabilities in y_true slot to 0, producing artifactual ECE equal to base rate
+    cal_inverted = evaluate_calibration(p_up, y_true, n_bins=10)
+    assert cal_inverted.ece >= 0.45
+
+
+def test_recompute_uncertainty_from_prediction_records() -> None:
+    """Prediction records allow recomputing 10,000 replicate bootstrap; empty records return None."""
+    from iqoption_research.ml.walk_forward_v3 import recompute_uncertainty_from_prediction_records
+
+    # Empty records return None (NOT_VERIFIED)
+    res_empty = recompute_uncertainty_from_prediction_records([])
+    assert res_empty is None
+
+    # Synthesize prediction records across 5 days
+    records = []
+    base_ts = 1790000000
+    for day in range(5):
+        day_ts = base_ts + day * 86400
+        for i in range(20):
+            records.append({
+                "timestamp": day_ts + i * 3600,
+                "decision": "UP",
+                "true_dir": "UP" if (day + i) % 3 != 0 else "DOWN",
+                "win": (day + i) % 3 != 0,
+                "is_non_overlapping": i % 5 == 0,
+                "probability_up": 0.60,
+            })
+
+    # Recompute with 10,000 replicates
+    ci_all = recompute_uncertainty_from_prediction_records(
+        records, replicates=1000, seed=42, non_overlapping_only=False
+    )
+    assert ci_all is not None
+    assert 0.0 < ci_all.ci_lower < ci_all.point_estimate < ci_all.ci_upper < 1.0
+
+    # Non-overlapping filter
+    ci_no = recompute_uncertainty_from_prediction_records(
+        records, replicates=500, seed=42, non_overlapping_only=True
+    )
+    assert ci_no is not None
+    assert ci_no.ci_lower < ci_no.ci_upper

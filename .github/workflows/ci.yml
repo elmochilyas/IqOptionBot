@@ -68,4 +68,5 @@ jobs:
 
       - name: Run Full Offline Pytest Suite
         run: |
-          python -c "import signal, pytest; signal.signal(signal.SIGINT, signal.SIG_IGN); raise SystemExit(pytest.main(['-q', '--full-trace']))"
+          python -c "import signal, pytest; signal.signal(signal.SIGINT, signal.SIG_IGN); code = pytest.main(['-q', '--full-trace']); print('PYTEST_EXIT_CODE=' + str(int(code)), flush=True); raise SystemExit(code)"
+          exit $LASTEXITCODE

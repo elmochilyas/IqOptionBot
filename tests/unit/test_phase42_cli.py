@@ -83,6 +83,23 @@ def test_cli_partitions_create_and_verify(isolated_env: Path) -> None:
 
 def test_cli_plan_create_and_validate(isolated_env: Path) -> None:
     """Test `research plan create` and `validate` commands."""
+    manifest_dest = isolated_env / "data" / "partitions" / "test_manifest.json"
+
+    # Create partitions first in isolated_env
+    res_part = runner.invoke(
+        app,
+        [
+            "research",
+            "partitions",
+            "create",
+            "--root",
+            str(isolated_env),
+            "--manifest-path",
+            str(manifest_dest),
+        ],
+    )
+    assert res_part.exit_code == 0, res_part.output
+
     plan_dest = isolated_env / "data" / "plans" / "test_plan.json"
 
     # Create plan
@@ -92,6 +109,10 @@ def test_cli_plan_create_and_validate(isolated_env: Path) -> None:
             "research",
             "plan",
             "create",
+            "--root",
+            str(isolated_env),
+            "--manifest-path",
+            str(manifest_dest),
             "--output",
             str(plan_dest),
         ],
@@ -106,6 +127,8 @@ def test_cli_plan_create_and_validate(isolated_env: Path) -> None:
             "research",
             "plan",
             "validate",
+            "--root",
+            str(isolated_env),
             "--plan-path",
             str(plan_dest),
         ],

@@ -636,6 +636,15 @@ class ProspectiveShadowObserver:
                     f"Candidate model '{model_id}' must have execution_authority='NONE', "
                     f"got {rec.execution_authority!r}"
                 )
+            if (
+                not config.is_synthetic
+                and not rec.is_baseline
+                and rec.verdict not in ("ELIGIBLE_FOR_PROSPECTIVE_RESEARCH", "PROSPECTIVE_PILOT")
+            ):
+                raise ValueError(
+                    f"Candidate model '{model_id}' verdict is {rec.verdict!r}; "
+                    "only models verified as 'ELIGIBLE_FOR_PROSPECTIVE_RESEARCH' may run in prospective observation."
+                )
             # Re-verify bundle and manifest integrity
             bundle_data = self.registry.load_frozen_bundle(model_id)
             if bundle_data is None:
@@ -655,6 +664,15 @@ class ProspectiveShadowObserver:
                 bundle_sha256=rec.bundle_sha256,
                 is_baseline=rec.is_baseline,
             )
+
+        # Compute dynamic buffer capacity for multi-timeframe warmup and multi-horizon maturity
+        required_warmup = max(
+            [config.min_warmup_bars] + [engine.min_warmup_bars for engine in self.engines.values()]
+        )
+        max_horizon = max((rec.horizon_bars for rec in self.records.values()), default=1)
+        self._max_history_bars = max(
+            self.config.max_history_bars, required_warmup + max_horizon + 50
+        )
 
         self.evaluator = ShadowOutcomeEvaluator(
             journal=self.journal,
@@ -894,7 +912,7 @@ class ProspectiveShadowObserver:
         # Contiguous candle: append to buffer
         self._seen_boundaries.add(c.to_ts)
         self._candle_buffer.append(c)
-        if len(self._candle_buffer) > self.config.max_history_bars:
+        if len(self._candle_buffer) > self._max_history_bars:
             self._candle_buffer.pop(0)
 
         self._consecutive_valid_candles += 1
@@ -934,9 +952,9 @@ class ProspectiveShadowObserver:
 
         # 4. Strict prospective commitment deadline checks
         cutoff_ts = c.to_ts
-        maturity_ts = cutoff_ts + 60
+        entry_window_end_ts = cutoff_ts + 60
         deadline_ts = (
-            maturity_ts
+            entry_window_end_ts
             - self.config.commitment_safety_margin_seconds
             - (event.clock_uncertainty_ms / 1000.0)
         )
@@ -1016,13 +1034,15 @@ class ProspectiveShadowObserver:
             return
 
         # 4d. Durable prediction commitment check and execution
-        maturity_iso = datetime.fromtimestamp(maturity_ts, UTC).isoformat()
         now_iso = datetime.now(UTC).isoformat()
 
         any_accepted = False
 
         for model_id, engine in self.engines.items():
             rec = self.records[model_id]
+            model_horizon_bars = max(1, getattr(rec, "horizon_bars", 1))
+            model_maturity_ts = cutoff_ts + (model_horizon_bars * 60)
+            model_maturity_iso = datetime.fromtimestamp(model_maturity_ts, UTC).isoformat()
             try:
                 pred_out = engine.predict(self._candle_buffer, decision_ts=cutoff_ts)
                 prob_dict = {"UP": pred_out.probability_up, "DOWN": pred_out.probability_down}
@@ -1043,9 +1063,9 @@ class ProspectiveShadowObserver:
                     probabilities=prob_dict,
                     decision=pred_out.decision.value,
                     confidence_threshold=rec.confidence_threshold,
-                    prediction_horizon_bars=1,
-                    expected_maturity_ts=maturity_ts,
-                    expected_maturity_utc=maturity_iso,
+                    prediction_horizon_bars=model_horizon_bars,
+                    expected_maturity_ts=model_maturity_ts,
+                    expected_maturity_utc=model_maturity_iso,
                     feature_fingerprint=pred_out.feature_fingerprint,
                     prediction_fingerprint="",
                     runtime_diagnostics={
@@ -1093,7 +1113,7 @@ class ProspectiveShadowObserver:
                     model_id=model_id,
                     prediction_fingerprint=pred_rec.prediction_fingerprint,
                     feature_cutoff_ts=cutoff_ts,
-                    expected_maturity_ts=maturity_ts,
+                    expected_maturity_ts=model_maturity_ts,
                     post_fsync_completion_ts=post_fsync_ts,
                     post_fsync_completion_utc=post_fsync_utc,
                     commitment_deadline_ts=deadline_ts,

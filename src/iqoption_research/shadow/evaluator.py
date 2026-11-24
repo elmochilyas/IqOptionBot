@@ -272,9 +272,21 @@ class ShadowOutcomeEvaluator:
                     resolved_count += 1
                     continue
 
-            # Continuity check: maturity candle must be consecutive to cutoff
-            # For H=1 bar (60s), maturity_candle.from_ts must equal cutoff_candle.to_ts
-            if maturity_candle.from_ts != cutoff_candle.to_ts:
+            # Continuity check: verify no gaps or closures between cutoff and maturity
+            # For any H >= 1, every intermediate 60s candle boundary must be present in sequence
+            has_discontinuity = False
+            if maturity_candle.to_ts != pred.expected_maturity_ts:
+                has_discontinuity = True
+            else:
+                curr_ts = cutoff_candle.to_ts
+                while curr_ts < maturity_candle.to_ts:
+                    next_ts = curr_ts + 60
+                    if next_ts not in by_to_ts:
+                        has_discontinuity = True
+                        break
+                    curr_ts = next_ts
+
+            if has_discontinuity:
                 # Temporal discontinuity detected between cutoff and maturity!
                 out_event = OutcomeEventRecord(
                     session_id=pred.session_id,

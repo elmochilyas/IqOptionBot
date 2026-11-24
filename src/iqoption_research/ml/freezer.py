@@ -263,11 +263,40 @@ def freeze_candidate(
     scaler_sha = _hash_file(bundle_dir / "scaler.joblib")
     cal_sha = _hash_file(bundle_dir / "calibrator.joblib") if calibrator is not None else ""
 
+    # Derive and freeze benchmark from authorized training data before evaluation (Phase 43)
+    n_tr_total = len(y_train_arr)
+    n_tr_up = int(np.sum(y_train_arr == 1))
+    n_tr_down = int(np.sum(y_train_arr == 0))
+    p_tr_up = float(n_tr_up / n_tr_total) if n_tr_total > 0 else 0.5
+    maj_dir = "UP" if p_tr_up >= 0.5 else "DOWN"
+    maj_class = 1 if p_tr_up >= 0.5 else 0
+
+    benchmark_spec = {
+        "benchmark_identity": "training_majority_class",
+        "source_partition": "train",
+        "sample_count": n_tr_total,
+        "class_counts": {"UP": n_tr_up, "DOWN": n_tr_down},
+        "class_frequencies": {"UP": p_tr_up, "DOWN": 1.0 - p_tr_up},
+        "majority_direction": maj_dir,
+        "direction": maj_dir,
+        "majority_class": maj_class,
+    }
+    clean_benchmark = {k: v for k, v in benchmark_spec.items() if k != "benchmark_hash"}
+    benchmark_hash = hashlib.sha256(
+        json.dumps(clean_benchmark, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    benchmark_spec["benchmark_hash"] = benchmark_hash
+
+    benchmark_file = bundle_dir / "benchmark.json"
+    benchmark_file.write_text(json.dumps(benchmark_spec, indent=2), encoding="utf-8")
+    benchmark_sha = hashlib.sha256(benchmark_file.read_bytes()).hexdigest()
+
     component_hashes = {
         "bundle_joblib": bundle_sha,
         "model_joblib": model_sha,
         "scaler_joblib": scaler_sha,
         "calibrator_joblib": cal_sha,
+        "benchmark_json": benchmark_sha,
     }
 
     manifest_data = {
@@ -278,6 +307,7 @@ def freeze_candidate(
         "run_id": f"freeze_{ts_slug}",
         "bundle_sha256": bundle_sha,
         "component_hashes": component_hashes,
+        "frozen_benchmark": benchmark_spec,
         "snapshot_id": snapshot_id,
         "dataset_content_sha256": snapshot_sha256,
         "feature_names": list(pipe.feature_names),
@@ -365,6 +395,8 @@ def evaluate_frozen_candidate(
     repo_root: Path | None = None,
     evaluation_authorization: str = "PHASE42_STAGE_C_INDEPENDENT_EVALUATION",
     force_reevaluation: bool = False,
+    holdout_candles: Sequence[Candle] | None = None,
+    authorizing_researcher: str | None = None,
 ) -> dict[str, Any]:
     """Stage C: Evaluate a previously frozen, verified candidate on protected holdout.
 
@@ -377,6 +409,8 @@ def evaluate_frozen_candidate(
     - Calibration error: ECE <= 0.05.
     - Zero execution authority granted under all circumstances.
     """
+    if test_candles is None and holdout_candles is not None:
+        test_candles = holdout_candles
     root = repo_root or Path.cwd()
     registry = ShadowModelRegistry(root)
     record = registry.get_candidate(model_id)
@@ -448,6 +482,28 @@ def evaluate_frozen_candidate(
         }
 
     # 3. Load candidate bundle
+    frozen_bm = manifest_data.get("frozen_benchmark")
+    benchmark_file = bundle_dir / "benchmark.json"
+    if frozen_bm is None or not benchmark_file.is_file():
+        raise ModelVerificationError(
+            f"Candidate {model_id} lacks frozen benchmark provenance! "
+            "Missing benchmark provenance must fail closed to prevent outcome-informed baseline leakage."
+        )
+    clean_bm = {k: v for k, v in frozen_bm.items() if k != "benchmark_hash"}
+    calc_bm_hash = hashlib.sha256(json.dumps(clean_bm, sort_keys=True).encode("utf-8")).hexdigest()
+    if calc_bm_hash != frozen_bm.get("benchmark_hash"):
+        raise ModelVerificationError(
+            f"Candidate {model_id} frozen benchmark hash mismatch! "
+            f"Computed {calc_bm_hash}, recorded {frozen_bm.get('benchmark_hash')}"
+        )
+    file_bm_hash = hashlib.sha256(benchmark_file.read_bytes()).hexdigest()
+    recorded_bm_file_sha = manifest_data.get("component_hashes", {}).get("benchmark_json")
+    if recorded_bm_file_sha and file_bm_hash != recorded_bm_file_sha:
+        raise ModelVerificationError(
+            f"Candidate {model_id} benchmark.json file on disk has been tampered with! "
+            f"Computed {file_bm_hash}, recorded {recorded_bm_file_sha}"
+        )
+
     bundle_dict = joblib.load(bundle_file)
     model = bundle_dict["model"]
     scaler = bundle_dict["scaler"]
@@ -510,38 +566,44 @@ def evaluate_frozen_candidate(
             else:
                 test_losses += 1
 
-    decisive_acc = test_wins / test_selected if test_selected > 0 else 0.0
-    coverage = test_selected / n_test if n_test > 0 else 0.0
+    decisive_acc = (test_wins / test_selected) if test_selected > 0 else None
+    coverage = (test_selected / n_test) if n_test > 0 else 0.0
     brier = float(np.mean((p_up - y_test_arr) ** 2))
     cal_eval = evaluate_calibration(p_up, y_test_arr, n_bins=10)
     ece = float(cal_eval.ece)
-    exp_85 = (test_wins * 0.85 - test_losses * 1.0) / test_selected if test_selected > 0 else 0.0
+    exp_85 = ((test_wins * 0.85 - test_losses * 1.0) / test_selected) if test_selected > 0 else None
 
     # Confidence Intervals
-    wilson_lower, wilson_upper = compute_wilson_ci(test_wins, test_selected)
+    wilson_ci_val: list[float] | None = None
+    if test_selected > 0:
+        wilson_lower, wilson_upper = compute_wilson_ci(test_wins, test_selected)
+        wilson_ci_val = [wilson_lower, wilson_upper]
 
     # Timestamps for Day-Block bootstrap
     valid_ts = np.array([
         c.from_ts for idx, c in enumerate(test_candles[:-h_bars]) if mask_test[idx]
     ])
-    day_block_lower, day_block_upper = compute_day_block_bootstrap_ci(
-        y_true=y_test_arr,
-        y_pred=np.where(p_up >= p_down, 1, 0),
-        timestamps=valid_ts,
-        selected_mask=selected_mask,
-        replicates=2000,
-    )
+    day_block_lower: float | None = None
+    day_block_upper: float | None = None
+    if test_selected > 0:
+        day_block_lower, day_block_upper = compute_day_block_bootstrap_ci(
+            y_true=y_test_arr,
+            y_pred=np.where(p_up >= p_down, 1, 0),
+            timestamps=valid_ts,
+            selected_mask=selected_mask,
+            replicates=2000,
+        )
 
-    # Matched Baseline Accuracies on exact same selected mask
+    # Matched Baseline Accuracies on exact same selected mask using FROZEN benchmark (Phase 43)
     if test_selected > 0:
         y_sel = y_test_arr[selected_mask]
-        majority_dir = int(np.mean(y_test_arr) >= 0.5)
-        majority_matched_acc = float(np.mean(y_sel == majority_dir))
+        maj_dir_class = frozen_bm["majority_class"]
+        majority_matched_acc = float(np.mean(y_sel == maj_dir_class))
         mom_pred_sel = np.where(f_test.features[mask_test][selected_mask, 0] > 0, 1, 0)
         momentum_matched_acc = float(np.mean(y_sel == mom_pred_sel))
     else:
-        majority_matched_acc = 0.50
-        momentum_matched_acc = 0.50
+        majority_matched_acc = None
+        momentum_matched_acc = None
 
     # Distinct market days count
     distinct_days = len(np.unique(valid_ts // 86400)) if len(valid_ts) > 0 else 0
@@ -573,12 +635,21 @@ def evaluate_frozen_candidate(
     elif coverage < 0.05:
         verdict = "COVERAGE_COLLAPSE_REJECTED"
         disposition = CandidateLifecycleState.REJECTED.value
+    elif day_block_lower is None or day_block_upper is None:
+        verdict = "MISSING_OR_UNSTABLE_BOOTSTRAP_CI"
+        disposition = CandidateLifecycleState.NO_DEMONSTRATED_EDGE.value
     elif (
-        day_block_lower is not None and day_block_lower <= BREAK_EVEN_PAYOUT_85
-    ) or decisive_acc <= BREAK_EVEN_PAYOUT_85:
+        decisive_acc is None
+        or decisive_acc <= BREAK_EVEN_PAYOUT_85
+        or day_block_lower <= BREAK_EVEN_PAYOUT_85
+    ):
         verdict = "NEGATIVE_HYPOTHETICAL_EXPECTANCY_OR_CI_BELOW_HURDLE"
         disposition = CandidateLifecycleState.NO_DEMONSTRATED_EDGE.value
-    elif decisive_acc <= majority_matched_acc or decisive_acc <= momentum_matched_acc:
+    elif (
+        majority_matched_acc is not None
+        and momentum_matched_acc is not None
+        and (decisive_acc <= majority_matched_acc or decisive_acc <= momentum_matched_acc)
+    ):
         verdict = "FAILED_TO_BEAT_MATCHED_BASELINES"
         disposition = CandidateLifecycleState.NO_DEMONSTRATED_EDGE.value
     elif ece > 0.050:
@@ -597,13 +668,15 @@ def evaluate_frozen_candidate(
         "losses": test_losses,
         "directional_accuracy": decisive_acc,
         "coverage": coverage,
-        "wilson_ci_95": [wilson_lower, wilson_upper],
-        "day_block_bootstrap_ci_95": [day_block_lower, day_block_upper],
+        "wilson_ci_95": wilson_ci_val,
+        "day_block_bootstrap_ci_95": [day_block_lower, day_block_upper]
+        if day_block_lower is not None
+        else None,
         "majority_matched_accuracy": majority_matched_acc,
         "momentum_matched_accuracy": momentum_matched_acc,
         "brier_score": brier,
         "ece": ece,
-        "expectancy_pct_85": (exp_85 * 100.0),
+        "expectancy_pct_85": (exp_85 * 100.0) if exp_85 is not None else None,
         "break_even_win_rate": BREAK_EVEN_PAYOUT_85,
         "provenance_status": prov_status,
         "is_holdout_previously_inspected": is_inspected,
@@ -612,6 +685,7 @@ def evaluate_frozen_candidate(
     eval_report = {
         "model_id": model_id,
         "stage": "STAGE_C_INDEPENDENT_EVALUATION",
+        "authorizing_researcher": authorizing_researcher or "UNSPECIFIED",
         "evaluated_at_utc": now_utc,
         "evaluation_authorization": evaluation_authorization,
         "is_verified": True,

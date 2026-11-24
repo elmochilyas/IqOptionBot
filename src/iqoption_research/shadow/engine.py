@@ -139,8 +139,13 @@ class ShadowPredictionEngine:
             ALL_V2_FEATURE_CONTRACTS,
             CausalFeaturePipelineV2,
         )
+        from iqoption_research.ml.features_v3 import (
+            ALL_V3_FEATURE_CONTRACTS,
+            CausalFeaturePipelineV3,
+        )
 
         v2_contract_map = {c.name: c for c in ALL_V2_FEATURE_CONTRACTS}
+        v3_contract_map = {c.name: c for c in ALL_V3_FEATURE_CONTRACTS}
         manifest = bundle_data.get("manifest", {})
         schema_ver = manifest.get("schema_version", manifest.get("feature_schema_version", "1.0"))
         v1_standard_features = {
@@ -168,35 +173,44 @@ class ShadowPredictionEngine:
             "volatility_10",
             "volatility_20",
         }
+        has_v3_exclusive = any(
+            f in v3_contract_map and f not in v2_contract_map for f in self.feature_names
+        )
+        is_v3 = schema_ver == "3.0" or has_v3_exclusive
+        self.is_v3 = is_v3
+
         has_v2_exclusive = any(
             f in v2_contract_map and f not in v1_standard_features for f in self.feature_names
         )
-        is_v2 = schema_ver == "2.0" or has_v2_exclusive
+        is_v2 = not is_v3 and (schema_ver == "2.0" or has_v2_exclusive)
         self.is_v2 = is_v2
 
-        has_volume = any("volume" in f for f in self.feature_names)
-        has_quotes = any("spread" in f for f in self.feature_names)
-        has_market_time = any(
-            f in ("sin_hour", "cos_hour", "sin_dow", "cos_dow") for f in self.feature_names
-        )
-        self.feature_pipeline = CausalFeaturePipeline(
-            drop_warmup=False,
-            include_volume=has_volume,
-            include_quotes=has_quotes,
-            include_market_time=has_market_time,
-            enforce_temporal_continuity=True,
-            static_schema=True,
-        )
+        self.v3_pipeline: CausalFeaturePipelineV3 | None = None
+        self.v2_pipeline: CausalFeaturePipelineV2 | None = None
+        self.feature_pipeline: CausalFeaturePipeline | None = None
 
-        if is_v2:
+        if is_v3:
+            self.v3_pipeline = CausalFeaturePipelineV3(custom_feature_names=self.feature_names)
+            self.min_warmup_bars = max(self.min_warmup_bars, self.v3_pipeline.min_warmup_bars)
+        elif is_v2:
             matched_contracts = [
                 v2_contract_map[f] for f in self.feature_names if f in v2_contract_map
             ]
-            self.v2_pipeline: CausalFeaturePipelineV2 | None = CausalFeaturePipelineV2(
-                contracts=matched_contracts
-            )
+            self.v2_pipeline = CausalFeaturePipelineV2(contracts=matched_contracts)
         else:
-            self.v2_pipeline = None
+            has_volume = any("volume" in f for f in self.feature_names)
+            has_quotes = any("spread" in f for f in self.feature_names)
+            has_market_time = any(
+                f in ("sin_hour", "cos_hour", "sin_dow", "cos_dow") for f in self.feature_names
+            )
+            self.feature_pipeline = CausalFeaturePipeline(
+                drop_warmup=False,
+                include_volume=has_volume,
+                include_quotes=has_quotes,
+                include_market_time=has_market_time,
+                enforce_temporal_continuity=True,
+                static_schema=True,
+            )
 
     def predict(
         self,
@@ -255,19 +269,33 @@ class ShadowPredictionEngine:
             )
 
         # 2. Extract Causal Features
-        if self.is_v2 and self.v2_pipeline is not None:
-            feat_matrix = self.v2_pipeline.compute_features(candles)
-            if feat_matrix.sample_count == 0:
+        if self.is_v3 and self.v3_pipeline is not None:
+            feat_matrix_v3 = self.v3_pipeline.compute_features(candles)
+            if feat_matrix_v3.sample_count == 0:
                 raise EngineError("Feature extraction produced zero rows")
-            latest_idx = feat_matrix.sample_count - 1
-            if feat_matrix.warmup_mask[latest_idx]:
+            latest_idx = feat_matrix_v3.sample_count - 1
+            if feat_matrix_v3.warmup_mask[latest_idx]:
                 raise DiscontinuousDataError(
                     f"Cutoff candle at ts={cutoff_ts} is marked as warmup. "
                     "Inference cannot be executed across unverified or discontinuous intervals."
                 )
             row_features = {
-                name: float(feat_matrix.features[latest_idx, col_idx])
-                for col_idx, name in enumerate(feat_matrix.feature_names)
+                name: float(feat_matrix_v3.features[latest_idx, col_idx])
+                for col_idx, name in enumerate(feat_matrix_v3.feature_names)
+            }
+        elif self.is_v2 and self.v2_pipeline is not None:
+            feat_matrix_v2 = self.v2_pipeline.compute_features(candles)
+            if feat_matrix_v2.sample_count == 0:
+                raise EngineError("Feature extraction produced zero rows")
+            latest_idx = feat_matrix_v2.sample_count - 1
+            if feat_matrix_v2.warmup_mask[latest_idx]:
+                raise DiscontinuousDataError(
+                    f"Cutoff candle at ts={cutoff_ts} is marked as warmup. "
+                    "Inference cannot be executed across unverified or discontinuous intervals."
+                )
+            row_features = {
+                name: float(feat_matrix_v2.features[latest_idx, col_idx])
+                for col_idx, name in enumerate(feat_matrix_v2.feature_names)
             }
         else:
             if self.feature_pipeline is None:

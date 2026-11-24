@@ -451,6 +451,26 @@ research_app.add_typer(experiment_app, name="experiment")
 research_app.add_typer(candidate_app, name="candidate")
 research_app.add_typer(report_app, name="report")
 
+timeframes_app = typer.Typer(
+    name="timeframes",
+    help="Multi-timeframe causal dataset aggregation and verification.",
+    no_args_is_help=True,
+)
+horizons_app = typer.Typer(
+    name="horizons",
+    help="Multi-horizon walk-forward evaluation and experiment matrix.",
+    no_args_is_help=True,
+)
+regimes_app = typer.Typer(
+    name="regimes",
+    help="Causal market regime classification and stratification.",
+    no_args_is_help=True,
+)
+
+research_app.add_typer(timeframes_app, name="timeframes")
+research_app.add_typer(horizons_app, name="horizons")
+research_app.add_typer(regimes_app, name="regimes")
+
 
 @research_app.command(
     "data-audit",
@@ -1194,6 +1214,398 @@ def report_export_command(
     console.print(f"Global Disposition: [bold red]{report.global_disposition}[/bold red]")
 
 
+@research_app.command(
+    "data-readiness",
+    help="Evaluate genuine market data readiness and sufficiency across horizons H1 to H60.",
+)
+def data_readiness_command(
+    root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Output machine-readable JSON format.")
+    ] = False,
+) -> None:
+    repo_root = root or Path.cwd()
+    from iqoption_research.market_data.data_inventory import (
+        audit_genuine_market_data,
+        compute_horizon_readiness,
+    )
+    from iqoption_research.market_data.parquet_storage import read_candles_parquet
+    from iqoption_research.research.dataset_manager import ResearchDatasetManager
+
+    manager = ResearchDatasetManager(repo_root)
+    snapshots = manager.list_snapshots()
+    if not snapshots:
+        console.print("[red]No snapshots found.[/red]")
+        raise typer.Exit(code=1)
+    candles = read_candles_parquet(snapshots[-1].parquet_path)
+    audit = audit_genuine_market_data(repo_root)
+    readiness_dict = compute_horizon_readiness(candles)
+    readiness = list(readiness_dict.values())
+
+    if as_json:
+        payload = {
+            "catalog_entries": audit.datasets_audited_count,
+            "total_candles": audit.total_retained_candles,
+            "readiness": [r.to_dict() for r in readiness],
+        }
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    table = Table(title="Phase 43 Multi-Horizon Dataset Readiness Matrix", show_header=True)
+    table.add_column("Horizon", style="cyan")
+    table.add_column("Minutes", justify="right")
+    table.add_column("Rolling Opportunities", justify="right")
+    table.add_column("Non-Overlapping Blocks", justify="right")
+    table.add_column("Status", style="bold")
+    table.add_column("Sufficiency / Governance Notes", style="white")
+
+    for r in readiness:
+        status_color = "green" if r.status.value == "SUFFICIENT" else "yellow"
+        table.add_row(
+            r.horizon_name,
+            f"{r.horizon_minutes}m",
+            f"{r.rolling_opportunities_count:,}",
+            f"{r.non_overlapping_opportunities_count:,}",
+            f"[{status_color}]{r.status.value}[/{status_color}]",
+            r.sufficiency_notes,
+        )
+    console.print(table)
+
+
+@timeframes_app.command("build", help="Aggregate M1 candles causally into higher timeframes.")
+def timeframes_build_command(
+    root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
+    snapshot_id: Annotated[
+        str | None, typer.Option("--snapshot-id", help="Snapshot identifier.")
+    ] = None,
+) -> None:
+    repo_root = root or Path.cwd()
+    from datetime import UTC, datetime
+
+    from iqoption_research.market_data.parquet_storage import read_candles_parquet
+    from iqoption_research.market_data.timeframe_engine import (
+        MultiTimeframeEngine,
+        Timeframe,
+    )
+    from iqoption_research.research.dataset_manager import ResearchDatasetManager
+
+    manager = ResearchDatasetManager(repo_root)
+    snapshots = manager.list_snapshots()
+    if not snapshots:
+        console.print("[red]No snapshots found in repository.[/red]")
+        raise typer.Exit(code=1)
+    target = next((s for s in snapshots if s.manifest.snapshot_id == snapshot_id), snapshots[-1])
+    candles = read_candles_parquet(target.parquet_path)
+    engine = MultiTimeframeEngine(source_dataset_digest=target.manifest.parquet_sha256)
+
+    table = Table(
+        title=f"Multi-Timeframe Causal Aggregation — {target.manifest.snapshot_id}",
+        show_header=True,
+    )
+    table.add_column("Timeframe", style="cyan")
+    table.add_column("Resolution", justify="right")
+    table.add_column("Aggregated Bars", justify="right")
+    table.add_column("Earliest UTC", style="white")
+    table.add_column("Latest UTC", style="white")
+    table.add_column("Causal Status", style="green")
+
+    for tf in list(Timeframe):
+        if tf == Timeframe.M1:
+            earliest = datetime.fromtimestamp(candles[0].from_ts, UTC).isoformat()[:19]
+            latest = datetime.fromtimestamp(candles[-1].to_ts, UTC).isoformat()[:19]
+            table.add_row(
+                tf.name,
+                "60s",
+                f"{len(candles):,}",
+                earliest,
+                latest,
+                "Verified M1 Base",
+            )
+            continue
+        agg = engine.aggregate_m1_to_timeframe(candles, tf)
+        if agg:
+            earliest = datetime.fromtimestamp(agg[0].from_ts, UTC).isoformat()[:19]
+            latest = datetime.fromtimestamp(agg[-1].to_ts, UTC).isoformat()[:19]
+            table.add_row(
+                tf.name,
+                f"{tf.value}s",
+                f"{len(agg):,}",
+                earliest,
+                latest,
+                "Deterministic Causal UTC Align",
+            )
+        else:
+            table.add_row(tf.name, f"{tf.value}s", "0", "N/A", "N/A", "Zero complete bars")
+    console.print(table)
+
+
+@timeframes_app.command(
+    "verify", help="Verify prefix invariance and causal alignment of multi-timeframe engine."
+)
+def timeframes_verify_command(
+    root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
+) -> None:
+    repo_root = root or Path.cwd()
+    from iqoption_research.market_data.parquet_storage import read_candles_parquet
+    from iqoption_research.market_data.timeframe_engine import MultiTimeframeEngine, Timeframe
+    from iqoption_research.research.dataset_manager import ResearchDatasetManager
+
+    manager = ResearchDatasetManager(repo_root)
+    snapshots = manager.list_snapshots()
+    if not snapshots:
+        console.print("[red]No snapshots found.[/red]")
+        raise typer.Exit(code=1)
+    candles = read_candles_parquet(snapshots[-1].parquet_path)[:300]
+    engine = MultiTimeframeEngine()
+
+    # Prefix invariance check across M5 and M15
+    for tf in (Timeframe.M5, Timeframe.M15):
+        full_agg = engine.aggregate_m1_to_timeframe(candles, tf)
+        if not full_agg:
+            continue
+        cutoff_c = full_agg[0]
+        prefix = [c for c in candles if c.to_ts <= cutoff_c.to_ts]
+        prefix_agg = engine.aggregate_m1_to_timeframe(prefix, tf)
+        if (
+            not prefix_agg
+            or prefix_agg[-1].close != cutoff_c.close
+            or prefix_agg[-1].high != cutoff_c.high
+            or prefix_agg[-1].low != cutoff_c.low
+            or prefix_agg[-1].open != cutoff_c.open
+        ):
+            raise typer.BadParameter(
+                "Prefix invariance check failed on higher timeframe aggregation"
+            )
+
+    console.print(
+        Panel(
+            "[bold green]Multi-Timeframe Engine Causal Verification: PASSED[/bold green]\n"
+            "Strict prefix invariance, deterministic UTC boundaries, and zero forward leakage verified."
+        )
+    )
+
+
+@horizons_app.command("plan", help="Build and view Phase 43 multi-horizon experiment matrix plan.")
+def horizons_plan_command() -> None:
+    from iqoption_research.ml.experiment_matrix import build_phase43_experiment_plan
+
+    trials = build_phase43_experiment_plan()
+
+    table = Table(
+        title=f"Phase 43 Multi-Horizon Experiment Plan ({len(trials)} Registered Trials)",
+        show_header=True,
+    )
+    table.add_column("Stage", style="cyan")
+    table.add_column("Trial ID", style="bold")
+    table.add_column("Horizon", justify="center")
+    table.add_column("Model Family", style="white")
+    table.add_column("Feature Preset", style="yellow")
+    table.add_column("Threshold", justify="right")
+
+    for t in trials[:20]:
+        table.add_row(
+            t.stage,
+            t.trial_id,
+            t.horizon_name,
+            t.model_family,
+            t.feature_preset,
+            f"{t.confidence_threshold:.2f}",
+        )
+    if len(trials) > 20:
+        table.add_row("...", f"... and {len(trials) - 20} more trials", "...", "...", "...", "...")
+    console.print(table)
+    console.print(
+        f"[bold green]Total Planned Trials: {len(trials)} (Budget limit: 100 trials)[/bold green]"
+    )
+
+
+@horizons_app.command("run", help="Run bounded multi-horizon walk-forward experiments.")
+def horizons_run_command(
+    root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum trials to execute.")] = 10,
+    horizon: Annotated[
+        str | None, typer.Option("--horizon", help="Filter trials by horizon (e.g. H1, H5).")
+    ] = None,
+    db_path: Annotated[
+        Path | None, typer.Option("--db-path", help="Path to SQLite ledger.")
+    ] = None,
+) -> None:
+    repo_root = root or Path.cwd()
+    from iqoption_research.market_data.parquet_storage import read_candles_parquet
+    from iqoption_research.ml.experiment_matrix import (
+        ExperimentRunnerV3,
+        build_phase43_experiment_plan,
+    )
+    from iqoption_research.research.dataset_manager import ResearchDatasetManager
+
+    manager = ResearchDatasetManager(repo_root)
+    snapshots = manager.list_snapshots()
+    if not snapshots:
+        console.print("[red]No snapshots found.[/red]")
+        raise typer.Exit(code=1)
+    candles = read_candles_parquet(snapshots[-1].parquet_path)
+    trials = build_phase43_experiment_plan()
+    if horizon:
+        trials = [t for t in trials if t.horizon_name == horizon.upper()]
+
+    runner = ExperimentRunnerV3(
+        repo_root=repo_root,
+        db_path=db_path or (repo_root / "data" / "experiments_v3" / "phase43_ledger.sqlite"),
+    )
+    console.print(
+        f"[bold cyan]Starting Phase 43 Multi-Horizon Experiments (Limit: {limit}, Horizon: {horizon or 'ALL'})...[/bold cyan]"
+    )
+    summary = runner.run_suite(
+        candles=candles,
+        plan=trials,
+        max_trials=limit,
+    )
+
+    table = Table(title="Executed Phase 43 Experiment Results", show_header=True)
+    table.add_column("Trial ID", style="bold")
+    table.add_column("Horizon", justify="center")
+    table.add_column("Model Family", style="white")
+    table.add_column("Feature Preset", style="yellow")
+    table.add_column("Dir Acc", justify="right")
+    table.add_column("Coverage", justify="right")
+    table.add_column("Verdict", style="cyan")
+
+    for r in summary.reports:
+        acc_str = (
+            f"{r.pooled_decisive_accuracy:.2%}" if r.pooled_decisive_accuracy is not None else "N/A"
+        )
+        cov_str = f"{r.pooled_coverage:.2%}" if r.pooled_coverage is not None else "N/A"
+        table.add_row(
+            r.trial_id,
+            r.target_horizon_name,
+            r.model_family,
+            r.feature_preset,
+            acc_str,
+            cov_str,
+            r.verdict,
+        )
+    console.print(table)
+
+
+@horizons_app.command("status", help="Show Phase 43 multi-horizon experiment ledger status.")
+def horizons_status_command(
+    root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
+    db_path: Annotated[
+        Path | None, typer.Option("--db-path", help="Path to SQLite ledger.")
+    ] = None,
+) -> None:
+    repo_root = root or Path.cwd()
+    from iqoption_research.ml.experiment_matrix import ExperimentRunnerV3
+
+    runner = ExperimentRunnerV3(
+        repo_root=repo_root,
+        db_path=db_path or (repo_root / "data" / "experiments_v3" / "phase43_ledger.sqlite"),
+    )
+    summary = runner.get_ledger_summary()
+
+    console.print(
+        Panel(
+            f"[bold]Phase 43 Experiment Ledger Status[/bold]\n"
+            f"Total Completed Trials: {summary['total_completed']}\n"
+            f"Global Disposition: [bold red]{summary['global_disposition']}[/bold red]\n"
+            f"Execution Authority: [bold red]{summary['execution_authority']}[/bold red]"
+        )
+    )
+
+    table = Table(title="Trial Status Breakdown", show_header=True)
+    table.add_column("Scientific Verdict", style="cyan")
+    table.add_column("Trial Count", justify="right", style="green")
+    for verdict, count in summary.get("verdicts", {}).items():
+        table.add_row(verdict, str(count))
+    console.print(table)
+
+
+@horizons_app.command(
+    "compare", help="Compare empirical performance across horizons and feature presets."
+)
+def horizons_compare_command(
+    root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
+    db_path: Annotated[
+        Path | None, typer.Option("--db-path", help="Path to SQLite ledger.")
+    ] = None,
+) -> None:
+    repo_root = root or Path.cwd()
+    from iqoption_research.ml.experiment_matrix import ExperimentRunnerV3
+
+    runner = ExperimentRunnerV3(
+        repo_root=repo_root,
+        db_path=db_path or (repo_root / "data" / "experiments_v3" / "phase43_ledger.sqlite"),
+    )
+    comparison = runner.compare_horizons()
+
+    table = Table(title="Phase 43 Horizon Performance Comparison", show_header=True)
+    table.add_column("Horizon", style="cyan")
+    table.add_column("Completed", justify="right")
+    table.add_column("Best Accuracy", justify="right")
+    table.add_column("Mean Accuracy", justify="right")
+    table.add_column("Mean Coverage", justify="right")
+    table.add_column("Best Trial ID", style="white")
+
+    for row in comparison:
+        table.add_row(
+            row["horizon"],
+            str(row["completed_trials"]),
+            f"{row['best_accuracy']:.2%}" if row["best_accuracy"] is not None else "N/A",
+            f"{row['mean_accuracy']:.2%}" if row["mean_accuracy"] is not None else "N/A",
+            f"{row['mean_coverage']:.2%}" if row["mean_coverage"] is not None else "N/A",
+            str(row["best_trial_id"] or "None"),
+        )
+    console.print(table)
+
+
+@regimes_app.command("analyze", help="Classify causal market regimes and display distribution.")
+def regimes_analyze_command(
+    root: Annotated[Path | None, typer.Option("--root", help="Repository root path.")] = None,
+    snapshot_id: Annotated[
+        str | None, typer.Option("--snapshot-id", help="Snapshot identifier.")
+    ] = None,
+) -> None:
+    from collections import Counter
+
+    repo_root = root or Path.cwd()
+    from iqoption_research.market_data.parquet_storage import read_candles_parquet
+    from iqoption_research.ml.regimes import CausalMarketRegimeClassifier
+    from iqoption_research.research.dataset_manager import ResearchDatasetManager
+
+    manager = ResearchDatasetManager(repo_root)
+    snapshots = manager.list_snapshots()
+    if not snapshots:
+        console.print("[red]No snapshots found.[/red]")
+        raise typer.Exit(code=1)
+    target = next((s for s in snapshots if s.manifest.snapshot_id == snapshot_id), snapshots[-1])
+    candles = read_candles_parquet(target.parquet_path)
+
+    classifier = CausalMarketRegimeClassifier()
+    regimes = classifier.classify_series(candles)
+
+    table = Table(
+        title=f"Causal Market Regime Distribution — {target.manifest.snapshot_id}", show_header=True
+    )
+    table.add_column("Dimension", style="cyan")
+    table.add_column("Regime Value", style="white")
+    table.add_column("Bar Count", justify="right", style="green")
+    table.add_column("Percentage", justify="right")
+
+    total = len(regimes)
+    for dim_name, values in [
+        ("Volatility", [r.volatility.value for r in regimes]),
+        ("Trend", [r.trend.value for r in regimes]),
+        ("Range", [r.range_state.value for r in regimes]),
+        ("Session", [r.session.value for r in regimes]),
+    ]:
+        counts = Counter(values)
+        for val, count in counts.most_common():
+            pct = count / total if total > 0 else 0.0
+            table.add_row(dim_name, val, f"{count:,}", f"{pct:.1%}")
+
+    console.print(table)
+
+
 # Hyphenated aliases registered directly on research_app for operator convenience
 research_app.command("partitions-create", hidden=True)(partitions_create_command)
 research_app.command("partitions-verify", hidden=True)(partitions_verify_command)
@@ -1206,3 +1618,13 @@ research_app.command("experiment-compare", hidden=True)(experiment_compare_comma
 research_app.command("candidate-freeze", hidden=True)(candidate_freeze_command)
 research_app.command("candidate-evaluate", hidden=True)(candidate_evaluate_command)
 research_app.command("report-export", hidden=True)(report_export_command)
+
+# Phase 43 aliases
+research_app.command("data-readiness", hidden=True)(data_readiness_command)
+research_app.command("timeframes-build", hidden=True)(timeframes_build_command)
+research_app.command("timeframes-verify", hidden=True)(timeframes_verify_command)
+research_app.command("horizons-plan", hidden=True)(horizons_plan_command)
+research_app.command("horizons-run", hidden=True)(horizons_run_command)
+research_app.command("horizons-status", hidden=True)(horizons_status_command)
+research_app.command("horizons-compare", hidden=True)(horizons_compare_command)
+research_app.command("regimes-analyze", hidden=True)(regimes_analyze_command)

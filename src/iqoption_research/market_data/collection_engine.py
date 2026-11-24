@@ -110,6 +110,27 @@ def _is_lock_owner_alive(lock_data: dict[str, Any]) -> bool:
                 return True
         return True
     except ImportError:
+        if os.name == "nt":
+            # Windows os.kill(pid, 0) terminates the target; it is NOT a
+            # POSIX existence probe. Query the process handle without signaling.
+            import ctypes
+            from ctypes import wintypes
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = kernel.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return ctypes.get_last_error() != 87  # invalid PID; access denied fails closed
+            try:
+                exit_code = wintypes.DWORD()
+                if not kernel.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return True
+                return exit_code.value == 259  # STILL_ACTIVE
+            finally:
+                kernel.CloseHandle(handle)
         try:
             os.kill(pid, 0)
             return True
@@ -1079,12 +1100,20 @@ class HistoricalCollectionCoordinator:
             interval_to = int(interval["to_ts"])
             uncovered_open_bars = 0
             first_uncovered: int | None = None
+            missing_ranges: list[dict[str, int]] = []
             cursor = interval_from
             while cursor < interval_to:
                 dt = datetime.fromtimestamp(cursor, UTC)
                 if (
                     (not schedule.is_schedule_verified) or schedule.is_market_open(dt)
                 ) and cursor not in verified_timestamps:
+                    if missing_ranges and missing_ranges[-1]["to_ts"] == cursor:
+                        missing_ranges[-1]["to_ts"] = cursor + ckpt.timeframe_seconds
+                    else:
+                        missing_ranges.append({
+                            "from_ts": cursor,
+                            "to_ts": cursor + ckpt.timeframe_seconds,
+                        })
                     uncovered_open_bars += 1
                     if first_uncovered is None:
                         first_uncovered = cursor
@@ -1099,6 +1128,7 @@ class HistoricalCollectionCoordinator:
                     "from_utc": interval.get("from_utc"),
                     "to_utc": interval.get("to_utc"),
                     "uncovered_open_bars": uncovered_open_bars,
+                    "unexplained_source_gaps": missing_ranges,
                     "first_missing_utc": (
                         datetime.fromtimestamp(first_uncovered, UTC).isoformat()
                         if first_uncovered is not None
@@ -1131,6 +1161,7 @@ class HistoricalCollectionCoordinator:
             "provenance_status": sorted(provenance_statuses),
             "receipt_candles_sum": receipt_candles_sum,
             "unique_verified_candles": len(verified_timestamps),
+            "verified_timestamps": sorted(verified_timestamps),
             "verified_parquet_paths": sorted(verified_parquet_paths),
             "verified_parquet_hashes": sorted(verified_parquet_hashes),
             "coverage_gaps_count": len(coverage_gaps),
@@ -1326,6 +1357,7 @@ class HistoricalCollectionCoordinator:
                 ckpt.save(ckpt_path)
 
             if ckpt.status in (
+                CollectionStatus.FAILED.value,
                 CollectionStatus.CANCELLED.value,
                 CollectionStatus.INTERRUPTED.value,
                 CollectionStatus.PAUSED.value,
@@ -1389,6 +1421,7 @@ class HistoricalCollectionCoordinator:
             ckpt.updated_at_utc = datetime.now(UTC).isoformat()
             ckpt.save(ckpt_path)
 
+            covered = set(self.verify_job_integrity(job_id).get("verified_timestamps", []))
             for idx in range(ckpt.current_interval_index, len(ckpt.missing_intervals)):
                 if idx in ckpt.completed_interval_indices:
                     continue
@@ -1411,9 +1444,14 @@ class HistoricalCollectionCoordinator:
                         logger.info("Collection job %s cancelled by operator.", job_id)
                         return save_cancelled(cursor)
 
-                    fetch_count = min(
-                        chunk_size, max(1, (cursor - from_ts) // ckpt.timeframe_seconds)
-                    )
+                    # Like BackfillJob._request_count, reserve room for an
+                    # inclusive endtime candle. This applies to the initial page
+                    # too: our cursor is always an exclusive interval boundary.
+                    # In particular, the final one-candle gap needs a two-record
+                    # probe. Full pages make progress with one fewer new candle.
+                    page_size = min(1000, max(2, chunk_size))
+                    remaining = max(1, (cursor - from_ts) // ckpt.timeframe_seconds)
+                    fetch_count = min(page_size, remaining + 1)
                     try:
                         chunk_candles = await self.collector.collect_from_broker(
                             client,
@@ -1421,8 +1459,9 @@ class HistoricalCollectionCoordinator:
                             candle_size_seconds=ckpt.timeframe_seconds,
                             end_time_ts=cursor,
                             count=fetch_count,
-                            chunk_size=chunk_size,
+                            chunk_size=page_size,
                             allow_partial=True,
+                            single_page=True,
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.error("Broker fetch failed at cursor %d: %s", cursor, exc)
@@ -1460,40 +1499,44 @@ class HistoricalCollectionCoordinator:
                             cursor,
                         )
 
-                    try:
-                        rcpt = self.record_collected_batch(
-                            job_id=job_id,
-                            candles=valid_chunk,
-                            is_synthetic=is_synthetic,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.error("Failed recording batch: %s", exc)
-                        return save_interrupted(
-                            CollectionStatus.FAILED, f"Failed recording batch: {exc}", cursor
-                        )
-
-                    # The checkpoint ID written by record_collected_batch is the
-                    # commit point; finalize only after cursor state is durable.
-                    ckpt = CollectionCheckpoint.load(ckpt_path)
-                    earliest_ts = min(c.from_ts for c in valid_chunk)
-                    if earliest_ts >= cursor:
-                        if is_interval_within_scheduled_closure(ckpt.symbol, from_ts, cursor):
-                            cursor = from_ts
-                        else:
-                            self._finalize_receipt(rcpt.receipt_id)
-                            return save_interrupted(
-                                CollectionStatus.PARTIALLY_COLLECTED,
-                                f"Pagination cursor failed to progress at {cursor}",
-                                cursor,
+                    # Exclude receipt-bound coverage, including segment commits
+                    # recovered after a crash before the page cursor was saved.
+                    pending = sorted(
+                        (c for c in valid_chunk if c.from_ts not in covered),
+                        key=lambda candle: candle.from_ts,
+                    )
+                    segments: list[list[Candle]] = []
+                    for candle in pending:
+                        if (
+                            not segments
+                            or candle.from_ts != segments[-1][-1].from_ts + ckpt.timeframe_seconds
+                        ):
+                            segments.append([])
+                        segments[-1].append(candle)
+                    # Commit newest first. Never advance the page cursor until
+                    # every segment is durable; cancellation leaves replay safe.
+                    for segment in reversed(segments):
+                        if cancel_requested():
+                            return save_cancelled(cursor)
+                        try:
+                            self.record_collected_batch(
+                                job_id=job_id,
+                                candles=segment,
+                                is_synthetic=is_synthetic,
                             )
-                    else:
-                        cursor = earliest_ts
-
+                        except Exception as exc:  # noqa: BLE001
+                            return save_interrupted(
+                                CollectionStatus.FAILED, f"Failed recording batch: {exc}", cursor
+                            )
+                        covered.update(c.from_ts for c in segment)
+                        if progress_cb is not None:
+                            progress_cb(self._build_progress(CollectionCheckpoint.load(ckpt_path)))
+                    ckpt = CollectionCheckpoint.load(ckpt_path)
+                    cursor = min(c.from_ts for c in valid_chunk)
                     ckpt.current_interval_cursor = cursor
                     ckpt.last_cursor_ts = cursor
                     ckpt.updated_at_utc = datetime.now(UTC).isoformat()
                     ckpt.save(ckpt_path)
-                    self._finalize_receipt(rcpt.receipt_id)
 
                     if progress_cb is not None:
                         progress_cb(self._build_progress(ckpt))
@@ -1538,7 +1581,11 @@ class HistoricalCollectionCoordinator:
                     fresh.status = CollectionStatus.COMPLETED_VERIFIED.value
                     fresh.failure_reason = None
                 else:
-                    fresh.status = CollectionStatus.UNVERIFIED.value
+                    fresh.status = (
+                        CollectionStatus.UNVERIFIED.value
+                        if integrity.get("errors")
+                        else CollectionStatus.PARTIALLY_COLLECTED.value
+                    )
                     fresh.failure_reason = (
                         "Collection completed but cryptographic verification failed: "
                         + "; ".join(integrity.get("errors", []))

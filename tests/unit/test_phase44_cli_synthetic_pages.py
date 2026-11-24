@@ -164,7 +164,7 @@ def test_synthetic_job_advances_cursor_across_multiple_pages(
         from_ts + 15 * 60,
         from_ts + 5 * 60,
     ]
-    assert [call["count"] for call in calls] == [10, 10, 10, 5]
+    assert [call["count"] for call in calls] == [10, 10, 10, 6]
     assert all(call["symbol"] == "EURUSD" for call in calls)
     assert all(call["size"] == CandleSize.MIN_1 for call in calls)
 

@@ -50,6 +50,11 @@ UNVERIFIED_OTC_MESSAGE = (
 class CollectionCenterPanel:
     """Dedicated Desktop Collection Center tab inside Research Workstation V2."""
 
+    btn_plan: ttk.Button
+    btn_start: ttk.Button
+    btn_stop: ttk.Button
+    btn_resume: ttk.Button
+    btn_verify: ttk.Button
     lbl_job_id: ttk.Label
     lbl_cursor: ttk.Label
     lbl_range_req: ttk.Label
@@ -105,8 +110,24 @@ class CollectionCenterPanel:
         paned.add(left_pane, weight=2)
         paned.add(right_pane, weight=3)
 
-        self._build_config_ui(left_pane)
+        # Reserve the controls before allocating remaining height to parameters.
         self._build_controls_ui(left_pane)
+        config_host = ttk.Frame(left_pane)
+        config_host.pack(fill="both", expand=True)
+        canvas = tk.Canvas(config_host, highlightthickness=0, width=1, height=1)
+        scrollbar = ttk.Scrollbar(config_host, orient="vertical", command=canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        config_content = ttk.Frame(canvas)
+        content_id = canvas.create_window((0, 0), window=config_content, anchor="nw")
+        config_content.bind(
+            "<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.bind(
+            "<Configure>", lambda event: canvas.itemconfigure(content_id, width=event.width)
+        )
+        self._build_config_ui(config_content)
         self._build_status_ui(right_pane)
 
         # Refresh accounts, jobs, and initialize dates
@@ -219,39 +240,30 @@ class CollectionCenterPanel:
 
     def _build_controls_ui(self, parent: ttk.Frame) -> None:
         ctl_frame = ttk.LabelFrame(parent, text="Operator Controls", padding=10)
-        ctl_frame.pack(fill="x", pady=(0, 8))
-
-        btn_row1 = ttk.Frame(ctl_frame)
-        btn_row1.pack(fill="x", pady=4)
-
-        self.btn_plan = ttk.Button(btn_row1, text="Inspect & Plan", command=self._plan_collection)
-        self.btn_plan.pack(side="left", padx=2)
-
-        self.btn_start = ttk.Button(
-            btn_row1,
-            text="Start Collection",
-            command=self._start_collection,
-            style="Accent.TButton" if "Accent.TButton" in ttk.Style().theme_names() else "TButton",
+        ctl_frame.pack(side="bottom", fill="x", pady=(8, 0))
+        ctl_frame.columnconfigure((0, 1), weight=1, uniform="controls")
+        controls = (
+            ("btn_plan", "Inspect & Plan", self._plan_collection, "normal"),
+            ("btn_start", "Start Collection", self._start_collection, "normal"),
+            ("btn_stop", "Stop / Pause", self._stop_collection, "disabled"),
+            ("btn_resume", "Resume Interrupted", self._resume_collection, "disabled"),
+            ("btn_verify", "Verify Integrity & Snapshot", self._verify_and_snapshot, "normal"),
         )
-        self.btn_start.pack(side="left", padx=4)
-
-        self.btn_stop = ttk.Button(
-            btn_row1, text="Stop / Pause", command=self._stop_collection, state="disabled"
-        )
-        self.btn_stop.pack(side="left", padx=4)
-
-        self.btn_resume = ttk.Button(
-            btn_row1, text="Resume Interrupted", command=self._resume_collection, state="disabled"
-        )
-        self.btn_resume.pack(side="left", padx=4)
-
-        btn_row2 = ttk.Frame(ctl_frame)
-        btn_row2.pack(fill="x", pady=(4, 0))
-
-        self.btn_verify = ttk.Button(
-            btn_row2, text="Verify Integrity & Snapshot", command=self._verify_and_snapshot
-        )
-        self.btn_verify.pack(side="left", padx=2)
+        for index, (name, text, command, state) in enumerate(controls):
+            button = ttk.Button(ctl_frame, text=text, command=command, state=state)
+            button.grid(
+                row=index // 2,
+                column=index % 2,
+                columnspan=2 if index == 4 else 1,
+                sticky="ew",
+                padx=2,
+                pady=4,
+            )
+            setattr(self, name, button)
+        # Explicit minima keep spanning-button requests and theme rounding from
+        # shrinking either action column below its longest label.
+        column_minimum = max(getattr(self, name).winfo_reqwidth() + 4 for name, *_ in controls[:-1])
+        ctl_frame.columnconfigure((0, 1), minsize=column_minimum)
 
     def _build_status_ui(self, parent: ttk.Frame) -> None:
         status_frame = ttk.LabelFrame(parent, text="Live Operational Status", padding=10)
@@ -436,6 +448,7 @@ class CollectionCenterPanel:
                     CollectionStatus.INTERRUPTED,
                     CollectionStatus.PARTIALLY_COLLECTED,
                     CollectionStatus.PAUSED,
+                    CollectionStatus.FAILED,
                 ):
                     self.btn_resume.config(state="normal")
                     self.btn_start.config(state="disabled")

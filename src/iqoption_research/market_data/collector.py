@@ -211,6 +211,7 @@ class HistoricalDataCollector:
         chunk_size: int = 500,
         require_practice: bool = False,
         allow_partial: bool = True,
+        single_page: bool = False,
     ) -> list[Candle]:
         """Fetch paginated authentic candles through the read-only broker interface."""
         if count <= 0:
@@ -258,6 +259,8 @@ class HistoricalDataCollector:
             if not batch:
                 break
             collected.extend(batch)
+            if single_page:
+                break
             earliest = min(candle.from_ts for candle in batch)
             if earliest >= cursor:
                 logger.warning("Pagination stopped because broker cursor did not move backward")

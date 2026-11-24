@@ -277,6 +277,24 @@ def write_candles_parquet(
                 f"Dataset file {target_parquet} already exists and on_duplicate='raise'"
             )
         if on_duplicate == "ignore":
+            # A matching range-derived filename is not proof of matching prices.
+            # Preserve the immutable original and quarantine conflicting captures.
+            comparable = [
+                name for name in table.column_names if name not in ("at_ts", "original_index")
+            ]
+            existing_table = pq.ParquetFile(target_parquet).read(columns=comparable)
+            incoming_table = table.select(comparable)
+            if not existing_table.equals(incoming_table):
+                quarantine = base_dir / "quarantine"
+                quarantine.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256(incoming_table.to_pydict().__repr__().encode()).hexdigest()[
+                    :16
+                ]
+                quarantine_path = quarantine / f"{dataset_id}_{digest}.parquet"
+                pq.write_table(table, quarantine_path, compression="snappy")
+                raise ImmutableDatasetError(
+                    f"Conflicting immutable dataset {dataset_id}; incoming capture quarantined at {quarantine_path}"
+                )
             existing_parquet_checksum = _compute_file_sha256(target_parquet)
             existing_meta_checksum = (
                 _compute_file_sha256(target_meta) if target_meta.is_file() else ""

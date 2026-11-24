@@ -32,7 +32,12 @@ def atomic_json(path: Path, value: dict[str, Any], *, immutable: bool = False) -
             stream.flush()
             os.fsync(stream.fileno())
         if immutable:
-            os.link(temp, path)  # Atomic create-only publication on the same NTFS volume.
+            if os.name == "nt":
+                # Windows rename is atomic on-volume and refuses an existing
+                # destination. Hard links can be denied in AppContainer sandboxes.
+                temp.rename(path)
+            else:
+                os.link(temp, path)  # POSIX rename would overwrite an existing seal.
         else:
             temp.replace(path)
     finally:

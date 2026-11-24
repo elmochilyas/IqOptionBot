@@ -3118,8 +3118,11 @@ def test_recurring_slots_duplicate_boundaries_never_counted_twice(tmp_path: Path
 # ==============================================================================
 
 
-def test_registration_anchors_both_present_and_consistent_accepted(tmp_path: Path) -> None:
+def test_registration_anchors_both_present_and_consistent_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Both registration anchors present, non-empty, and consistent are accepted."""
+    monkeypatch.chdir(tmp_path)
     spec_path = tmp_path / "study_spec.json"
     spec = _init_study(spec_path)
 

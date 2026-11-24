@@ -199,7 +199,11 @@ def test_desktop_two_account_workflow_start_cancel_reopen_resume_snapshot(
         panel.combo_account.set(second_label)
 
         panel._plan_collection()
-        root.update()
+        _pump_until(
+            root,
+            lambda: panel.current_job_id is not None and panel._active_operation is None,
+            after_queue=after_queue,
+        )
         job_id = panel.current_job_id
         assert job_id is not None
 
@@ -272,7 +276,13 @@ def test_desktop_two_account_workflow_start_cancel_reopen_resume_snapshot(
         panel._on_symbol_changed()
         assert "Unverified" in panel.lbl_instrument_type.cget("text")
 
+        previous_job = panel.current_job_id
         panel._plan_collection()
+        _pump_until(
+            root,
+            lambda: panel.current_job_id != previous_job and panel._active_operation is None,
+            after_queue=after_queue,
+        )
         otc_job = panel.current_job_id
         assert otc_job is not None
         assert panel.coordinator.get_progress(otc_job).symbol == "EURUSD_OTC"

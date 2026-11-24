@@ -77,6 +77,44 @@ _ACTIVE_JOB_LOCK_GUARD: Final[threading.Lock] = threading.Lock()
 _ACTIVE_JOB_OPERATIONS: dict[str, tuple[int, str]] = {}
 _ACTIVE_JOB_OPERATIONS_GUARD: Final[threading.Lock] = threading.Lock()
 
+# Integrity reports are optimization hints only. A report is trusted for snapshot
+# creation only when it was minted by verify_job_integrity in this interpreter and
+# its durable-state binding still matches the files under the job lock. Anything
+# else forces fresh verification.
+
+
+@dataclass(frozen=True, slots=True)
+class _IntegrityReportProof:
+    job_id: str
+    repo_root: str
+    state_fingerprint: str
+    content_sha256: str
+
+
+_INTEGRITY_REPORT_PROOFS: dict[str, _IntegrityReportProof] = {}
+_INTEGRITY_REPORT_PROOFS_GUARD: Final[threading.Lock] = threading.Lock()
+_MAX_REMEMBERED_INTEGRITY_REPORTS: Final[int] = 256
+
+
+def _canonical_json_sha256(payload: Any) -> str:
+    """Return a stable SHA-256 over a JSON-serializable verification payload."""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _register_integrity_report_proof(token: str, proof: _IntegrityReportProof) -> None:
+    with _INTEGRITY_REPORT_PROOFS_GUARD:
+        _INTEGRITY_REPORT_PROOFS[token] = proof
+        while len(_INTEGRITY_REPORT_PROOFS) > _MAX_REMEMBERED_INTEGRITY_REPORTS:
+            _INTEGRITY_REPORT_PROOFS.pop(next(iter(_INTEGRITY_REPORT_PROOFS)))
+
+
+def _lookup_integrity_report_proof(token: Any) -> _IntegrityReportProof | None:
+    if not isinstance(token, str) or not token:
+        return None
+    with _INTEGRITY_REPORT_PROOFS_GUARD:
+        return _INTEGRITY_REPORT_PROOFS.get(token)
+
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     """Publish JSON using a same-directory temporary file and atomic replace."""
@@ -472,6 +510,155 @@ class HistoricalCollectionCoordinator:
             failure_reason=ckpt.failure_reason,
             receipt_count=len(ckpt.receipt_ids),
         )
+
+    def _receipt_path_hashes_for_job(
+        self,
+        job_id: str,
+        ckpt: CollectionCheckpoint | None,
+        *,
+        sha_cache: dict[Path, str] | None = None,
+    ) -> tuple[dict[str, str], list[str]]:
+        """Re-derive the exact parquet path-to-hash binding from durable receipts.
+
+        The caller-supplied integrity report is never used to construct this
+        mapping. Legacy receipts without a stored relative path are resolved by
+        their recorded checksum only when that match is unambiguous. A shared
+        hash cache lets verification reuse its already-computed file digests
+        instead of re-reading large Parquet files.
+        """
+        mapping: dict[str, str] = {}
+        errors: list[str] = []
+        if ckpt is None:
+            return mapping, errors
+
+        def file_sha(path: Path) -> str:
+            if sha_cache is not None and path in sha_cache:
+                return sha_cache[path]
+            digest_value = _compute_file_sha256(path)
+            if sha_cache is not None:
+                sha_cache[path] = digest_value
+            return digest_value
+
+        repo_resolved = self.repo_root.resolve()
+        for receipt_id in sorted(set(ckpt.receipt_ids)):
+            if not str(receipt_id).startswith(f"rcpt_{job_id}_"):
+                errors.append(f"{receipt_id}: receipt is not bound to job {job_id}")
+                continue
+            receipt_file = self.receipts_dir / f"{receipt_id}.json"
+            if not receipt_file.is_file():
+                errors.append(f"{receipt_id}: registered receipt missing from disk")
+                continue
+            try:
+                rdata = json.loads(receipt_file.read_text(encoding="utf-8"))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{receipt_id}: unreadable receipt during snapshot binding: {exc}")
+                continue
+
+            expected_sha = rdata.get("parquet_sha256")
+            if not isinstance(expected_sha, str) or not expected_sha:
+                errors.append(f"{receipt_id}: receipt has no parquet checksum")
+                continue
+
+            rel_path = rdata.get("parquet_relative_path")
+            if rel_path:
+                candidate = (self.repo_root / str(rel_path)).resolve()
+                try:
+                    candidate.relative_to(repo_resolved)
+                except ValueError:
+                    errors.append(f"{receipt_id}: parquet path escapes repository root")
+                    continue
+            else:
+                root = self.repo_root / (
+                    "data/synthetic_datasets" if ckpt.is_synthetic else "data/datasets"
+                )
+                matches = (
+                    [p for p in root.rglob("*.parquet") if file_sha(p) == expected_sha]
+                    if root.is_dir()
+                    else []
+                )
+                if len(matches) != 1:
+                    errors.append(
+                        f"{receipt_id}: legacy parquet hash match is "
+                        f"{'missing' if not matches else 'ambiguous'}"
+                    )
+                    continue
+                candidate = matches[0]
+                try:
+                    rel_path = candidate.relative_to(repo_resolved).as_posix()
+                except ValueError:
+                    rel_path = candidate.as_posix()
+
+            if not candidate.is_file():
+                errors.append(f"{receipt_id}: bound parquet file not found: {candidate}")
+                continue
+            actual_sha = file_sha(candidate)
+            if actual_sha != expected_sha:
+                errors.append(
+                    f"{receipt_id}: bound parquet checksum changed ({actual_sha} != {expected_sha})"
+                )
+                continue
+
+            rel_key = str(rel_path).replace("\\", "/")
+            previous = mapping.get(rel_key)
+            if previous is not None and previous != expected_sha:
+                errors.append(f"{rel_key}: conflicting hashes across receipts for one parquet file")
+                continue
+            mapping[rel_key] = expected_sha
+
+        return dict(sorted(mapping.items())), errors
+
+    def _build_snapshot_state_binding(
+        self,
+        job_id: str,
+        ckpt: CollectionCheckpoint | None,
+        path_hashes: dict[str, str],
+    ) -> dict[str, Any]:
+        """Fingerprint the checkpoint, all job receipts, and exact source bindings."""
+        ckpt_path = self.checkpoints_dir / f"{job_id}.json"
+        checkpoint_sha = _compute_file_sha256(ckpt_path) if ckpt_path.is_file() else ""
+        receipt_records = [
+            {
+                "receipt_id": receipt_file.stem,
+                "sha256": _compute_file_sha256(receipt_file),
+            }
+            for receipt_file in sorted(self.receipts_dir.glob(f"rcpt_{job_id}_*.json"))
+        ]
+        state = {
+            "job_id": job_id,
+            "repo_root": str(self.repo_root.resolve()),
+            "checkpoint_sha256": checkpoint_sha,
+            "checkpoint_receipt_ids": list(ckpt.receipt_ids) if ckpt is not None else [],
+            "receipts": receipt_records,
+            "path_to_hash": dict(sorted(path_hashes.items())),
+        }
+        return {"state": state, "fingerprint": _canonical_json_sha256(state)}
+
+    def _mint_integrity_report(
+        self,
+        report: dict[str, Any],
+        ckpt: CollectionCheckpoint | None,
+        path_hashes: dict[str, str],
+    ) -> dict[str, Any]:
+        """Attach an internal authenticity proof and durable-state fingerprint."""
+        binding = self._build_snapshot_state_binding(str(report.get("job_id")), ckpt, path_hashes)
+        report["verified_parquet_path_hashes"] = [
+            {"path": path, "sha256": sha} for path, sha in sorted(path_hashes.items())
+        ]
+        report["snapshot_state"] = binding["state"]
+        report["snapshot_state_fingerprint"] = binding["fingerprint"]
+        token = uuid.uuid4().hex
+        report["verification_token"] = token
+        content = {key: value for key, value in report.items() if key != "verification_token"}
+        _register_integrity_report_proof(
+            token,
+            _IntegrityReportProof(
+                job_id=str(report.get("job_id")),
+                repo_root=str(self.repo_root.resolve()),
+                state_fingerprint=str(binding["fingerprint"]),
+                content_sha256=_canonical_json_sha256(content),
+            ),
+        )
+        return report
 
     @contextlib.contextmanager
     def job_operation(self, job_id: str, operation: str) -> Any:
@@ -1064,13 +1251,17 @@ class HistoricalCollectionCoordinator:
         with self.job_operation(job_id, "verification"):
             ckpt_path = self.checkpoints_dir / f"{job_id}.json"
             if not ckpt_path.is_file():
-                return {
-                    "job_id": job_id,
-                    "verified": False,
-                    "status": "NOT_FOUND",
-                    "reason": f"Checkpoint not found at {ckpt_path}",
-                    "errors": [f"Checkpoint not found at {ckpt_path}"],
-                }
+                return self._mint_integrity_report(
+                    {
+                        "job_id": job_id,
+                        "verified": False,
+                        "status": "NOT_FOUND",
+                        "reason": f"Checkpoint not found at {ckpt_path}",
+                        "errors": [f"Checkpoint not found at {ckpt_path}"],
+                    },
+                    None,
+                    {},
+                )
 
             # Verify is exposed as a read command. When another worker owns the job,
             # recovery/adoption must remain that owner's responsibility so a reader
@@ -1092,7 +1283,7 @@ class HistoricalCollectionCoordinator:
             receipt_files = sorted(self.receipts_dir.glob(f"rcpt_{job_id}_*.json"))
 
             if not receipt_files:
-                return {
+                no_receipts_report: dict[str, Any] = {
                     "job_id": job_id,
                     "symbol": ckpt.symbol,
                     "status": ckpt.status,
@@ -1110,6 +1301,7 @@ class HistoricalCollectionCoordinator:
                         "Zero receipts found for job; missing receipts cannot produce COMPLETED_VERIFIED."
                     ],
                 }
+                return self._mint_integrity_report(no_receipts_report, ckpt, {})
 
             start_time = time.monotonic()
 
@@ -1140,7 +1332,7 @@ class HistoricalCollectionCoordinator:
             checked_parquet_paths: set[str] = set()
 
             def _build_cancelled_report() -> dict[str, Any]:
-                return {
+                cancelled: dict[str, Any] = {
                     "job_id": job_id,
                     "symbol": ckpt.symbol,
                     "status": "CANCELLED",
@@ -1156,6 +1348,11 @@ class HistoricalCollectionCoordinator:
                     "coverage_gaps": [],
                     "errors": ["Integrity verification cancelled by operator"],
                 }
+                binding_paths, binding_errors = self._receipt_path_hashes_for_job(
+                    job_id, ckpt, sha_cache=file_sha_cache
+                )
+                cancelled["errors"].extend(binding_errors)
+                return self._mint_integrity_report(cancelled, ckpt, binding_paths)
 
             total_rcpts = len(receipt_files)
             last_progress_emit = 0.0
@@ -1311,7 +1508,12 @@ class HistoricalCollectionCoordinator:
                     )
                 )
 
-            return {
+            binding_paths, binding_errors = self._receipt_path_hashes_for_job(
+                job_id, ckpt, sha_cache=file_sha_cache
+            )
+            errors.extend(binding_errors)
+            verified = verified and not binding_errors
+            report: dict[str, Any] = {
                 "job_id": job_id,
                 "symbol": ckpt.symbol,
                 "status": ckpt.status,
@@ -1337,6 +1539,7 @@ class HistoricalCollectionCoordinator:
                 "coverage_gaps": coverage_gaps,
                 "errors": errors,
             }
+            return self._mint_integrity_report(report, ckpt, binding_paths)
 
     def _reconcile_job_state_unlocked(self, job_id: str) -> CollectionCheckpoint:
         """Reconcile durable state assuming the caller already owns the job lock."""
@@ -1404,30 +1607,89 @@ class HistoricalCollectionCoordinator:
     def create_snapshot_for_job(
         self, job_id: str, *, integrity: dict[str, Any] | None = None
     ) -> Any:
-        """Create an immutable snapshot strictly from receipt-verified parquet files."""
+        """Create an immutable snapshot strictly from receipt-verified parquet files.
+
+        A precomputed report is only an optimization hint. It is trusted only when
+        it was minted internally, is byte-for-byte unchanged, and its durable-state
+        binding still matches the checkpoint, receipts, and exact path-to-hash map
+        while the job lock is held. Otherwise fresh verification runs under that
+        same lock; correctness is preferred over avoiding a second verification.
+        """
         with self.job_operation(job_id, "snapshot"):
             self.acquire_job_lock(job_id)
             try:
-                if (
-                    integrity is None
-                    or integrity.get("job_id") != job_id
-                    or not integrity.get("verified", False)
-                ):
-                    integrity = self.verify_job_integrity(job_id)
+                ckpt_path = self.checkpoints_dir / f"{job_id}.json"
+                if not ckpt_path.is_file():
+                    raise FileNotFoundError(f"Checkpoint for job {job_id} not found at {ckpt_path}")
+                ckpt = CollectionCheckpoint.load(ckpt_path)
+                if ckpt.is_synthetic:
+                    raise ValueError(
+                        f"Job {job_id} contains synthetic test evidence and cannot be "
+                        "registered as a genuine research snapshot"
+                    )
 
+                def derive_current_binding() -> tuple[dict[str, str], list[str], dict[str, Any]]:
+                    pairs, errors = self._receipt_path_hashes_for_job(job_id, ckpt)
+                    state_binding = self._build_snapshot_state_binding(job_id, ckpt, pairs)
+                    return pairs, errors, state_binding
+
+                trusted_report = False
+                expected_pairs: dict[str, str] = {}
+                binding_errors: list[str] = []
+                binding: dict[str, Any] = {}
+                if (
+                    integrity is not None
+                    and integrity.get("job_id") == job_id
+                    and integrity.get("verified") is True
+                ):
+                    proof = _lookup_integrity_report_proof(integrity.get("verification_token"))
+                    if proof is not None and (
+                        proof.job_id == job_id and proof.repo_root == str(self.repo_root.resolve())
+                    ):
+                        content = {
+                            key: value
+                            for key, value in integrity.items()
+                            if key != "verification_token"
+                        }
+                        if proof.content_sha256 == _canonical_json_sha256(content):
+                            expected_pairs, binding_errors, binding = derive_current_binding()
+                            trusted_report = (
+                                not binding_errors
+                                and proof.state_fingerprint == binding["fingerprint"]
+                                and integrity.get("snapshot_state_fingerprint")
+                                == binding["fingerprint"]
+                            )
+
+                if not trusted_report:
+                    # Correctness wins over the optimization: an unauthenticated
+                    # report is discarded and a fresh verification runs under
+                    # the same job lock before any snapshot is published.
+                    integrity = self.verify_job_integrity(job_id)
+                    expected_pairs, binding_errors, binding = derive_current_binding()
+
+                if integrity is None:  # defensive; verification must produce a report
+                    raise ValueError(f"Job {job_id}: integrity verification produced no report")
                 if not integrity.get("verified", False):
                     err_msg = "; ".join(integrity.get("errors", [])) or "Coverage incomplete"
                     raise ValueError(f"Job {job_id} failed integrity verification: {err_msg}")
 
-                expected_paths = set(integrity.get("verified_parquet_paths", []))
-                expected_hashes = set(integrity.get("verified_parquet_hashes", []))
-                if not expected_paths or not expected_hashes:
+                if binding_errors:
+                    raise ValueError(
+                        f"Job {job_id} snapshot state is invalid: {'; '.join(binding_errors)}"
+                    )
+                if binding["fingerprint"] != integrity.get("snapshot_state_fingerprint"):
+                    raise ValueError(
+                        f"Job {job_id} integrity report is stale: checkpoint, receipts, or "
+                        "receipt-bound parquet files changed after verification"
+                    )
+                if not expected_pairs:
                     raise ValueError(f"Job {job_id} has no verified parquet files to snapshot")
 
                 dataset_mgr = ResearchDatasetManager(self.repo_root)
                 discovered = dataset_mgr.discover_sources()
                 repo_resolved = self.repo_root.resolve()
                 job_sources: list[Any] = []
+                matched_paths: set[str] = set()
                 for source in discovered:
                     try:
                         rel_path = str(source.path.resolve().relative_to(repo_resolved)).replace(
@@ -1437,16 +1699,51 @@ class HistoricalCollectionCoordinator:
                         continue
                     if (
                         source.is_eligible
-                        and rel_path in expected_paths
-                        and source.sha256_checksum in expected_hashes
+                        and rel_path in expected_pairs
+                        and source.sha256_checksum == expected_pairs[rel_path]
                     ):
                         job_sources.append(source)
+                        matched_paths.add(rel_path)
 
-                if not job_sources:
+                missing = sorted(set(expected_pairs) - matched_paths)
+                if missing:
                     raise ValueError(
-                        f"Job {job_id}: no discoverable sources match the receipt-verified parquet files"
+                        f"Job {job_id}: expected receipt-bound parquet files are missing or "
+                        f"ineligible for snapshot: {missing}"
                     )
-                return dataset_mgr.prepare_dataset(sources=job_sources)
+                if len(job_sources) != len(expected_pairs):
+                    raise ValueError(
+                        f"Job {job_id}: ambiguous source mapping for receipt-bound parquet files"
+                    )
+
+                # Recheck the cheap durable-state fingerprint immediately before
+                # publication. prepare_dataset independently rehashes each
+                # catalog parquet source, so a swapped file cannot be published.
+                publication_binding = self._build_snapshot_state_binding(
+                    job_id, ckpt, expected_pairs
+                )
+                if publication_binding["fingerprint"] != binding["fingerprint"]:
+                    raise ValueError(
+                        f"Job {job_id}: checkpoint or receipts changed before snapshot publication"
+                    )
+
+                snapshot = dataset_mgr.prepare_dataset(sources=job_sources)
+                published_pairs: dict[str, str] = {}
+                for record in snapshot.manifest.source_files:
+                    try:
+                        published_path = (
+                            Path(str(record["path"])).resolve().relative_to(repo_resolved)
+                        )
+                        rel_key = published_path.as_posix()
+                    except (ValueError, KeyError):
+                        rel_key = str(record.get("path", "")).replace("\\", "/")
+                    published_pairs[rel_key] = str(record.get("sha256", ""))
+                if published_pairs != expected_pairs:
+                    raise ValueError(
+                        f"Job {job_id}: published snapshot does not bind every expected source "
+                        f"({sorted(published_pairs)} != {sorted(expected_pairs)})"
+                    )
+                return snapshot
             finally:
                 self.release_job_lock(job_id)
 
@@ -1825,6 +2122,11 @@ class HistoricalCollectionCoordinator:
                 and snap.manifest.candle_size_seconds == timeframe_seconds
             ):
                 if snap.manifest.to_ts <= start_ts or snap.manifest.from_ts >= end_ts:
+                    continue
+                if not dataset_mgr.snapshot_is_genuine(snap):
+                    logger.debug(
+                        "Ignoring ineligible snapshot for coverage: %s", snap.manifest.snapshot_id
+                    )
                     continue
                 try:
                     import pyarrow.parquet as pq

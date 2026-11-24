@@ -83,6 +83,7 @@ logger = logging.getLogger(__name__)
 FORBIDDEN_TRADING_ATTRIBUTES: frozenset[str] = frozenset({
     "buy",
     "sell",
+    "order",
     "place_order",
     "place_trade",
     "open_position",

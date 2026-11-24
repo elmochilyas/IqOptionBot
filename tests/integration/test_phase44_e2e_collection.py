@@ -28,6 +28,7 @@ from iqoption_research.market_data.fetch import CandleFetchResult
 from iqoption_research.market_data.validation import assess_data_quality
 from iqoption_research.ml.h15_research_v4 import H15ResearchEngineV4
 from iqoption_research.ml.preflight import (
+    DEFAULT_PROTECTED_HOLDOUT_END_TS,
     DEFAULT_PROTECTED_HOLDOUT_START_TS,
     AuthorizedDevelopmentPopulation,
     compute_candle_content_digest,
@@ -112,20 +113,22 @@ async def test_phase44_e2e_collection_and_h15_lifecycle(tmp_path: Path) -> None:
     mock_client.assert_read_only = MagicMock()
     mock_client.get_candles = AsyncMock(return_value=res1)
 
-    # Cancel after 1 batch
-    call_count = 0
+    # Cancel after the first batch is durably committed, before the next fetch.
+    cancel_requested = False
 
-    def cancel_after_one() -> bool:
-        nonlocal call_count
-        call_count += 1
-        return call_count > 1
+    def cancel_after_commit(_progress) -> None:
+        nonlocal cancel_requested
+        if not cancel_requested:
+            cancel_requested = True
+            coord.cancel_collection(job_id)
 
     prog1 = await coord.execute_collection(
         job_id=job_id,
         client=mock_client,
         chunk_size=15,
-        cancel_token=cancel_after_one,
+        progress_cb=cancel_after_commit,
         is_synthetic=False,
+        operator_authorized=True,
     )
     assert prog1.status == CollectionStatus.CANCELLED
     assert prog1.candles_collected_this_session == 15
@@ -179,12 +182,21 @@ async def test_phase44_e2e_collection_and_h15_lifecycle(tmp_path: Path) -> None:
     # 6. Verify preflight development population contract against collected candles
     digest = compute_candle_content_digest(stored_candles)
     contract = AuthorizedDevelopmentPopulation(
-        population_id="pop_integration",
+        population_id="pop_phase44_e2e_offline",
         symbol="EURUSD",
         expected_content_digest=digest,
         from_ts=stored_candles[0].from_ts,
         to_ts=stored_candles[-1].to_ts,
+        timeframe_seconds=60,
+        snapshot_id="rds_phase44_e2e_offline_collection",
+        snapshot_verified=True,
+        provenance="LOCAL_BROKER_COLLECTION_VERIFIED",
+        plan_id="PLAN_PHASE44_E2E_OFFLINE",
         max_allowed_ts=DEFAULT_PROTECTED_HOLDOUT_START_TS,
+        excluded_protected_intervals=(
+            (DEFAULT_PROTECTED_HOLDOUT_START_TS, DEFAULT_PROTECTED_HOLDOUT_END_TS),
+        ),
+        exposure_history=("PHASE44_SUPERVISED_E2E",),
         min_candle_count=30,
     )
     preflight_rep = validate_development_population_preflight(stored_candles, contract=contract)

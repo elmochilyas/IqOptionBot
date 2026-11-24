@@ -92,6 +92,28 @@ def test_client_authorization_enforced() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_requires_explicit_operator_authorization(tmp_path: Path) -> None:
+    """Unattended execution fails closed before any checkpoint mutation."""
+    coord = HistoricalCollectionCoordinator(tmp_path)
+    job_id, _, _ = coord.plan_collection(
+        symbol="EURUSD",
+        start_utc="2026-11-04T10:00:00+00:00",
+        end_utc="2026-11-04T10:10:00+00:00",
+        timeframe_seconds=60,
+    )
+    client = MagicMock()
+    client.assert_read_only = MagicMock()
+    client.get_candles = AsyncMock()
+
+    with pytest.raises(PermissionError, match="operator authorization"):
+        await coord.execute_collection(job_id=job_id, client=client)
+
+    ckpt_path = tmp_path / "data/collection_checkpoints" / f"{job_id}.json"
+    assert CollectionCheckpoint.load(ckpt_path).status == CollectionStatus.PENDING.value
+    assert not list(coord.receipts_dir.glob("*.json"))
+
+
+@pytest.mark.asyncio
 async def test_false_completion_prevented_on_empty_response(tmp_path: Path) -> None:
     """Empty response during open market interval must NOT mark interval or job completed."""
     coord = HistoricalCollectionCoordinator(tmp_path)
@@ -122,6 +144,7 @@ async def test_false_completion_prevented_on_empty_response(tmp_path: Path) -> N
         job_id=job_id,
         client=mock_client,
         is_synthetic=False,
+        operator_authorized=True,
     )
 
     # Must be SOURCE_UNAVAILABLE, NOT COMPLETED_VERIFIED!
@@ -181,20 +204,22 @@ async def test_durable_resumption_and_reconciliation(tmp_path: Path) -> None:
     mock_client.assert_read_only = MagicMock()
     mock_client.get_candles = AsyncMock(return_value=fetch_result1)
 
-    # 1. Execute first batch, then trigger cancellation
-    call_count = 0
+    # 1. Execute first batch, then request cancellation before the next fetch.
+    cancel_requested = False
 
-    def cancel_after_first() -> bool:
-        nonlocal call_count
-        call_count += 1
-        return call_count > 1
+    def cancel_after_commit(_progress) -> None:
+        nonlocal cancel_requested
+        if not cancel_requested:
+            cancel_requested = True
+            coord.cancel_collection(job_id)
 
     prog1 = await coord.execute_collection(
         job_id=job_id,
         client=mock_client,
         chunk_size=10,
-        cancel_token=cancel_after_first,
+        progress_cb=cancel_after_commit,
         is_synthetic=False,
+        operator_authorized=True,
     )
     assert prog1.status == CollectionStatus.CANCELLED
     assert prog1.candles_collected_this_session == 10

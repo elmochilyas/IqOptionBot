@@ -278,26 +278,21 @@ def test_market_time_feature_causality() -> None:
 
 def test_shadow_prediction_engine_uses_static_schema() -> None:
     """Verify ShadowPredictionEngine initializes with static_schema to prevent drift."""
-    registry = ShadowModelRegistry()
-    candidates = registry.list_candidates()
-    if candidates:
-        model_id = candidates[0].model_id
-        engine = ShadowPredictionEngine(registry=registry, model_id=model_id)
-    else:
-        # Isolated mock registry when environment has no pre-existing candidate models on disk
-        mock_registry = MagicMock(spec=ShadowModelRegistry)
-        mock_record = MagicMock(spec=FrozenRegistrationRecord)
-        mock_record.feature_names = ("f1", "f2")
-        mock_registry.get_candidate.return_value = mock_record
-        mock_registry.load_frozen_bundle.return_value = {
-            "bundle": {
-                "model": MagicMock(),
-                "scaler": None,
-                "calibrator": None,
-                "feature_names": ["f1", "f2"],
-            }
+    # Use an isolated v1-schema fixture so the assertion does not depend on
+    # whatever frozen candidates happen to exist on the local workstation.
+    mock_registry = MagicMock(spec=ShadowModelRegistry)
+    mock_record = MagicMock(spec=FrozenRegistrationRecord)
+    mock_record.feature_names = ("f1", "f2")
+    mock_registry.get_candidate.return_value = mock_record
+    mock_registry.load_frozen_bundle.return_value = {
+        "bundle": {
+            "model": MagicMock(),
+            "scaler": None,
+            "calibrator": None,
+            "feature_names": ["f1", "f2"],
         }
-        engine = ShadowPredictionEngine(registry=mock_registry, model_id="candidate_mock")
+    }
+    engine = ShadowPredictionEngine(registry=mock_registry, model_id="candidate_mock")
 
     assert hasattr(engine, "feature_pipeline")
     assert engine.feature_pipeline.static_schema is True

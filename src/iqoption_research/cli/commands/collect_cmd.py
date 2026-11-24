@@ -19,16 +19,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import typer
 
 from iqoption_research.market_data.collection_engine import (
+    CollectionCheckpoint,
     CollectionProgress,
     CollectionStatus,
     HistoricalCollectionCoordinator,
+)
+from iqoption_research.market_data.collector import DataAcquisitionError
+from iqoption_research.market_data.synthetic_collection_fixture import (
+    create_synthetic_collection_client,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,6 +72,44 @@ def _emit_output(data: dict[str, Any], json_output: bool) -> None:
             typer.echo(f"{k}: {v}")
 
 
+def _prepare_live_account_selection(
+    *,
+    saved_credentials: bool,
+    account_id: str | None,
+    json_output: bool,
+) -> str:
+    """Resolve an explicit saved account before any live broker construction.
+
+    The account ID itself is the durable, non-sensitive label. Raw emails, tokens,
+    and passwords are never printed or written to a checkpoint or receipt.
+    """
+    from iqoption_research.cli.commands.backfill_cmd import _resolve_explicit_live_account
+
+    if not account_id:
+        err_data = {
+            "error": "Explicit --account-id is required for live collection.",
+            "status": "FAILED",
+        }
+        _emit_output(err_data, json_output)
+        raise typer.Exit(1)
+
+    try:
+        label = _resolve_explicit_live_account(saved_credentials, account_id)
+    except DataAcquisitionError as exc:
+        err_data = {"error": str(exc), "status": "FAILED"}
+        _emit_output(err_data, json_output)
+        raise typer.Exit(1) from None
+
+    if label is None:  # pragma: no cover - account_id is proven non-empty above
+        err_data = {
+            "error": "Explicit account selection could not be resolved.",
+            "status": "FAILED",
+        }
+        _emit_output(err_data, json_output)
+        raise typer.Exit(1)
+    return label
+
+
 @collect_app.command("plan")
 def plan_collection_command(
     symbol: str = typer.Option("EURUSD", "--symbol", help="Asset symbol (e.g. EURUSD)."),
@@ -86,6 +128,9 @@ def plan_collection_command(
         help="UTC end timestamp in ISO-8601 format.",
     ),
     timeframe: int = typer.Option(60, "--timeframe", help="Candle timeframe in seconds."),
+    account_id: str | None = typer.Option(
+        None, "--account-id", help="Associate job with saved account ID."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Inspect local coverage and generate a planned collection job."""
@@ -96,6 +141,7 @@ def plan_collection_command(
             start_utc=from_utc,
             end_utc=to_utc,
             timeframe_seconds=timeframe,
+            account_id=account_id,
         )
     except Exception as exc:  # noqa: BLE001
         err_data = {"error": str(exc), "status": "FAILED"}
@@ -179,6 +225,9 @@ def run_collection_command(
     saved_credentials: bool = typer.Option(
         True, "--saved-credentials", help="Use secure Windows credential vault."
     ),
+    account_id: str | None = typer.Option(
+        None, "--account-id", help="Explicit saved account ID to authenticate with."
+    ),
     synthetic: bool = typer.Option(
         False, "--synthetic", help="Offline synthetic test execution fixture."
     ),
@@ -186,6 +235,24 @@ def run_collection_command(
 ) -> None:
     """Execute an authorized historical collection job."""
     coord = HistoricalCollectionCoordinator(Path())
+
+    if live and synthetic:
+        err_data = {
+            "error": "Cannot specify both --live and --synthetic simultaneously.",
+            "status": "FAILED",
+        }
+        _emit_output(err_data, json_output)
+        raise typer.Exit(1)
+
+    account_label: str | None = account_id if synthetic else None
+    if live:
+        account_label = _prepare_live_account_selection(
+            saved_credentials=saved_credentials,
+            account_id=account_id,
+            json_output=json_output,
+        )
+        if not json_output:
+            typer.echo(f"Selected Account ID: {account_id}")
 
     if not live and not synthetic:
         data = {
@@ -198,45 +265,25 @@ def run_collection_command(
 
     async def _run() -> CollectionProgress:
         if synthetic:
-            # Synthetic mock client for testing
-            from unittest.mock import AsyncMock, MagicMock
-
-            from iqoption_research.market_data.fetch import CandleFetchResult
-            from iqoption_research.market_data.validation import assess_data_quality
-            from iqoption_research.models.market import CandleSize
-            from tests.unit.test_phase43_data_inventory import (
-                create_deterministic_synthetic_candles,
+            # Offline test fixture only: fabricated candles, never broker evidence.
+            ckpt = CollectionCheckpoint.load(coord.checkpoints_dir / f"{job_id}.json")
+            mock_client = create_synthetic_collection_client(
+                symbol=ckpt.symbol,
+                timeframe_seconds=ckpt.timeframe_seconds,
             )
-
-            mock_client = MagicMock()
-            mock_client.assert_read_only = MagicMock()
-            ckpt = coord.checkpoints_dir / f"{job_id}.json"
-            c_data = json.loads(ckpt.read_text(encoding="utf-8"))
-            req_from = int(c_data["requested_from_ts"])
-            candles = create_deterministic_synthetic_candles(count=chunk_size, start_ts=req_from)
-            quality = assess_data_quality(candles, expected_size=CandleSize(60))
-            fetch_res = CandleFetchResult(
-                symbol="EURUSD",
-                size=CandleSize(60),
-                candles=tuple(candles),
-                errors=(),
-                quality=quality,
-                fetched_at=datetime.now(UTC),
-                raw_count=len(candles),
-                source="synthetic",
-            )
-            mock_client.get_candles = AsyncMock(return_value=fetch_res)
             return await coord.execute_collection(
                 job_id=job_id,
                 client=mock_client,
                 chunk_size=chunk_size,
                 is_synthetic=True,
                 operator_authorized=True,
+                account_id=account_id,
+                account_label=account_label,
             )
 
         from iqoption_research.cli.commands.backfill_cmd import _connect_live_client
 
-        client, cleanup = await _connect_live_client(saved_credentials)
+        client, cleanup = await _connect_live_client(saved_credentials, account_id=account_id)
         try:
             return await coord.execute_collection(
                 job_id=job_id,
@@ -244,6 +291,8 @@ def run_collection_command(
                 chunk_size=chunk_size,
                 is_synthetic=False,
                 operator_authorized=True,
+                account_id=account_id,
+                account_label=account_label,
             )
         finally:
             await cleanup()
@@ -271,6 +320,9 @@ def resume_collection_command(
     saved_credentials: bool = typer.Option(
         True, "--saved-credentials", help="Use secure Windows credential vault."
     ),
+    account_id: str | None = typer.Option(
+        None, "--account-id", help="Explicit saved account ID to authenticate with."
+    ),
     synthetic: bool = typer.Option(
         False, "--synthetic", help="Offline synthetic test execution fixture."
     ),
@@ -278,6 +330,28 @@ def resume_collection_command(
 ) -> None:
     """Reconcile storage and durable receipts, then resume collection."""
     coord = HistoricalCollectionCoordinator(Path())
+    # Capture the cancel signal at command entry, before account selection and
+    # broker construction. A cancel issued during that window has a new token
+    # and must survive the worker's stale-signal cleanup.
+    stale_cancel_token = coord.capture_stale_cancel_token(job_id)
+
+    if live and synthetic:
+        err_data = {
+            "error": "Cannot specify both --live and --synthetic simultaneously.",
+            "status": "FAILED",
+        }
+        _emit_output(err_data, json_output)
+        raise typer.Exit(1)
+
+    account_label: str | None = account_id if synthetic else None
+    if live:
+        account_label = _prepare_live_account_selection(
+            saved_credentials=saved_credentials,
+            account_id=account_id,
+            json_output=json_output,
+        )
+        if not json_output:
+            typer.echo(f"Selected Account ID: {account_id}")
 
     try:
         # Reconcile progress before resuming
@@ -302,44 +376,27 @@ def resume_collection_command(
 
     async def _resume() -> CollectionProgress:
         if synthetic:
-            from unittest.mock import AsyncMock, MagicMock
-
-            from iqoption_research.market_data.fetch import CandleFetchResult
-            from iqoption_research.market_data.validation import assess_data_quality
-            from iqoption_research.models.market import CandleSize
-            from tests.unit.test_phase43_data_inventory import (
-                create_deterministic_synthetic_candles,
+            # Offline test fixture only: fabricated candles, never broker evidence.
+            ckpt = CollectionCheckpoint.load(coord.checkpoints_dir / f"{job_id}.json")
+            mock_client = create_synthetic_collection_client(
+                symbol=ckpt.symbol,
+                timeframe_seconds=ckpt.timeframe_seconds,
             )
-
-            mock_client = MagicMock()
-            mock_client.assert_read_only = MagicMock()
-            ckpt = coord.checkpoints_dir / f"{job_id}.json"
-            c_data = json.loads(ckpt.read_text(encoding="utf-8"))
-            req_from = int(c_data["requested_from_ts"])
-            candles = create_deterministic_synthetic_candles(count=chunk_size, start_ts=req_from)
-            quality = assess_data_quality(candles, expected_size=CandleSize(60))
-            fetch_res = CandleFetchResult(
-                symbol="EURUSD",
-                size=CandleSize(60),
-                candles=tuple(candles),
-                errors=(),
-                quality=quality,
-                fetched_at=datetime.now(UTC),
-                raw_count=len(candles),
-                source="synthetic",
-            )
-            mock_client.get_candles = AsyncMock(return_value=fetch_res)
             return await coord.resume_collection(
                 job_id=job_id,
                 client=mock_client,
                 chunk_size=chunk_size,
                 is_synthetic=True,
                 operator_authorized=True,
+                account_id=account_id,
+                account_label=account_label,
+                stale_cancel_token=stale_cancel_token,
+                capture_stale_cancel_token=False,
             )
 
         from iqoption_research.cli.commands.backfill_cmd import _connect_live_client
 
-        client, cleanup = await _connect_live_client(saved_credentials)
+        client, cleanup = await _connect_live_client(saved_credentials, account_id=account_id)
         try:
             return await coord.resume_collection(
                 job_id=job_id,
@@ -347,6 +404,10 @@ def resume_collection_command(
                 chunk_size=chunk_size,
                 is_synthetic=False,
                 operator_authorized=True,
+                account_id=account_id,
+                account_label=account_label,
+                stale_cancel_token=stale_cancel_token,
+                capture_stale_cancel_token=False,
             )
         finally:
             await cleanup()

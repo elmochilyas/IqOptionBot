@@ -126,7 +126,7 @@ def check_read_only_posture() -> CheckResult:
     return CheckResult(
         "read_only_posture",
         True,
-        "no buy/sell/close/change_balance attributes on AsyncIQOption",
+        "no buy/sell/order/close/change_balance attributes on AsyncIQOption",
     )
 
 

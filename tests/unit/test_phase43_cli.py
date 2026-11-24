@@ -75,6 +75,17 @@ def test_cli_horizons_plan() -> None:
     assert "Total Planned Trials: 71" in result.stdout
 
 
+def test_cli_horizons_run_is_inspection_only(isolated_env: Path) -> None:
+    """Production CLI Phase 43 execution fails closed with script guidance."""
+    result = runner.invoke(
+        research_app, ["horizons", "run", "--root", str(isolated_env), "--limit", "1"]
+    )
+    assert result.exit_code == 1
+    assert "inspection-only" in result.stdout.lower()
+    assert "run_phase43_experiments.py" in result.stdout
+    assert "TEST_ONLY" in result.stdout
+
+
 def test_cli_regimes_analyze(isolated_env: Path) -> None:
     """Verify research regimes analyze prints regime distributions."""
     result = runner.invoke(research_app, ["regimes", "analyze", "--root", str(isolated_env)])

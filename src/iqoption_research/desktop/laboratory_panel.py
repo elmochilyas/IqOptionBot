@@ -1103,94 +1103,12 @@ class ModelLaboratoryPanel:
         self._write_text(self.mh_log_text, "\n".join(lines))
 
     def run_multi_horizon_matrix_action(self) -> None:
-        """Run bounded multi-horizon experiment matrix in background thread."""
-        from iqoption_research.market_data.parquet_storage import read_candles_parquet
-        from iqoption_research.ml.experiment_matrix import (
-            ExperimentRunnerV3,
-            build_phase43_experiment_plan,
+        """Direct Phase 43 trial execution is inspection-only from the dashboard."""
+        guidance = (
+            "Phase 43 trial execution is not available from the dashboard.\n\n"
+            "Authoritative snapshots are inspection-only. Use "
+            "scripts/run_phase43_experiments.py with an explicit development-only "
+            "snapshot override; every override is TEST_ONLY and never genuine evidence."
         )
-
-        if not self.snapshots:
-            self.refresh()
-        if not self.snapshots:
-            messagebox.showwarning("No Snapshot", "No market data snapshots available.")
-            return
-
-        if not messagebox.askyesno(
-            "Phase 43 Multi-Horizon Matrix",
-            "Execute bounded multi-horizon walk-forward experiments?\n\n"
-            "Evaluates multi-timeframe feature schemas (m1_reference, htf_context, "
-            "regime_context, full_v3) across horizons H1, H3, H5, H15, H30, H60.\n\n"
-            "Offline research only: zero broker orders, execution authority NONE.",
-        ):
-            return
-
-        snap = self.snapshots[-1]
-        candles = read_candles_parquet(snap.parquet_path)
-        plan = build_phase43_experiment_plan(max_search_budget=10)
-
-        self._write_text(
-            self.mh_log_text,
-            "Starting Phase 43 Multi-Horizon Experiments (enforcing development partition, 85%)...\n",
-        )
-        self.btn_run_mh_matrix.state(["disabled"])
-
-        runner = ExperimentRunnerV3(repo_root=self.root)
-
-        def prog_cb(completed: int, total: int, status_str: str) -> None:
-            msg = f"[{completed}/{total}] {status_str}\n"
-            self.dashboard.window.after(0, lambda: self._append_log(self.mh_log_text, msg))
-
-        def run_task() -> None:
-            try:
-                summary = runner.run_suite(
-                    candles=candles,
-                    plan=plan,
-                    max_trials=10,
-                    progress_callback=prog_cb,
-                    enforce_development_partition=True,
-                    dataset_id=snap.manifest.snapshot_id,
-                    dataset_sha256=snap.manifest.parquet_sha256,
-                )
-
-                def on_done() -> None:
-                    self.btn_run_mh_matrix.state(["!disabled"])
-                    for r in summary.reports:
-                        acc_str = (
-                            f"{r.pooled_decisive_accuracy:.2%}"
-                            if r.pooled_decisive_accuracy is not None
-                            else "N/A"
-                        )
-                        cov_str = (
-                            f"{r.pooled_coverage:.2%}" if r.pooled_coverage is not None else "N/A"
-                        )
-                        self.mh_tree.insert(
-                            "",
-                            "end",
-                            values=(
-                                r.target_horizon_name,
-                                r.trial_id.split("_")[0],
-                                r.model_family,
-                                r.feature_preset,
-                                f"{r.confidence_threshold:.2f}",
-                                acc_str,
-                                cov_str,
-                                r.verdict,
-                            ),
-                        )
-                    self._append_log(
-                        self.mh_log_text,
-                        f"\nExperiment Suite Finished: {summary.total_completed_trials} completed, "
-                        f"Global Disposition: {summary.global_disposition}\n",
-                    )
-
-                self.dashboard.window.after(0, on_done)
-            except Exception as exc:  # noqa: BLE001
-
-                def on_err(err_msg: str = str(exc)) -> None:
-                    self.btn_run_mh_matrix.state(["!disabled"])
-                    self._append_log(self.mh_log_text, f"\nExecution failed: {err_msg}\n")
-
-                self.dashboard.window.after(0, on_err)
-
-        self.dashboard.executor.submit(run_task)
+        messagebox.showwarning("Phase 43 Trials Inspection-Only", guidance)
+        self._write_text(self.mh_log_text, f"{guidance}\n")

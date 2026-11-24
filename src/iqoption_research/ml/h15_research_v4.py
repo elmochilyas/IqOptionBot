@@ -39,6 +39,7 @@ from iqoption_research.ml.calibration.metrics import evaluate_calibration
 from iqoption_research.ml.features_v3 import CausalFeaturePipelineV3
 from iqoption_research.ml.preflight import (
     AuthorizedDevelopmentPopulation,
+    PreflightEnforcement,
     validate_development_population_preflight,
 )
 from iqoption_research.ml.targets.specs import TiePolicy
@@ -103,6 +104,8 @@ class H15ModelEvaluationReport:
     statistically_superior_to_baseline: bool
     verdict: str
     disposition: str = "NO_DEMONSTRATED_EDGE"
+    preflight_status: str = "EXPLORATORY_PREFLIGHT_DISABLED"
+    execution_authority: str = "NONE"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -233,11 +236,21 @@ class H15ResearchEngineV4:
         k_folds: int = 3,
         preflight_contract: AuthorizedDevelopmentPopulation | None = None,
         enforce_preflight: bool = True,
+        preflight_enforcement: PreflightEnforcement = PreflightEnforcement.GENUINE,
     ) -> H15ModelEvaluationReport:
-        """Execute rigorous walk-forward evaluation for H15 with corrected fold geometry."""
+        """Execute rigorous walk-forward evaluation for H15 with corrected fold geometry.
+
+        enforce_preflight=False is an explicit exploratory opt-out and is reported
+        as EXPLORATORY_PREFLIGHT_DISABLED; it is never a genuine research result.
+        """
         # Preflight validation
+        preflight_report = None
         if enforce_preflight:
-            validate_development_population_preflight(candles, contract=preflight_contract)
+            preflight_report = validate_development_population_preflight(
+                candles,
+                contract=preflight_contract,
+                enforcement=preflight_enforcement,
+            )
 
         n_candles = len(candles)
 
@@ -567,4 +580,8 @@ class H15ResearchEngineV4:
             statistically_superior_to_baseline=any_superior,
             verdict=verdict,
             disposition="NO_DEMONSTRATED_EDGE",
+            preflight_status=(
+                preflight_report.status if preflight_report else "EXPLORATORY_PREFLIGHT_DISABLED"
+            ),
+            execution_authority="NONE",
         )

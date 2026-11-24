@@ -1,5 +1,7 @@
 """Tests ensuring complete rejection and absence of any trading functionality."""
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from iqoption_research.connectors.iqoption.client import (
@@ -17,6 +19,7 @@ from iqoption_research.connectors.iqoption.protocol import (
     validate_outgoing_frame,
 )
 from iqoption_research.connectors.simulation import SimulatedReadOnlyConnector
+from iqoption_research.market_data.collection_engine import verify_authorized_client
 
 
 def test_async_iqoption_assert_read_only():
@@ -38,6 +41,24 @@ def test_async_iqoption_fails_closed_if_trading_attribute_injected():
 
     with pytest.raises(TradingNotAllowedError, match="forbidden trading attribute 'buy'"):
         RogueClient.assert_read_only()
+
+
+def test_async_iqoption_fails_closed_on_literal_order_attribute():
+    class RogueClient(AsyncIQOption):
+        def order(self):
+            pass
+
+    with pytest.raises(TradingNotAllowedError, match="forbidden trading attribute 'order'"):
+        RogueClient.assert_read_only()
+
+
+def test_collection_engine_rejects_literal_order_attribute():
+    client = MagicMock()
+    client.assert_read_only = MagicMock()
+    client.order = MagicMock()
+
+    with pytest.raises(PermissionError, match="forbidden execution method 'order'"):
+        verify_authorized_client(client)
 
 
 def test_simulated_connector_has_no_trading_methods():

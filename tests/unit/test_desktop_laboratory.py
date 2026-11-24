@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from iqoption_research.desktop import laboratory_panel
 from iqoption_research.desktop.laboratory_panel import ModelLaboratoryPanel
 
 
@@ -104,3 +105,28 @@ def test_model_selection_and_report_rendering(mock_dashboard: MagicMock, tk_root
     assert vals[0] == "candidate_rf_test"
     assert vals[1] == "random_forest"
     assert "58.20%" in vals[4]
+
+
+def test_multi_horizon_matrix_action_is_inspection_only(
+    mock_dashboard: MagicMock,
+    tk_root: tk.Tk,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dashboard button cannot run Phase 43 trials outside the dev-only script."""
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        laboratory_panel.messagebox,
+        "showwarning",
+        lambda title, message: warnings.append((title, message)),
+    )
+
+    notebook = ttk.Notebook(tk_root)
+    panel = ModelLaboratoryPanel(mock_dashboard, notebook)
+    panel.run_multi_horizon_matrix_action()
+
+    assert len(warnings) == 1
+    title, message = warnings[0]
+    assert title == "Phase 43 Trials Inspection-Only"
+    assert "run_phase43_experiments.py" in message
+    assert "TEST_ONLY" in message
+    assert "run_phase43_experiments.py" in panel.mh_log_text.get("1.0", "end")

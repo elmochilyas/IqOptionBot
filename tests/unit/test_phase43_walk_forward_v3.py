@@ -9,6 +9,7 @@ from iqoption_research.ml.experiment_matrix import (
     build_phase43_experiment_plan,
 )
 from iqoption_research.ml.features_v3 import CausalFeaturePipelineV3
+from iqoption_research.ml.preflight import PreflightEnforcement
 from iqoption_research.ml.walk_forward_v3 import (
     run_walk_forward_v3_evaluation,
 )
@@ -65,7 +66,13 @@ def test_experiment_runner_v3_suite_execution(tmp_path: Path) -> None:
     runner = ExperimentRunnerV3(tmp_path)
 
     plan = build_phase43_experiment_plan(max_search_budget=2)
-    summary = runner.run_suite(candles=candles, plan=plan, max_trials=2, bootstrap_replicates=50)
+    summary = runner.run_suite(
+        candles=candles,
+        plan=plan,
+        max_trials=2,
+        bootstrap_replicates=50,
+        preflight_enforcement=PreflightEnforcement.TEST_ONLY,
+    )
 
     assert summary.total_planned_trials == 2
     assert summary.total_completed_trials == 2
@@ -95,6 +102,7 @@ def test_experiment_runner_v3_enforces_development_partition_and_exposure_loggin
         bootstrap_replicates=50,
         enforce_development_partition=True,
         dataset_id="test_partition_dataset",
+        preflight_enforcement=PreflightEnforcement.TEST_ONLY,
     )
 
     assert summary.total_completed_trials == 1
@@ -103,8 +111,9 @@ def test_experiment_runner_v3_enforces_development_partition_and_exposure_loggin
         from_ts=candles[0].from_ts, to_ts=candles[-1].to_ts
     )
     assert len(records) > 0
-    # First record should be FEATURE_DISCOVERY with sample_count == 1700 (85% of 2000)
+    # Synthetic methodology checks use the entire fixture and are explicitly
+    # marked TEST_ONLY; implicit 85% slicing was removed.
     rec = records[0]
     assert rec.dataset_id == "test_partition_dataset"
-    assert rec.sample_count == 1700
-    assert "Enforced development partition" in rec.notes
+    assert rec.sample_count == 2000
+    assert "TEST_ONLY_AD_HOC" in rec.notes

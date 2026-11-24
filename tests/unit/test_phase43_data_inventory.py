@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -95,11 +96,12 @@ def test_historical_collection_coordinator_plan_and_record(tmp_path: Path) -> No
 
     assert job_id.startswith("collect_eurusd_")
     assert len(missing) == 1
-    assert missing[0].expected_candles_count == 121
+    assert missing[0].expected_candles_count == 120
     assert progress.status == CollectionStatus.PENDING
 
     # Record batch
-    candles = create_deterministic_synthetic_candles(count=50)
+    interval_start_ts = int(datetime.fromisoformat("2026-11-01T00:00:00+00:00").timestamp())
+    candles = create_deterministic_synthetic_candles(count=50, start_ts=interval_start_ts)
     receipt = coord.record_collected_batch(job_id, candles, is_synthetic=True)
 
     assert receipt.receipt_id.startswith("rcpt_collect_eurusd_")
@@ -182,6 +184,7 @@ async def test_historical_collection_coordinator_execute_collection(tmp_path: Pa
         progress_cb=on_progress,
         chunk_size=10,
         is_synthetic=False,
+        operator_authorized=True,
     )
 
     assert mock_client.assert_read_only.called
@@ -208,5 +211,6 @@ async def test_historical_collection_coordinator_execute_collection(tmp_path: Pa
         job_id=job_id2,
         client=mock_client,
         cancel_token=lambda: True,
+        operator_authorized=True,
     )
     assert canc_progress.status == CollectionStatus.CANCELLED

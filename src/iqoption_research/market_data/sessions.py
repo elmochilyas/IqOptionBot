@@ -14,7 +14,7 @@ Gaps are strictly classified as:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import UTC, datetime, time
 from enum import StrEnum
 from typing import Final
 from zoneinfo import ZoneInfo
@@ -168,3 +168,27 @@ def get_market_schedule(symbol: str) -> MarketSchedule:
         is_schedule_verified=False,
         description=f"Unverified schedule for {canonical}",
     )
+
+
+CASABLANCA_TZ: Final[ZoneInfo] = ZoneInfo("Africa/Casablanca")
+
+
+def parse_explicit_utc_datetime(val: str) -> datetime:
+    """Parse an ISO date/time string strictly as UTC.
+
+    Guarantees:
+    - Never interprets naive input strings as Windows machine local time.
+    - If input lacks timezone information, assigns UTC explicitly.
+    - If input contains timezone information, converts it directly to UTC.
+    """
+    s = val.strip()
+    dt = datetime.fromisoformat(s)
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
+def format_casablanca_display(dt: datetime) -> str:
+    """Format UTC datetime for local operator display in Africa/Casablanca."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    local_dt = dt.astimezone(CASABLANCA_TZ)
+    return local_dt.strftime("%Y-%m-%d %H:%M:%S (%Z)")

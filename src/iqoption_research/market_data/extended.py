@@ -42,9 +42,9 @@ class CollectorError(Exception):
 class ScheduledMarketClosure(CollectorError):
     """Raised when regular-market collection ends due to a scheduled market close.
 
-    This represents a known calendar-driven event (Friday 22:00 UTC / NY 17:00,
-    weekend, DST transition). Committed records and the final manifest are
-    preserved cleanly before the session exits.
+    This represents a known calendar-driven event (Friday 17:00 America/New_York,
+    whose UTC equivalent changes with DST, plus weekends and DST transitions).
+    Committed records and the final manifest are preserved cleanly before exit.
     """
 
     TERMINATION_REASON: str = "SCHEDULED_MARKET_CLOSURE"
@@ -140,7 +140,8 @@ def assess_duration_market_fit(start: datetime, minutes: int) -> MarketFitAssess
         reason = (
             f"Regular EURUSD market is closed as of {start.strftime('%Y-%m-%d %H:%M UTC')}. "
             "OTC substitution is strictly forbidden. Interbank Forex market hours are "
-            "Sunday 17:00 to Friday 17:00 America/New_York (22:00 UTC)."
+            "Sunday 17:00 to Friday 17:00 America/New_York; the UTC equivalent "
+            "changes with DST (21:00 UTC in EDT, 22:00 UTC in EST)."
         )
         return MarketFitAssessment(
             fits=False,

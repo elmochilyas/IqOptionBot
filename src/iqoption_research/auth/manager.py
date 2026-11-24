@@ -89,6 +89,7 @@ class AuthenticationManager:
         *,
         email: str | None = None,
         password: str | None = None,
+        account_id: str | None = None,
         prompt_fn: Callable[[], tuple[str, str]] | None = None,
         mfa_callback: MFACallback | None = None,
     ) -> bool:
@@ -162,11 +163,21 @@ class AuthenticationManager:
                     )
                 return False
 
-        # 5. Process result
-        return await self._process_auth_result(result, email)
+        # 5. Process result; explicitly bind the operator-selected account when provided.
+        return await self._process_auth_result(result, email, account_id=account_id)
 
-    async def login_saved(self, *, mfa_callback: MFACallback | None = None) -> bool:
-        """Authenticate using credentials stored in Windows Credential Manager."""
+    async def login_saved(
+        self,
+        *,
+        account_id: str | None = None,
+        mfa_callback: MFACallback | None = None,
+    ) -> bool:
+        """Authenticate using credentials stored in Windows Credential Manager.
+
+        If account_id is provided, resolves and loads the specific account through
+        the secure AccountStore. Never silently substitutes another account if the
+        requested account is unavailable.
+        """
         self._last_error = None
 
         if not self.vault.is_secure_backend():
@@ -175,16 +186,25 @@ class AuthenticationManager:
             )
             return False
 
-        if not self.vault.has_saved_credentials():
-            self._last_error = (
-                "No saved credentials found in Windows Credential Vault. Use interactive login."
-            )
-            return False
+        creds: Credentials | None
+        if account_id is not None:
+            try:
+                store = self.vault.account_store()
+                creds = store.load(account_id)
+            except Exception:  # noqa: BLE001 - never surface backend payloads or secrets
+                self._last_error = f"Selected account '{account_id}' is unavailable."
+                return False
+        else:
+            if not self.vault.has_saved_credentials():
+                self._last_error = (
+                    "No saved credentials found in Windows Credential Vault. Use interactive login."
+                )
+                return False
 
-        creds = self.vault.load_saved_credentials()
-        if creds is None:
-            self._last_error = "Failed to load credentials from Windows Credential Vault."
-            return False
+            creds = self.vault.load_saved_credentials()
+            if creds is None:
+                self._last_error = "Failed to load credentials from Windows Credential Vault."
+                return False
 
         email = creds.email
         if self.state_machine.current_state in (
@@ -230,7 +250,7 @@ class AuthenticationManager:
                     )
                 return False
 
-        return await self._process_auth_result(result, email)
+        return await self._process_auth_result(result, email, account_id=account_id)
 
     async def _resolve_mfa_challenge(
         self,
@@ -276,7 +296,12 @@ class AuthenticationManager:
             )
             return AuthResult(success=False, error_message=str(exc))
 
-    async def _process_auth_result(self, result: AuthResult, email: str) -> bool:
+    async def _process_auth_result(
+        self,
+        result: AuthResult,
+        email: str,
+        account_id: str | None = None,
+    ) -> bool:
         """Process successful or failed AuthResult and initialize AuthSession."""
         if not result.success or not result.ssid:
             self._last_error = result.error_message or "Authentication failed without message."
@@ -291,6 +316,7 @@ class AuthenticationManager:
         self._session = AuthSession(
             ssid=result.ssid,
             email=email,
+            account_id=account_id,
             ttl_seconds=self.config.session_ttl_seconds,
         )
         self.state_machine.transition_to(

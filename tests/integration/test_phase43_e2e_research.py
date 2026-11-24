@@ -54,6 +54,7 @@ from iqoption_research.ml.partitions import (
     create_partition_manifest,
     extract_partition_candles,
 )
+from iqoption_research.ml.preflight import PreflightEnforcement
 from iqoption_research.ml.regimes import (
     CausalMarketRegimeClassifier,
     evaluate_regimes_stratified,
@@ -184,7 +185,13 @@ def test_phase43_e2e_research_lifecycle(tmp_path: Path, monkeypatch: Any) -> Non
     assert len(plan) == 4
     ledger_db = tmp_path / "ledger.sqlite"
     runner = ExperimentRunnerV3(repo_root=tmp_path, db_path=ledger_db)
-    suite_res = runner.run_suite(candles=candles, plan=plan, max_trials=2, bootstrap_replicates=50)
+    suite_res = runner.run_suite(
+        candles=candles,
+        plan=plan,
+        max_trials=2,
+        bootstrap_replicates=50,
+        preflight_enforcement=PreflightEnforcement.TEST_ONLY,
+    )
     assert suite_res.total_completed_trials == 2
     assert suite_res.global_disposition in ("NO_DEMONSTRATED_EDGE", "PROMISING_EXPLORATORY")
 

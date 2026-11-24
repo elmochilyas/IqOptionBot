@@ -21,7 +21,6 @@ Orchestrates the 4-stage bounded empirical research plan:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import sqlite3
@@ -33,6 +32,12 @@ from typing import Any, Final
 
 from iqoption_research.ml.exposure_registry import EvidenceExposureRegistry, ExposurePurpose
 from iqoption_research.ml.features_v3 import CausalFeaturePipelineV3
+from iqoption_research.ml.preflight import (
+    AuthorizedDevelopmentPopulation,
+    PreflightEnforcement,
+    compute_candle_content_digest,
+    validate_development_population_preflight,
+)
 from iqoption_research.ml.walk_forward_v3 import (
     WalkForwardV3Report,
     run_walk_forward_v3_evaluation,
@@ -375,75 +380,65 @@ class ExperimentRunnerV3:
         enforce_development_partition: bool = True,
         dataset_id: str = "dataset_candles",
         dataset_sha256: str = "",
+        contract: AuthorizedDevelopmentPopulation | None = None,
+        preflight_enforcement: PreflightEnforcement = PreflightEnforcement.GENUINE,
     ) -> ResearchSuiteSummaryV3:
         """Execute the registered trial plan across candles.
 
-        When enforce_development_partition is True (default), restricts exploratory
-        suite execution strictly to the development partition (first 85% of candles,
-        preserving the final 15% as protected test holdout) and logs exposure in the
-        EvidenceExposureRegistry.
+        Genuine research requires an explicit AuthorizedDevelopmentPopulation
+        contract. TEST_ONLY enforcement is an explicit opt-out for synthetic
+        fixtures and methodology checks; it never yields genuine conclusions.
+        Implicit 85% slicing is eliminated.
         """
         if not candles:
             raise ValueError("Candles sequence cannot be empty for experiment suite.")
 
-        if (
-            enforce_development_partition
-            and len(candles) >= 1000
-            and int(len(candles) * 0.85) >= 800
-        ):
-            dev_cutoff = int(len(candles) * 0.85)
-            effective_candles = candles[:dev_cutoff]
-            from_ts = effective_candles[0].from_ts
-            to_ts = effective_candles[-1].to_ts
-            d_sha = (
-                dataset_sha256
-                or hashlib.sha256(
-                    f"{from_ts}:{to_ts}:{len(effective_candles)}".encode()
-                ).hexdigest()
+        preflight_report = None
+        if enforce_development_partition:
+            preflight_report = validate_development_population_preflight(
+                candles,
+                contract=contract,
+                expected_digest=dataset_sha256 or None,
+                enforcement=preflight_enforcement,
             )
-            self.exposure_registry.record_exposure(
-                dataset_id=dataset_id,
-                dataset_sha256=d_sha,
-                from_ts=from_ts,
-                to_ts=to_ts,
-                purpose=ExposurePurpose.FEATURE_DISCOVERY,
-                actor_stage="multi_horizon_experiment_matrix",
-                sample_count=len(effective_candles),
-                plan_id="phase43_multi_horizon_plan",
-                notes=(
-                    f"Enforced development partition: {len(effective_candles)}/{len(candles)} "
-                    f"candles used (withheld {len(candles) - len(effective_candles)} protected holdout candles)."
-                ),
-            )
-            logger.info(
-                "Enforced development partition: using %d/%d candles (range %d to %d, withheld %d).",
-                len(effective_candles),
-                len(candles),
-                from_ts,
-                to_ts,
-                len(candles) - len(effective_candles),
-            )
-        else:
-            effective_candles = candles
-            from_ts = effective_candles[0].from_ts
-            to_ts = effective_candles[-1].to_ts
-            d_sha = (
-                dataset_sha256
-                or hashlib.sha256(
-                    f"{from_ts}:{to_ts}:{len(effective_candles)}".encode()
-                ).hexdigest()
-            )
-            self.exposure_registry.record_exposure(
-                dataset_id=dataset_id,
-                dataset_sha256=d_sha,
-                from_ts=from_ts,
-                to_ts=to_ts,
-                purpose=ExposurePurpose.FEATURE_DISCOVERY,
-                actor_stage="multi_horizon_experiment_matrix",
-                sample_count=len(effective_candles),
-                plan_id="phase43_multi_horizon_plan",
-                notes="Candles processed without additional slicing in experiment suite.",
-            )
+
+        effective_candles = candles
+        from_ts = effective_candles[0].from_ts
+        to_ts = effective_candles[-1].to_ts
+        # Always record the canonical candle content digest; never a parquet checksum.
+        d_sha = (
+            preflight_report.computed_content_digest
+            if preflight_report is not None
+            else compute_candle_content_digest(effective_candles)
+        )
+        plan_id = (
+            contract.plan_id if contract and contract.plan_id else "phase43_multi_horizon_plan"
+        )
+        pop_id = contract.population_id if contract else "ad_hoc_dev_population"
+
+        self.exposure_registry.record_exposure(
+            dataset_id=dataset_id,
+            dataset_sha256=d_sha,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            purpose=ExposurePurpose.FEATURE_DISCOVERY,
+            actor_stage="multi_horizon_experiment_matrix",
+            sample_count=len(effective_candles),
+            plan_id=plan_id,
+            notes=(
+                f"{preflight_report.status if preflight_report else 'EXPLORATORY_NO_PREFLIGHT'}: "
+                f"{len(effective_candles)} candles (range {from_ts} to {to_ts}, "
+                f"population_id={pop_id})."
+            ),
+        )
+        logger.info(
+            "Development population: %d candles (range %d to %d, population_id=%s, status=%s).",
+            len(effective_candles),
+            from_ts,
+            to_ts,
+            pop_id,
+            preflight_report.status if preflight_report else "EXPLORATORY_NO_PREFLIGHT",
+        )
 
         trials = plan or build_phase43_experiment_plan(max_search_budget=max_trials)
         trials = trials[:max_trials]
@@ -518,11 +513,12 @@ class ExperimentRunnerV3:
         ]
         promising_count = len(promising_candidates)
 
-        global_disp = "PROMISING_EXPLORATORY" if promising_count > 0 else "NO_DEMONSTRATED_EDGE"
+        # Promising exploratory trials are never promoted to demonstrated edge.
+        global_disp = "NO_DEMONSTRATED_EDGE"
 
         return ResearchSuiteSummaryV3(
             suite_id=suite_id,
-            plan_id="phase43_multi_horizon_plan",
+            plan_id=plan_id,
             started_at_utc=start_utc,
             completed_at_utc=end_utc,
             total_planned_trials=len(trials),
@@ -633,3 +629,6 @@ class ExperimentRunnerV3:
             return comparison
         finally:
             conn.close()
+
+
+MultiHorizonExperimentMatrix = ExperimentRunnerV3

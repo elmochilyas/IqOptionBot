@@ -57,24 +57,90 @@ def _validate_job_id(job_id: str) -> str:
     return job_id
 
 
-async def _connect_live_client(saved_credentials: bool) -> tuple[HistoricalBroker, Cleanup]:
+def _safe_account_label(account_id: str) -> str:
+    """Return a non-sensitive label for durable receipts and terminal output."""
+    return account_id
+
+
+def _resolve_explicit_live_account(
+    saved_credentials: bool,
+    account_id: str | None,
+) -> str | None:
+    """Validate an explicit saved-account selection before any broker construction.
+
+    A saved-credential live session must name one account already present in the
+    verified Windows Credential Vault. Interactive credential entry remains an
+    explicit operator selection, but an account ID is still bound when supplied.
+    No password, token, or raw email is returned or logged.
+    """
+    if not account_id:
+        if saved_credentials:
+            raise DataAcquisitionError(
+                "Explicit --account-id is required for live broker access with saved credentials."
+            )
+        return None
+
+    if saved_credentials:
+        from iqoption_research.auth.vault import WindowsCredentialVault
+
+        vault = WindowsCredentialVault()
+        if not vault.is_secure_backend():
+            raise DataAcquisitionError(
+                "Windows Credential Vault is unavailable or insecure; access refused."
+            )
+        try:
+            available = {a.account_id for a in vault.account_store().list_accounts()}
+        except Exception as exc:
+            raise DataAcquisitionError("Secure account-store read failed.") from exc
+        if account_id not in available:
+            raise DataAcquisitionError(f"Selected account '{account_id}' is unavailable.")
+
+    return _safe_account_label(account_id)
+
+
+def _enforce_live_account_selection(saved_credentials: bool, account_id: str | None) -> None:
+    """Fail closed at the CLI boundary, before any plan, provider, or broker work."""
+    try:
+        _resolve_explicit_live_account(saved_credentials, account_id)
+    except DataAcquisitionError as exc:
+        print_error(f"Live broker access refused: {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+async def _connect_live_client(
+    saved_credentials: bool,
+    account_id: str | None = None,
+) -> tuple[HistoricalBroker, Cleanup]:
     """Open an explicitly authorized live read-only session.
 
     Kept behind one seam so automated tests can inject a fully offline broker while
     exercising the real CLI, job, validation, storage, catalog, and checkpoint path.
+    The selected account is resolved before AuthenticationManager, the auth provider,
+    or the broker client are constructed.
     """
+    _resolve_explicit_live_account(saved_credentials, account_id)
+
     from iqoption_research.auth.manager import AuthenticationManager
     from iqoption_research.auth.provider import IQOptionAuthProvider
     from iqoption_research.connectors.iqoption.client import AsyncIQOption
 
     auth = AuthenticationManager(provider=IQOptionAuthProvider())
-    logged_in = await (auth.login_saved() if saved_credentials else auth.login_interactive())
+    logged_in = await (
+        auth.login_saved(account_id=account_id)
+        if saved_credentials
+        else auth.login_interactive(account_id=account_id)
+    )
     if not logged_in:
         raise DataAcquisitionError(auth.last_error or "Broker authentication failed.")
     session = auth.session
     if session is None or not session.is_active:
         await auth.logout()
         raise DataAcquisitionError("Broker authentication produced no active session.")
+    if account_id is not None and session.account_id != account_id:
+        await auth.logout()
+        raise DataAcquisitionError(
+            "Authenticated session is bound to a different account than the selected one."
+        )
 
     client = AsyncIQOption(ssid=session.ssid, offline=False)
     client.assert_read_only()
@@ -105,10 +171,14 @@ async def _run_authorized_job(
     output_dir: Path,
     saved_credentials: bool,
     resume: bool,
+    account_id: str | None = None,
     additional_broker_requests: int | None = None,
     request_before_cursor: bool = False,
 ) -> BackfillResult:
-    client, cleanup = await _connect_live_client(saved_credentials)
+    if account_id is not None:
+        client, cleanup = await _connect_live_client(saved_credentials, account_id=account_id)
+    else:
+        client, cleanup = await _connect_live_client(saved_credentials)
     try:
         collector = HistoricalDataCollector(storage_dir=output_dir)
         job = launch_backfill(
@@ -169,8 +239,12 @@ async def _run_authorized_extension(
     job_id: str,
     output_dir: Path,
     saved_credentials: bool,
+    account_id: str | None = None,
 ) -> BackfillResult:
-    client, cleanup = await _connect_live_client(saved_credentials)
+    if account_id is not None:
+        client, cleanup = await _connect_live_client(saved_credentials, account_id=account_id)
+    else:
+        client, cleanup = await _connect_live_client(saved_credentials)
     try:
         collector = HistoricalDataCollector(storage_dir=output_dir)
         job = launch_backward_expansion(
@@ -190,8 +264,12 @@ async def _run_boundary_diagnostic(
     output_dir: Path,
     probe_count: int,
     saved_credentials: bool,
+    account_id: str | None = None,
 ) -> BoundaryDiagnosticResult:
-    client, cleanup = await _connect_live_client(saved_credentials)
+    if account_id is not None:
+        client, cleanup = await _connect_live_client(saved_credentials, account_id=account_id)
+    else:
+        client, cleanup = await _connect_live_client(saved_credentials)
     try:
         collector = HistoricalDataCollector(storage_dir=output_dir)
         return await diagnose_exclusive_boundary(
@@ -211,8 +289,12 @@ async def _run_forward_sync(
     output_dir: Path,
     saved_credentials: bool,
     additional_requests: int | None,
+    account_id: str | None = None,
 ) -> ForwardSyncResult:
-    client, cleanup = await _connect_live_client(saved_credentials)
+    if account_id is not None:
+        client, cleanup = await _connect_live_client(saved_credentials, account_id=account_id)
+    else:
+        client, cleanup = await _connect_live_client(saved_credentials)
     try:
         collector = HistoricalDataCollector(storage_dir=output_dir)
         job = create_forward_sync_job(
@@ -243,6 +325,11 @@ def backfill_command(
         help="Required confirmation for broker network access",
     ),
     saved_credentials: bool = typer.Option(False, "--saved", help="Use saved credentials"),
+    account_id: str | None = typer.Option(
+        None,
+        "--account-id",
+        help="Explicit saved account ID required with --saved for live access.",
+    ),
     output_dir: Path = typer.Option(Path("data/datasets"), "--output-dir"),
     strict: bool = typer.Option(False, "--strict", help="Fail if the target is only partial"),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only"),
@@ -260,6 +347,7 @@ def backfill_command(
         raise typer.Exit(code=2)
     if not yes_i_understand:
         raise typer.BadParameter("--live requires --yes-i-understand")
+    _enforce_live_account_selection(saved_credentials, account_id)
     resolved_job_id = _validate_job_id(job_id or uuid.uuid4().hex)
     try:
         result = asyncio.run(
@@ -274,6 +362,7 @@ def backfill_command(
                 output_dir=output_dir,
                 saved_credentials=saved_credentials,
                 resume=False,
+                account_id=account_id,
             )
         )
         _emit_result(result, json_output=json_output)
@@ -353,6 +442,7 @@ def backfill_extend_command(
     live: bool = typer.Option(False, "--live"),
     yes_i_understand: bool = typer.Option(False, "--yes-i-understand"),
     saved_credentials: bool = typer.Option(False, "--saved"),
+    account_id: str | None = typer.Option(None, "--account-id"),
     output_dir: Path = typer.Option(Path("data/datasets"), "--output-dir"),
     strict: bool = typer.Option(False, "--strict"),
     json_output: bool = typer.Option(False, "--json"),
@@ -366,6 +456,7 @@ def backfill_extend_command(
         raise typer.Exit(code=2)
     if not yes_i_understand:
         raise typer.BadParameter("--live requires --yes-i-understand")
+    _enforce_live_account_selection(saved_credentials, account_id)
     resolved_job_id = _validate_job_id(job_id)
     try:
         plan = build_backward_expansion_plan(
@@ -386,6 +477,7 @@ def backfill_extend_command(
                 job_id=resolved_job_id,
                 output_dir=output_dir,
                 saved_credentials=saved_credentials,
+                account_id=account_id,
             )
         )
         _emit_result(result, json_output=json_output)
@@ -489,6 +581,7 @@ def forward_sync_command(
     live: bool = typer.Option(False, "--live", help="Authorize read-only broker access"),
     yes_i_understand: bool = typer.Option(False, "--yes-i-understand"),
     saved_credentials: bool = typer.Option(False, "--saved", help="Use saved credentials"),
+    account_id: str | None = typer.Option(None, "--account-id"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Manually run one bounded incremental forward-collection cycle."""
@@ -500,6 +593,7 @@ def forward_sync_command(
         raise typer.Exit(code=2)
     if not yes_i_understand:
         raise typer.BadParameter("--live requires --yes-i-understand")
+    _enforce_live_account_selection(saved_credentials, account_id)
     resolved_job_id = _validate_job_id(job_id)
     try:
         plan = build_forward_sync_plan(
@@ -544,6 +638,7 @@ def forward_sync_command(
                     output_dir=output_dir,
                     saved_credentials=saved_credentials,
                     additional_requests=additional_requests,
+                    account_id=account_id,
                 )
             )
         _emit_forward_result(result, json_output=json_output)
@@ -616,6 +711,7 @@ def backfill_boundary_diagnostic_command(
     live: bool = typer.Option(False, "--live", help="Authorize one read-only broker request"),
     yes_i_understand: bool = typer.Option(False, "--yes-i-understand"),
     saved_credentials: bool = typer.Option(False, "--saved", help="Use saved credentials"),
+    account_id: str | None = typer.Option(None, "--account-id"),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only"),
 ) -> None:
     """Probe cursor-1 once without modifying data, catalog, or checkpoint."""
@@ -627,6 +723,7 @@ def backfill_boundary_diagnostic_command(
         raise typer.Exit(code=2)
     if not yes_i_understand:
         raise typer.BadParameter("--live requires --yes-i-understand")
+    _enforce_live_account_selection(saved_credentials, account_id)
     resolved_job_id = _validate_job_id(job_id)
     try:
         checkpoint = load_checkpoint(output_dir, resolved_job_id)
@@ -636,6 +733,7 @@ def backfill_boundary_diagnostic_command(
                 output_dir=output_dir,
                 probe_count=probe_count,
                 saved_credentials=saved_credentials,
+                account_id=account_id,
             )
         )
     except (DataAcquisitionError, ValueError) as exc:
@@ -671,6 +769,7 @@ def backfill_resume_command(
     live: bool = typer.Option(False, "--live", help="Authorize a real read-only connection"),
     yes_i_understand: bool = typer.Option(False, "--yes-i-understand"),
     saved_credentials: bool = typer.Option(False, "--saved", help="Use saved credentials"),
+    account_id: str | None = typer.Option(None, "--account-id"),
     strict: bool = typer.Option(False, "--strict"),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only"),
     additional_requests: int | None = typer.Option(
@@ -694,6 +793,7 @@ def backfill_resume_command(
         raise typer.Exit(code=2)
     if not yes_i_understand:
         raise typer.BadParameter("--live requires --yes-i-understand")
+    _enforce_live_account_selection(saved_credentials, account_id)
     resolved_job_id = _validate_job_id(job_id)
     try:
         checkpoint = load_checkpoint(output_dir, resolved_job_id)
@@ -709,6 +809,7 @@ def backfill_resume_command(
                 output_dir=output_dir,
                 saved_credentials=saved_credentials,
                 resume=True,
+                account_id=account_id,
                 additional_broker_requests=additional_requests,
                 request_before_cursor=exclusive_cursor,
             )

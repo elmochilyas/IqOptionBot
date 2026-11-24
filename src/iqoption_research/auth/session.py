@@ -27,6 +27,7 @@ class AuthSession:
 
     ssid: str
     email: str
+    account_id: str | None = None
     authenticated_at: float = field(default_factory=time.time)
     ttl_seconds: float = DEFAULT_SESSION_TTL_SECONDS
     last_activity_at: float = field(default_factory=time.time)

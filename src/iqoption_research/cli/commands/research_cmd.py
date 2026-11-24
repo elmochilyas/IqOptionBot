@@ -1430,68 +1430,15 @@ def horizons_run_command(
         Path | None, typer.Option("--db-path", help="Path to SQLite ledger.")
     ] = None,
 ) -> None:
-    repo_root = root or Path.cwd()
-    from iqoption_research.market_data.parquet_storage import read_candles_parquet
-    from iqoption_research.ml.experiment_matrix import (
-        ExperimentRunnerV3,
-        build_phase43_experiment_plan,
-    )
-    from iqoption_research.research.dataset_manager import ResearchDatasetManager
-
-    manager = ResearchDatasetManager(repo_root)
-    snapshots = manager.list_snapshots()
-    if not snapshots:
-        console.print("[red]No snapshots found.[/red]")
-        raise typer.Exit(code=1)
-    target_snap = snapshots[-1]
-    candles = read_candles_parquet(target_snap.parquet_path)
-    trials = build_phase43_experiment_plan()
-    if horizon:
-        trials = [t for t in trials if t.horizon_name == horizon.upper()]
-
-    runner = ExperimentRunnerV3(
-        repo_root=repo_root,
-        db_path=db_path or (repo_root / "data" / "experiments_v3" / "phase43_ledger.sqlite"),
-    )
+    # Options remain for command compatibility; execution is intentionally disabled.
+    del root, limit, horizon, db_path
+    console.print("[red]Phase 43 trial execution is inspection-only from the production CLI.[/red]")
     console.print(
-        f"[bold cyan]Starting Phase 43 Multi-Horizon Experiments (Limit: {limit}, Horizon: {horizon or 'ALL'})...[/bold cyan]"
+        "[dim]Use scripts/run_phase43_experiments.py with an explicit development-only "
+        "snapshot (--dev-snapshot-id or --dev-snapshot-path). Every override is TEST_ONLY "
+        "and never genuine research evidence.[/dim]"
     )
-    console.print(
-        "[dim]Enforcing protected research partition: strictly development candles utilized (85%).[/dim]"
-    )
-    summary = runner.run_suite(
-        candles=candles,
-        plan=trials,
-        max_trials=limit,
-        enforce_development_partition=True,
-        dataset_id=target_snap.manifest.snapshot_id,
-        dataset_sha256=target_snap.manifest.parquet_sha256,
-    )
-
-    table = Table(title="Executed Phase 43 Experiment Results", show_header=True)
-    table.add_column("Trial ID", style="bold")
-    table.add_column("Horizon", justify="center")
-    table.add_column("Model Family", style="white")
-    table.add_column("Feature Preset", style="yellow")
-    table.add_column("Dir Acc", justify="right")
-    table.add_column("Coverage", justify="right")
-    table.add_column("Verdict", style="cyan")
-
-    for r in summary.reports:
-        acc_str = (
-            f"{r.pooled_decisive_accuracy:.2%}" if r.pooled_decisive_accuracy is not None else "N/A"
-        )
-        cov_str = f"{r.pooled_coverage:.2%}" if r.pooled_coverage is not None else "N/A"
-        table.add_row(
-            r.trial_id,
-            r.target_horizon_name,
-            r.model_family,
-            r.feature_preset,
-            acc_str,
-            cov_str,
-            r.verdict,
-        )
-    console.print(table)
+    raise typer.Exit(code=1)
 
 
 @horizons_app.command("status", help="Show Phase 43 multi-horizon experiment ledger status.")

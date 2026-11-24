@@ -8,10 +8,25 @@ import pytest
 from iqoption_research.desktop.collection_center_panel import CollectionCenterPanel
 
 
+@pytest.fixture(scope="module")
+def tk_root():
+    # Repeated Tcl interpreter initialization can fail on Windows CI runners.
+    root = tk.Tk()
+    yield root
+    root.destroy()
+
+
+@pytest.mark.parametrize(
+    "theme", ["clam", "alt", "default", "classic", "vista", "xpnative", "winnative"]
+)
 @pytest.mark.parametrize("size", ["1280x800", "1366x768", "1920x1080"])
 @pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
-def test_operator_controls_geometry(tmp_path, size, scale):
-    root = tk.Tk()
+def test_operator_controls_geometry(tmp_path, size, scale, theme, tk_root):
+    root = tk_root
+    style = ttk.Style(root)
+    if theme not in style.theme_names():
+        pytest.skip(f"Theme {theme} is unavailable on this platform")
+    style.theme_use(theme)
     try:
         root.tk.call("tk", "scaling", scale * 96 / 72)
         root.geometry(size)
@@ -36,4 +51,5 @@ def test_operator_controls_geometry(tmp_path, size, scale):
                 <= root.winfo_rooty() + root.winfo_height()
             )
     finally:
-        root.destroy()
+        for child in root.winfo_children():
+            child.destroy()

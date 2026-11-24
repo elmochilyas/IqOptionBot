@@ -260,6 +260,10 @@ class CollectionCenterPanel:
                 pady=4,
             )
             setattr(self, name, button)
+        # Explicit minima keep spanning-button requests and theme rounding from
+        # shrinking either action column below its longest label.
+        column_minimum = max(getattr(self, name).winfo_reqwidth() + 4 for name, *_ in controls[:-1])
+        ctl_frame.columnconfigure((0, 1), minsize=column_minimum)
 
     def _build_status_ui(self, parent: ttk.Frame) -> None:
         status_frame = ttk.LabelFrame(parent, text="Live Operational Status", padding=10)

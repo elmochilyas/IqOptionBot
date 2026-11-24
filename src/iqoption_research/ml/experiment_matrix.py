@@ -21,7 +21,6 @@ Orchestrates the 4-stage bounded empirical research plan:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import sqlite3
@@ -33,6 +32,9 @@ from typing import Any, Final
 
 from iqoption_research.ml.exposure_registry import EvidenceExposureRegistry, ExposurePurpose
 from iqoption_research.ml.features_v3 import CausalFeaturePipelineV3
+from iqoption_research.ml.preflight import (
+    compute_candle_content_digest,
+)
 from iqoption_research.ml.walk_forward_v3 import (
     WalkForwardV3Report,
     run_walk_forward_v3_evaluation,
@@ -395,12 +397,7 @@ class ExperimentRunnerV3:
             effective_candles = candles[:dev_cutoff]
             from_ts = effective_candles[0].from_ts
             to_ts = effective_candles[-1].to_ts
-            d_sha = (
-                dataset_sha256
-                or hashlib.sha256(
-                    f"{from_ts}:{to_ts}:{len(effective_candles)}".encode()
-                ).hexdigest()
-            )
+            d_sha = dataset_sha256 or compute_candle_content_digest(effective_candles)
             self.exposure_registry.record_exposure(
                 dataset_id=dataset_id,
                 dataset_sha256=d_sha,
@@ -427,12 +424,7 @@ class ExperimentRunnerV3:
             effective_candles = candles
             from_ts = effective_candles[0].from_ts
             to_ts = effective_candles[-1].to_ts
-            d_sha = (
-                dataset_sha256
-                or hashlib.sha256(
-                    f"{from_ts}:{to_ts}:{len(effective_candles)}".encode()
-                ).hexdigest()
-            )
+            d_sha = dataset_sha256 or compute_candle_content_digest(effective_candles)
             self.exposure_registry.record_exposure(
                 dataset_id=dataset_id,
                 dataset_sha256=d_sha,

@@ -152,6 +152,8 @@ def run_walk_forward_v3_evaluation(
     min_coverage: float = 0.01,
     bootstrap_replicates: int = 2000,
     bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
+    min_train_samples: int | None = None,
+    enforce_family_constraint: bool = False,
 ) -> WalkForwardV3Report:
     """Execute chronological walk-forward validation for a specified horizon and model."""
     hp = hyperparameters or {}
@@ -186,7 +188,12 @@ def run_walk_forward_v3_evaluation(
     # Purging bars is strictly horizon_bars H!
     purging_bars = horizon_bars
     buffer_bars = purging_bars + embargo_bars
-    val_fold_len = (n_candles - 500) // (k_folds + 1)
+    initial_train = (
+        min_train_samples
+        if min_train_samples is not None
+        else (max(2500, d_features * 50) if enforce_family_constraint else 500)
+    )
+    val_fold_len = max((n_candles - initial_train) // (k_folds + 1), 100)
     cal_len = max(val_fold_len // 2, 150)
 
     fold_results: list[FoldResultV3] = []
@@ -201,7 +208,7 @@ def run_walk_forward_v3_evaluation(
     all_pooled_regimes: list[Any] = []
 
     for fold_i in range(k_folds):
-        train_end = 500 + fold_i * val_fold_len
+        train_end = initial_train + fold_i * val_fold_len
         cal_start = train_end + buffer_bars
         cal_end = cal_start + cal_len
         val_start = cal_end + buffer_bars

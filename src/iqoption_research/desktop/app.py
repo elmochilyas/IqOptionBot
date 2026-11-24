@@ -11,6 +11,7 @@ from tkinter import messagebox, ttk
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from iqoption_research.desktop.collection_center_panel import CollectionCenterPanel
 from iqoption_research.desktop.core import STUDY, require_slot, slot_used, slots
 from iqoption_research.desktop.diagnostics_panel import ModelDiagnosticsPanel
 from iqoption_research.desktop.laboratory_panel import ModelLaboratoryPanel
@@ -108,6 +109,7 @@ class Dashboard:
         ).pack(side="bottom", anchor="w", pady=(12, 0))
         notebook.pack(fill="both", expand=True)
         self.overview = self.text_tab(notebook, "Overview")
+        self.collection_center = CollectionCenterPanel(self, notebook)
         self.workstation = WorkstationPanels(self, notebook)
         self.laboratory = ModelLaboratoryPanel(self, notebook)
         self.shadow_evaluation = ShadowEvaluationPanel(self, notebook)

@@ -67,6 +67,16 @@ jobs:
           python -m iqoption_research.cli.main security-check --json
 
       - name: Run Full Offline Pytest Suite
+        continue-on-error: true
+        env:
+          PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code.txt
         run: |
-          python -c "import signal, pytest; signal.signal(signal.SIGINT, signal.SIG_IGN); code = pytest.main(['-q', '--full-trace']); print('PYTEST_EXIT_CODE=' + str(int(code)), flush=True); raise SystemExit(code)"
-          exit $LASTEXITCODE
+          python scripts/ci_pytest.py
+
+      - name: Verify Full Offline Pytest Suite Result
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'pytest_exit_code.txt'
+          if (-not (Test-Path $path)) { throw "Pytest exit code file is missing: $path" }
+          $code = (Get-Content $path -Raw).Trim()
+          Write-Host "PYTEST_EXIT_CODE=$code"
+          if ($code -ne '0') { throw "Pytest failed with exit code $code" }

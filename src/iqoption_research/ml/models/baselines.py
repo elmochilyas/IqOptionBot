@@ -215,10 +215,15 @@ class LogisticRegressionModel(BaseMLModel):
         C: float = 1.0,
         penalty: str = "l2",
         solver: str = "lbfgs",
+        l1_ratio: float | None = None,
         max_iter: int = 1000,
         random_state: int = 42,
         class_weight: str | dict[int, float] | None = "balanced",
     ) -> None:
+        resolved_solver = solver
+        if penalty in ("l1", "elasticnet") and solver == "lbfgs":
+            resolved_solver = "saga"
+
         super().__init__(
             name="logistic_regression",
             version="1.0.0",
@@ -226,7 +231,8 @@ class LogisticRegressionModel(BaseMLModel):
             hyperparameters={
                 "C": float(C),
                 "penalty": penalty,
-                "solver": solver,
+                "solver": resolved_solver,
+                "l1_ratio": l1_ratio,
                 "max_iter": int(max_iter),
                 "random_state": int(random_state),
                 "class_weight": class_weight,
@@ -234,7 +240,8 @@ class LogisticRegressionModel(BaseMLModel):
         )
         self.C = float(C)
         self.penalty = penalty
-        self.solver = solver
+        self.solver = resolved_solver
+        self.l1_ratio = l1_ratio
         self.max_iter = int(max_iter)
         self.random_state = int(random_state)
         self.class_weight = class_weight
@@ -263,7 +270,14 @@ class LogisticRegressionModel(BaseMLModel):
                 "random_state": self.random_state,
                 "class_weight": self.class_weight,
             }
-            if self.penalty != "l2":
+            if self.penalty == "l1":
+                lr_kwargs["penalty"] = "l1"
+                if self.solver == "saga":
+                    lr_kwargs["l1_ratio"] = 1.0
+            elif self.penalty == "elasticnet":
+                lr_kwargs["penalty"] = "elasticnet"
+                lr_kwargs["l1_ratio"] = self.l1_ratio if self.l1_ratio is not None else 0.5
+            elif self.penalty != "l2":
                 lr_kwargs["penalty"] = self.penalty
             self._sklearn_model = LogisticRegression(**lr_kwargs)
             self._sklearn_model.fit(X_arr, y_arr)
@@ -344,6 +358,7 @@ class LogisticRegressionModel(BaseMLModel):
             C=hp.get("C", 1.0),
             penalty=hp.get("penalty", "l2"),
             solver=hp.get("solver", "lbfgs"),
+            l1_ratio=hp.get("l1_ratio"),
             max_iter=hp.get("max_iter", 1000),
             random_state=hp.get("random_state", 42),
             class_weight=hp.get("class_weight", "balanced"),
@@ -477,6 +492,138 @@ class RuleBasedMomentumModel(BaseMLModel):
         hp = meta.get("hyperparameters", {})
         model = cls(
             momentum_feature=hp.get("momentum_feature", "return_1"),
+            threshold=hp.get("threshold", 0.0),
+            base_prob=hp.get("base_prob", 0.55),
+            mapping_type=hp.get("mapping_type", "step"),
+            sigmoid_steepness=hp.get("sigmoid_steepness", 50.0),
+        )
+        model._feature_idx = int(meta.get("feature_idx", 0))
+        model._set_fitted_state(
+            feature_names=tuple(meta["feature_names"]),
+            classes=np.array(meta["classes"], dtype=np.int64),
+        )
+        return model
+
+
+class RuleBasedReversalModel(BaseMLModel):
+    """Deterministic indicator-to-probability mapping predicting mean reversion.
+
+    If momentum/return > threshold, predicts reversion DOWN (p0 > 0.5).
+    If momentum/return < -threshold, predicts reversion UP (p1 > 0.5).
+
+    Parameters:
+        reversal_feature: Feature column name for reversal decisions (default "return_1").
+        threshold: Neutral dead-zone threshold (default 0.0).
+        base_prob: Probability allocated to the contrarian direction (default 0.55).
+        mapping_type: "step" for piecewise threshold or "sigmoid" for smooth logistic scaling.
+        sigmoid_steepness: Steepness factor k for sigmoid mapping (default 50.0).
+    """
+
+    def __init__(
+        self,
+        *,
+        reversal_feature: str = "return_1",
+        threshold: float = 0.0,
+        base_prob: float = 0.55,
+        mapping_type: str = "step",
+        sigmoid_steepness: float = 50.0,
+    ) -> None:
+        if mapping_type not in ("step", "sigmoid"):
+            raise ModelValidationError(f"Invalid mapping_type: '{mapping_type}'")
+        if not 0.5 <= base_prob <= 1.0:
+            raise ModelValidationError(f"base_prob must be in [0.5, 1.0], got {base_prob}")
+
+        super().__init__(
+            name="rule_based_reversal",
+            version="1.0.0",
+            model_type="baseline",
+            hyperparameters={
+                "reversal_feature": reversal_feature,
+                "threshold": float(threshold),
+                "base_prob": float(base_prob),
+                "mapping_type": mapping_type,
+                "sigmoid_steepness": float(sigmoid_steepness),
+            },
+        )
+        self.reversal_feature = reversal_feature
+        self.threshold = float(threshold)
+        self.base_prob = float(base_prob)
+        self.mapping_type = mapping_type
+        self.sigmoid_steepness = float(sigmoid_steepness)
+        self._feature_idx: int = 0
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: Sequence[str] | None = None,
+    ) -> RuleBasedReversalModel:
+        """Validate feature names and locate reversal feature column index."""
+        _X_arr, _y_arr, f_names = self._validate_and_prepare_inputs(X, y, feature_names)
+
+        if self.reversal_feature in f_names:
+            self._feature_idx = f_names.index(self.reversal_feature)
+        elif self.reversal_feature == "return_1" or feature_names is None:
+            self._feature_idx = 0
+        else:
+            raise ModelValidationError(
+                f"Feature '{self.reversal_feature}' not found in feature_names: {f_names}"
+            )
+
+        self._set_fitted_state(feature_names=f_names, classes=np.array([0, 1], dtype=np.int64))
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """Compute contrarian directional probabilities from reversal feature values."""
+        X_arr = self._validate_inference_input(X)
+        values = X_arr[:, self._feature_idx]
+
+        if self.mapping_type == "step":
+            p1 = np.full(len(X_arr), 0.5, dtype=np.float64)
+            p1[values > self.threshold] = 1.0 - self.base_prob
+            p1[values < -self.threshold] = self.base_prob
+        else:
+            z = -self.sigmoid_steepness * (values - self.threshold)
+            z = np.clip(z, -50.0, 50.0)
+            p1 = 1.0 / (1.0 + np.exp(-z))
+
+        p0 = 1.0 - p1
+        return np.column_stack([p0, p1])
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Predict directional class labels {0, 1}."""
+        probs = self.predict_proba(X)
+        return np.argmax(probs, axis=1).astype(np.int64)
+
+    def save(self, directory: Path | str) -> Path:
+        """Serialize rule metadata to directory."""
+        if not self.is_fitted:
+            raise NotFittedError(f"Cannot save unfitted model '{self.name}'.")
+        dir_path = Path(directory)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "name": self.name,
+            "version": self.version,
+            "model_type": self.model_type,
+            "class_name": self.__class__.__name__,
+            "hyperparameters": self.hyperparameters,
+            "feature_names": list(self.feature_names),
+            "classes": self.classes_.tolist(),
+            "feature_idx": self._feature_idx,
+            "is_fitted": self.is_fitted,
+        }
+        with (dir_path / self.METADATA_FILENAME).open("w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+        return dir_path
+
+    @classmethod
+    def load(cls, directory: Path | str) -> RuleBasedReversalModel:
+        """Load rule metadata from directory."""
+        dir_path = Path(directory)
+        meta = cls._load_metadata(dir_path)
+        hp = meta.get("hyperparameters", {})
+        model = cls(
+            reversal_feature=hp.get("reversal_feature", "return_1"),
             threshold=hp.get("threshold", 0.0),
             base_prob=hp.get("base_prob", 0.55),
             mapping_type=hp.get("mapping_type", "step"),

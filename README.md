@@ -1,6 +1,6 @@
-# IQ Option AI Trading Research System (Phases 1–38)
+# IQ Option AI Trading Research System (Phases 1–42)
 
-Quantitative market research, authentic historical data cataloging, causal feature engineering, offline backtesting, microsecond timing instrumentation, and offline machine-learning research platform. The system spans Phases 1 through 38, progressing from foundational read-only WebSocket transport and checksum-backed Parquet storage to microsecond application socket timing, multi-session live shadow observation, authentic prospective model evaluation, single-cohort research dataset construction, bounded missing-label recovery planning, and operator-supervised prospective evidence pilot workflows.
+Quantitative market research, authentic historical data cataloging, causal feature engineering, offline backtesting, microsecond timing instrumentation, offline machine-learning research platform, and independent scientific validation. The system spans Phases 1 through 42, progressing from foundational read-only WebSocket transport and checksum-backed Parquet storage to microsecond application socket timing, multi-session live shadow observation, authentic prospective model evaluation, single-cohort research dataset construction, bounded missing-label recovery planning, operator-supervised prospective evidence pilot workflows, model failure intelligence, and advanced AI model research.
 
 > [!WARNING]
 > **UNOFFICIAL BROKER INTERFACE**: This research tooling interacts with an unofficial, reverse-engineered WebSocket interface (`wss://iqoption.com/echo/websocket`). Its compatibility, platform authorization, and terms of service compliance have not been established by IQ Option.
@@ -35,14 +35,14 @@ Extended collection is separate from the unchanged Phase 38 model evaluation.
 |---|---|
 | **Operating System** | Windows (PowerShell tested; cross-platform compatible) |
 | **Python Version** | Python `>= 3.12` (verified on Python 3.12.10) |
-| **Test Suite** | **2,274 passed tests** (`pytest`, 100% pass rate, 0 failures, 0 skips locally; 1 skipped on clean CI runners lacking authentic Parquet files) |
-| **Type Checking** | **Clean MyPy verification across 351 source files** (`mypy src tests`) |
+| **Test Suite** | **2,645 passed tests** (`pytest`, 100% pass rate, 0 failures, 0 skips) |
+| **Type Checking** | **Clean MyPy verification across 273 source files** (`mypy src`) |
 | **Linting & Code Style** | **Clean Ruff compliance** with zero linting errors (`ruff check src tests`) |
 | **Security Audit** | **7/7 automated offline security checks passed** (`iqresearch security-check`) |
-| **Scientific Disposition** | **`NO_DEMONSTRATED_EDGE`** across all walk-forward and prospective evaluations |
+| **Scientific Disposition** | **`NO_DEMONSTRATED_EDGE`** across all walk-forward, shadow, and prospective evaluations |
 | **Execution Authority** | **`NONE`** (zero real or practice orders authorized or emitted) |
-| **Authentic Coverage** | **66,458 unique EURUSD 1m candles** across **65.49 calendar days** (2026-09-15 to 2026-11-19) |
-| **Market Integrity** | 9 scheduled market closures; 0 unexpected open-market gaps |
+| **Authentic Coverage** | **66,464 unique EURUSD 1m candles** across **58 market days** (2026-09-02 to 2026-11-20) |
+| **Market Integrity** | 11 scheduled market closures; 2 isolated missing candle gaps |
 | **Target Instruments** | EUR/USD (`active_id=1`, Forex & OTC); passive schema diagnostics on Blitz (`EURUSD_OP`) |
 
 ---

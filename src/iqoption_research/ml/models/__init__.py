@@ -40,9 +40,12 @@ from iqoption_research.ml.models.baselines import (
     LogisticRegressionModel,
     MajorityClassModel,
     RuleBasedMomentumModel,
+    RuleBasedReversalModel,
     SeededRandomModel,
 )
 from iqoption_research.ml.models.tabular import (
+    CompactNeuralNetModel,
+    ExtraTreesModel,
     HistGradientBoostingModel,
     RandomForestModel,
 )
@@ -51,6 +54,8 @@ __all__ = [
     "BaseMLError",
     "BaseMLModel",
     "CatBoostAdapter",
+    "CompactNeuralNetModel",
+    "ExtraTreesModel",
     "HistGradientBoostingModel",
     "LightGBMAdapter",
     "LogisticRegressionModel",
@@ -63,6 +68,7 @@ __all__ = [
     "NotFittedError",
     "RandomForestModel",
     "RuleBasedMomentumModel",
+    "RuleBasedReversalModel",
     "SeededRandomModel",
     "XGBoostAdapter",
     "get_available_gbdt_adapters",

@@ -135,6 +135,45 @@ class ShadowPredictionEngine:
         self.feature_names = tuple(bundle_dict.get("feature_names", self.record.feature_names))
 
         # Setup causal feature pipeline with static schema matching model registration
+        from iqoption_research.ml.features_v2 import (
+            ALL_V2_FEATURE_CONTRACTS,
+            CausalFeaturePipelineV2,
+        )
+
+        v2_contract_map = {c.name: c for c in ALL_V2_FEATURE_CONTRACTS}
+        manifest = bundle_data.get("manifest", {})
+        schema_ver = manifest.get("schema_version", manifest.get("feature_schema_version", "1.0"))
+        v1_standard_features = {
+            "return_1",
+            "log_return_1",
+            "intrabar_return",
+            "candle_range",
+            "body_to_range",
+            "upper_shadow_ratio",
+            "lower_shadow_ratio",
+            "log_volume",
+            "volume_sma_10",
+            "volume_ratio_10",
+            "spread_pips",
+            "spread_ratio",
+            "sin_hour",
+            "cos_hour",
+            "sin_dow",
+            "cos_dow",
+            "sma_5",
+            "sma_10",
+            "sma_20",
+            "sma_ratio_5",
+            "sma_ratio_20",
+            "volatility_10",
+            "volatility_20",
+        }
+        has_v2_exclusive = any(
+            f in v2_contract_map and f not in v1_standard_features for f in self.feature_names
+        )
+        is_v2 = schema_ver == "2.0" or has_v2_exclusive
+        self.is_v2 = is_v2
+
         has_volume = any("volume" in f for f in self.feature_names)
         has_quotes = any("spread" in f for f in self.feature_names)
         has_market_time = any(
@@ -148,6 +187,16 @@ class ShadowPredictionEngine:
             enforce_temporal_continuity=True,
             static_schema=True,
         )
+
+        if is_v2:
+            matched_contracts = [
+                v2_contract_map[f] for f in self.feature_names if f in v2_contract_map
+            ]
+            self.v2_pipeline: CausalFeaturePipelineV2 | None = CausalFeaturePipelineV2(
+                contracts=matched_contracts
+            )
+        else:
+            self.v2_pipeline = None
 
     def predict(
         self,
@@ -206,21 +255,36 @@ class ShadowPredictionEngine:
             )
 
         # 2. Extract Causal Features
-        feat_dataset = self.feature_pipeline.transform(list(candles))
-        if feat_dataset.row_count == 0:
-            raise EngineError("Feature extraction produced zero rows")
+        if self.is_v2 and self.v2_pipeline is not None:
+            feat_matrix = self.v2_pipeline.compute_features(candles)
+            if feat_matrix.sample_count == 0:
+                raise EngineError("Feature extraction produced zero rows")
+            latest_idx = feat_matrix.sample_count - 1
+            if feat_matrix.warmup_mask[latest_idx]:
+                raise DiscontinuousDataError(
+                    f"Cutoff candle at ts={cutoff_ts} is marked as warmup. "
+                    "Inference cannot be executed across unverified or discontinuous intervals."
+                )
+            row_features = {
+                name: float(feat_matrix.features[latest_idx, col_idx])
+                for col_idx, name in enumerate(feat_matrix.feature_names)
+            }
+        else:
+            if self.feature_pipeline is None:
+                raise EngineError("No feature pipeline configured")
+            feat_dataset = self.feature_pipeline.transform(list(candles))
+            if feat_dataset.row_count == 0:
+                raise EngineError("Feature extraction produced zero rows")
 
-        latest_row = feat_dataset.rows[-1]
+            latest_row = feat_dataset.rows[-1]
 
-        # Verify latest bar is not marked warmup due to lookback or discontinuity
-        if latest_row.is_warmup:
-            raise DiscontinuousDataError(
-                f"Cutoff candle at ts={cutoff_ts} is marked as warmup or discontinuous. "
-                "Inference cannot be executed across unverified or discontinuous intervals."
-            )
-
-        # 3. Construct point-in-time feature vector in exact schema order
-        row_features = latest_row.features
+            # Verify latest bar is not marked warmup due to lookback or discontinuity
+            if latest_row.is_warmup:
+                raise DiscontinuousDataError(
+                    f"Cutoff candle at ts={cutoff_ts} is marked as warmup or discontinuous. "
+                    "Inference cannot be executed across unverified or discontinuous intervals."
+                )
+            row_features = latest_row.features
         missing_features = [f for f in self.feature_names if f not in row_features]
         if missing_features:
             raise FeatureSchemaError(

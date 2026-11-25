@@ -6,9 +6,11 @@ DEVELOPMENT_RESEARCH_NOT_INDEPENDENT_CONFIRMATION. execution_authority=NONE.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import tracemalloc
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -217,8 +219,8 @@ def _fit_and_predict_probs(
     y_cal: np.ndarray,
     X_te: np.ndarray,
     feature_names: tuple[str, ...],
-) -> tuple[np.ndarray, Any]:
-    """Fit model(s) on train, calibrate on cal, return calibrated probs on test."""
+) -> tuple[np.ndarray, np.ndarray, Any, str, str | None]:
+    """Fit model(s) on train, calibrate on cal, return (probs_te, probs_cal, model, cal_status, cal_error)."""
     if spec.model_family == "prob_ensemble":
         m1 = create_model_instance("logistic_regression", {"C": 0.25, "max_iter": 800})
         m2 = create_model_instance(
@@ -231,49 +233,74 @@ def _fit_and_predict_probs(
         )
         for m in (m1, m2, m3):
             m.fit(X_tr, y_tr, feature_names=feature_names)
-        p_cal = (
+        p_cal_raw = (
             np.asarray(m1.predict_proba(X_cal))
             + np.asarray(m2.predict_proba(X_cal))
             + np.asarray(m3.predict_proba(X_cal))
         ) / 3.0
-        p_te = (
+        p_te_raw = (
             np.asarray(m1.predict_proba(X_te))
             + np.asarray(m2.predict_proba(X_te))
             + np.asarray(m3.predict_proba(X_te))
         ) / 3.0
         cal = ProbabilityCalibrator(method=CalibrationMethod.SIGMOID)
-        cal.fit(p_cal, y_cal)
-        return np.asarray(cal.calibrate(p_te)), m3
+        try:
+            cal.fit(p_cal_raw, y_cal)
+            return (
+                np.asarray(cal.calibrate(p_te_raw)),
+                np.asarray(cal.calibrate(p_cal_raw)),
+                m3,
+                "CALIBRATED_SIGMOID",
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return p_te_raw, p_cal_raw, m3, "CALIBRATION_FAILED", f"{type(exc).__name__}: {exc}"
 
     if spec.is_regime_aware:
         clf_reg = CausalRegimeClassifier(feature_names).fit(X_tr)
         reg_tr = clf_reg.predict_regimes(X_tr)
+        reg_cal = clf_reg.predict_regimes(X_cal)
         reg_te = clf_reg.predict_regimes(X_te)
         global_m = create_model_instance(spec.model_family, spec.hyperparameters)
         global_m.fit(X_tr, y_tr, feature_names=feature_names)
-        cal = ProbabilityCalibrator(method=CalibrationMethod.SIGMOID)
-        cal.fit(np.asarray(global_m.predict_proba(X_cal)), y_cal)
-        p_te = np.asarray(cal.calibrate(np.asarray(global_m.predict_proba(X_te))))
-        # Train regime-specific models only where training N >= 1000 and both classes exist
+        p_cal_raw = np.asarray(global_m.predict_proba(X_cal))
+        p_te_raw = np.asarray(global_m.predict_proba(X_te))
         for reg_name in set(reg_tr):
             mask_tr = np.array([r == reg_name for r in reg_tr], dtype=bool)
+            mask_cal = np.array([r == reg_name for r in reg_cal], dtype=bool)
             mask_te = np.array([r == reg_name for r in reg_te], dtype=bool)
-            if (
-                int(np.sum(mask_tr)) >= 1000
-                and int(np.sum(mask_te)) > 0
-                and len(np.unique(y_tr[mask_tr])) == 2
-            ):
+            if int(np.sum(mask_tr)) >= 1000 and len(np.unique(y_tr[mask_tr])) == 2:
                 rm = create_model_instance(spec.model_family, spec.hyperparameters)
                 rm.fit(X_tr[mask_tr], y_tr[mask_tr], feature_names=feature_names)
-                p_te[mask_te] = np.asarray(
-                    cal.calibrate(np.asarray(rm.predict_proba(X_te[mask_te])))
-                )
-        return p_te, global_m
+                if int(np.sum(mask_cal)) > 0:
+                    p_cal_raw[mask_cal] = np.asarray(rm.predict_proba(X_cal[mask_cal]))
+                if int(np.sum(mask_te)) > 0:
+                    p_te_raw[mask_te] = np.asarray(rm.predict_proba(X_te[mask_te]))
+        cal = ProbabilityCalibrator(method=CalibrationMethod.SIGMOID)
+        try:
+            cal.fit(p_cal_raw, y_cal)
+            return (
+                np.asarray(cal.calibrate(p_te_raw)),
+                np.asarray(cal.calibrate(p_cal_raw)),
+                global_m,
+                "CALIBRATED_SIGMOID",
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                p_te_raw,
+                p_cal_raw,
+                global_m,
+                "CALIBRATION_FAILED",
+                f"{type(exc).__name__}: {exc}",
+            )
 
     model = create_model_instance(spec.model_family, spec.hyperparameters)
     model.fit(X_tr, y_tr, feature_names=feature_names)
+    p_cal_raw = np.asarray(model.predict_proba(X_cal))
+    p_te_raw = np.asarray(model.predict_proba(X_te))
     if spec.calibration_method == "none":
-        return np.asarray(model.predict_proba(X_te)), model
+        return p_te_raw, p_cal_raw, model, "NONE", None
     cal_method = (
         CalibrationMethod.ISOTONIC
         if spec.calibration_method == "isotonic"
@@ -281,10 +308,170 @@ def _fit_and_predict_probs(
     )
     cal = ProbabilityCalibrator(method=cal_method)
     try:
-        cal.fit(np.asarray(model.predict_proba(X_cal)), y_cal)
-        return np.asarray(cal.calibrate(np.asarray(model.predict_proba(X_te)))), model
-    except Exception:  # noqa: BLE001
-        return np.asarray(model.predict_proba(X_te)), model
+        cal.fit(p_cal_raw, y_cal)
+        status = f"CALIBRATED_{cal_method.value.upper()}"
+        return (
+            np.asarray(cal.calibrate(p_te_raw)),
+            np.asarray(cal.calibrate(p_cal_raw)),
+            model,
+            status,
+            None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return p_te_raw, p_cal_raw, model, "CALIBRATION_FAILED", f"{type(exc).__name__}: {exc}"
+
+
+def _operational_coverage_policies(
+    fold_cal_probs: list[np.ndarray],
+    fold_te_probs: list[np.ndarray],
+    fold_te_y: list[np.ndarray],
+    fold_te_ts: list[np.ndarray],
+    horizon_bars: int,
+    timeframe_seconds: int,
+) -> tuple[list[dict[str, Any]], dict[float, list[dict[str, Any]]]]:
+    """Fit confidence thresholds strictly on each fold's calibration split and apply unchanged to test."""
+    policies: list[dict[str, Any]] = []
+    records_by_target: dict[float, list[dict[str, Any]]] = {}
+
+    total_test_n = sum(len(y) for y in fold_te_y)
+    active_hours = max(1.0, (total_test_n * timeframe_seconds) / 3600.0)
+
+    for cov_target in COVERAGE_TARGETS:
+        sel_p: list[np.ndarray] = []
+        sel_y: list[np.ndarray] = []
+        sel_ts: list[np.ndarray] = []
+        thresholds_used: list[float] = []
+        recs_for_target: list[dict[str, Any]] = []
+
+        for p_cal, p_te, y_te, ts_te in zip(
+            fold_cal_probs, fold_te_probs, fold_te_y, fold_te_ts, strict=True
+        ):
+            if cov_target >= 1.0:
+                tau = 0.50
+            else:
+                conf_cal = np.maximum(p_cal[:, 1], 1.0 - p_cal[:, 1])
+                tau = float(np.quantile(conf_cal, 1.0 - cov_target))
+            thresholds_used.append(round(tau, 5))
+            conf_te = np.maximum(p_te[:, 1], 1.0 - p_te[:, 1])
+            mask = conf_te >= tau
+            if np.any(mask):
+                sel_p.append(p_te[mask])
+                sel_y.append(y_te[mask])
+                sel_ts.append(ts_te[mask])
+                recs_for_target.extend(_decision_records(p_te, y_te, ts_te, tau, horizon_bars))
+
+        records_by_target[cov_target] = recs_for_target
+        if not sel_y:
+            policies.append({
+                "policy_type": "OPERATIONAL_CAL_FITTED_THRESHOLD",
+                "target_coverage": cov_target,
+                "fold_thresholds_cal": thresholds_used,
+                "achieved_coverage": 0.0,
+                "selected": 0,
+                "non_overlapping_selected": 0,
+                "status": "NO_PREDICTIONS_ABOVE_CAL_THRESHOLD",
+            })
+            continue
+
+        cat_p = np.vstack(sel_p)
+        cat_y = np.concatenate(sel_y)
+        cat_ts = np.concatenate(sel_ts)
+        preds_bin = (cat_p[:, 1] >= 0.5).astype(np.int64)
+        acc = float(np.mean(preds_bin == cat_y))
+        pos = cat_y == 1
+        neg = cat_y == 0
+        rec_p = float(np.mean(preds_bin[pos] == 1)) if np.any(pos) else 0.5
+        rec_n = float(np.mean(preds_bin[neg] == 0)) if np.any(neg) else 0.5
+        bal = 0.5 * (rec_p + rec_n)
+
+        non_ov = 0
+        last_mat = -1
+        for ts_val in cat_ts:
+            tv = int(ts_val)
+            if tv >= last_mat:
+                non_ov += 1
+                last_mat = tv + horizon_bars * timeframe_seconds
+
+        ach_cov = float(len(cat_y) / max(1, total_test_n))
+        sel_per_hr = float(len(cat_y) / active_hours)
+        non_ov_per_hr = float(non_ov / active_hours)
+        policies.append({
+            "policy_type": "OPERATIONAL_CAL_FITTED_THRESHOLD",
+            "target_coverage": cov_target,
+            "fold_thresholds_cal": thresholds_used,
+            "achieved_coverage": round(ach_cov, 5),
+            "selected": len(cat_y),
+            "non_overlapping_selected": int(non_ov),
+            "non_overlapping_ratio": round(non_ov / max(1, len(cat_y)), 4),
+            "directional_accuracy": round(acc, 5),
+            "balanced_accuracy": round(bal, 5),
+            "pred_per_active_hour": round(sel_per_hr, 3),
+            "non_ov_per_active_hour": round(non_ov_per_hr, 3),
+            "non_ov_per_8h_day": round(non_ov_per_hr * 8.0, 2),
+            "status": "EVALUATED",
+        })
+
+    return policies, records_by_target
+
+
+def _day_block_matched_p_value(
+    records: list[dict[str, Any]],
+    majority_dir: str,
+    *,
+    replicates: int = 10000,
+    seed: int = 47,
+) -> dict[str, Any]:
+    """Dependence-aware UTC day-block paired comparison vs training-fitted majority baseline."""
+    decisive = [
+        r
+        for r in records
+        if r.get("true_dir") in ("UP", "DOWN") and r.get("decision") in ("UP", "DOWN")
+    ]
+    if len(decisive) < 20:
+        return {"status": "INSUFFICIENT_EVIDENCE", "p_value": None}
+
+    by_day: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for r in decisive:
+        ts = int(r.get("timestamp") or 0)
+        if ts <= 0:
+            continue
+        day = datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d")
+        m_win = 1 if r.get("decision") == r.get("true_dir") else 0
+        b_win = 1 if majority_dir == r.get("true_dir") else 0
+        by_day[day].append((m_win, b_win))
+
+    days = sorted(by_day.keys())
+    if len(days) < 5:
+        return {"status": "INSUFFICIENT_DAYS", "day_count": len(days), "p_value": None}
+
+    m_sums = np.array([sum(x[0] for x in by_day[d]) for d in days], dtype=np.float64)
+    b_sums = np.array([sum(x[1] for x in by_day[d]) for d in days], dtype=np.float64)
+    cnts = np.array([len(by_day[d]) for d in days], dtype=np.float64)
+
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(days), size=(replicates, len(days)))
+    tot = np.maximum(1.0, np.sum(cnts[idx], axis=1))
+    m_acc_boot = np.sum(m_sums[idx], axis=1) / tot
+    b_acc_boot = np.sum(b_sums[idx], axis=1) / tot
+    deltas = m_acc_boot - b_acc_boot
+
+    obs_m = float(np.sum(m_sums) / np.sum(cnts))
+    obs_b = float(np.sum(b_sums) / np.sum(cnts))
+    # One-sided test H1: model > matched baseline (centered bootstrap under H0)
+    centered = deltas - float(np.mean(deltas))
+    obs_delta = obs_m - obs_b
+    p_val = float(np.mean(centered >= obs_delta))
+    return {
+        "status": "VERIFIED",
+        "day_count": len(days),
+        "selected_samples": len(decisive),
+        "model_accuracy": round(obs_m, 5),
+        "matched_majority_direction": majority_dir,
+        "matched_baseline_accuracy": round(obs_b, 5),
+        "delta_vs_matched_baseline": round(obs_delta, 5),
+        "p_value": max(1.0 / replicates, p_val),
+        "replicates": replicates,
+    }
 
 
 def _coverage_curve(
@@ -394,7 +581,9 @@ def run_phase47_research(
     pred_dir.mkdir(parents=True, exist_ok=True)
 
     ledger: list[dict[str, Any]] = []
-    finalist_candidates: list[tuple[Phase47TrialSpec, list[dict[str, Any]]]] = []
+    finalist_candidates: list[
+        tuple[Phase47TrialSpec, list[dict[str, Any]], dict[str, Any], str]
+    ] = []
 
     for spec in plan:
         t_trial = time.perf_counter()
@@ -441,13 +630,17 @@ def run_phase47_research(
 
         # 3 expanding chronological folds
         fold_bounds = ((0.0, 0.45, 0.55), (0.0, 0.58, 0.70), (0.0, 0.72, 0.85))
+        all_cal_probs: list[np.ndarray] = []
         all_probs: list[np.ndarray] = []
         all_y: list[np.ndarray] = []
         all_ts: list[np.ndarray] = []
         fold_accs: list[float] = []
+        fold_cal_statuses: list[str] = []
+        calibration_failures: list[dict[str, Any]] = []
         all_records: list[dict[str, Any]] = []
+        train_up_rates: list[float] = []
 
-        for _, tr_e_r, te_e_r in fold_bounds:
+        for f_idx, (_, tr_e_r, te_e_r) in enumerate(fold_bounds):
             tr_end = int(n * tr_e_r)
             cal_s = tr_end + purge
             cal_len = max(300, int(n * 0.08))
@@ -456,15 +649,20 @@ def run_phase47_research(
             te_e = int(n * te_e_r)
             if not (100 < tr_end < cal_s < cal_e < te_s < te_e <= n):
                 continue
+            train_up_rates.append(float(np.mean(y_all[:tr_end])))
             scaler = StandardScaler().fit(X_all[:tr_end])
             X_tr = np.asarray(scaler.transform(X_all[:tr_end]), dtype=np.float64)
             X_cal = np.asarray(scaler.transform(X_all[cal_s:cal_e]), dtype=np.float64)
             X_te = np.asarray(scaler.transform(X_all[te_s:te_e]), dtype=np.float64)
-            probs_te, _ = _fit_and_predict_probs(
+            probs_te, probs_cal, _, cal_status, cal_err = _fit_and_predict_probs(
                 spec, X_tr, y_all[:tr_end], X_cal, y_all[cal_s:cal_e], X_te, pipe.feature_names
             )
+            fold_cal_statuses.append(cal_status)
+            if cal_err is not None:
+                calibration_failures.append({"fold": f_idx, "error": cal_err})
             preds_te = (probs_te[:, 1] >= 0.5).astype(np.int64)
             fold_accs.append(float(np.mean(preds_te == y_all[te_s:te_e])))
+            all_cal_probs.append(probs_cal)
             all_probs.append(probs_te)
             all_y.append(y_all[te_s:te_e])
             all_ts.append(ts_all[te_s:te_e])
@@ -492,20 +690,32 @@ def run_phase47_research(
         ll = float(log_loss(cat_y, np.column_stack([1.0 - p_up, p_up])))
         ece_val = _ece(p_up, cat_y)
         bal_full = balanced_accuracy(all_records)
-        cov_curve = _coverage_curve(
+
+        # Separate retrospective test-quantile diagnostic from operational cal-fitted policies
+        retro_curve = _coverage_curve(
             cat_probs, cat_y, cat_ts, spec.horizon_bars, spec.timeframe_seconds
         )
-
-        # Persist prediction-level records locally (gitignored under data/phase47/)
-        pred_file = pred_dir / f"{spec.trial_id}.json"
-        pred_file.write_text(
-            json.dumps({"trial_id": spec.trial_id, "records": all_records[:5000]}),
-            encoding="utf-8",
+        op_policies, op_records_by_target = _operational_coverage_policies(
+            all_cal_probs,
+            all_probs,
+            all_y,
+            all_ts,
+            spec.horizon_bars,
+            spec.timeframe_seconds,
         )
 
-        # Best selective coverage >= 5% accuracy for ranking finalists
-        cov5 = next((c for c in cov_curve if abs(float(c["target_coverage"]) - 0.05) < 1e-9), {})
-        cov10 = next((c for c in cov_curve if abs(float(c["target_coverage"]) - 0.10) < 1e-9), {})
+        # Preserve ALL prediction-level records locally (never truncate!) with cryptographic digest
+        pred_file = pred_dir / f"{spec.trial_id}.json"
+        pred_payload = json.dumps(
+            {"trial_id": spec.trial_id, "record_count": len(all_records), "records": all_records},
+            sort_keys=True,
+        )
+        pred_file.write_text(pred_payload, encoding="utf-8")
+        pred_sha256 = hashlib.sha256(pred_payload.encode("utf-8")).hexdigest()
+
+        op5 = next((c for c in op_policies if abs(float(c["target_coverage"]) - 0.05) < 1e-9), {})
+        op10 = next((c for c in op_policies if abs(float(c["target_coverage"]) - 0.10) < 1e-9), {})
+        maj_dir = "UP" if (sum(train_up_rates) / max(1, len(train_up_rates))) >= 0.5 else "DOWN"
 
         entry = {
             "trial_id": spec.trial_id,
@@ -520,6 +730,10 @@ def run_phase47_research(
             "is_regime_aware": spec.is_regime_aware,
             "manifest_id": manifest.manifest_id,
             "test_samples": len(cat_y),
+            "prediction_record_count": len(all_records),
+            "predictions_sha256": pred_sha256,
+            "calibration_statuses": fold_cal_statuses,
+            "calibration_failures": calibration_failures,
             "full_coverage_acc": round(acc_full, 5),
             "full_coverage_bal_acc": round(float(bal_full or 0.5), 5),
             "brier_score": round(brier, 5),
@@ -527,16 +741,17 @@ def run_phase47_research(
             "ece": round(ece_val, 5),
             "fold_accs": [round(x, 5) for x in fold_accs],
             "fold_std": round(float(np.std(fold_accs)), 5),
-            "cov_5pct_acc": cov5.get("directional_accuracy"),
-            "cov_10pct_acc": cov10.get("directional_accuracy"),
-            "coverage_curve": cov_curve,
+            "cov_5pct_acc": op5.get("directional_accuracy"),
+            "cov_10pct_acc": op10.get("directional_accuracy"),
+            "operational_coverage_policies": op_policies,
+            "retrospective_quantile_curve": retro_curve,
             "elapsed_seconds": round(time.perf_counter() - t_trial, 3),
         }
         ledger.append(entry)
         if not spec.is_baseline:
-            finalist_candidates.append((spec, all_records))
+            finalist_candidates.append((spec, op_records_by_target.get(0.10, []), op10, maj_dir))
 
-    # WS7: Select top finalist per timeframe (by 10%-coverage accuracy) for 10k bootstrap + nested validation
+    # WS7: Select top finalist per timeframe (by operational 10%-target accuracy) for 10k bootstrap + nested validation
     completed_models = [e for e in ledger if e["status"] == "COMPLETED" and not e["is_baseline"]]
     by_tf_best: dict[int, dict[str, Any]] = {}
     for e in completed_models:
@@ -549,25 +764,21 @@ def run_phase47_research(
     finalist_results: list[dict[str, Any]] = []
     nested_results: dict[str, Any] = {}
 
-    for spec, recs in finalist_candidates:
+    for spec, op10_recs, op10_meta, maj_dir in finalist_candidates:
         if spec.trial_id not in finalist_ids:
             continue
-        # Filter to top 10% confidence predictions for selective finalist evaluation
-        dec_recs = sorted(
-            recs,
-            key=lambda r: max(float(r["probability_up"]), 1.0 - float(r["probability_up"])),
-            reverse=True,
-        )
-        top_n = max(MIN_INNER_SELECTED_SAMPLES, int(len(dec_recs) * 0.10))
-        sel_recs = dec_recs[:top_n]
+        # Reconciled population: exact operational 10%-target policy records (threshold fitted on cal only!)
         boot_10k = recompute_prediction_bootstrap(
-            sel_recs, replicates=bootstrap_replicates, seed=spec.seed
+            op10_recs, replicates=bootstrap_replicates, seed=spec.seed
         )
         boot_2d = _two_day_block_bootstrap(
-            sel_recs, replicates=bootstrap_replicates, seed=spec.seed + 100
+            op10_recs, replicates=bootstrap_replicates, seed=spec.seed + 100
+        )
+        matched_cmp = _day_block_matched_p_value(
+            op10_recs, maj_dir, replicates=bootstrap_replicates, seed=spec.seed + 200
         )
 
-        # Nested chronological validation with strict MIN_INNER_SELECTED_SAMPLES / DAYS / CLASS guards
+        # Nested chronological validation with strict MIN_INNER_SELECTED_SAMPLES / DAYS / CLASS / COVERAGE guards
         manifest, candles = populations[spec.timeframe_seconds]
         pipe, feat_mat = feature_cache[spec.timeframe_seconds, spec.feature_preset]
         tb = target_cache[spec.timeframe_seconds, spec.horizon_bars]
@@ -592,7 +803,7 @@ def run_phase47_research(
             if not (dev_s < itr_e < ical_s < ical_e < idev_s < dev_e < ass_s < ass_e <= n):
                 continue
             sc_in = StandardScaler().fit(X_all[dev_s:itr_e])
-            p_idev, _ = _fit_and_predict_probs(
+            p_idev, _, _, cal_st_in, cal_err_in = _fit_and_predict_probs(
                 spec,
                 np.asarray(sc_in.transform(X_all[dev_s:itr_e])),
                 y_all[dev_s:itr_e],
@@ -601,9 +812,10 @@ def run_phase47_research(
                 np.asarray(sc_in.transform(X_all[idev_s:dev_e])),
                 pipe.feature_names,
             )
-            # Inner threshold selection with strict minimum sample/day/class guards
-            best_th = 0.50
+            # Inner threshold selection with strict minimum sample/day/class/coverage guards
+            best_th: float | None = None
             best_bal = -1.0
+            n_idev = max(1, dev_e - idev_s)
             for th in (0.50, 0.52, 0.54, 0.56):
                 cand_recs = _decision_records(
                     p_idev, y_all[idev_s:dev_e], ts_all[idev_s:dev_e], th, spec.horizon_bars
@@ -614,16 +826,28 @@ def run_phase47_research(
                 }
                 up_c = sum(1 for r in cand_recs if r["true_dir"] == "UP")
                 dn_c = sum(1 for r in cand_recs if r["true_dir"] == "DOWN")
+                cov_in = len(cand_recs) / n_idev
                 if (
                     len(cand_recs) >= MIN_INNER_SELECTED_SAMPLES
                     and len(days_u) >= MIN_INNER_DAYS
                     and up_c >= MIN_INNER_CLASS_COUNT
                     and dn_c >= MIN_INNER_CLASS_COUNT
+                    and cov_in >= 0.01
                 ):
                     b_acc = float(balanced_accuracy(cand_recs) or 0.0)
                     if b_acc > best_bal:
                         best_bal = b_acc
                         best_th = th
+
+            if best_th is None:
+                outer_folds.append({
+                    "fold_index": f_idx,
+                    "status": "INSUFFICIENT_EVIDENCE",
+                    "reason": "No inner threshold satisfied min_samples>=50, min_days>=5, min_class>=10, min_coverage>=1%.",
+                    "inner_calibration_status": cal_st_in,
+                    "inner_calibration_error": cal_err_in,
+                })
+                continue
 
             # Fit outer on full dev + cal, assess on [ass_s:ass_e]
             cal_s2 = dev_e + purge
@@ -631,7 +855,7 @@ def run_phase47_research(
             if cal_e2 <= cal_s2 + 100:
                 continue
             sc_out = StandardScaler().fit(X_all[dev_s:dev_e])
-            p_ass, _ = _fit_and_predict_probs(
+            p_ass, _, _, cal_st_out, cal_err_out = _fit_and_predict_probs(
                 spec,
                 np.asarray(sc_out.transform(X_all[dev_s:dev_e])),
                 y_all[dev_s:dev_e],
@@ -648,7 +872,10 @@ def run_phase47_research(
             )
             outer_folds.append({
                 "fold_index": f_idx,
+                "status": "ASSESSMENT_COMPLETED",
                 "selected_threshold": best_th,
+                "outer_calibration_status": cal_st_out,
+                "outer_calibration_error": cal_err_out,
                 "assessment_samples": len(ass_recs),
                 "assessment_acc": round(
                     sum(1 for r in ass_recs if r["decision"] == r["true_dir"])
@@ -662,27 +889,36 @@ def run_phase47_research(
         nested_results[spec.trial_id] = {"outer_folds": outer_folds}
         finalist_results.append({
             "trial_id": spec.trial_id,
+            "population_id": f"{manifest.manifest_id}_op10pct",
+            "selection_method": "OPERATIONAL_CAL_THRESHOLD_FOR_10PCT_TARGET",
+            "fold_thresholds_cal": op10_meta.get("fold_thresholds_cal"),
             "timeframe": spec.timeframe_label,
             "horizon_bars": spec.horizon_bars,
             "model_family": spec.model_family,
             "feature_preset": spec.feature_preset,
-            "top_10pct_samples": len(sel_recs),
+            "selected_samples": len(op10_recs),
+            "non_overlapping_samples": op10_meta.get("non_overlapping_selected"),
             "day_block_10k": boot_10k.get("ci_95"),
             "two_day_10k": boot_2d,
+            "matched_baseline_comparison": matched_cmp,
             "break_even_85": BREAK_EVEN_85_PAYOUT,
             "qualifies": False,  # Verified below against Stage C / Phase 40C
             "disposition": DISPOSITION,
         })
 
-    # Holm-Bonferroni p-values across finalists against 0.50 (conservative binomial on non-overlapping)
-    pvals = [0.5 for _ in finalist_results]
-    for fr in finalist_results:
-        ci = fr.get("day_block_10k") or {}
-        if ci and float(ci.get("ci_lower", 0.0)) > BREAK_EVEN_85_PAYOUT:
-            fr["qualifies"] = True
-    holm_p = holm_adjust(pvals) if pvals else []
+    # Holm-Bonferroni adjustment on actual day-block p-values vs matched baseline
+    valid_pvals = [
+        float(fr["matched_baseline_comparison"]["p_value"])
+        if fr["matched_baseline_comparison"].get("p_value") is not None
+        else 1.0
+        for fr in finalist_results
+    ]
+    holm_p = holm_adjust(valid_pvals) if valid_pvals else []
     for fr, hp in zip(finalist_results, holm_p, strict=True):
-        fr["holm_adjusted_p_placeholder"] = hp
+        fr["holm_adjusted_vs_matched_baseline"] = hp
+        ci = fr.get("day_block_10k") or {}
+        if ci and float(ci.get("ci_lower", 0.0)) > BREAK_EVEN_85_PAYOUT and hp.get("rejected"):
+            fr["qualifies"] = True
 
     # WS4 Target formulation comparison
     target_comparisons: dict[str, Any] = {}

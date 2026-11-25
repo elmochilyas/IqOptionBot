@@ -1,6 +1,6 @@
 # Phase 47 WS1 — Predictive Signal Discovery Report
 
-Generated: `2026-11-25T20:35:18.881268+00:00`
+Generated: `2026-11-25T21:33:17.415055+00:00`
 Disposition: `NO_DEMONSTRATED_EDGE` | Authority: `NONE` | Stage: `DEVELOPMENT_RESEARCH_NOT_INDEPENDENT_CONFIRMATION`
 
 ## Hypothesis Assessment

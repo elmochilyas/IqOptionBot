@@ -1,7 +1,7 @@
 {
   "disposition": "NO_DEMONSTRATED_EDGE",
   "execution_authority": "NONE",
-  "generated_at_utc": "2026-11-25T20:35:18.881268+00:00",
+  "generated_at_utc": "2026-11-25T21:33:17.415055+00:00",
   "hypotheses_assessment": [
     {
       "detail": "Lag-1..10 |return| autocorrelations are strongly positive across M1, M5, and M15, supporting causal volatility/compression features.",

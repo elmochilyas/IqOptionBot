@@ -20,5 +20,6 @@ Inspection of `src/iqoption_research/ml/freezer.py`, Phase 40C campaign contract
 ## 3. Mandatory Safeguards for Any Exploratory Campaign
 - **Artifact Immutability:** Bound to exact model bytes, ordered feature list, scaler, calibrator, threshold, native timeframe, and horizon; zero mutation or retraining during campaign.
 - **Genuine Provenance & Pre-Maturity Commitment:** Every prediction must be committed and hashed before outcome maturity on closed native candles (`EURUSD` regular market only, no OTC).
-- **Fixed Windows & Owner Authorization:** Bounded supervised sessions only; no automatic reconnects or starts; explicit owner sign-off per campaign.
+- **Fixed Windows & Owner Authorization:** Bounded supervised sessions only; no automatic reconnects or starts; explicit owner sign-off per campaign. Realistic session counts must follow non-overlapping operational yield estimates in `reports/phase47/CANDIDATE_ELIGIBILITY_ASSESSMENT.md` (e.g., ~18–48 8h supervised sessions for 200 non-overlapping M1_H15/M5_H6 samples).
 - **Separation from Confirmatory Evidence:** Exploratory sessions are tagged `EXPLORATORY_PROSPECTIVE_ONLY` and cannot be retroactively relabeled as confirmatory Stage C passes without a fresh preregistered confirmatory campaign.
+- **Calibration & Guardrail Integrity:** Any exploratory frozen candidate must record its calibration status (`CALIBRATED_ISOTONIC` / `CALIBRATED_SIGMOID`), full prediction SHA-256 digests, and must enforce minimum sample/day/class/coverage requirements without silent fallback.

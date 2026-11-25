@@ -118,6 +118,50 @@ def test_observation_center_full_synthetic_lifecycle_and_export(
         assert (export_out / "ws6_synthetic_session_diagnostics.json").exists()
         assert (export_out / "ws6_synthetic_session_diagnostics.md").exists()
         assert (export_out / "verification_result.json").exists()
+        assert oc.lbl_kpi_resolved is not None
+        assert "W:" in oc.lbl_kpi_resolved.cget("text")
+    finally:
+        with contextlib.suppress(Exception):
+            panel.shutdown()
+            tk_root.destroy()
+
+
+@pytest.mark.parametrize(("width", "height"), [(1280, 720), (1366, 768), (1920, 1080)])
+def test_observation_center_layout_non_collapsing_across_resolutions(
+    tmp_path: Path, width: int, height: int
+) -> None:
+    tk_root = tk.Tk()
+    try:
+        tk_root.geometry(f"{width}x{height}")
+        dash = _make_mock_dashboard(tmp_path, tk_root)
+        nb = ttk.Notebook(tk_root)
+        nb.pack(fill="both", expand=True)
+        panel = ShadowEvaluationPanel(dash, nb)
+        nb.select(panel.frame)
+        panel.sub_notebook.select(panel.obs_frame)
+        tk_root.update()
+
+        oc = panel.observation_center
+        assert oc.obs_scroll_canvas is not None
+        assert oc.obs_scroll_bar is not None
+        assert panel.obs_tree.winfo_height() >= 100
+        assert panel.obs_chart_canvas.winfo_height() >= 170
+        assert panel.obs_history_tree.winfo_height() >= 100
+
+        # Both tables must have vertical and horizontal scrollbars wired
+        assert panel.obs_tree.cget("yscrollcommand")
+        assert panel.obs_tree.cget("xscrollcommand")
+        assert panel.obs_history_tree.cget("yscrollcommand")
+        assert panel.obs_history_tree.cget("xscrollcommand")
+
+        # Collapsible configuration section frees space and restores cleanly
+        assert oc.obs_config_body is not None
+        oc.toggle_config_section()
+        tk_root.update()
+        assert oc._is_config_collapsed is True
+        oc.toggle_config_section()
+        tk_root.update()
+        assert oc._is_config_collapsed is False
     finally:
         with contextlib.suppress(Exception):
             panel.shutdown()

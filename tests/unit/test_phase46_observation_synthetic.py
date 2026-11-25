@@ -8,16 +8,11 @@ Uses explicitly labeled synthetic fixtures to validate observation plumbing:
 
 from __future__ import annotations
 
-import json
-import uuid
 from pathlib import Path
 
 from iqoption_research.models.market import Candle, CandleSize
-from iqoption_research.shadow.journal import ShadowPredictionJournal
-from iqoption_research.shadow.observer import ObservationSessionConfig, ProspectiveShadowObserver
-from iqoption_research.shadow.registry import ShadowModelRegistry
-from iqoption_research.shadow.streaming import SyntheticMarketStream
 from iqoption_research.phase46.observation.synthetic_fixtures import PHASE46_SYNTHETIC_FIXTURE_LABEL
+from iqoption_research.shadow.streaming import SyntheticMarketStream
 
 
 def _make_candles(tf_seconds: int, n: int = 40, start: int = 1_700_000_000) -> list[Candle]:

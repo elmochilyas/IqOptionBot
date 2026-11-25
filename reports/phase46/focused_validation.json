@@ -1,5 +1,5 @@
 {
-  "completed_at_utc": "2026-11-25T15:48:43.599499+00:00",
+  "completed_at_utc": "2026-11-25T15:52:15.893432+00:00",
   "disposition": "NO_DEMONSTRATED_EDGE",
   "execution_authority": "NONE",
   "focused_trial_ids": [
@@ -516,12 +516,12 @@
   },
   "research_stage": "DEVELOPMENT_RESEARCH_NOT_INDEPENDENT_CONFIRMATION",
   "resource_usage": {
-    "elapsed_seconds": 297.798,
-    "peak_working_set_bytes": 641560576,
-    "python_peak_allocated_bytes": 166389294
+    "elapsed_seconds": 301.508,
+    "peak_working_set_bytes": 642703360,
+    "python_peak_allocated_bytes": 166400497
   },
-  "started_at_utc": "2026-11-25T15:43:45.793059+00:00",
-  "suite_id": "p46_focused_1795621723",
+  "started_at_utc": "2026-11-25T15:47:14.383591+00:00",
+  "suite_id": "p46_focused_1795621935",
   "trial_records": [
     {
       "abstention": 0.9752082605876191,

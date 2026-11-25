@@ -181,6 +181,9 @@ class Dashboard:
             collection_center = getattr(self, "collection_center", None)
             if collection_center is not None:
                 collection_center.shutdown()
+            shadow_eval = getattr(self, "shadow_evaluation", None)
+            if shadow_eval is not None and hasattr(shadow_eval, "shutdown"):
+                shadow_eval.shutdown()
             self.window.destroy()
 
     def render(self) -> None:

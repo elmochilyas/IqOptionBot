@@ -1,55 +1,68 @@
 # Phase 46 — Realistic Observation Duration Estimate (WS3)
 
-**Generated (initial):** 2026-04-10 (from Phase 45 genuine dev provenance). **Updated (10k WS1 run):** 2026-11-25 after `p46_focused_1795617414` (10,000-replicate day-block + 2-day sensitivity on focused candidates).  
-**Governance:** DEVELOPMENT_RESEARCH framing for inputs; prospective counts only after freeze + finalized contract + owner authorization. `execution_authority = NONE`, `NO_DEMONSTRATED_EDGE`. Do **not** weaken minimum evidence requirements due to low coverage.
+**Updated:** 2026-11-25 (incorporating 10,000-replicate WS1 results from `p46_focused_1795621935` and historical candidate rates)  
+**Governance:** `DEVELOPMENT_RESEARCH` framing for inputs; prospective counts only after immutable freeze + finalized contract + owner authorization. `execution_authority = NONE`, `NO_DEMONSTRATED_EDGE`. Do **not** weaken minimum evidence requirements due to low coverage.
 
-## Inputs (from Phase 45 data quality/provenance)
-- M1 dev population: ~60,711 candles over ~58.21 calendar days (2026-09-15T05:01:00Z → 2026-11-12T10:00:00Z cutoff close). Segments: 14.
-- M5 dev population: ~59,387 candles over ~288.20 calendar days (2026-01-28T05:05:00Z → 2026-11-12T10:00:00Z). Segments: 44.
-- M15 dev population: ~30,768 candles over ~451.54 calendar days (2025-08-17T21:00:00Z → 2026-11-12T10:00:00Z). Segments: 69.
-- All historical/dev context remains DEVELOPMENT_RESEARCH; protected periods not reusable as independent evidence.
+## 1. Historical Inputs (Phase 45 Genuine Development Inventory & WS1)
 
-## Confirmed focused candidates (observation targets)
-1. `p45_046_M15_M15_H2_random_forest_native_only` (M15, horizon M15_H2 = 30 minutes)
-2. `p45_029_M5_M5_H3_hist_gradient_boosting_native_only` (M5, horizon M5_H3 = 15 minutes)
-3. `p45_004_M1_M1_H1_random_forest_native_only` (M1, horizon M1_H1 = 1 minute)
+| Timeframe | Total Unique Candles | Development Population | Protected Population | Calendar Span (Dev) |
+|---|---:|---:|---:|---|
+| M1 (60s) | 71,627 | 60,711 | 10,916 | ~58.21 days (14 segments) |
+| M5 (300s) | 61,571 | 59,387 | 2,184 | ~288.20 days (44 segments) |
+| M15 (900s) | 31,496 | 30,768 | 728 | ~451.54 days (69 segments) |
+| **Total** | **164,694** | **150,866** | **13,828** | Boundary: `2026-11-12T10:00:00Z` (`1794477600`) |
 
-## Method (conservative, explicit assumptions)
-- “Selected predictions per hour/day” depend on: (a) native candle availability in supervised live windows, (b) feature warmup, (c) model eligibility/abstention policy at inference, (d) market-closed gaps (do not impute). 
-- Use **theoretical maximum** from closed native candles when eligible: M1 → up to 60 decisions/hour if every closed M1 eligible; M5 → up to 12/hour; M15 → up to 4/hour. **Realized rates will be lower** due to abstentions, warmup, gaps, interruptions, and any contract filters.
-- Prospective “resolved predictions” require waiting **exact maturity** per horizon (30m / 15m / 1m) after a persisted decision on a fully closed candle.
+## 2. Measured 10,000-Replicate WS1 Focused Validation Summary
 
-### Rough realized-rate planning bands (illustrative, not guarantees)
-Assume supervised observation covers regular EURUSD market hours only (per contract intent) and effective eligible closed-candle capture is reduced by gaps/warmup/abstentions. Example planning assumptions (operator must measure empirically):
-- M1_H1: **5–30 resolved decisive predictions/hour** in active covered periods (high variance).
-- M5_H3: **1–6 resolved decisive predictions/hour**.
-- M15_H2: **0.3–2 resolved decisive predictions/hour**.
+| Candidate Trial ID | TF / Horizon | Maturity | Historical Selected Acc | Historical Coverage | Non-Overlapping Selected | 10k Day-Block 95% CI | 10k 2-Day Sensitivity 95% CI |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `p45_046_M15_M15_H2_random_forest_native_only` | M15 / M15_H2 | 30 min | 58.35% (290/497) | 2.48% | 244 | [53.62%, 63.18%] | [53.32%, 63.33%] |
+| `p45_029_M5_M5_H3_hist_gradient_boosting_native_only` | M5 / M5_H3 | 15 min | 57.33% (352/614) | 1.48% | 211 | [52.31%, 62.43%] | [52.42%, 62.62%] |
+| `p45_004_M1_M1_H1_random_forest_native_only` | M1 / M1_H1 | 1 min | 55.75% (378/678) | 1.64% | 678 | [50.50%, 61.03%] | [52.88%, 58.78%] |
 
-These bands are **not** acceptance thresholds; they are to size supervision effort. Actual rates must be reported from measured sessions.
+## 3. Historical Selected-Prediction Rates & Realistic Loss Factors
 
-## Measured 10k focused validation (from `reports/phase46/focused_validation.json`, suite `p46_focused_1795617414`)
-All are **DEVELOPMENT_RESEARCH**, `NO_DEMONSTRATED_EDGE`, `execution_authority = NONE`. Negatives preserved.
+From Phase 45 historical coverage and native decision frequency (assuming continuous eligible EURUSD regular-market candles and stable coverage):
 
-| Trial | TF/Horizon | 10k day-block CI95 (acc) | 2-day sensitivity CI95 (acc, verified) |
-|---|---|---|---|
-| `p45_046_M15_M15_H2_random_forest_native_only` | M15 / M15_H2 | [0.5362, 0.6318] (replicates=10000, seed=42) | [0.5332, 0.6333] |
-| `p45_029_M5_M5_H3_hist_gradient_boosting_native_only` | M5 / M5_H3 | [0.5231, 0.6243] | [0.5242, 0.6262] |
-| `p45_004_M1_M1_H1_random_forest_native_only` | M1 / M1_H1 | [0.5050, 0.6103] | [0.5288, 0.5878] |
+- **M1 Random Forest (`M1_H1`):** ~`0.98` selected predictions per active market hour (`60 bars/hr * 1.64% coverage ≈ 0.98/hr`).
+- **M5 Gradient Boosting (`M5_H3`):** ~`0.18` selected predictions per active market hour (`12 bars/hr * 1.48% coverage ≈ 0.18/hr`).
+- **M15 Random Forest (`M15_H2`):** ~`0.10` selected predictions per active market hour (`4 bars/hr * 2.48% coverage ≈ 0.10/hr`).
 
-Interpretation (conservative): intervals include break-even-adjacent regions in a dependence-aware sense for these dev folds; **no qualification for freezing** is claimed here (see WS2 assessment). Any prospective claim would require separate preregistered evidence under authorized contract.
+### Realistic Operational Derating Factors
+Theoretical opportunity counts overstate usable scientific evidence because of:
+1. **Market closures:** Regular EURUSD closes on weekends (~48 hours/week) and holiday illiquidity windows.
+2. **Warmup periods:** Each supervised session requires initial closed native candles before the first decision is eligible (e.g., 21–60+ bars = 21–60 min for M1, 1.75–5 hrs for M5, 5.25–15 hrs for M15 unless pre-warmed from verified recent history).
+3. **Missing observations & gaps:** Continuity gaps are never interpolated; affected windows pause/invalidate pending decisions.
+4. **Interrupted sessions & unresolved tail:** Predictions made within `horizon_bars * timeframe_seconds` of session end cannot mature before disconnect.
+5. **Temporal dependence (non-overlapping requirement):** For `M5_H3` (overlap factor ~2.9x in Phase 45: 614 selected vs 211 non-overlapping) and `M15_H2` (overlap factor ~2.0x: 497 selected vs 244 non-overlapping), usable independent-horizon samples accumulate even more slowly than raw selected predictions.
 
-## What this means (order-of-magnitude)
-To satisfy “minimum days and minimum resolved predictions” under existing scientific acceptance requirements (not weakened here), expect:
-- **M15_H2**: likely **many supervised sessions across days/weeks** to accumulate enough resolved, dependence-aware evidence; low per-hour yield makes short sessions insufficient.
-- **M5_H3**: **multiple days to weeks** of supervised coverage depending on eligibility/abstention and stability of data stream.
-- **M1_H1**: higher theoretical throughput but still requires **sustained supervised coverage over multiple days** and careful handling of dependence/non-overlap; gaps and interruptions extend wall time.
+Using a conservative **0.75x operational yield factor** (accounting for warmup, gaps, and session-end unresolved tails) and historical non-overlapping ratios:
 
-**Practical operator guidance:** plan for **multi-session campaigns** (hours per session, repeated across days) with strict logging of coverage, abstentions, gaps, and unresolved items. “Continuous observation” in UI means automated generation/resolution loops **within an authorized supervised session**, not unattended operation.
+| Candidate | Raw Rate (sel/hr) | Effective Resolved Rate (sel/hr, 0.75x) | Non-Overlapping Ratio | Effective Non-Overlapping Rate (/hr) |
+|---|---:|---:|---:|---:|
+| M1 Random Forest (`M1_H1`) | 0.98 | 0.735 | 1.00 (678/678) | **0.735 / hr** |
+| M5 Gradient Boosting (`M5_H3`) | 0.18 | 0.135 | 0.344 (211/614) | **0.046 / hr** |
+| M15 Random Forest (`M15_H2`) | 0.10 | 0.075 | 0.491 (244/497) | **0.037 / hr** |
 
-## Required reporting in every prospective session
-- elapsed supervised time, market coverage windows, closed candles observed, predictions persisted pre-maturity, resolved count, abstain count, gaps/missing-data events (counted, not filled), baseline comparisons on identical timestamps, and reference to this duration estimate assumptions.
+## 4. Required Observation Hours, Supervised Sessions & Market Days
 
-## Blockers / notes
-- Exact minimums (days, resolved N) must match the finalized preregistered contract and preserved Phase 40C/Stage C gates; this estimate does not set them lower.
-- If realized coverage is far below bands, the honest outcome may be “insufficient prospective evidence within feasible supervised effort” — that is a scientific result, not a reason to relax gates.
-- The 10k numbers above are **development (pre-boundary) focused validation**, not prospective confirmation.
+Assuming supervised sessions of **4 hours/day** (realistic operator-supervised daily window) or **8 hours/day** (full-day supervised shift), 5 market days/week:
+
+### Target = 200 Non-Overlapping Resolved Predictions
+| Candidate | Required Active Hours | 4h Sessions (= Market Days) | 8h Sessions (= Market Days) |
+|---|---:|---:|---:|
+| M1 Random Forest (`M1_H1`) | ~272 hrs | ~68 sessions (~13.6 wks) | ~34 sessions (~6.8 wks) |
+| M5 Gradient Boosting (`M5_H3`) | ~4,307 hrs | ~1,077 sessions (~4.1 yrs) | ~538 sessions (~2.1 yrs) |
+| M15 Random Forest (`M15_H2`) | ~5,420 hrs | ~1,355 sessions (~5.2 yrs) | ~678 sessions (~2.6 yrs) |
+
+### Target = 500 Non-Overlapping Resolved Predictions
+| Candidate | Required Active Hours | 4h Sessions (= Market Days) | 8h Sessions (= Market Days) |
+|---|---:|---:|---:|
+| M1 Random Forest (`M1_H1`) | ~680 hrs | ~170 sessions (~34 wks) | ~85 sessions (~17 wks) |
+| M5 Gradient Boosting (`M5_H3`) | ~10,768 hrs | ~2,692 sessions (~10.4 yrs) | ~1,346 sessions (~5.2 yrs) |
+| M15 Random Forest (`M15_H2`) | ~13,550 hrs | ~3,388 sessions (~13.0 yrs) | ~1,694 sessions (~6.5 yrs) |
+
+## 5. Scientific Conclusion on Feasibility
+- At ~1.5%–2.5% historical coverage, **M5_H3 and M15_H2 are practically infeasible** to validate prospectively under supervised human sessions within reasonable calendar time, and even **M1_H1** requires hundreds of supervised hours across multiple months.
+- **Do not reduce evidence requirements** to compensate for low coverage. If prospective evidence cannot be gathered within feasible supervised effort, the honest scientific outcome is `INSUFFICIENT_PROSPECTIVE_EVIDENCE`.
+- Genuine prospective activation remains **blocked** until an eligible candidate is frozen and the preregistered contract is finalized and owner-authorized.

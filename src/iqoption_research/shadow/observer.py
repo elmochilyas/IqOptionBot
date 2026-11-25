@@ -734,8 +734,8 @@ class ProspectiveShadowObserver:
                 self.inputs_journal.record_candle(
                     c,
                     candle_source="WARMUP",
-                    symbol="EURUSD",
-                    timeframe=60,
+                    symbol=config.symbol,
+                    timeframe=int(config.timeframe),
                 )
 
         if self.diagnostics_journal is not None:

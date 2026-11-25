@@ -86,12 +86,22 @@ def _regime_tag_simple(record: dict[str, Any]) -> str:
     return "MID_VOL"
 
 
-def _two_day_block_bootstrap(records: list[dict[str, Any]], *, replicates: int = 10000, seed: int = 4242) -> dict[str, Any]:
+def _two_day_block_bootstrap(
+    records: list[dict[str, Any]], *, replicates: int = 10000, seed: int = 4242
+) -> dict[str, Any]:
     if replicates <= 0:
         raise ValueError("replicates must be positive")
-    decisive = [r for r in records if r.get("true_dir") in ("UP", "DOWN") and r.get("decision") in ("UP", "DOWN")]
+    decisive = [
+        r
+        for r in records
+        if r.get("true_dir") in ("UP", "DOWN") and r.get("decision") in ("UP", "DOWN")
+    ]
     if len(decisive) < 10:
-        return {"status": "NOT_VERIFIED", "block_unit": "UTC_2DAY_BLOCK", "reason": "Insufficient decisive samples"}
+        return {
+            "status": "NOT_VERIFIED",
+            "block_unit": "UTC_2DAY_BLOCK",
+            "reason": "Insufficient decisive samples",
+        }
     by_day: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for r in decisive:
         ts = int(r.get("timestamp") or r.get("decision_ts") or r.get("from_ts") or 0)
@@ -148,7 +158,11 @@ def _two_day_block_bootstrap(records: list[dict[str, Any]], *, replicates: int =
 
 
 def _compute_breakdowns(pred_records: list[dict[str, Any]], _horizon_bars: int) -> dict[str, Any]:
-    decisive = [r for r in pred_records if r.get("true_dir") in ("UP", "DOWN") and r.get("decision") in ("UP", "DOWN")]
+    decisive = [
+        r
+        for r in pred_records
+        if r.get("true_dir") in ("UP", "DOWN") and r.get("decision") in ("UP", "DOWN")
+    ]
     all_rows = list(pred_records)
     coverage = (len(decisive) / len(all_rows)) if all_rows else 0.0
     by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -159,24 +173,53 @@ def _compute_breakdowns(pred_records: list[dict[str, Any]], _horizon_bars: int) 
         by_session[_session_tag(ts)].append(r)
     session_stats = {}
     for k, rows in sorted(by_session.items()):
-        acc = sum(1 for rr in rows if rr.get("decision") == rr.get("true_dir")) / len(rows) if rows else None
-        session_stats[k] = {"samples": len(rows), "directional_accuracy": acc, "balanced_accuracy": balanced_accuracy(rows)}
+        acc = (
+            sum(1 for rr in rows if rr.get("decision") == rr.get("true_dir")) / len(rows)
+            if rows
+            else None
+        )
+        session_stats[k] = {
+            "samples": len(rows),
+            "directional_accuracy": acc,
+            "balanced_accuracy": balanced_accuracy(rows),
+        }
     by_regime: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in decisive:
         by_regime[_regime_tag_simple(r)].append(r)
     regime_stats = {}
     for k, rows in sorted(by_regime.items()):
-        acc = sum(1 for rr in rows if rr.get("decision") == rr.get("true_dir")) / len(rows) if rows else None
-        regime_stats[k] = {"samples": len(rows), "directional_accuracy": acc, "balanced_accuracy": balanced_accuracy(rows)}
+        acc = (
+            sum(1 for rr in rows if rr.get("decision") == rr.get("true_dir")) / len(rows)
+            if rows
+            else None
+        )
+        regime_stats[k] = {
+            "samples": len(rows),
+            "directional_accuracy": acc,
+            "balanced_accuracy": balanced_accuracy(rows),
+        }
     by_fold: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in decisive:
         fold = r.get("fold") or r.get("fold_id") or "UNKNOWN"
         by_fold[str(fold)].append(r)
     fold_stats = {}
     for k, rows in sorted(by_fold.items()):
-        acc = sum(1 for rr in rows if rr.get("decision") == rr.get("true_dir")) / len(rows) if rows else None
-        fold_stats[k] = {"samples": len(rows), "directional_accuracy": acc, "balanced_accuracy": balanced_accuracy(rows)}
-    conf_buckets: dict[str, list[dict[str, Any]]] = {"HIGH": [], "MID": [], "LOW": [], "UNKNOWN": []}
+        acc = (
+            sum(1 for rr in rows if rr.get("decision") == rr.get("true_dir")) / len(rows)
+            if rows
+            else None
+        )
+        fold_stats[k] = {
+            "samples": len(rows),
+            "directional_accuracy": acc,
+            "balanced_accuracy": balanced_accuracy(rows),
+        }
+    conf_buckets: dict[str, list[dict[str, Any]]] = {
+        "HIGH": [],
+        "MID": [],
+        "LOW": [],
+        "UNKNOWN": [],
+    }
     for r in decisive:
         p = r.get("probability_up")
         if p is None:
@@ -199,7 +242,11 @@ def _compute_breakdowns(pred_records: list[dict[str, Any]], _horizon_bars: int) 
         if not rows:
             continue
         acc = sum(1 for rr in rows if rr.get("decision") == rr.get("true_dir")) / len(rows)
-        cov_impact[k] = {"samples": len(rows), "directional_accuracy": acc, "balanced_accuracy": balanced_accuracy(rows)}
+        cov_impact[k] = {
+            "samples": len(rows),
+            "directional_accuracy": acc,
+            "balanced_accuracy": balanced_accuracy(rows),
+        }
     return {
         "coverage_selected_over_all_rows": coverage,
         "selected_decisive_samples": len(decisive),
@@ -212,7 +259,12 @@ def _compute_breakdowns(pred_records: list[dict[str, Any]], _horizon_bars: int) 
     }
 
 
-def _run_focused_nested(runner: Any, completed_like_records: list[dict[str, Any]], populations: dict[int, tuple[Any, list[Any]]], cross_tf: dict[int, list[Any]]) -> dict[str, Any]:
+def _run_focused_nested(
+    runner: Any,
+    completed_like_records: list[dict[str, Any]],
+    populations: dict[int, tuple[Any, list[Any]]],
+    cross_tf: dict[int, list[Any]],
+) -> dict[str, Any]:
     """Run focused nested chronological evaluation for the three confirmed candidates.
 
     Phase45._nested_evaluation only targets logistic-regression finalists in its generic path.
@@ -223,7 +275,11 @@ def _run_focused_nested(runner: Any, completed_like_records: list[dict[str, Any]
     from iqoption_research.ml.targets.specs import TiePolicy
     from iqoption_research.ml.targets_v3 import MultiHorizonTargetEngine
     from iqoption_research.ml.walk_forward import create_model_instance
-    from iqoption_research.phase45.evaluation import balanced_accuracy, class_distribution, recompute_prediction_bootstrap
+    from iqoption_research.phase45.evaluation import (
+        balanced_accuracy,
+        class_distribution,
+        recompute_prediction_bootstrap,
+    )
     from iqoption_research.research.features.scalers import StandardScaler
 
     def _meta(rec: dict[str, Any], key: str) -> Any:
@@ -252,7 +308,11 @@ def _run_focused_nested(runner: Any, completed_like_records: list[dict[str, Any]
             hyperparameters = dict(_meta(rec, "hyperparameters") or {})
             manifest, candles = populations[timeframe_seconds]
             source_digest = manifest.content_digest
-            if timeframe_seconds == 60 and _meta(rec, "feature_preset") in {"m1_m5", "m1_m15", "m1_m5_m15"}:
+            if timeframe_seconds == 60 and _meta(rec, "feature_preset") in {
+                "m1_m5",
+                "m1_m15",
+                "m1_m5_m15",
+            }:
                 # cross tf not used in these focused trials (all native_only) but keep consistent
                 pass
             pipeline = runner._pipeline(timeframe_seconds, "native_only", cross_tf, source_digest)  # noqa: SLF001
@@ -272,12 +332,13 @@ def _run_focused_nested(runner: Any, completed_like_records: list[dict[str, Any]
             y_all = np.asarray(target_bundle.targets[valid], dtype=np.int64)
             timestamps_all = np.asarray(features.timestamps[valid], dtype=np.int64)
             if len(y_all) < 3000:
-                results["per_trial"][tid] = {"status": "NOT_RUN", "reason": "Insufficient mature labels"}
+                results["per_trial"][tid] = {
+                    "status": "NOT_RUN",
+                    "reason": "Insufficient mature labels",
+                }
                 continue
             # Inner candidate grids per family (small, honest)
-            if model_family == "random_forest":
-                inner_specs = [{"threshold": 0.52}, {"threshold": 0.55}, {"threshold": 0.58}]
-            elif model_family == "hist_gradient_boosting":
+            if model_family == "random_forest" or model_family == "hist_gradient_boosting":
                 inner_specs = [{"threshold": 0.52}, {"threshold": 0.55}, {"threshold": 0.58}]
             else:
                 inner_specs = [{"threshold": 0.52}, {"threshold": 0.55}, {"threshold": 0.58}]
@@ -300,55 +361,113 @@ def _run_focused_nested(runner: Any, completed_like_records: list[dict[str, Any]
                         continue
                     scaler = StandardScaler().fit(X_all[dev_s:itrain_end])
                     model = create_model_instance(model_family, hyperparameters)
-                    model.fit(np.asarray(scaler.transform(X_all[dev_s:itrain_end]), dtype=np.float64), y_all[dev_s:itrain_end], feature_names=pipeline.feature_names)
+                    model.fit(
+                        np.asarray(scaler.transform(X_all[dev_s:itrain_end]), dtype=np.float64),
+                        y_all[dev_s:itrain_end],
+                        feature_names=pipeline.feature_names,
+                    )
                     calibrator = ProbabilityCalibrator(method=CalibrationMethod.ISOTONIC)
                     X_ical = np.asarray(scaler.transform(X_all[ical_s:ical_e]))
                     try:
-                        calibrator.fit(np.asarray(model.predict_proba(X_ical)), y_all[ical_s:ical_e])
-                    except Exception:
-                        inner_scores.append({"candidate_index": si, "threshold": spec["threshold"], "inner_balanced_accuracy": None, "inner_samples": 0, "note": "calibration_failed"})
+                        calibrator.fit(
+                            np.asarray(model.predict_proba(X_ical)), y_all[ical_s:ical_e]
+                        )
+                    except Exception:  # noqa: BLE001
+                        inner_scores.append({
+                            "candidate_index": si,
+                            "threshold": spec["threshold"],
+                            "inner_balanced_accuracy": None,
+                            "inner_samples": 0,
+                            "note": "calibration_failed",
+                        })
                         continue
                     X_idev = np.asarray(scaler.transform(X_all[ical_e:dev_e]))
                     probs = calibrator.calibrate(np.asarray(model.predict_proba(X_idev)))
                     # reuse decision records helper from runner
                     from iqoption_research.phase45.runner import _decision_records
-                    chosen = _decision_records(probs, y_all[ical_e:dev_e], timestamps_all[ical_e:dev_e], float(spec["threshold"]), horizon_bars)
+
+                    chosen = _decision_records(
+                        probs,
+                        y_all[ical_e:dev_e],
+                        timestamps_all[ical_e:dev_e],
+                        float(spec["threshold"]),
+                        horizon_bars,
+                    )
                     acc = balanced_accuracy(chosen)
-                    inner_scores.append({"candidate_index": si, "threshold": spec["threshold"], "inner_balanced_accuracy": acc, "inner_samples": len(chosen)})
+                    inner_scores.append({
+                        "candidate_index": si,
+                        "threshold": spec["threshold"],
+                        "inner_balanced_accuracy": acc,
+                        "inner_samples": len(chosen),
+                    })
                 if not inner_scores:
                     continue
-                valid_inner = [x for x in inner_scores if x.get("inner_balanced_accuracy") is not None]
+                valid_inner = [
+                    x for x in inner_scores if x.get("inner_balanced_accuracy") is not None
+                ]
                 if not valid_inner:
                     selected = inner_scores[0]
                 else:
-                    selected = max(valid_inner, key=lambda x: float(x["inner_balanced_accuracy"] or 0.0))
+                    selected = max(
+                        valid_inner, key=lambda x: float(x["inner_balanced_accuracy"] or 0.0)
+                    )
                 # assess
                 scaler = StandardScaler().fit(X_all[dev_s:dev_e])
                 model = create_model_instance(model_family, hyperparameters)
-                model.fit(np.asarray(scaler.transform(X_all[dev_s:dev_e])), y_all[dev_s:dev_e], feature_names=pipeline.feature_names)
+                model.fit(
+                    np.asarray(scaler.transform(X_all[dev_s:dev_e])),
+                    y_all[dev_s:dev_e],
+                    feature_names=pipeline.feature_names,
+                )
                 calibrator = ProbabilityCalibrator(method=CalibrationMethod.ISOTONIC)
                 X_cal2 = np.asarray(scaler.transform(X_all[cal_s:cal_e]))
                 try:
                     calibrator.fit(np.asarray(model.predict_proba(X_cal2)), y_all[cal_s:cal_e])
-                except Exception as exc:
-                    outer_folds.append({"fold_index": fold_index, "status": "FAILED", "reason": f"calibration:{type(exc).__name__}"})
+                except Exception as exc:  # noqa: BLE001
+                    outer_folds.append({
+                        "fold_index": fold_index,
+                        "status": "FAILED",
+                        "reason": f"calibration:{type(exc).__name__}",
+                    })
                     continue
                 X_ass = np.asarray(scaler.transform(X_all[ass_s:ass_e]))
                 probs_ass = calibrator.calibrate(np.asarray(model.predict_proba(X_ass)))
                 from iqoption_research.phase45.runner import _decision_records
-                assessment = _decision_records(probs_ass, y_all[ass_s:ass_e], timestamps_all[ass_s:ass_e], float(selected["threshold"]), horizon_bars)
+
+                assessment = _decision_records(
+                    probs_ass,
+                    y_all[ass_s:ass_e],
+                    timestamps_all[ass_s:ass_e],
+                    float(selected["threshold"]),
+                    horizon_bars,
+                )
                 outer_folds.append({
                     "fold_index": fold_index,
-                    "training_window": {"start_ts": int(timestamps_all[dev_s]), "end_ts": int(timestamps_all[dev_e - 1])},
-                    "calibration_window": {"start_ts": int(timestamps_all[cal_s]), "end_ts": int(timestamps_all[cal_e - 1]) if cal_e > cal_s else int(timestamps_all[cal_s])},
-                    "assessment_window": {"start_ts": int(timestamps_all[ass_s]), "end_ts": int(timestamps_all[ass_e - 1])},
+                    "training_window": {
+                        "start_ts": int(timestamps_all[dev_s]),
+                        "end_ts": int(timestamps_all[dev_e - 1]),
+                    },
+                    "calibration_window": {
+                        "start_ts": int(timestamps_all[cal_s]),
+                        "end_ts": int(timestamps_all[cal_e - 1])
+                        if cal_e > cal_s
+                        else int(timestamps_all[cal_s]),
+                    },
+                    "assessment_window": {
+                        "start_ts": int(timestamps_all[ass_s]),
+                        "end_ts": int(timestamps_all[ass_e - 1]),
+                    },
                     "selected_threshold": selected["threshold"],
                     "inner_candidates": inner_scores,
                     "assessment_samples": len(assessment),
                     "assessment_balanced_accuracy": balanced_accuracy(assessment),
-                    "assessment_non_overlapping_balanced_accuracy": balanced_accuracy([r for r in assessment if r.get("is_non_overlapping")]),
+                    "assessment_non_overlapping_balanced_accuracy": balanced_accuracy([
+                        r for r in assessment if r.get("is_non_overlapping")
+                    ]),
                     "assessment_class_distribution": class_distribution(assessment),
-                    "assessment_day_block_bootstrap_ci_95": recompute_prediction_bootstrap(assessment, replicates=1000, seed=42 + fold_index),
+                    "assessment_day_block_bootstrap_ci_95": recompute_prediction_bootstrap(
+                        assessment, replicates=1000, seed=42 + fold_index
+                    ),
                     "status": "ASSESSMENT_COMPLETED",
                 })
             results["per_trial"][tid] = {
@@ -364,7 +483,10 @@ def _run_focused_nested(runner: Any, completed_like_records: list[dict[str, Any]
                 "execution_authority": EXECUTION_AUTHORITY,
             }
         except Exception as exc:  # noqa: BLE001
-            results["per_trial"][tid] = {"status": "FAILED", "reason": f"{type(exc).__name__}: {exc}"}
+            results["per_trial"][tid] = {
+                "status": "FAILED",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
     return results
 
 
@@ -392,7 +514,9 @@ def run_phase46_focused_validation(
     runner = Phase45Runner(Path(repo_root).resolve())
     manifests = runner.discover_manifests(None)
     if not manifests:
-        raise FileNotFoundError("No Phase45 development manifests found. Run `phase45 inventory` first.")
+        raise FileNotFoundError(
+            "No Phase45 development manifests found. Run `phase45 inventory` first."
+        )
 
     populations: dict[int, tuple[Any, list[Any]]] = {}
     for path in manifests:
@@ -414,18 +538,30 @@ def run_phase46_focused_validation(
         manifest, candles = populations[spec.timeframe_seconds]
         source_digest = manifest.content_digest
         if spec.timeframe_seconds == 60 and spec.feature_preset in {"m1_m5", "m1_m15", "m1_m5_m15"}:
-            source_digest = source_digest + "|" + "|".join(f"{tf}:{populations[tf][0].content_digest}" for tf in sorted(cross_tf))
-        pipeline = runner._pipeline(spec.timeframe_seconds, spec.feature_preset, cross_tf, source_digest)  # noqa: SLF001
+            source_digest = (
+                source_digest
+                + "|"
+                + "|".join(f"{tf}:{populations[tf][0].content_digest}" for tf in sorted(cross_tf))
+            )
+        pipeline = runner._pipeline(  # noqa: SLF001
+            spec.timeframe_seconds, spec.feature_preset, cross_tf, source_digest
+        )
         skip = runner._skip_reason(spec, pipeline, len(candles))  # noqa: SLF001
         if skip:
-            records.append({**spec.to_dict(), "status": "SKIPPED", "reason": skip, "recorded_at_utc": _now()})
+            records.append({
+                **spec.to_dict(),
+                "status": "SKIPPED",
+                "reason": skip,
+                "recorded_at_utc": _now(),
+            })
             continue
         try:
             from iqoption_research.ml.walk_forward_v3 import run_walk_forward_v3_evaluation
             from iqoption_research.phase45.evaluation import summarize_trial_report
 
             report = run_walk_forward_v3_evaluation(
-                candles, pipeline,  # type: ignore[arg-type]
+                candles,
+                pipeline,  # type: ignore[arg-type]
                 horizon_bars=spec.horizon_bars,
                 model_family=spec.model_family,
                 hyperparameters=spec.hyperparameters,
@@ -444,22 +580,44 @@ def run_phase46_focused_validation(
                 max_label_maturity_ts=runner.boundary_ts,
             )
             pred_meta = runner._persist_predictions(spec.trial_id, report)  # noqa: SLF001
-            summary = summarize_trial_report(report, bootstrap_replicates=bootstrap_replicates, metadata={**spec.to_dict(), "dataset_manifest_id": manifest.manifest_id, "dataset_content_digest": manifest.content_digest, **pred_meta})
+            summary = summarize_trial_report(
+                report,
+                bootstrap_replicates=bootstrap_replicates,
+                metadata={
+                    **spec.to_dict(),
+                    "dataset_manifest_id": manifest.manifest_id,
+                    "dataset_content_digest": manifest.content_digest,
+                    **pred_meta,
+                },
+            )
             pred_records = list(getattr(report, "prediction_records", ()))
-            summary["phase46_10k_dayblock"] = recompute_prediction_bootstrap(pred_records, replicates=bootstrap_replicates, seed=spec.seed)
-            summary["phase46_2dayblock_sensitivity"] = _two_day_block_bootstrap(pred_records, replicates=bootstrap_replicates_sensitivity, seed=spec.seed + 777)
+            summary["phase46_10k_dayblock"] = recompute_prediction_bootstrap(
+                pred_records, replicates=bootstrap_replicates, seed=spec.seed
+            )
+            summary["phase46_2dayblock_sensitivity"] = _two_day_block_bootstrap(
+                pred_records, replicates=bootstrap_replicates_sensitivity, seed=spec.seed + 777
+            )
             summary["phase46_breakdowns"] = _compute_breakdowns(pred_records, spec.horizon_bars)
             summary["status"] = "COMPLETED"
             records.append(summary)
         except Exception as exc:  # noqa: BLE001
-            records.append({**spec.to_dict(), "status": "FAILED", "reason": f"{type(exc).__name__}: {exc}", "recorded_at_utc": _now()})
+            records.append({
+                **spec.to_dict(),
+                "status": "FAILED",
+                "reason": f"{type(exc).__name__}: {exc}",
+                "recorded_at_utc": _now(),
+            })
 
     nested_summary: dict[str, Any] = {"status": "NOT_RUN", "reason": "run_nested=False"}
     if run_nested:
         nested_summary = _run_focused_nested(runner, records, populations, cross_tf)
 
     elapsed = time.perf_counter() - t0
-    resource = {"elapsed_seconds": round(elapsed, 3), "peak_working_set_bytes": _peak_working_set_bytes(), "python_peak_allocated_bytes": _tracemalloc_peak()}
+    resource = {
+        "elapsed_seconds": round(elapsed, 3),
+        "peak_working_set_bytes": _peak_working_set_bytes(),
+        "python_peak_allocated_bytes": _tracemalloc_peak(),
+    }
     return Phase46FocusedResult(
         suite_id=f"p46_focused_{int(time.time())}",
         started_at_utc=started,

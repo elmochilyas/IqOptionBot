@@ -1,0 +1,159 @@
+{
+  "diagnostics": {
+    "abstention_rate": 0.0,
+    "abstention_reasons": {
+      "counts_by_reason": {
+        "none": 0
+      },
+      "status": "AVAILABLE",
+      "total_abstentions": 0
+    },
+    "balanced_accuracy": {
+      "down_recall": 1.0,
+      "down_true_count": 4,
+      "status": "AVAILABLE",
+      "up_recall": 1.0,
+      "up_true_count": 23,
+      "value": 1.0
+    },
+    "baseline_comparisons": [
+      {
+        "baseline_name": "majority_class",
+        "brier_score": 0.25,
+        "candidate_delta_accuracy": 0.0,
+        "candidate_delta_brier": 0.0,
+        "candidate_delta_decisive_accuracy": 0.0,
+        "decisive_directional_accuracy": 0.0,
+        "decisive_sample_count": 27,
+        "directional_accuracy": 0.0,
+        "is_verified": false,
+        "sample_count": 27,
+        "status": "UNAVAILABLE",
+        "tie_count": 0
+      },
+      {
+        "baseline_name": "random_uniform",
+        "brier_score": 0.25,
+        "candidate_delta_accuracy": 0.5,
+        "candidate_delta_brier": 0.2474,
+        "candidate_delta_decisive_accuracy": 0.5,
+        "decisive_directional_accuracy": 0.5,
+        "decisive_sample_count": 27,
+        "directional_accuracy": 0.5,
+        "is_verified": true,
+        "sample_count": 27,
+        "status": "VERIFIED",
+        "tie_count": 0
+      }
+    ],
+    "brier_score": 0.0026,
+    "calibration_reliability": {
+      "bins": [
+        {
+          "count": 1,
+          "empirical_accuracy": 1.0,
+          "mean_confidence": 0.73717,
+          "range": "[0.7, 0.8)"
+        },
+        {
+          "count": 26,
+          "empirical_accuracy": 1.0,
+          "mean_confidence": 1.0,
+          "range": "[0.9, 1.0]"
+        }
+      ],
+      "brier_score": 0.0026,
+      "calibration_drift": {
+        "note": "No reference training calibration curve stored alongside session journal.",
+        "status": "UNAVAILABLE"
+      },
+      "ece": 0.009734,
+      "status": "AVAILABLE"
+    },
+    "candidate_specific": {
+      "commitments_verified_count": 27,
+      "model_id": "candidate_logistic_regression_20261125_183012_lab_98be193602d4",
+      "opportunity_count": 28,
+      "status": "AVAILABLE",
+      "symbol": "EURUSD",
+      "timeframe_seconds": 60
+    },
+    "confidence_summary": {
+      "count": 28,
+      "max": 1.0,
+      "mean": 0.990613,
+      "min": 0.73717,
+      "status": "AVAILABLE"
+    },
+    "coverage": 1.0,
+    "data_quality_failures": {
+      "counts_by_note": {
+        "none": 0
+      },
+      "feature_computation_failures": 0,
+      "invalid_discontinuity_count": 0,
+      "is_interrupted": false,
+      "quarantined_late_count": 0,
+      "status": "AVAILABLE",
+      "terminal_status": "STREAM_COMPLETED_EOF",
+      "unresolved_pending_count": 1
+    },
+    "directional_accuracy": 1.0,
+    "disclaimer": "OFFLINE RESEARCH SHADOW EVALUATION. NO LIVE EXECUTION AUTHORITY. NO DEMONSTRATED EDGE. CANDLE-CLOSE COMPARISONS ARE HYPOTHETICAL RESEARCH BENCHMARKS AND NEVER OBSERVED BROKER ORDER SETTLEMENTS. ASSUMED PAYOUT SIMULATIONS DO NOT CONSTITUTE PROOF OF PROSPECTIVE PROFITABILITY. WILSON SCORE INTERVALS ASSUME I.I.D. BERNOULLI TRIALS AND REPRESENT AN OPTIMAL BOUND UNDER TEMPORAL SERIAL DEPENDENCE. PHASE 38 MODEL REMAINS FROZEN.",
+    "evidence_verification": {
+      "is_valid": true,
+      "issues": [],
+      "status": "VERIFIED"
+    },
+    "execution_authority": "NONE",
+    "feature_distribution_drift": {
+      "note": "No reference training feature distribution snapshot stored alongside this session journal.",
+      "observed_feature_fingerprints": 0,
+      "status": "UNAVAILABLE"
+    },
+    "invalid_discontinuity_count": 0,
+    "is_synthetic": true,
+    "loss_count": 0,
+    "pending_count": 1,
+    "regime_session_breakdown": {
+      "causal_market_regimes": {
+        "note": "Volatility/regime proxy values are not persisted per-prediction in the current journal schema.",
+        "status": "UNAVAILABLE"
+      },
+      "status": "PARTIAL",
+      "utc_sessions": {
+        "ASIA_00_08Z": {
+          "accuracy": 1.0,
+          "losses": 0,
+          "resolved_decisive": 27,
+          "wins": 27
+        }
+      }
+    },
+    "research_disposition": "NO_DEMONSTRATED_EDGE",
+    "resolved_count": 27,
+    "scientific_verdict": "FUNCTIONAL_REPLAY_TEST_ONLY_NO_EDGE",
+    "session_id": "p46_synth_m1_1795631660",
+    "session_manifest_summary": {
+      "file_digests": {},
+      "is_interrupted": false,
+      "is_synthetic": true,
+      "session_id": "p46_synth_m1_1795631660",
+      "status": "AVAILABLE",
+      "terminal_status": "STREAM_COMPLETED_EOF",
+      "termination_reason": "STREAM_COMPLETED_EOF"
+    },
+    "skipped_abstain_count": 0,
+    "symbol": "EURUSD",
+    "tie_count": 0,
+    "timeframe_seconds": 60,
+    "total_predictions": 28,
+    "trade_count": 27,
+    "win_count": 27,
+    "win_rate_decisive": 1.0
+  },
+  "execution_authority": "NONE",
+  "label": "PHASE46_SYNTHETIC_DIAGNOSTICS",
+  "research_disposition": "NO_DEMONSTRATED_EDGE",
+  "warning": "SYNTHETIC / DEVELOPMENT_RESEARCH ONLY. Not genuine prospective evidence."
+}

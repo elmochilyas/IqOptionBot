@@ -60,18 +60,36 @@ def publish_focused_validation(repo_root: Path, result: Any) -> dict[str, str]:
             rec.get("horizon_name", rec.get("horizon", "")),
             rec.get("model_family", ""),
             rec.get("status", ""),
-            rec.get("phase46_10k_dayblock", {}).get("ci_95", {}).get("ci_lower") if isinstance(rec.get("phase46_10k_dayblock"), dict) else None,
-            rec.get("phase46_10k_dayblock", {}).get("ci_95", {}).get("ci_upper") if isinstance(rec.get("phase46_10k_dayblock"), dict) else None,
+            rec.get("phase46_10k_dayblock", {}).get("ci_95", {}).get("ci_lower")
+            if isinstance(rec.get("phase46_10k_dayblock"), dict)
+            else None,
+            rec.get("phase46_10k_dayblock", {}).get("ci_95", {}).get("ci_upper")
+            if isinstance(rec.get("phase46_10k_dayblock"), dict)
+            else None,
             rec.get("disposition", rec.get("status", "")),
         ])
-    lines.extend(_md_table(
-        ["Trial", "TF", "Horizon", "Model", "Status", "10k CI lo", "10k CI hi", "Notes"],
-        rows,
-    ))
-    lines.extend(["", "## Nested emphasis (tree-based, explicit Phase46 nested protocol)", "", "```json"])
+    lines.extend(
+        _md_table(
+            ["Trial", "TF", "Horizon", "Model", "Status", "10k CI lo", "10k CI hi", "Notes"],
+            rows,
+        )
+    )
+    lines.extend([
+        "",
+        "## Nested emphasis (tree-based, explicit Phase46 nested protocol)",
+        "",
+        "```json",
+    ])
     lines.append(json.dumps(data.get("nested_summary", {}), indent=2, sort_keys=True))
     lines.append("```")
-    lines.extend(["", "## Governance note", "", "- This report is DEVELOPMENT_RESEARCH only.", "- No execution authority. No demonstrated edge claimed.", "- Negatives/inconclusives preserved."])
+    lines.extend([
+        "",
+        "## Governance note",
+        "",
+        "- This report is DEVELOPMENT_RESEARCH only.",
+        "- No execution authority. No demonstrated edge claimed.",
+        "- Negatives/inconclusives preserved.",
+    ])
     (reports / "focused_validation.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     paths["focused_validation_md"] = "reports/phase46/focused_validation.md"
 

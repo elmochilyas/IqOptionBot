@@ -1,0 +1,733 @@
+{
+  "disposition": "NO_DEMONSTRATED_EDGE",
+  "execution_authority": "NONE",
+  "generated_at_utc": "2026-11-25T20:35:18.881268+00:00",
+  "hypotheses_assessment": [
+    {
+      "detail": "Lag-1..10 |return| autocorrelations are strongly positive across M1, M5, and M15, supporting causal volatility/compression features.",
+      "hypothesis": "Volatility clustering (|return| autocorrelation)",
+      "status": "SUPPORTED"
+    },
+    {
+      "detail": "Return autocorrelations and unconditional momentum persistence hover near 50% with day-block 95% CIs straddling 0.50 and H1/H2 drift.",
+      "hypothesis": "Unconditional 1-bar directional momentum / mean-reversion",
+      "status": "UNSTABLE_OR_WEAK"
+    },
+    {
+      "detail": "Volume is tick/activity count only; treated strictly as activity proxy, never order flow.",
+      "hypothesis": "Volume field as institutional order flow",
+      "status": "UNSUPPORTED"
+    },
+    {
+      "detail": "Volatility and directional activity vary by UTC session; useful as context features but not standalone directional predictors.",
+      "hypothesis": "UTC session structure",
+      "status": "SUPPORTED_AS_CONTEXT"
+    }
+  ],
+  "protected_boundary_ts": 1794477600,
+  "research_stage": "DEVELOPMENT_RESEARCH_NOT_INDEPENDENT_CONFIRMATION",
+  "timeframes": {
+    "300s": {
+      "abs_return_vol_clustering_autocorr": {
+        "lag_1": 0.26614,
+        "lag_10": 0.18705,
+        "lag_2": 0.22879,
+        "lag_3": 0.22403,
+        "lag_5": 0.21423
+      },
+      "candle_count": 59387,
+      "content_digest": "624de4f68f222144f8496c7da6551dbfb17a16a6edf03c3b4bb3145c06d85a4c",
+      "contiguous_bars": 59345,
+      "horizons": {
+        "H12_60m": {
+          "down_count": 30173,
+          "fwd_return_mean": -1.1596053358011645e-05,
+          "fwd_return_std": 0.000731701896214111,
+          "horizon_bars": 12,
+          "horizon_minutes": 60,
+          "momentum_h1_vs_h2": {
+            "h1": 0.49543069599360645,
+            "h2": 0.49211257817929116
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.4898048328761379,
+            "ci_upper": 0.4979738394460118,
+            "days": 248,
+            "mean": 0.49377160826282596,
+            "n": 57559,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 19724,
+              "up_rate": 0.48697
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 9872,
+              "up_rate": 0.46759
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 9866,
+              "up_rate": 0.46523
+            },
+            "US_LATE_16_24Z": {
+              "n": 19143,
+              "up_rate": 0.50259
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.4888378682038005,
+            "ci_upper": 0.5014178792245828,
+            "days": 248,
+            "mean": 0.4950147710487445,
+            "n": 21664,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 236,
+          "total_valid": 58841,
+          "up_count": 28432,
+          "up_rate_decisive": 0.48515
+        },
+        "H1_5m": {
+          "down_count": 29437,
+          "fwd_return_mean": -9.206722431252705e-07,
+          "fwd_return_std": 0.00021964626283854175,
+          "horizon_bars": 1,
+          "horizon_minutes": 5,
+          "momentum_h1_vs_h2": {
+            "h1": 0.4907203523120478,
+            "h2": 0.4918038516654434
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.4865274392252454,
+            "ci_upper": 0.49559896051638863,
+            "days": 248,
+            "mean": 0.4912621019887456,
+            "n": 57222,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 19460,
+              "up_rate": 0.49954
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 9787,
+              "up_rate": 0.48156
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 9794,
+              "up_rate": 0.49214
+            },
+            "US_LATE_16_24Z": {
+              "n": 19201,
+              "up_rate": 0.49742
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.4761408824086347,
+            "ci_upper": 0.491008150248051,
+            "days": 248,
+            "mean": 0.48345878635814515,
+            "n": 21522,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 1061,
+          "total_valid": 59303,
+          "up_count": 28805,
+          "up_rate_decisive": 0.49457
+        },
+        "H3_15m": {
+          "down_count": 29841,
+          "fwd_return_mean": -2.8263587355578285e-06,
+          "fwd_return_std": 0.00037376764378593824,
+          "horizon_bars": 3,
+          "horizon_minutes": 15,
+          "momentum_h1_vs_h2": {
+            "h1": 0.49018655940079064,
+            "h2": 0.48905995353514337
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.4854861086407456,
+            "ci_upper": 0.4937068615509541,
+            "days": 248,
+            "mean": 0.4896232467014581,
+            "n": 57677,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 19619,
+              "up_rate": 0.49666
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 9862,
+              "up_rate": 0.48073
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 9840,
+              "up_rate": 0.48455
+            },
+            "US_LATE_16_24Z": {
+              "n": 19401,
+              "up_rate": 0.49626
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.47390729684152955,
+            "ci_upper": 0.48872997193808276,
+            "days": 248,
+            "mean": 0.4815189873417722,
+            "n": 21725,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 497,
+          "total_valid": 59219,
+          "up_count": 28881,
+          "up_rate_decisive": 0.49183
+        },
+        "H6_30m": {
+          "down_count": 30105,
+          "fwd_return_mean": -5.812409664313841e-06,
+          "fwd_return_std": 0.000523851032421033,
+          "horizon_bars": 6,
+          "horizon_minutes": 30,
+          "momentum_h1_vs_h2": {
+            "h1": 0.4905006240465955,
+            "h2": 0.49265011787546803
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.4869874555326718,
+            "ci_upper": 0.4960100140823032,
+            "days": 248,
+            "mean": 0.49157537096103177,
+            "n": 57688,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 19678,
+              "up_rate": 0.49024
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 9847,
+              "up_rate": 0.47466
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 9864,
+              "up_rate": 0.47678
+            },
+            "US_LATE_16_24Z": {
+              "n": 19349,
+              "up_rate": 0.49661
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.48276026061730154,
+            "ci_upper": 0.49652432969215493,
+            "days": 248,
+            "mean": 0.48970662736609405,
+            "n": 21713,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 355,
+          "total_valid": 59093,
+          "up_count": 28633,
+          "up_rate_decisive": 0.48747
+        }
+      },
+      "manifest_id": "gov_eurusd_300s_624de4f68f22",
+      "return_autocorr": {
+        "lag_1": -0.02281,
+        "lag_10": -0.00357,
+        "lag_2": -0.00572,
+        "lag_3": -0.0093,
+        "lag_5": 0.00461
+      },
+      "return_mean": -9.486156276777544e-07,
+      "return_std": 0.00021963876048522793,
+      "timeframe_seconds": 300,
+      "volume_audit": {
+        "note": "IQ Option tick/activity count proxy, not institutional order-book volume.",
+        "volume_range_correlation": 0.77551,
+        "zero_volume_fraction": 0.00017
+      }
+    },
+    "60s": {
+      "abs_return_vol_clustering_autocorr": {
+        "lag_1": 0.25329,
+        "lag_10": 0.18603,
+        "lag_2": 0.22737,
+        "lag_3": 0.21969,
+        "lag_5": 0.21175
+      },
+      "candle_count": 60711,
+      "content_digest": "f8fecd1910011914cacbc7b7390d3e2d8d2031f80a1273fc6ce0ebc46c025136",
+      "contiguous_bars": 60702,
+      "horizons": {
+        "H15_15m": {
+          "down_count": 30768,
+          "fwd_return_mean": -8.620574404525741e-06,
+          "fwd_return_std": 0.000370978651536716,
+          "horizon_bars": 15,
+          "horizon_minutes": 15,
+          "momentum_h1_vs_h2": {
+            "h1": 0.5010367246529608,
+            "h2": 0.4985767000527148
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.49562518152773744,
+            "ci_upper": 0.5037645565712522,
+            "days": 51,
+            "mean": 0.4998067123528378,
+            "n": 56910,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 20134,
+              "up_rate": 0.50343
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 10126,
+              "up_rate": 0.46642
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 10029,
+              "up_rate": 0.43464
+            },
+            "US_LATE_16_24Z": {
+              "n": 19712,
+              "up_rate": 0.50807
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.4926181942310975,
+            "ci_upper": 0.5049180327868853,
+            "days": 51,
+            "mean": 0.4986833705713374,
+            "n": 25064,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 566,
+          "total_valid": 60567,
+          "up_count": 29233,
+          "up_rate_decisive": 0.48721
+        },
+        "H1_1m": {
+          "down_count": 28946,
+          "fwd_return_mean": -5.754353255899473e-07,
+          "fwd_return_std": 9.397532979283517e-05,
+          "horizon_bars": 1,
+          "horizon_minutes": 1,
+          "momentum_h1_vs_h2": {
+            "h1": 0.4943229527947136,
+            "h2": 0.4956737614544924
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.49162171585618475,
+            "ci_upper": 0.49841307158810394,
+            "days": 51,
+            "mean": 0.494998357124603,
+            "n": 54782,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 19295,
+              "up_rate": 0.49852
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 9929,
+              "up_rate": 0.4934
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 9845,
+              "up_rate": 0.48431
+            },
+            "US_LATE_16_24Z": {
+              "n": 18485,
+              "up_rate": 0.5043
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.4886353467561521,
+            "ci_upper": 0.49962563312045805,
+            "days": 51,
+            "mean": 0.4941372141372141,
+            "n": 24050,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 3139,
+          "total_valid": 60693,
+          "up_count": 28608,
+          "up_rate_decisive": 0.49706
+        },
+        "H30_30m": {
+          "down_count": 31239,
+          "fwd_return_mean": -1.723193772740775e-05,
+          "fwd_return_std": 0.0005278434628662104,
+          "horizon_bars": 30,
+          "horizon_minutes": 30,
+          "momentum_h1_vs_h2": {
+            "h1": 0.4990879113169157,
+            "h2": 0.49936855398863395
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.49451469116710634,
+            "ci_upper": 0.5036233930016752,
+            "days": 51,
+            "mean": 0.49922823265277483,
+            "n": 57012,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 20214,
+              "up_rate": 0.49931
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 10122,
+              "up_rate": 0.45604
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 10048,
+              "up_rate": 0.4169
+            },
+            "US_LATE_16_24Z": {
+              "n": 19724,
+              "up_rate": 0.50553
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.49461837682691945,
+            "ci_upper": 0.5068777470291389,
+            "days": 51,
+            "mean": 0.5008760054153062,
+            "n": 25114,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 324,
+          "total_valid": 60432,
+          "up_count": 28869,
+          "up_rate_decisive": 0.48029
+        },
+        "H5_5m": {
+          "down_count": 30378,
+          "fwd_return_mean": -2.8926577054966845e-06,
+          "fwd_return_std": 0.00021308153134635562,
+          "horizon_bars": 5,
+          "horizon_minutes": 5,
+          "momentum_h1_vs_h2": {
+            "h1": 0.49752422720520617,
+            "h2": 0.49755959538798894
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.4935413021628262,
+            "ci_upper": 0.5012989292610146,
+            "days": 51,
+            "mean": 0.4975419112965976,
+            "n": 56548,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 19973,
+              "up_rate": 0.49312
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 10077,
+              "up_rate": 0.4801
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 9986,
+              "up_rate": 0.46495
+            },
+            "US_LATE_16_24Z": {
+              "n": 19554,
+              "up_rate": 0.50537
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.49087423951996,
+            "ci_upper": 0.5033052884615384,
+            "days": 51,
+            "mean": 0.4970464135021097,
+            "n": 24885,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 1067,
+          "total_valid": 60657,
+          "up_count": 29212,
+          "up_rate_decisive": 0.49022
+        },
+        "H60_60m": {
+          "down_count": 31179,
+          "fwd_return_mean": -3.4230599309707746e-05,
+          "fwd_return_std": 0.0007471277671878862,
+          "horizon_bars": 60,
+          "horizon_minutes": 60,
+          "momentum_h1_vs_h2": {
+            "h1": 0.5019533312216239,
+            "h2": 0.497853170972056
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.4956028849594185,
+            "ci_upper": 0.5042021343603218,
+            "days": 51,
+            "mean": 0.49990321502102875,
+            "n": 56827,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 20259,
+              "up_rate": 0.49608
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 10115,
+              "up_rate": 0.43925
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 10048,
+              "up_rate": 0.40904
+            },
+            "US_LATE_16_24Z": {
+              "n": 19500,
+              "up_rate": 0.52
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.49546758462421114,
+            "ci_upper": 0.5076458594730239,
+            "days": 51,
+            "mean": 0.5013982102908278,
+            "n": 25032,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 240,
+          "total_valid": 60162,
+          "up_count": 28743,
+          "up_rate_decisive": 0.47967
+        }
+      },
+      "manifest_id": "gov_eurusd_60s_f8fecd191001",
+      "return_autocorr": {
+        "lag_1": 0.01407,
+        "lag_10": 0.00609,
+        "lag_2": 0.00576,
+        "lag_3": 0.00361,
+        "lag_5": 0.00117
+      },
+      "return_mean": -6.518905536105976e-07,
+      "return_std": 9.5304655858823e-05,
+      "timeframe_seconds": 60,
+      "volume_audit": {
+        "note": "IQ Option tick/activity count proxy, not institutional order-book volume.",
+        "volume_range_correlation": 0.76169,
+        "zero_volume_fraction": 0.00326
+      }
+    },
+    "900s": {
+      "abs_return_vol_clustering_autocorr": {
+        "lag_1": 0.23247,
+        "lag_10": 0.10731,
+        "lag_2": 0.20357,
+        "lag_3": 0.19033,
+        "lag_5": 0.16277
+      },
+      "candle_count": 30768,
+      "content_digest": "399632518d0e570216403c869b6bc73a502992349294c65db61addb7c060fa28",
+      "contiguous_bars": 30701,
+      "horizons": {
+        "H1_15m": {
+          "down_count": 15296,
+          "fwd_return_mean": -1.1037933141079495e-06,
+          "fwd_return_std": 0.0003723432476057913,
+          "horizon_bars": 1,
+          "horizon_minutes": 15,
+          "momentum_h1_vs_h2": {
+            "h1": 0.489738991831042,
+            "h2": 0.4862190343361891
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.48261210615766764,
+            "ci_upper": 0.4935691861053911,
+            "days": 387,
+            "mean": 0.4879790130836156,
+            "n": 30114,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 10154,
+              "up_rate": 0.49783
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 5116,
+              "up_rate": 0.48964
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 5114,
+              "up_rate": 0.49531
+            },
+            "US_LATE_16_24Z": {
+              "n": 9988,
+              "up_rate": 0.4989
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.4683685828752446,
+            "ci_upper": 0.48760812518223345,
+            "days": 385,
+            "mean": 0.47782779427257926,
+            "n": 10441,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 262,
+          "total_valid": 30634,
+          "up_count": 15076,
+          "up_rate_decisive": 0.49638
+        },
+        "H2_30m": {
+          "down_count": 15358,
+          "fwd_return_mean": -2.382897574406611e-06,
+          "fwd_return_std": 0.0005213146326803785,
+          "horizon_bars": 2,
+          "horizon_minutes": 30,
+          "momentum_h1_vs_h2": {
+            "h1": 0.48947752771692227,
+            "h2": 0.4832370709685985
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.4809788873884259,
+            "ci_upper": 0.49201356121771345,
+            "days": 387,
+            "mean": 0.4863572993427604,
+            "n": 30126,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 10176,
+              "up_rate": 0.49872
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 5115,
+              "up_rate": 0.48094
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 5122,
+              "up_rate": 0.49453
+            },
+            "US_LATE_16_24Z": {
+              "n": 9973,
+              "up_rate": 0.49734
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.47388877815427544,
+            "ci_upper": 0.49331666506394845,
+            "days": 385,
+            "mean": 0.4837752464822437,
+            "n": 10447,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 181,
+          "total_valid": 30567,
+          "up_count": 15028,
+          "up_rate_decisive": 0.49457
+        },
+        "H4_60m": {
+          "down_count": 15398,
+          "fwd_return_mean": -4.417300927128879e-06,
+          "fwd_return_std": 0.0007266016094953973,
+          "horizon_bars": 4,
+          "horizon_minutes": 60,
+          "momentum_h1_vs_h2": {
+            "h1": 0.4901530272787758,
+            "h2": 0.4942115768463074
+          },
+          "momentum_persistence_ci": {
+            "ci_lower": 0.48665113182423436,
+            "ci_upper": 0.49784379492093916,
+            "days": 387,
+            "mean": 0.4921823020625416,
+            "n": 30060,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "session_up_rates": {
+            "ASIA_00_08Z": {
+              "n": 10209,
+              "up_rate": 0.4927
+            },
+            "EU_OPEN_08_12Z": {
+              "n": 5129,
+              "up_rate": 0.47222
+            },
+            "EU_US_OVERLAP_12_16Z": {
+              "n": 5122,
+              "up_rate": 0.49414
+            },
+            "US_LATE_16_24Z": {
+              "n": 9858,
+              "up_rate": 0.50081
+            }
+          },
+          "strong_body_continuation_ci": {
+            "ci_lower": 0.4852941176470588,
+            "ci_upper": 0.5035507381797795,
+            "days": 385,
+            "mean": 0.4945792957881608,
+            "n": 10423,
+            "replicates": 2000,
+            "status": "VERIFIED"
+          },
+          "tie_count": 115,
+          "total_valid": 30433,
+          "up_count": 14920,
+          "up_rate_decisive": 0.49212
+        }
+      },
+      "manifest_id": "gov_eurusd_900s_399632518d0e",
+      "return_autocorr": {
+        "lag_1": -0.02008,
+        "lag_10": 0.00435,
+        "lag_2": -0.01572,
+        "lag_3": -0.00278,
+        "lag_5": 0.00893
+      },
+      "return_mean": -1.1369962254328479e-06,
+      "return_std": 0.000372099623160649,
+      "timeframe_seconds": 900,
+      "volume_audit": {
+        "note": "IQ Option tick/activity count proxy, not institutional order-book volume.",
+        "volume_range_correlation": 0.0265,
+        "zero_volume_fraction": 3e-05
+      }
+    }
+  }
+}

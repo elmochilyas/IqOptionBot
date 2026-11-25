@@ -525,8 +525,11 @@ async def test_close_during_initialization_fails_without_waiting_for_timeout(
                 await super().send(data)
 
     monkeypatch.setattr(observer_module, "ws_connect", AsyncMock(return_value=Socket(obs)))
+    # The close is propagated as soon as the listener observes the dropped socket.
+    # Local TLS-context setup can take ~0.2s, so 2s still proves we do not wait
+    # for the observer's 5s account-state timeout while avoiding host-speed flakes.
     with pytest.raises(ObserverStageError, match="WS_CONNECTION_CLOSED"):
-        await asyncio.wait_for(obs.async_connect(), timeout=0.5)
+        await asyncio.wait_for(obs.async_connect(), timeout=2.0)
     assert not obs.failure_diagnostics()["history_request_dispatched"]
     assert not obs.is_connected
     await obs.async_close()

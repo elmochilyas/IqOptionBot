@@ -16,12 +16,14 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import queue
 import threading
 import time
 import tkinter as tk
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from tkinter import messagebox, ttk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any
 
 from iqoption_research.market_data.collection_engine import (
@@ -55,6 +57,7 @@ class CollectionCenterPanel:
     btn_stop: ttk.Button
     btn_resume: ttk.Button
     btn_verify: ttk.Button
+    btn_export_report: ttk.Button
     lbl_job_id: ttk.Label
     lbl_cursor: ttk.Label
     lbl_range_req: ttk.Label
@@ -74,8 +77,21 @@ class CollectionCenterPanel:
         self._cancel_requested = False
         self._worker_thread: threading.Thread | None = None
         self._collection_start_time: float | None = None
+        self._active_operation: str | None = None
+        self._verify_cancel_requested = False
+        self._last_verification_report: dict[str, Any] | None = None
+        self._op_start_time: float | None = None
         self._accounts_map: dict[str, str] = {}
         self._jobs_map: dict[str, str] = {}
+        self._ui_queue: queue.Queue[Callable[[], None]] = queue.Queue()
+        self._ui_poll_pending = False
+        self._ui_poll_after_id: str | None = None
+        # Every background operation carries a generation token. Results from a
+        # superseded generation or a job other than the selected one are discarded.
+        self._operation_generation = 0
+        self._plan_request: tuple[str, str, str, int] | None = None
+        self._plan_base_job_id: str | None = None
+        self._pending_start_after_plan = False
 
         # Main frame
         self.frame = ttk.Frame(notebook, padding=12)
@@ -134,6 +150,71 @@ class CollectionCenterPanel:
         self._refresh_accounts()
         self._refresh_jobs()
         self._apply_preset(30)
+        self._schedule_ui_poll()
+
+    def _dispatch_to_ui(self, callback: Callable[[], None]) -> None:
+        """Thread-safe dispatch of a callback to the main Tkinter thread."""
+        self._ui_queue.put(callback)
+
+    def _schedule_ui_poll(self) -> None:
+        """Keep exactly one recurring UI poll scheduled on the Tk main thread."""
+        if self._ui_poll_pending or self._ui_poll_after_id is not None:
+            return
+        with contextlib.suppress(Exception):
+            if self.dashboard.window.winfo_exists():
+                self._ui_poll_pending = True
+                self._ui_poll_after_id = self.dashboard.window.after(20, self._scheduled_poll)
+
+    def _scheduled_poll(self) -> None:
+        """Tk callback wrapper that owns the recurring poll timer."""
+        self._ui_poll_after_id = None
+        self._ui_poll_pending = False
+        self._poll_ui_queue()
+        self._schedule_ui_poll()
+
+    def shutdown(self) -> None:
+        """Cancel pending UI callbacks before the Tk window is destroyed."""
+        self._ui_poll_pending = True
+        if self._ui_poll_after_id is not None:
+            with contextlib.suppress(Exception):
+                self.dashboard.window.after_cancel(self._ui_poll_after_id)
+            self._ui_poll_after_id = None
+        while not self._ui_queue.empty():
+            with contextlib.suppress(queue.Empty):
+                self._ui_queue.get_nowait()
+
+    def _poll_ui_queue(self) -> None:
+        """Drain queued UI callbacks strictly on the main thread."""
+        # Manual pumps may call this directly. They must not disturb the one
+        # recurring Tk timer owned by ``_scheduled_poll``; otherwise every pump
+        # would leave another stale ``after`` callback queued for a dead widget.
+        while not self._ui_queue.empty():
+            try:
+                cb = self._ui_queue.get_nowait()
+                cb()
+            except queue.Empty:
+                break
+            except Exception as exc:
+                logger.exception("Error executing queued UI callback: %s", exc)
+
+    def _next_operation_generation(self) -> int:
+        """Invalidate callbacks from every previously started background operation."""
+        self._operation_generation += 1
+        return self._operation_generation
+
+    def _is_current_worker_result(self, generation: int, job_id: str | None) -> bool:
+        """Reject stale worker results before they can mutate the visible job."""
+        if generation != self._operation_generation:
+            logger.debug("Discarding stale worker result from generation %s", generation)
+            return False
+        if job_id is not None and job_id != self.current_job_id:
+            logger.debug(
+                "Discarding worker result for job %s; selected job is %s",
+                job_id,
+                self.current_job_id,
+            )
+            return False
+        return True
 
     def _build_config_ui(self, parent: ttk.Frame) -> None:
         cfg_frame = ttk.LabelFrame(parent, text="Collection Parameters", padding=10)
@@ -245,7 +326,7 @@ class CollectionCenterPanel:
         controls = (
             ("btn_plan", "Inspect & Plan", self._plan_collection, "normal"),
             ("btn_start", "Start Collection", self._start_collection, "normal"),
-            ("btn_stop", "Stop / Pause", self._stop_collection, "disabled"),
+            ("btn_stop", "Stop / Pause", self._stop_clicked, "disabled"),
             ("btn_resume", "Resume Interrupted", self._resume_collection, "disabled"),
             ("btn_verify", "Verify Integrity & Snapshot", self._verify_and_snapshot, "normal"),
         )
@@ -311,8 +392,18 @@ class CollectionCenterPanel:
             lbl.grid(row=row, column=col + 1, sticky="w", pady=2, padx=(0, 12))
             setattr(self, attr_name, lbl)
 
-        # Reason for stop/failure
-        ttk.Label(status_frame, text="Diagnostics & Output Log:").pack(anchor="w", pady=(4, 2))
+        # Reason for stop/failure & Export Report button
+        log_header = ttk.Frame(status_frame)
+        log_header.pack(fill="x", pady=(4, 2))
+        ttk.Label(log_header, text="Diagnostics & Output Log:").pack(side="left")
+        self.btn_export_report = ttk.Button(
+            log_header,
+            text="Export Report JSON",
+            command=self._export_report,
+            state="disabled",
+            width=18,
+        )
+        self.btn_export_report.pack(side="right")
         self.txt_log = tk.Text(status_frame, height=12, wrap="word", font=("Consolas", 9))
         self.txt_log.pack(fill="both", expand=True)
 
@@ -499,7 +590,15 @@ class CollectionCenterPanel:
             self._log("Operator declined live connection; no broker access was attempted.")
         return bool(confirmed)
 
-    def _plan_collection(self) -> None:
+    def _plan_collection(self, *, start_after: bool = False) -> None:
+        """Start planning on a worker thread; never block the Tk event loop."""
+        if self._active_operation is not None:
+            messagebox.showwarning(
+                "Operation in Progress",
+                f"An operation ({self._active_operation}) is currently in progress. Please wait.",
+            )
+            return
+
         symbol = self.combo_symbol.get().strip().upper()
         s_text = self.entry_start_utc.get().strip()
         e_text = self.entry_end_utc.get().strip()
@@ -508,26 +607,129 @@ class CollectionCenterPanel:
         try:
             s_dt = parse_explicit_utc_datetime(s_text)
             e_dt = parse_explicit_utc_datetime(e_text)
-            selected_account_label = self.combo_account.get()
-            selected_account_id = self._accounts_map.get(selected_account_label)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Planning Error", f"Invalid UTC range:\n{exc}")
+            self._log(f"Planning failed: {exc}")
+            return
+
+        selected_account_label = self.combo_account.get()
+        selected_account_id = self._accounts_map.get(selected_account_label)
+        request: tuple[str, str, str, int] = (symbol, s_dt.isoformat(), e_dt.isoformat(), tf)
+        self._plan_request = request
+        self._plan_base_job_id = self.current_job_id
+        self._pending_start_after_plan = bool(start_after)
+        generation = self._next_operation_generation()
+        self._set_controls_state("planning")
+        self.lbl_status_badge.config(text="PLANNING...", foreground="#17324d")
+        self._log(f"Analyzing existing coverage for {symbol} in background...")
+        self._worker_thread = threading.Thread(
+            target=self._run_planning_thread,
+            args=(*request, selected_account_id, generation),
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+    def _run_planning_thread(
+        self,
+        symbol: str,
+        start_utc: str,
+        end_utc: str,
+        timeframe_seconds: int,
+        account_id: str | None,
+        generation: int,
+    ) -> None:
+        """Expensive coverage inspection and checkpoint creation run off the UI thread."""
+        try:
             job_id, missing, progress = self.coordinator.plan_collection(
                 symbol=symbol,
-                start_utc=s_dt.isoformat(),
-                end_utc=e_dt.isoformat(),
-                timeframe_seconds=tf,
-                account_id=selected_account_id,
-                account_label=selected_account_id,
+                start_utc=start_utc,
+                end_utc=end_utc,
+                timeframe_seconds=timeframe_seconds,
+                account_id=account_id,
+                account_label=account_id,
             )
-            self.current_job_id = job_id
-            self._update_progress_display(progress)
-            self._refresh_jobs()
-            self._log(f"Planned job {job_id}: {len(missing)} missing intervals identified.")
-            self.btn_start.config(state="normal")
-            self.btn_stop.config(state="disabled")
-            self.btn_resume.config(state="disabled")
+            self._dispatch_to_ui(
+                lambda: self._on_planning_completed(
+                    job_id,
+                    missing,
+                    progress,
+                    generation,
+                    (symbol, start_utc, end_utc, timeframe_seconds),
+                )
+            )
         except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Planning Error", f"Failed to plan collection:\n{exc}")
-            self._log(f"Planning failed: {exc}")
+            err_msg = str(exc)
+            logger.error("Planning worker error: %s", err_msg)
+            self._dispatch_to_ui(lambda: self._on_planning_failed(generation, err_msg))
+
+    def _current_plan_inputs(self) -> tuple[str, str, str, int] | None:
+        """Snapshot visible inputs so a plan completed after an edit is discarded."""
+        try:
+            return (
+                self.combo_symbol.get().strip().upper(),
+                parse_explicit_utc_datetime(self.entry_start_utc.get().strip()).isoformat(),
+                parse_explicit_utc_datetime(self.entry_end_utc.get().strip()).isoformat(),
+                self._get_timeframe_seconds(),
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _on_planning_completed(
+        self,
+        job_id: str,
+        missing: list[Any],
+        progress: CollectionProgress,
+        generation: int,
+        request: tuple[str, str, str, int],
+    ) -> None:
+        if generation != self._operation_generation or self._plan_request != request:
+            logger.debug("Discarding stale planning result for job %s", job_id)
+            return
+        if self.current_job_id != self._plan_base_job_id:
+            self._active_operation = None
+            self._plan_request = None
+            self._plan_base_job_id = None
+            self._pending_start_after_plan = False
+            self._set_controls_state(None)
+            self._log("Selected job changed during planning; planned job was discarded.")
+            return
+        if self._current_plan_inputs() != request:
+            self._active_operation = None
+            self._plan_request = None
+            self._plan_base_job_id = None
+            self._pending_start_after_plan = False
+            self._set_controls_state(None)
+            self._log("Planning inputs changed during analysis; planned job was discarded.")
+            return
+
+        self._plan_request = None
+        self._plan_base_job_id = None
+        self._active_operation = None
+        self.current_job_id = job_id
+        self._update_progress_display(progress)
+        self._refresh_jobs()
+        self._log(f"Planned job {job_id}: {len(missing)} missing intervals identified.")
+        self._set_controls_state(None)
+
+        # A background plan alone never opens the broker. Only an explicit Start
+        # request that was pending before planning may continue, and that path
+        # still requires the live-connection confirmation dialog.
+        if self._pending_start_after_plan:
+            self._pending_start_after_plan = False
+            self._start_collection()
+
+    def _on_planning_failed(self, generation: int, err_msg: str) -> None:
+        if generation != self._operation_generation:
+            logger.debug("Discarding stale planning failure from generation %s", generation)
+            return
+        self._active_operation = None
+        self._plan_request = None
+        self._plan_base_job_id = None
+        self._pending_start_after_plan = False
+        self._set_controls_state(None)
+        self.lbl_status_badge.config(text="PLANNING FAILED", foreground="#a82315")
+        self._log(f"Planning failed: {err_msg}")
+        messagebox.showerror("Planning Error", f"Failed to plan collection:\n{err_msg}")
 
     def _update_progress_display(self, p: CollectionProgress) -> None:
         self.lbl_job_id.config(text=p.job_id)
@@ -563,11 +765,113 @@ class CollectionCenterPanel:
         if p.failure_reason:
             self._log(f"Status Note: {p.failure_reason}")
 
+    def _set_controls_state(self, operation: str | None) -> None:
+        """Update operator control states according to the active operation."""
+        self._active_operation = operation
+        if operation == "planning":
+            self.btn_plan.config(state="disabled")
+            self.btn_start.config(state="disabled")
+            self.btn_stop.config(state="disabled", text="Stop / Pause")
+            self.btn_resume.config(state="disabled")
+            self.btn_verify.config(state="disabled")
+            self.combo_jobs.config(state="disabled")
+            self.btn_refresh_jobs.config(state="disabled")
+            self.combo_symbol.config(state="disabled")
+            self.combo_timeframe.config(state="disabled")
+            if hasattr(self, "btn_export_report"):
+                self.btn_export_report.config(state="disabled")
+        elif operation == "verification":
+            self.btn_plan.config(state="disabled")
+            self.btn_start.config(state="disabled")
+            self.btn_stop.config(state="normal", text="Stop Verification")
+            self.btn_resume.config(state="disabled")
+            self.btn_verify.config(state="disabled")
+            self.combo_jobs.config(state="disabled")
+            self.btn_refresh_jobs.config(state="disabled")
+            self.combo_symbol.config(state="disabled")
+            self.combo_timeframe.config(state="disabled")
+            if hasattr(self, "btn_export_report"):
+                self.btn_export_report.config(state="disabled")
+        elif operation == "collection":
+            self.btn_plan.config(state="disabled")
+            self.btn_start.config(state="disabled")
+            self.btn_stop.config(state="normal", text="Stop / Pause")
+            self.btn_resume.config(state="disabled")
+            self.btn_verify.config(state="disabled")
+            self.combo_jobs.config(state="disabled")
+            self.btn_refresh_jobs.config(state="disabled")
+            self.combo_symbol.config(state="disabled")
+            self.combo_timeframe.config(state="disabled")
+        elif operation == "snapshot":
+            self.btn_plan.config(state="disabled")
+            self.btn_start.config(state="disabled")
+            self.btn_stop.config(state="disabled", text="Stop / Pause")
+            self.btn_resume.config(state="disabled")
+            self.btn_verify.config(state="disabled")
+            self.combo_jobs.config(state="disabled")
+            self.btn_refresh_jobs.config(state="disabled")
+            self.combo_symbol.config(state="disabled")
+            self.combo_timeframe.config(state="disabled")
+        else:
+            self.btn_stop.config(state="disabled", text="Stop / Pause")
+            self.btn_plan.config(state="normal")
+            self.btn_verify.config(state="normal")
+            self.combo_jobs.config(state="readonly")
+            self.btn_refresh_jobs.config(state="normal")
+            self.combo_symbol.config(state="readonly")
+            self.combo_timeframe.config(state="readonly")
+            if hasattr(self, "btn_export_report") and self._last_verification_report:
+                self.btn_export_report.config(state="normal")
+
+            if self.current_job_id:
+                try:
+                    progress = self.coordinator.get_progress(self.current_job_id)
+                    if progress.status in (
+                        CollectionStatus.CANCELLED,
+                        CollectionStatus.INTERRUPTED,
+                        CollectionStatus.PARTIALLY_COLLECTED,
+                        CollectionStatus.PAUSED,
+                        CollectionStatus.FAILED,
+                    ):
+                        self.btn_resume.config(state="normal")
+                        self.btn_start.config(state="disabled")
+                    elif progress.status == CollectionStatus.COMPLETED_VERIFIED:
+                        self.btn_resume.config(state="disabled")
+                        self.btn_start.config(state="disabled")
+                    else:
+                        self.btn_start.config(state="normal")
+                        self.btn_resume.config(state="disabled")
+                except Exception:  # noqa: BLE001
+                    self.btn_start.config(state="normal")
+                    self.btn_resume.config(state="disabled")
+            else:
+                self.btn_start.config(state="normal")
+                self.btn_resume.config(state="disabled")
+
+    def _stop_clicked(self) -> None:
+        if self._active_operation == "verification":
+            self._stop_verification()
+        else:
+            self._stop_collection()
+
+    def _stop_verification(self) -> None:
+        self._verify_cancel_requested = True
+        self._log("Cancellation requested by operator. Halting verification worker...")
+        self.btn_stop.config(state="disabled")
+
     def _start_collection(self) -> None:
         if not self.current_job_id:
-            self._plan_collection()
-            if not self.current_job_id:
-                return
+            # Planning is asynchronous. The completion handler will continue only
+            # after the operator has explicitly confirmed the live read-only start.
+            self._plan_collection(start_after=True)
+            return
+
+        if self._active_operation is not None:
+            messagebox.showwarning(
+                "Operation in Progress",
+                f"An operation ({self._active_operation}) is currently in progress. Please wait.",
+            )
+            return
 
         block_reason = self._unverified_otc_block_reason(self.current_job_id)
         if block_reason:
@@ -589,21 +893,20 @@ class CollectionCenterPanel:
         ):
             return
 
+        job_id = self.current_job_id
+        generation = self._next_operation_generation()
         self._cancel_requested = False
         self._collection_start_time = time.monotonic()
-        self.btn_start.config(state="disabled")
-        self.btn_plan.config(state="disabled")
-        self.btn_stop.config(state="normal")
-        self.btn_resume.config(state="disabled")
+        self._set_controls_state("collection")
         self.lbl_status_badge.config(text="CONNECTING...", foreground="#17324d")
         self._log(
-            f"Starting authorized collection session for job {self.current_job_id} "
+            f"Starting authorized collection session for job {job_id} "
             f"using account {selected_account_label} (ID: {selected_account_id})..."
         )
 
         self._worker_thread = threading.Thread(
             target=self._run_collection_thread,
-            args=(self.current_job_id, False, selected_account_id, selected_account_id),
+            args=(job_id, False, selected_account_id, selected_account_id, None, generation),
             daemon=True,
         )
         self._worker_thread.start()
@@ -620,6 +923,13 @@ class CollectionCenterPanel:
         if not self.current_job_id:
             messagebox.showwarning(
                 "Resume Error", "No collection job selected or loaded to resume."
+            )
+            return
+
+        if self._active_operation is not None:
+            messagebox.showwarning(
+                "Operation in Progress",
+                f"An operation ({self._active_operation}) is currently in progress. Please wait.",
             )
             return
 
@@ -645,25 +955,26 @@ class CollectionCenterPanel:
         if not self._confirm_live_connection(self.current_job_id, selected_account_id, resume=True):
             return
 
+        job_id = self.current_job_id
+        generation = self._next_operation_generation()
         self._cancel_requested = False
         self._collection_start_time = time.monotonic()
-        self.btn_start.config(state="disabled")
-        self.btn_stop.config(state="normal")
-        self.btn_resume.config(state="disabled")
+        self._set_controls_state("collection")
         self.lbl_status_badge.config(text="RESUMING...", foreground="#b35900")
         self._log(
-            f"Resuming collection for job {self.current_job_id} "
+            f"Resuming collection for job {job_id} "
             f"using account {selected_account_label} (ID: {selected_account_id})..."
         )
 
         self._worker_thread = threading.Thread(
             target=self._run_collection_thread,
             args=(
-                self.current_job_id,
+                job_id,
                 True,
                 selected_account_id,
                 selected_account_id,
                 stale_cancel_token,
+                generation,
             ),
             daemon=True,
         )
@@ -676,12 +987,13 @@ class CollectionCenterPanel:
         account_id: str | None = None,
         account_label: str | None = None,
         stale_cancel_token: str | None = None,
+        generation: int = 0,
     ) -> None:
         """Background worker thread for asynchronous collection."""
         import asyncio
 
         def progress_cb(prog: CollectionProgress) -> None:
-            self.dashboard.window.after(0, lambda: self._update_progress_display(prog))
+            self._dispatch_to_ui(lambda: self._on_collection_progress(prog, generation, job_id))
 
         async def _exec() -> CollectionProgress:
             from iqoption_research.cli.commands.backfill_cmd import _connect_live_client
@@ -716,31 +1028,32 @@ class CollectionCenterPanel:
 
         try:
             final_progress = asyncio.run(_exec())
-            self.dashboard.window.after(0, lambda: self._on_collection_completed(final_progress))
+            self._dispatch_to_ui(lambda: self._on_collection_completed(final_progress, generation))
         except Exception as exc:  # noqa: BLE001
             err_msg = str(exc)
             logger.error("Collection thread error: %s", err_msg)
+            self._dispatch_to_ui(lambda: self._on_collection_failed(err_msg, generation, job_id))
 
-            def _on_failed() -> None:
-                self._on_collection_failed(err_msg)
+    def _on_collection_progress(
+        self, prog: CollectionProgress, generation: int, job_id: str
+    ) -> None:
+        if self._is_current_worker_result(generation, job_id):
+            self._update_progress_display(prog)
 
-            self.dashboard.window.after(0, _on_failed)
-
-    def _on_collection_completed(self, prog: CollectionProgress) -> None:
+    def _on_collection_completed(self, prog: CollectionProgress, generation: int) -> None:
+        if not self._is_current_worker_result(generation, prog.job_id):
+            return
+        self._active_operation = None
         self._update_progress_display(prog)
-        self.btn_plan.config(state="normal")
-        self.btn_start.config(state="normal")
-        self.btn_stop.config(state="disabled")
+        self._set_controls_state(None)
 
         if prog.status in (
             CollectionStatus.CANCELLED,
             CollectionStatus.PARTIALLY_COLLECTED,
             CollectionStatus.INTERRUPTED,
         ):
-            self.btn_resume.config(state="normal")
             self._log(f"Collection stopped with status: {prog.status.value}. Resume available.")
         elif prog.status == CollectionStatus.COMPLETED_VERIFIED:
-            self.btn_resume.config(state="disabled")
             self._log(
                 "Collection successfully finished and verified complete! Ready for snapshot registration."
             )
@@ -749,12 +1062,12 @@ class CollectionCenterPanel:
                 f"Job {prog.job_id} successfully completed with full verified coverage!",
             )
 
-    def _on_collection_failed(self, err_msg: str) -> None:
+    def _on_collection_failed(self, err_msg: str, generation: int, job_id: str) -> None:
+        if not self._is_current_worker_result(generation, job_id):
+            return
+        self._active_operation = None
         self.lbl_status_badge.config(text="ERROR / FAILED", foreground="#a82315")
-        self.btn_plan.config(state="normal")
-        self.btn_start.config(state="normal")
-        self.btn_stop.config(state="disabled")
-        self.btn_resume.config(state="normal")
+        self._set_controls_state(None)
         self._log(f"Collection halted due to error: {err_msg}")
         messagebox.showerror("Collection Stopped", f"Collection stopped with error:\n{err_msg}")
 
@@ -763,42 +1076,233 @@ class CollectionCenterPanel:
             messagebox.showwarning("Verify Error", "No collection job selected to verify.")
             return
 
+        if self._active_operation is not None:
+            messagebox.showwarning(
+                "Operation in Progress",
+                f"An operation ({self._active_operation}) is currently in progress. Please wait.",
+            )
+            return
+
         block_reason = self._unverified_otc_block_reason(self.current_job_id)
         if block_reason:
             self._log(f"Verification/snapshot blocked: {block_reason}")
             messagebox.showwarning("Verified Snapshot Disabled", block_reason)
             return
 
-        report = self.coordinator.verify_job_integrity(self.current_job_id)
-        self._log(f"Integrity Report for {self.current_job_id}: {report}")
+        job_id = self.current_job_id
+        generation = self._next_operation_generation()
+        self._verify_cancel_requested = False
+        self._op_start_time = time.monotonic()
+        self._set_controls_state("verification")
+        self.lbl_status_badge.config(text="VERIFYING...", foreground="#17324d")
+        self.progress_bar["value"] = 0.0
+        self._log(f"Starting background integrity verification for job {job_id}...")
 
-        if not report.get("verified", False):
+        self._worker_thread = threading.Thread(
+            target=self._run_verification_thread,
+            args=(job_id, generation),
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+    def _run_verification_thread(self, job_id: str, generation: int) -> None:
+        from iqoption_research.market_data.collection_engine import VerificationProgress
+
+        last_ui_vp_time = 0.0
+
+        def progress_cb(vp: VerificationProgress) -> None:
+            nonlocal last_ui_vp_time
+            now = time.monotonic()
+            if (
+                now - last_ui_vp_time >= 0.05
+                or abs(vp.percent_complete - 100.0) < 1e-6
+                or vp.receipts_checked == 0
+            ):
+                last_ui_vp_time = now
+                self._dispatch_to_ui(lambda: self._on_verification_progress(vp, generation, job_id))
+
+        try:
+            report = self.coordinator.verify_job_integrity(
+                job_id,
+                cancel_token=lambda: self._verify_cancel_requested,
+                progress_cb=progress_cb,
+            )
+            self._dispatch_to_ui(
+                lambda: self._on_verification_completed(job_id, report, generation)
+            )
+        except Exception as exc:  # noqa: BLE001
+            err_msg = str(exc)
+            logger.error("Verification worker error: %s", err_msg)
+            self._dispatch_to_ui(lambda: self._on_verification_failed(job_id, err_msg, generation))
+
+    def _on_verification_progress(
+        self, vp: Any, generation: int = 0, job_id: str | None = None
+    ) -> None:
+        if not self._is_current_worker_result(generation, job_id):
+            return
+        self.progress_bar["value"] = vp.percent_complete
+        self.lbl_receipts.config(text=f"{vp.receipts_checked:,} / {vp.total_receipts:,}")
+        self.lbl_candles.config(text=f"{vp.candles_verified:,}")
+        self.lbl_status_badge.config(text=f"VERIFYING ({vp.percent_complete:.0f}%)")
+        self.lbl_cursor.config(text=f"Files: {vp.files_checked} | {vp.current_operation}")
+        elapsed_sec = int(vp.elapsed_seconds)
+        hours = elapsed_sec // 3600
+        minutes = (elapsed_sec % 3600) // 60
+        seconds = elapsed_sec % 60
+        self.lbl_elapsed.config(text=f"Elapsed: {hours:02d}:{minutes:02d}:{seconds:02d}")
+
+    def _log_verification_summary(self, job_id: str, report: dict[str, Any]) -> None:
+        """Display concise summaries instead of dumping thousands of timestamps."""
+        verified = report.get("verified", False)
+        status_label = "VERIFIED COMPLETE" if verified else f"INCOMPLETE ({report.get('status')})"
+        symbol = report.get("symbol", "--")
+        candles = report.get("unique_verified_candles", 0)
+        receipt_sum = report.get("receipt_candles_sum", 0)
+        rcpts = report.get("receipt_count", 0)
+        legacy = report.get("legacy_receipt_count", 0)
+        completed_ivs = report.get("completed_intervals", 0)
+        total_ivs = report.get("total_intervals", 0)
+        gaps = report.get("coverage_gaps_count", 0)
+        errors = report.get("errors", [])
+        prov = ", ".join(report.get("provenance_status", [])) or "None"
+
+        self._log(
+            f"--- Verification Summary for {job_id} ---\n"
+            f"Result: {status_label} | Symbol: {symbol}\n"
+            f"Candles: {candles:,} unique verified (receipt sum: {receipt_sum:,})\n"
+            f"Receipts: {rcpts} valid ({legacy} legacy) | Intervals: {completed_ivs}/{total_ivs} completed\n"
+            f"Coverage Gaps: {gaps} | Provenance: {prov}\n"
+            f"Errors: {len(errors)}" + (f" ({'; '.join(errors[:3])})" if errors else "")
+        )
+
+    def _on_verification_completed(
+        self, job_id: str, report: dict[str, Any], generation: int = 0
+    ) -> None:
+        if not self._is_current_worker_result(generation, job_id):
+            return
+        self._last_verification_report = report
+        if hasattr(self, "btn_export_report"):
+            self.btn_export_report.config(state="normal")
+
+        self._log_verification_summary(job_id, report)
+
+        status = report.get("status")
+        if status == "CANCELLED":
+            self._active_operation = None
+            self._set_controls_state(None)
+            self.lbl_status_badge.config(text="CANCELLED", foreground="#b35900")
+            self._log(f"Verification of job {job_id} was cancelled by operator.")
+            return
+
+        if not report.get("verified"):
+            self._active_operation = None
+            self._set_controls_state(None)
+            self.lbl_status_badge.config(text=status or "UNVERIFIED", foreground="#a82315")
             msg = (
-                f"Job {self.current_job_id} could not be verified complete.\n"
-                f"Status: {report.get('status')}\n"
+                f"Job {job_id} could not be verified complete.\n"
+                f"Status: {status}\n"
                 f"Completed Intervals: {report.get('completed_intervals')} / {report.get('total_intervals')}\n"
                 f"Errors: {report.get('errors')}"
             )
             messagebox.showwarning("Verification Incomplete", msg)
             return
 
+        self.lbl_status_badge.config(text="COMPLETED_VERIFIED", foreground="#1e6b20")
+        self.progress_bar["value"] = 100.0
+
         # Verified complete! Offer automatic snapshot registration
         if messagebox.askyesno(
             "Integrity Verified",
-            f"Job {self.current_job_id} is verified complete!\n\n"
+            f"Job {job_id} is verified complete!\n\n"
             f"Unique Verified Candles: {report.get('unique_verified_candles', 0):,}\n"
             f"Receipt Candles: {report.get('receipt_candles_sum', 0):,}\n"
             f"Receipts: {report.get('receipt_count', 0):,}\n\n"
             "Would you like to register an immutable research dataset snapshot now?",
         ):
+            self._start_snapshot_worker(job_id, report, generation)
+        else:
+            self._active_operation = None
+            self._set_controls_state(None)
+
+    def _on_verification_failed(self, job_id: str, err_msg: str, generation: int = 0) -> None:
+        if not self._is_current_worker_result(generation, job_id):
+            return
+        self._active_operation = None
+        self._set_controls_state(None)
+        self.lbl_status_badge.config(text="VERIFICATION FAILED", foreground="#a82315")
+        self._log(f"Verification failed for job {job_id}: {err_msg}")
+        messagebox.showerror("Verification Error", f"Verification failed:\n{err_msg}")
+
+    def _start_snapshot_worker(
+        self, job_id: str, report: dict[str, Any], generation: int = 0
+    ) -> None:
+        self._active_operation = "snapshot"
+        self._set_controls_state("snapshot")
+        self.lbl_status_badge.config(text="CREATING SNAPSHOT...", foreground="#17324d")
+        self._log(f"Registering immutable research snapshot for job {job_id} in background...")
+
+        self._worker_thread = threading.Thread(
+            target=self._run_snapshot_thread,
+            args=(job_id, report, generation),
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+    def _run_snapshot_thread(
+        self, job_id: str, report: dict[str, Any], generation: int = 0
+    ) -> None:
+        try:
+            snap = self.coordinator.create_snapshot_for_job(job_id, integrity=report)
+            self._dispatch_to_ui(lambda: self._on_snapshot_completed(job_id, snap, generation))
+        except Exception as exc:  # noqa: BLE001
+            err_msg = str(exc)
+            logger.error("Snapshot worker error: %s", err_msg)
+            self._dispatch_to_ui(lambda: self._on_snapshot_failed(job_id, err_msg, generation))
+
+    def _on_snapshot_completed(self, job_id: str, snap: Any, generation: int = 0) -> None:
+        if not self._is_current_worker_result(generation, job_id):
+            return
+        self._active_operation = None
+        self._set_controls_state(None)
+        self.lbl_status_badge.config(text="SNAPSHOT REGISTERED", foreground="#1e6b20")
+        self._log(f"Created immutable research snapshot: {snap.manifest.snapshot_id}")
+        messagebox.showinfo(
+            "Snapshot Registered",
+            f"Snapshot successfully created:\n{snap.manifest.snapshot_id}\n"
+            f"Candles: {snap.manifest.total_candles:,}",
+        )
+
+    def _on_snapshot_failed(self, job_id: str, err_msg: str, generation: int = 0) -> None:
+        if not self._is_current_worker_result(generation, job_id):
+            return
+        self._active_operation = None
+        self._set_controls_state(None)
+        self.lbl_status_badge.config(text="SNAPSHOT FAILED", foreground="#a82315")
+        self._log(f"Snapshot registration failed: {err_msg}")
+        messagebox.showerror("Snapshot Error", f"Failed registering snapshot:\n{err_msg}")
+
+    def _export_report(self) -> None:
+        if not self._last_verification_report:
+            messagebox.showinfo("Export Report", "No verification report available to export.")
+            return
+
+        job_id = self._last_verification_report.get("job_id", "job")
+        default_name = f"integrity_report_{job_id}.json"
+        path = filedialog.asksaveasfilename(
+            parent=self.dashboard.window,
+            title="Export Verification Integrity Report",
+            defaultextension=".json",
+            initialfile=default_name,
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
+        )
+        if path:
             try:
-                snap = self.coordinator.create_snapshot_for_job(self.current_job_id)
-                self._log(f"Created immutable research snapshot: {snap.manifest.snapshot_id}")
-                messagebox.showinfo(
-                    "Snapshot Registered",
-                    f"Snapshot successfully created:\n{snap.manifest.snapshot_id}\n"
-                    f"Candles: {snap.manifest.total_candles:,}",
+                Path(path).write_text(
+                    json.dumps(self._last_verification_report, indent=2, default=str),
+                    encoding="utf-8",
                 )
+                self._log(f"Exported full verification report to {path}")
+                messagebox.showinfo("Export Complete", f"Report saved successfully to:\n{path}")
             except Exception as exc:  # noqa: BLE001
-                self._log(f"Snapshot registration failed: {exc}")
-                messagebox.showerror("Snapshot Error", f"Failed registering snapshot:\n{exc}")
+                self._log(f"Export failed: {exc}")
+                messagebox.showerror("Export Failed", f"Could not save report:\n{exc}")

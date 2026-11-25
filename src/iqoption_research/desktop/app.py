@@ -178,6 +178,9 @@ class Dashboard:
         self.stop()
         if self.process.child is None:
             self.executor.shutdown(wait=False, cancel_futures=True)
+            collection_center = getattr(self, "collection_center", None)
+            if collection_center is not None:
+                collection_center.shutdown()
             self.window.destroy()
 
     def render(self) -> None:

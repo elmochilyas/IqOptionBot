@@ -19,11 +19,13 @@ Enforces strict data integrity and operator governance:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import threading
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -72,6 +74,46 @@ PROVENANCE_LEGACY_UNSPECIFIED: Final[str] = "LEGACY_PROVENANCE_UNSPECIFIED"
 # processes.
 _ACTIVE_JOB_LOCKS: dict[str, str] = {}
 _ACTIVE_JOB_LOCK_GUARD: Final[threading.Lock] = threading.Lock()
+_ACTIVE_JOB_OPERATIONS: dict[str, tuple[int, str]] = {}
+_ACTIVE_JOB_OPERATIONS_GUARD: Final[threading.Lock] = threading.Lock()
+
+# Integrity reports are optimization hints only. A report is trusted for snapshot
+# creation only when it was minted by verify_job_integrity in this interpreter and
+# its durable-state binding still matches the files under the job lock. Anything
+# else forces fresh verification.
+
+
+@dataclass(frozen=True, slots=True)
+class _IntegrityReportProof:
+    job_id: str
+    repo_root: str
+    state_fingerprint: str
+    content_sha256: str
+
+
+_INTEGRITY_REPORT_PROOFS: dict[str, _IntegrityReportProof] = {}
+_INTEGRITY_REPORT_PROOFS_GUARD: Final[threading.Lock] = threading.Lock()
+_MAX_REMEMBERED_INTEGRITY_REPORTS: Final[int] = 256
+
+
+def _canonical_json_sha256(payload: Any) -> str:
+    """Return a stable SHA-256 over a JSON-serializable verification payload."""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _register_integrity_report_proof(token: str, proof: _IntegrityReportProof) -> None:
+    with _INTEGRITY_REPORT_PROOFS_GUARD:
+        _INTEGRITY_REPORT_PROOFS[token] = proof
+        while len(_INTEGRITY_REPORT_PROOFS) > _MAX_REMEMBERED_INTEGRITY_REPORTS:
+            _INTEGRITY_REPORT_PROOFS.pop(next(iter(_INTEGRITY_REPORT_PROOFS)))
+
+
+def _lookup_integrity_report_proof(token: Any) -> _IntegrityReportProof | None:
+    if not isinstance(token, str) or not token:
+        return None
+    with _INTEGRITY_REPORT_PROOFS_GUARD:
+        return _INTEGRITY_REPORT_PROOFS.get(token)
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -325,6 +367,23 @@ class CollectionProgress:
         return d
 
 
+@dataclass(frozen=True, slots=True)
+class VerificationProgress:
+    """Live progress reported during cryptographic integrity verification."""
+
+    job_id: str
+    total_receipts: int
+    receipts_checked: int
+    files_checked: int
+    candles_verified: int
+    current_operation: str
+    elapsed_seconds: float = 0.0
+    percent_complete: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class CollectionCheckpoint:
     """Durable state saved to disk for crash recovery and continuation."""
@@ -451,6 +510,180 @@ class HistoricalCollectionCoordinator:
             failure_reason=ckpt.failure_reason,
             receipt_count=len(ckpt.receipt_ids),
         )
+
+    def _receipt_path_hashes_for_job(
+        self,
+        job_id: str,
+        ckpt: CollectionCheckpoint | None,
+        *,
+        sha_cache: dict[Path, str] | None = None,
+    ) -> tuple[dict[str, str], list[str]]:
+        """Re-derive the exact parquet path-to-hash binding from durable receipts.
+
+        The caller-supplied integrity report is never used to construct this
+        mapping. Legacy receipts without a stored relative path are resolved by
+        their recorded checksum only when that match is unambiguous. A shared
+        hash cache lets verification reuse its already-computed file digests
+        instead of re-reading large Parquet files.
+        """
+        mapping: dict[str, str] = {}
+        errors: list[str] = []
+        if ckpt is None:
+            return mapping, errors
+
+        def file_sha(path: Path) -> str:
+            if sha_cache is not None and path in sha_cache:
+                return sha_cache[path]
+            digest_value = _compute_file_sha256(path)
+            if sha_cache is not None:
+                sha_cache[path] = digest_value
+            return digest_value
+
+        repo_resolved = self.repo_root.resolve()
+        for receipt_id in sorted(set(ckpt.receipt_ids)):
+            if not str(receipt_id).startswith(f"rcpt_{job_id}_"):
+                errors.append(f"{receipt_id}: receipt is not bound to job {job_id}")
+                continue
+            receipt_file = self.receipts_dir / f"{receipt_id}.json"
+            if not receipt_file.is_file():
+                errors.append(f"{receipt_id}: registered receipt missing from disk")
+                continue
+            try:
+                rdata = json.loads(receipt_file.read_text(encoding="utf-8"))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{receipt_id}: unreadable receipt during snapshot binding: {exc}")
+                continue
+
+            expected_sha = rdata.get("parquet_sha256")
+            if not isinstance(expected_sha, str) or not expected_sha:
+                errors.append(f"{receipt_id}: receipt has no parquet checksum")
+                continue
+
+            rel_path = rdata.get("parquet_relative_path")
+            if rel_path:
+                candidate = (self.repo_root / str(rel_path)).resolve()
+                try:
+                    candidate.relative_to(repo_resolved)
+                except ValueError:
+                    errors.append(f"{receipt_id}: parquet path escapes repository root")
+                    continue
+            else:
+                root = self.repo_root / (
+                    "data/synthetic_datasets" if ckpt.is_synthetic else "data/datasets"
+                )
+                matches = (
+                    [p for p in root.rglob("*.parquet") if file_sha(p) == expected_sha]
+                    if root.is_dir()
+                    else []
+                )
+                if len(matches) != 1:
+                    errors.append(
+                        f"{receipt_id}: legacy parquet hash match is "
+                        f"{'missing' if not matches else 'ambiguous'}"
+                    )
+                    continue
+                candidate = matches[0]
+                try:
+                    rel_path = candidate.relative_to(repo_resolved).as_posix()
+                except ValueError:
+                    rel_path = candidate.as_posix()
+
+            if not candidate.is_file():
+                errors.append(f"{receipt_id}: bound parquet file not found: {candidate}")
+                continue
+            actual_sha = file_sha(candidate)
+            if actual_sha != expected_sha:
+                errors.append(
+                    f"{receipt_id}: bound parquet checksum changed ({actual_sha} != {expected_sha})"
+                )
+                continue
+
+            rel_key = str(rel_path).replace("\\", "/")
+            previous = mapping.get(rel_key)
+            if previous is not None and previous != expected_sha:
+                errors.append(f"{rel_key}: conflicting hashes across receipts for one parquet file")
+                continue
+            mapping[rel_key] = expected_sha
+
+        return dict(sorted(mapping.items())), errors
+
+    def _build_snapshot_state_binding(
+        self,
+        job_id: str,
+        ckpt: CollectionCheckpoint | None,
+        path_hashes: dict[str, str],
+    ) -> dict[str, Any]:
+        """Fingerprint the checkpoint, all job receipts, and exact source bindings."""
+        ckpt_path = self.checkpoints_dir / f"{job_id}.json"
+        checkpoint_sha = _compute_file_sha256(ckpt_path) if ckpt_path.is_file() else ""
+        receipt_records = [
+            {
+                "receipt_id": receipt_file.stem,
+                "sha256": _compute_file_sha256(receipt_file),
+            }
+            for receipt_file in sorted(self.receipts_dir.glob(f"rcpt_{job_id}_*.json"))
+        ]
+        state = {
+            "job_id": job_id,
+            "repo_root": str(self.repo_root.resolve()),
+            "checkpoint_sha256": checkpoint_sha,
+            "checkpoint_receipt_ids": list(ckpt.receipt_ids) if ckpt is not None else [],
+            "receipts": receipt_records,
+            "path_to_hash": dict(sorted(path_hashes.items())),
+        }
+        return {"state": state, "fingerprint": _canonical_json_sha256(state)}
+
+    def _mint_integrity_report(
+        self,
+        report: dict[str, Any],
+        ckpt: CollectionCheckpoint | None,
+        path_hashes: dict[str, str],
+    ) -> dict[str, Any]:
+        """Attach an internal authenticity proof and durable-state fingerprint."""
+        binding = self._build_snapshot_state_binding(str(report.get("job_id")), ckpt, path_hashes)
+        report["verified_parquet_path_hashes"] = [
+            {"path": path, "sha256": sha} for path, sha in sorted(path_hashes.items())
+        ]
+        report["snapshot_state"] = binding["state"]
+        report["snapshot_state_fingerprint"] = binding["fingerprint"]
+        token = uuid.uuid4().hex
+        report["verification_token"] = token
+        content = {key: value for key, value in report.items() if key != "verification_token"}
+        _register_integrity_report_proof(
+            token,
+            _IntegrityReportProof(
+                job_id=str(report.get("job_id")),
+                repo_root=str(self.repo_root.resolve()),
+                state_fingerprint=str(binding["fingerprint"]),
+                content_sha256=_canonical_json_sha256(content),
+            ),
+        )
+        return report
+
+    @contextlib.contextmanager
+    def job_operation(self, job_id: str, operation: str) -> Any:
+        """Prevent concurrent operations (collection, verification, snapshot) on the same job."""
+        thread_id = threading.get_ident()
+        with _ACTIVE_JOB_OPERATIONS_GUARD:
+            existing = _ACTIVE_JOB_OPERATIONS.get(job_id)
+            if existing is not None:
+                active_thread_id, active_op = existing
+                if active_thread_id != thread_id:
+                    raise RuntimeError(
+                        f"Job {job_id} is currently busy with '{active_op}' in another thread. "
+                        f"Concurrent '{operation}' is not permitted on the same job."
+                    )
+            _ACTIVE_JOB_OPERATIONS[job_id] = (thread_id, operation)
+        try:
+            yield
+        finally:
+            with _ACTIVE_JOB_OPERATIONS_GUARD:
+                current = _ACTIVE_JOB_OPERATIONS.get(job_id)
+                if current == (thread_id, operation):
+                    if existing is not None:
+                        _ACTIVE_JOB_OPERATIONS[job_id] = existing
+                    else:
+                        _ACTIVE_JOB_OPERATIONS.pop(job_id, None)
 
     def acquire_job_lock(self, job_id: str) -> Path:
         """Atomically acquire the single-worker lock for a collection job.
@@ -683,6 +916,9 @@ class HistoricalCollectionCoordinator:
         receipt_file: Path,
         rdata: dict[str, Any],
         ckpt: CollectionCheckpoint,
+        *,
+        file_sha_cache: dict[Path, str] | None = None,
+        parquet_candles_cache: dict[Path, list[Candle]] | None = None,
     ) -> tuple[dict[str, Any] | None, list[str]]:
         """Validate one receipt against its exact parquet file and candle population."""
         errors: list[str] = []
@@ -791,18 +1027,34 @@ class HistoricalCollectionCoordinator:
         if parquet_path is None:
             return None, errors
 
-        actual_pq_sha = _compute_file_sha256(parquet_path)
+        if file_sha_cache is not None and parquet_path in file_sha_cache:
+            actual_pq_sha = file_sha_cache[parquet_path]
+        else:
+            actual_pq_sha = _compute_file_sha256(parquet_path)
+            if file_sha_cache is not None:
+                file_sha_cache[parquet_path] = actual_pq_sha
+
         if actual_pq_sha != rdata.get("parquet_sha256"):
             errors.append(
                 f"{name}: parquet checksum altered ({actual_pq_sha} != {rdata.get('parquet_sha256')})"
             )
             return None, errors
 
-        try:
-            batch_candles = read_candles_parquet(parquet_path, expected_symbol=ckpt.symbol)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"{name}: failed reading parquet at {parquet_path}: {exc}")
-            return None, errors
+        if parquet_candles_cache is not None and parquet_path in parquet_candles_cache:
+            batch_candles = parquet_candles_cache[parquet_path]
+        else:
+            try:
+                batch_candles = read_candles_parquet(
+                    parquet_path, expected_symbol=ckpt.symbol, verify_checksum=False
+                )
+                if parquet_candles_cache is not None:
+                    if len(parquet_candles_cache) >= 16:
+                        with contextlib.suppress(StopIteration, KeyError):
+                            del parquet_candles_cache[next(iter(parquet_candles_cache))]
+                    parquet_candles_cache[parquet_path] = batch_candles
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{name}: failed reading parquet at {parquet_path}: {exc}")
+                return None, errors
 
         timestamps = [c.from_ts for c in batch_candles]
         if len(timestamps) != len(set(timestamps)):
@@ -978,7 +1230,13 @@ class HistoricalCollectionCoordinator:
         rdata["commit_state"] = RECEIPT_COMMITTED
         _atomic_write_json(receipt_file, rdata)
 
-    def verify_job_integrity(self, job_id: str) -> dict[str, Any]:
+    def verify_job_integrity(
+        self,
+        job_id: str,
+        *,
+        cancel_token: Callable[[], bool] | None = None,
+        progress_cb: Callable[[VerificationProgress], None] | None = None,
+    ) -> dict[str, Any]:
         """Cryptographically verify receipts, parquet integrity, and job coverage.
 
         Guarantees:
@@ -990,184 +1248,298 @@ class HistoricalCollectionCoordinator:
         - Never promotes checkpoint completion flags into proof.
         - Supports legacy receipts without inventing missing provenance.
         """
-        ckpt_path = self.checkpoints_dir / f"{job_id}.json"
-        if not ckpt_path.is_file():
-            return {
-                "job_id": job_id,
-                "verified": False,
-                "status": "NOT_FOUND",
-                "reason": f"Checkpoint not found at {ckpt_path}",
-                "errors": [f"Checkpoint not found at {ckpt_path}"],
-            }
+        with self.job_operation(job_id, "verification"):
+            ckpt_path = self.checkpoints_dir / f"{job_id}.json"
+            if not ckpt_path.is_file():
+                return self._mint_integrity_report(
+                    {
+                        "job_id": job_id,
+                        "verified": False,
+                        "status": "NOT_FOUND",
+                        "reason": f"Checkpoint not found at {ckpt_path}",
+                        "errors": [f"Checkpoint not found at {ckpt_path}"],
+                    },
+                    None,
+                    {},
+                )
 
-        # Verify is exposed as a read command. When another worker owns the job,
-        # recovery/adoption must remain that owner's responsibility so a reader
-        # cannot mutate receipt or checkpoint state mid-flight.
-        job_lock_file = self.checkpoints_dir / f"{job_id}.lock"
-        skip_recovery = False
-        if job_lock_file.is_file() and not self._job_lock_owned_by_me(job_id):
-            try:
-                lock_data = json.loads(job_lock_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                lock_data = {}
-            # Only a live foreign worker owns recovery. A crashed owner's stale
-            # lock must not block ordinary offline crash recovery forever.
-            skip_recovery = _is_lock_owner_alive(lock_data)
-        if skip_recovery:
-            ckpt = CollectionCheckpoint.load(ckpt_path)
-        else:
-            ckpt = self._recover_job_commit_state(job_id)
-        receipt_files = sorted(self.receipts_dir.glob(f"rcpt_{job_id}_*.json"))
+            # Verify is exposed as a read command. When another worker owns the job,
+            # recovery/adoption must remain that owner's responsibility so a reader
+            # cannot mutate receipt or checkpoint state mid-flight.
+            job_lock_file = self.checkpoints_dir / f"{job_id}.lock"
+            skip_recovery = False
+            if job_lock_file.is_file() and not self._job_lock_owned_by_me(job_id):
+                try:
+                    lock_data = json.loads(job_lock_file.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    lock_data = {}
+                # Only a live foreign worker owns recovery. A crashed owner's stale
+                # lock must not block ordinary offline crash recovery forever.
+                skip_recovery = _is_lock_owner_alive(lock_data)
+            if skip_recovery:
+                ckpt = CollectionCheckpoint.load(ckpt_path)
+            else:
+                ckpt = self._recover_job_commit_state(job_id)
+            receipt_files = sorted(self.receipts_dir.glob(f"rcpt_{job_id}_*.json"))
 
-        if not receipt_files:
-            return {
+            if not receipt_files:
+                no_receipts_report: dict[str, Any] = {
+                    "job_id": job_id,
+                    "symbol": ckpt.symbol,
+                    "status": ckpt.status,
+                    "verified": False,
+                    "reason": f"No cryptographic receipts found for job {job_id}",
+                    "receipt_count": 0,
+                    "verified_candles": 0,
+                    "unique_verified_candles": 0,
+                    "valid_receipt_ids": [],
+                    "verified_parquet_paths": [],
+                    "verified_parquet_hashes": [],
+                    "reconstructed_completed_indices": [],
+                    "coverage_gaps": [],
+                    "errors": [
+                        "Zero receipts found for job; missing receipts cannot produce COMPLETED_VERIFIED."
+                    ],
+                }
+                return self._mint_integrity_report(no_receipts_report, ckpt, {})
+
+            start_time = time.monotonic()
+
+            def _is_cancelled() -> bool:
+                return bool(cancel_token and cancel_token())
+
+            errors: list[str] = []
+            disk_ids = {rf.stem for rf in receipt_files}
+            recorded_ids = set(ckpt.receipt_ids)
+            missing_from_disk = recorded_ids - disk_ids
+            if missing_from_disk:
+                errors.append(f"Recorded receipts missing from disk: {sorted(missing_from_disk)}")
+            unregistered = disk_ids - recorded_ids
+            if unregistered:
+                errors.append(f"Disk receipts not registered in checkpoint: {sorted(unregistered)}")
+
+            verified_timestamps: set[int] = set()
+            timestamp_owner: dict[int, str] = {}
+            verified_parquet_paths: set[str] = set()
+            verified_parquet_hashes: set[str] = set()
+            valid_receipt_ids: list[str] = []
+            legacy_receipt_count = 0
+            provenance_statuses: set[str] = set()
+            receipt_candles_sum = 0
+
+            file_sha_cache: dict[Path, str] = {}
+            parquet_candles_cache: dict[Path, list[Candle]] = {}
+            checked_parquet_paths: set[str] = set()
+
+            def _build_cancelled_report() -> dict[str, Any]:
+                cancelled: dict[str, Any] = {
+                    "job_id": job_id,
+                    "symbol": ckpt.symbol,
+                    "status": "CANCELLED",
+                    "verified": False,
+                    "reason": "Integrity verification cancelled by operator",
+                    "receipt_count": len(valid_receipt_ids),
+                    "verified_candles": len(verified_timestamps),
+                    "unique_verified_candles": len(verified_timestamps),
+                    "valid_receipt_ids": valid_receipt_ids,
+                    "verified_parquet_paths": sorted(verified_parquet_paths),
+                    "verified_parquet_hashes": sorted(verified_parquet_hashes),
+                    "reconstructed_completed_indices": [],
+                    "coverage_gaps": [],
+                    "errors": ["Integrity verification cancelled by operator"],
+                }
+                binding_paths, binding_errors = self._receipt_path_hashes_for_job(
+                    job_id, ckpt, sha_cache=file_sha_cache
+                )
+                cancelled["errors"].extend(binding_errors)
+                return self._mint_integrity_report(cancelled, ckpt, binding_paths)
+
+            total_rcpts = len(receipt_files)
+            last_progress_emit = 0.0
+            for idx, receipt_file in enumerate(receipt_files):
+                if _is_cancelled():
+                    return _build_cancelled_report()
+
+                now_mono = time.monotonic()
+                if progress_cb and (
+                    now_mono - last_progress_emit >= 0.1 or idx == 0 or idx == total_rcpts - 1
+                ):
+                    last_progress_emit = now_mono
+                    elapsed = now_mono - start_time
+                    pct = round((idx / max(total_rcpts, 1)) * 90.0, 1)
+                    progress_cb(
+                        VerificationProgress(
+                            job_id=job_id,
+                            total_receipts=total_rcpts,
+                            receipts_checked=idx,
+                            files_checked=len(checked_parquet_paths),
+                            candles_verified=len(verified_timestamps),
+                            current_operation=f"Checking receipt {idx + 1}/{total_rcpts}: {receipt_file.name}",
+                            elapsed_seconds=elapsed,
+                            percent_complete=pct,
+                        )
+                    )
+
+                if receipt_file.stem not in recorded_ids:
+                    continue
+                try:
+                    rdata = json.loads(receipt_file.read_text(encoding="utf-8"))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{receipt_file.name}: unreadable receipt JSON: {exc}")
+                    continue
+                evidence, receipt_errors = self._verify_single_receipt(
+                    receipt_file,
+                    rdata,
+                    ckpt,
+                    file_sha_cache=file_sha_cache,
+                    parquet_candles_cache=parquet_candles_cache,
+                )
+                if evidence is None or receipt_errors:
+                    errors.extend(receipt_errors)
+                    continue
+
+                receipt_id = str(evidence["receipt_id"])
+                for timestamp in evidence["timestamps"]:
+                    owner = timestamp_owner.get(timestamp)
+                    if owner is not None and owner != receipt_id:
+                        errors.append(
+                            f"Duplicate verified candle {timestamp} across receipts "
+                            f"{owner} and {receipt_id}"
+                        )
+                        continue
+                    timestamp_owner[timestamp] = receipt_id
+                verified_timestamps.update(evidence["timestamps"])
+                parquet_rel = str(evidence["parquet_relative_path"])
+                verified_parquet_paths.add(parquet_rel)
+                checked_parquet_paths.add(parquet_rel)
+                verified_parquet_hashes.add(str(evidence["parquet_sha256"]))
+                valid_receipt_ids.append(receipt_id)
+                receipt_candles_sum += int(evidence["candle_count"])
+                if evidence["is_legacy"]:
+                    legacy_receipt_count += 1
+                provenance_statuses.add(str(evidence["provenance_status"]))
+
+            if _is_cancelled():
+                return _build_cancelled_report()
+
+            if progress_cb:
+                elapsed = time.monotonic() - start_time
+                progress_cb(
+                    VerificationProgress(
+                        job_id=job_id,
+                        total_receipts=total_rcpts,
+                        receipts_checked=total_rcpts,
+                        files_checked=len(checked_parquet_paths),
+                        candles_verified=len(verified_timestamps),
+                        current_operation="Checking session coverage intervals...",
+                        elapsed_seconds=elapsed,
+                        percent_complete=92.0,
+                    )
+                )
+
+            schedule = get_market_schedule(ckpt.symbol)
+            reconstructed_completed: list[int] = []
+            coverage_gaps: list[dict[str, Any]] = []
+            first_missing_by_interval: dict[int, int] = {}
+
+            for idx, interval in enumerate(ckpt.missing_intervals):
+                if _is_cancelled():
+                    return _build_cancelled_report()
+
+                interval_from = int(interval["from_ts"])
+                interval_to = int(interval["to_ts"])
+                uncovered_open_bars = 0
+                first_uncovered: int | None = None
+                missing_ranges: list[dict[str, int]] = []
+                cursor = interval_from
+                while cursor < interval_to:
+                    if cursor not in verified_timestamps:
+                        dt = datetime.fromtimestamp(cursor, UTC)
+                        if (not schedule.is_schedule_verified) or schedule.is_market_open(dt):
+                            if missing_ranges and missing_ranges[-1]["to_ts"] == cursor:
+                                missing_ranges[-1]["to_ts"] = cursor + ckpt.timeframe_seconds
+                            else:
+                                missing_ranges.append({
+                                    "from_ts": cursor,
+                                    "to_ts": cursor + ckpt.timeframe_seconds,
+                                })
+                            uncovered_open_bars += 1
+                            if first_uncovered is None:
+                                first_uncovered = cursor
+                    cursor += ckpt.timeframe_seconds
+                if uncovered_open_bars == 0:
+                    reconstructed_completed.append(idx)
+                else:
+                    if first_uncovered is not None:
+                        first_missing_by_interval[idx] = first_uncovered
+                    coverage_gaps.append({
+                        "interval_index": idx,
+                        "from_utc": interval.get("from_utc"),
+                        "to_utc": interval.get("to_utc"),
+                        "uncovered_open_bars": uncovered_open_bars,
+                        "unexplained_source_gaps": missing_ranges,
+                        "first_missing_utc": (
+                            datetime.fromtimestamp(first_uncovered, UTC).isoformat()
+                            if first_uncovered is not None
+                            else ""
+                        ),
+                    })
+
+            coverage_complete = len(reconstructed_completed) == len(ckpt.missing_intervals)
+            verified = (
+                not errors
+                and coverage_complete
+                and bool(valid_receipt_ids)
+                and bool(verified_timestamps)
+            )
+
+            if progress_cb:
+                elapsed = time.monotonic() - start_time
+                progress_cb(
+                    VerificationProgress(
+                        job_id=job_id,
+                        total_receipts=total_rcpts,
+                        receipts_checked=total_rcpts,
+                        files_checked=len(checked_parquet_paths),
+                        candles_verified=len(verified_timestamps),
+                        current_operation="Complete",
+                        elapsed_seconds=elapsed,
+                        percent_complete=100.0,
+                    )
+                )
+
+            binding_paths, binding_errors = self._receipt_path_hashes_for_job(
+                job_id, ckpt, sha_cache=file_sha_cache
+            )
+            errors.extend(binding_errors)
+            verified = verified and not binding_errors
+            report: dict[str, Any] = {
                 "job_id": job_id,
                 "symbol": ckpt.symbol,
                 "status": ckpt.status,
-                "verified": False,
-                "reason": f"No cryptographic receipts found for job {job_id}",
-                "receipt_count": 0,
-                "verified_candles": 0,
-                "unique_verified_candles": 0,
-                "valid_receipt_ids": [],
-                "verified_parquet_paths": [],
-                "verified_parquet_hashes": [],
-                "reconstructed_completed_indices": [],
-                "coverage_gaps": [],
-                "errors": [
-                    "Zero receipts found for job; missing receipts cannot produce COMPLETED_VERIFIED."
-                ],
+                "verified": verified,
+                "requested_from_utc": datetime.fromtimestamp(
+                    ckpt.requested_from_ts, UTC
+                ).isoformat(),
+                "requested_to_utc": datetime.fromtimestamp(ckpt.requested_to_ts, UTC).isoformat(),
+                "total_intervals": len(ckpt.missing_intervals),
+                "completed_intervals": len(reconstructed_completed),
+                "reconstructed_completed_indices": reconstructed_completed,
+                "first_missing_by_interval": first_missing_by_interval,
+                "receipt_count": len(valid_receipt_ids),
+                "valid_receipt_ids": valid_receipt_ids,
+                "legacy_receipt_count": legacy_receipt_count,
+                "provenance_status": sorted(provenance_statuses),
+                "receipt_candles_sum": receipt_candles_sum,
+                "unique_verified_candles": len(verified_timestamps),
+                "verified_timestamps": sorted(verified_timestamps),
+                "verified_parquet_paths": sorted(verified_parquet_paths),
+                "verified_parquet_hashes": sorted(verified_parquet_hashes),
+                "coverage_gaps_count": len(coverage_gaps),
+                "coverage_gaps": coverage_gaps,
+                "errors": errors,
             }
-
-        errors: list[str] = []
-        disk_ids = {rf.stem for rf in receipt_files}
-        recorded_ids = set(ckpt.receipt_ids)
-        missing_from_disk = recorded_ids - disk_ids
-        if missing_from_disk:
-            errors.append(f"Recorded receipts missing from disk: {sorted(missing_from_disk)}")
-        unregistered = disk_ids - recorded_ids
-        if unregistered:
-            errors.append(f"Disk receipts not registered in checkpoint: {sorted(unregistered)}")
-
-        verified_timestamps: set[int] = set()
-        timestamp_owner: dict[int, str] = {}
-        verified_parquet_paths: set[str] = set()
-        verified_parquet_hashes: set[str] = set()
-        valid_receipt_ids: list[str] = []
-        legacy_receipt_count = 0
-        provenance_statuses: set[str] = set()
-        receipt_candles_sum = 0
-
-        for receipt_file in receipt_files:
-            if receipt_file.stem not in recorded_ids:
-                continue
-            try:
-                rdata = json.loads(receipt_file.read_text(encoding="utf-8"))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{receipt_file.name}: unreadable receipt JSON: {exc}")
-                continue
-            evidence, receipt_errors = self._verify_single_receipt(receipt_file, rdata, ckpt)
-            if evidence is None or receipt_errors:
-                errors.extend(receipt_errors)
-                continue
-
-            receipt_id = str(evidence["receipt_id"])
-            for timestamp in evidence["timestamps"]:
-                owner = timestamp_owner.get(timestamp)
-                if owner is not None and owner != receipt_id:
-                    errors.append(
-                        f"Duplicate verified candle {timestamp} across receipts "
-                        f"{owner} and {receipt_id}"
-                    )
-                    continue
-                timestamp_owner[timestamp] = receipt_id
-            verified_timestamps.update(evidence["timestamps"])
-            verified_parquet_paths.add(str(evidence["parquet_relative_path"]))
-            verified_parquet_hashes.add(str(evidence["parquet_sha256"]))
-            valid_receipt_ids.append(receipt_id)
-            receipt_candles_sum += int(evidence["candle_count"])
-            if evidence["is_legacy"]:
-                legacy_receipt_count += 1
-            provenance_statuses.add(str(evidence["provenance_status"]))
-
-        schedule = get_market_schedule(ckpt.symbol)
-        reconstructed_completed: list[int] = []
-        coverage_gaps: list[dict[str, Any]] = []
-        first_missing_by_interval: dict[int, int] = {}
-
-        for idx, interval in enumerate(ckpt.missing_intervals):
-            interval_from = int(interval["from_ts"])
-            interval_to = int(interval["to_ts"])
-            uncovered_open_bars = 0
-            first_uncovered: int | None = None
-            missing_ranges: list[dict[str, int]] = []
-            cursor = interval_from
-            while cursor < interval_to:
-                dt = datetime.fromtimestamp(cursor, UTC)
-                if (
-                    (not schedule.is_schedule_verified) or schedule.is_market_open(dt)
-                ) and cursor not in verified_timestamps:
-                    if missing_ranges and missing_ranges[-1]["to_ts"] == cursor:
-                        missing_ranges[-1]["to_ts"] = cursor + ckpt.timeframe_seconds
-                    else:
-                        missing_ranges.append({
-                            "from_ts": cursor,
-                            "to_ts": cursor + ckpt.timeframe_seconds,
-                        })
-                    uncovered_open_bars += 1
-                    if first_uncovered is None:
-                        first_uncovered = cursor
-                cursor += ckpt.timeframe_seconds
-            if uncovered_open_bars == 0:
-                reconstructed_completed.append(idx)
-            else:
-                if first_uncovered is not None:
-                    first_missing_by_interval[idx] = first_uncovered
-                coverage_gaps.append({
-                    "interval_index": idx,
-                    "from_utc": interval.get("from_utc"),
-                    "to_utc": interval.get("to_utc"),
-                    "uncovered_open_bars": uncovered_open_bars,
-                    "unexplained_source_gaps": missing_ranges,
-                    "first_missing_utc": (
-                        datetime.fromtimestamp(first_uncovered, UTC).isoformat()
-                        if first_uncovered is not None
-                        else ""
-                    ),
-                })
-
-        coverage_complete = len(reconstructed_completed) == len(ckpt.missing_intervals)
-        verified = (
-            not errors
-            and coverage_complete
-            and bool(valid_receipt_ids)
-            and bool(verified_timestamps)
-        )
-
-        return {
-            "job_id": job_id,
-            "symbol": ckpt.symbol,
-            "status": ckpt.status,
-            "verified": verified,
-            "requested_from_utc": datetime.fromtimestamp(ckpt.requested_from_ts, UTC).isoformat(),
-            "requested_to_utc": datetime.fromtimestamp(ckpt.requested_to_ts, UTC).isoformat(),
-            "total_intervals": len(ckpt.missing_intervals),
-            "completed_intervals": len(reconstructed_completed),
-            "reconstructed_completed_indices": reconstructed_completed,
-            "first_missing_by_interval": first_missing_by_interval,
-            "receipt_count": len(valid_receipt_ids),
-            "valid_receipt_ids": valid_receipt_ids,
-            "legacy_receipt_count": legacy_receipt_count,
-            "provenance_status": sorted(provenance_statuses),
-            "receipt_candles_sum": receipt_candles_sum,
-            "unique_verified_candles": len(verified_timestamps),
-            "verified_timestamps": sorted(verified_timestamps),
-            "verified_parquet_paths": sorted(verified_parquet_paths),
-            "verified_parquet_hashes": sorted(verified_parquet_hashes),
-            "coverage_gaps_count": len(coverage_gaps),
-            "coverage_gaps": coverage_gaps,
-            "errors": errors,
-        }
+            return self._mint_integrity_report(report, ckpt, binding_paths)
 
     def _reconcile_job_state_unlocked(self, job_id: str) -> CollectionCheckpoint:
         """Reconcile durable state assuming the caller already owns the job lock."""
@@ -1225,45 +1597,155 @@ class HistoricalCollectionCoordinator:
 
     def reconcile_job_state(self, job_id: str) -> CollectionCheckpoint:
         """Audit storage and receipts against checkpoint to reconcile durable progress."""
-        self.acquire_job_lock(job_id)
-        try:
-            return self._reconcile_job_state_unlocked(job_id)
-        finally:
-            self.release_job_lock(job_id)
-
-    def create_snapshot_for_job(self, job_id: str) -> Any:
-        """Create an immutable snapshot strictly from receipt-verified parquet files."""
-        integrity = self.verify_job_integrity(job_id)
-        if not integrity["verified"]:
-            err_msg = "; ".join(integrity.get("errors", [])) or "Coverage incomplete"
-            raise ValueError(f"Job {job_id} failed integrity verification: {err_msg}")
-
-        expected_paths = set(integrity.get("verified_parquet_paths", []))
-        expected_hashes = set(integrity.get("verified_parquet_hashes", []))
-        if not expected_paths or not expected_hashes:
-            raise ValueError(f"Job {job_id} has no verified parquet files to snapshot")
-
-        dataset_mgr = ResearchDatasetManager(self.repo_root)
-        discovered = dataset_mgr.discover_sources()
-        repo_resolved = self.repo_root.resolve()
-        job_sources: list[Any] = []
-        for source in discovered:
+        with self.job_operation(job_id, "reconcile"):
+            self.acquire_job_lock(job_id)
             try:
-                rel_path = str(source.path.resolve().relative_to(repo_resolved)).replace("\\", "/")
-            except ValueError:
-                continue
-            if (
-                source.is_eligible
-                and rel_path in expected_paths
-                and source.sha256_checksum in expected_hashes
-            ):
-                job_sources.append(source)
+                return self._reconcile_job_state_unlocked(job_id)
+            finally:
+                self.release_job_lock(job_id)
 
-        if not job_sources:
-            raise ValueError(
-                f"Job {job_id}: no discoverable sources match the receipt-verified parquet files"
-            )
-        return dataset_mgr.prepare_dataset(sources=job_sources)
+    def create_snapshot_for_job(
+        self, job_id: str, *, integrity: dict[str, Any] | None = None
+    ) -> Any:
+        """Create an immutable snapshot strictly from receipt-verified parquet files.
+
+        A precomputed report is only an optimization hint. It is trusted only when
+        it was minted internally, is byte-for-byte unchanged, and its durable-state
+        binding still matches the checkpoint, receipts, and exact path-to-hash map
+        while the job lock is held. Otherwise fresh verification runs under that
+        same lock; correctness is preferred over avoiding a second verification.
+        """
+        with self.job_operation(job_id, "snapshot"):
+            self.acquire_job_lock(job_id)
+            try:
+                ckpt_path = self.checkpoints_dir / f"{job_id}.json"
+                if not ckpt_path.is_file():
+                    raise FileNotFoundError(f"Checkpoint for job {job_id} not found at {ckpt_path}")
+                ckpt = CollectionCheckpoint.load(ckpt_path)
+                if ckpt.is_synthetic:
+                    raise ValueError(
+                        f"Job {job_id} contains synthetic test evidence and cannot be "
+                        "registered as a genuine research snapshot"
+                    )
+
+                def derive_current_binding() -> tuple[dict[str, str], list[str], dict[str, Any]]:
+                    pairs, errors = self._receipt_path_hashes_for_job(job_id, ckpt)
+                    state_binding = self._build_snapshot_state_binding(job_id, ckpt, pairs)
+                    return pairs, errors, state_binding
+
+                trusted_report = False
+                expected_pairs: dict[str, str] = {}
+                binding_errors: list[str] = []
+                binding: dict[str, Any] = {}
+                if (
+                    integrity is not None
+                    and integrity.get("job_id") == job_id
+                    and integrity.get("verified") is True
+                ):
+                    proof = _lookup_integrity_report_proof(integrity.get("verification_token"))
+                    if proof is not None and (
+                        proof.job_id == job_id and proof.repo_root == str(self.repo_root.resolve())
+                    ):
+                        content = {
+                            key: value
+                            for key, value in integrity.items()
+                            if key != "verification_token"
+                        }
+                        if proof.content_sha256 == _canonical_json_sha256(content):
+                            expected_pairs, binding_errors, binding = derive_current_binding()
+                            trusted_report = (
+                                not binding_errors
+                                and proof.state_fingerprint == binding["fingerprint"]
+                                and integrity.get("snapshot_state_fingerprint")
+                                == binding["fingerprint"]
+                            )
+
+                if not trusted_report:
+                    # Correctness wins over the optimization: an unauthenticated
+                    # report is discarded and a fresh verification runs under
+                    # the same job lock before any snapshot is published.
+                    integrity = self.verify_job_integrity(job_id)
+                    expected_pairs, binding_errors, binding = derive_current_binding()
+
+                if integrity is None:  # defensive; verification must produce a report
+                    raise ValueError(f"Job {job_id}: integrity verification produced no report")
+                if not integrity.get("verified", False):
+                    err_msg = "; ".join(integrity.get("errors", [])) or "Coverage incomplete"
+                    raise ValueError(f"Job {job_id} failed integrity verification: {err_msg}")
+
+                if binding_errors:
+                    raise ValueError(
+                        f"Job {job_id} snapshot state is invalid: {'; '.join(binding_errors)}"
+                    )
+                if binding["fingerprint"] != integrity.get("snapshot_state_fingerprint"):
+                    raise ValueError(
+                        f"Job {job_id} integrity report is stale: checkpoint, receipts, or "
+                        "receipt-bound parquet files changed after verification"
+                    )
+                if not expected_pairs:
+                    raise ValueError(f"Job {job_id} has no verified parquet files to snapshot")
+
+                dataset_mgr = ResearchDatasetManager(self.repo_root)
+                discovered = dataset_mgr.discover_sources()
+                repo_resolved = self.repo_root.resolve()
+                job_sources: list[Any] = []
+                matched_paths: set[str] = set()
+                for source in discovered:
+                    try:
+                        rel_path = str(source.path.resolve().relative_to(repo_resolved)).replace(
+                            "\\", "/"
+                        )
+                    except ValueError:
+                        continue
+                    if (
+                        source.is_eligible
+                        and rel_path in expected_pairs
+                        and source.sha256_checksum == expected_pairs[rel_path]
+                    ):
+                        job_sources.append(source)
+                        matched_paths.add(rel_path)
+
+                missing = sorted(set(expected_pairs) - matched_paths)
+                if missing:
+                    raise ValueError(
+                        f"Job {job_id}: expected receipt-bound parquet files are missing or "
+                        f"ineligible for snapshot: {missing}"
+                    )
+                if len(job_sources) != len(expected_pairs):
+                    raise ValueError(
+                        f"Job {job_id}: ambiguous source mapping for receipt-bound parquet files"
+                    )
+
+                # Recheck the cheap durable-state fingerprint immediately before
+                # publication. prepare_dataset independently rehashes each
+                # catalog parquet source, so a swapped file cannot be published.
+                publication_binding = self._build_snapshot_state_binding(
+                    job_id, ckpt, expected_pairs
+                )
+                if publication_binding["fingerprint"] != binding["fingerprint"]:
+                    raise ValueError(
+                        f"Job {job_id}: checkpoint or receipts changed before snapshot publication"
+                    )
+
+                snapshot = dataset_mgr.prepare_dataset(sources=job_sources)
+                published_pairs: dict[str, str] = {}
+                for record in snapshot.manifest.source_files:
+                    try:
+                        published_path = (
+                            Path(str(record["path"])).resolve().relative_to(repo_resolved)
+                        )
+                        rel_key = published_path.as_posix()
+                    except (ValueError, KeyError):
+                        rel_key = str(record.get("path", "")).replace("\\", "/")
+                    published_pairs[rel_key] = str(record.get("sha256", ""))
+                if published_pairs != expected_pairs:
+                    raise ValueError(
+                        f"Job {job_id}: published snapshot does not bind every expected source "
+                        f"({sorted(published_pairs)} != {sorted(expected_pairs)})"
+                    )
+                return snapshot
+            finally:
+                self.release_job_lock(job_id)
 
     async def resume_collection(
         self,
@@ -1343,6 +1825,17 @@ class HistoricalCollectionCoordinator:
         # Reject an unauthorized client before acquiring ownership or mutating
         # any durable checkpoint/receipt state.
         verify_authorized_client(client)
+
+        # Acquire in-memory operation guard
+        thread_id = threading.get_ident()
+        with _ACTIVE_JOB_OPERATIONS_GUARD:
+            existing_op = _ACTIVE_JOB_OPERATIONS.get(job_id)
+            if existing_op is not None and existing_op[0] != thread_id:
+                raise RuntimeError(
+                    f"Job {job_id} is currently busy with '{existing_op[1]}' in another thread. "
+                    f"Concurrent 'collection' is not permitted on the same job."
+                )
+            _ACTIVE_JOB_OPERATIONS[job_id] = (thread_id, "collection")
 
         self.acquire_job_lock(job_id)
         try:
@@ -1603,6 +2096,12 @@ class HistoricalCollectionCoordinator:
             cancel_signal_file.unlink(missing_ok=True)
             return self._build_progress(fresh)
         finally:
+            with _ACTIVE_JOB_OPERATIONS_GUARD:
+                if _ACTIVE_JOB_OPERATIONS.get(job_id) == (thread_id, "collection"):
+                    if existing_op is not None:
+                        _ACTIVE_JOB_OPERATIONS[job_id] = existing_op
+                    else:
+                        _ACTIVE_JOB_OPERATIONS.pop(job_id, None)
             self.release_job_lock(job_id)
 
     def inspect_coverage(
@@ -1622,11 +2121,20 @@ class HistoricalCollectionCoordinator:
                 snap.manifest.symbol == symbol
                 and snap.manifest.candle_size_seconds == timeframe_seconds
             ):
+                if snap.manifest.to_ts <= start_ts or snap.manifest.from_ts >= end_ts:
+                    continue
+                if not dataset_mgr.snapshot_is_genuine(snap):
+                    logger.debug(
+                        "Ignoring ineligible snapshot for coverage: %s", snap.manifest.snapshot_id
+                    )
+                    continue
                 try:
-                    candles = snap.load_candles()
-                    for c in candles:
-                        if start_ts <= c.from_ts < end_ts:
-                            existing_timestamps.add(c.from_ts)
+                    import pyarrow.parquet as pq
+
+                    table = pq.read_table(snap.parquet_path, columns=["from_ts"])
+                    for ts in table.column("from_ts").to_pylist():
+                        if start_ts <= ts < end_ts:
+                            existing_timestamps.add(ts)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(
                         "Could not inspect snapshot %s: %s", snap.manifest.snapshot_id, exc

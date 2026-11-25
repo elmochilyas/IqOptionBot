@@ -43,6 +43,34 @@ logger = logging.getLogger(__name__)
 DEFAULT_SNAPSHOTS_DIR: Final[Path] = Path("data/research_datasets")
 PROVENANCE_LEGACY: Final[str] = "LEGACY_AUTHENTIC_COLLECTION"
 PROVENANCE_EXTENDED_LIVE: Final[str] = "EXTENDED_LIVE_COLLECTION"
+# Genuine demo/practice-account quotes remain authentic market evidence. Only
+# synthetic test-fixture labels are ineligible; wallet classification is not
+# treated as a synthetic-data proxy.
+AUTHENTIC_SNAPSHOT_PROVENANCE: Final[frozenset[str]] = frozenset({
+    PROVENANCE_LEGACY,
+    PROVENANCE_EXTENDED_LIVE,
+    "AUTHENTIC_BROKER_COLLECTION",
+    "BROKER_HISTORICAL",
+    "HISTORICAL",
+    "HISTORICAL_REUSED",
+})
+SYNTHETIC_EVIDENCE_MARKERS: Final[tuple[str, ...]] = (
+    "SYNTHETIC",
+    "TEST_FIXTURE",
+    "TEST_EVIDENCE",
+    "FAKE",
+    "FABRICAT",
+    "SIMULAT",
+)
+# A demo/practice account may be labelled SIMULATED by an operator. That is a
+# wallet classification, not a claim that the candles were fabricated. Only
+# explicit fixture/synthetic labels are ineligible here.
+INELIGIBLE_WALLET_MARKERS: Final[tuple[str, ...]] = (
+    "SYNTHETIC",
+    "TEST_FIXTURE",
+    "TEST_EVIDENCE",
+    "FAKE_CANDLE",
+)
 
 
 class DatasetManagerError(Exception):
@@ -1047,5 +1075,74 @@ class ResearchDatasetManager:
                 logger.warning("Failed to load snapshot at %s: %s", s_dir, exc)
 
         return snapshots
+
+    @staticmethod
+    def _contains_synthetic_evidence_marker(
+        value: Any,
+        markers: tuple[str, ...] = SYNTHETIC_EVIDENCE_MARKERS,
+    ) -> bool:
+        text = str(value or "").upper()
+        return any(marker in text for marker in markers)
+
+    def snapshot_is_genuine(self, snapshot: ResearchDatasetSnapshot) -> bool:
+        """Return True only for checksum-valid, authentic, non-synthetic snapshots.
+
+        Genuine market data captured from a demo/practice broker account carries
+        a wallet classification such as PRACTICE or DEMO and is still acceptable
+        evidence. Explicit synthetic/test-fixture provenance, OTC/synthetic flags,
+        and corrupted files are not.
+        """
+        manifest = snapshot.manifest
+        if not snapshot.verify_integrity():
+            return False
+        if manifest.candle_size_seconds <= 0:
+            return False
+        # OTC symbols are not genuine exchange-rate coverage even when the
+        # manifest omits an explicit is_otc flag.
+        if "OTC" in str(manifest.symbol).upper():
+            return False
+        if manifest.total_candles_retained <= 0 or manifest.to_ts <= manifest.from_ts:
+            return False
+        if self._contains_synthetic_evidence_marker(
+            manifest.wallet_classification, INELIGIBLE_WALLET_MARKERS
+        ):
+            return False
+
+        try:
+            raw = json.loads(snapshot.manifest_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return False
+        if raw.get("is_synthetic") is True or raw.get("is_otc") is True:
+            return False
+
+        provenance = raw.get("provenance_breakdown", manifest.provenance_breakdown)
+        if not isinstance(provenance, dict) or not provenance:
+            return False
+        for label, count in provenance.items():
+            if self._contains_synthetic_evidence_marker(label):
+                return False
+            if str(label) not in AUTHENTIC_SNAPSHOT_PROVENANCE:
+                return False
+            # prepare_dataset records both supported provenance classes, with a
+            # zero count for the class that contributed no candles. Zero is not
+            # synthetic evidence.
+            if isinstance(count, int) and count < 0:
+                return False
+
+        sources = raw.get("source_files", manifest.source_files)
+        if not isinstance(sources, list) or not sources:
+            return False
+        for source in sources:
+            if not isinstance(source, dict):
+                return False
+            if source.get("is_synthetic") is True or source.get("is_otc") is True:
+                return False
+            source_provenance = source.get("provenance")
+            if source_provenance is not None:
+                if self._contains_synthetic_evidence_marker(source_provenance):
+                    return False
+                if str(source_provenance) not in AUTHENTIC_SNAPSHOT_PROVENANCE:
+                    return False
+        return True
 
     build_snapshot = prepare_dataset

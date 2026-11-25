@@ -93,6 +93,17 @@ class ObservationCenterController:
         self._accuracy_history: list[float] = []
         self._sessions_index: dict[str, Path] = {}
         self._last_ui_push_mono: float = 0.0
+        self._is_config_collapsed: bool = False
+        self.obs_scroll_canvas: tk.Canvas | None = None
+        self.obs_scroll_bar: ttk.Scrollbar | None = None
+        self.obs_scroll_inner: ttk.Frame | None = None
+        self._scroll_window_id: int | None = None
+        self.btn_toggle_config: ttk.Button | None = None
+        self.obs_config_body: ttk.Frame | None = None
+        self.lbl_kpi_opps: ttk.Label | None = None
+        self.lbl_kpi_preds: ttk.Label | None = None
+        self.lbl_kpi_resolved: ttk.Label | None = None
+        self.lbl_kpi_baseline: ttk.Label | None = None
         self._fixture_label_to_tf: dict[str, int] = {
             f"{fx.fixture_id} ({fx.timeframe_label} / H{fx.horizon_bars})": fx.timeframe_seconds
             for fx in PHASE46_SYNTHETIC_FIXTURES
@@ -148,33 +159,116 @@ class ObservationCenterController:
             self._poll_after_id = None
 
     # ------------------------------------------------------------------
+    # Scroll & Collapsible Section Helpers
+    # ------------------------------------------------------------------
+    def _on_inner_configure(self, _event: Any = None) -> None:
+        if self.obs_scroll_canvas is not None:
+            self.obs_scroll_canvas.configure(scrollregion=self.obs_scroll_canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event: Any) -> None:
+        if self.obs_scroll_canvas is not None and self._scroll_window_id is not None:
+            self.obs_scroll_canvas.itemconfigure(self._scroll_window_id, width=max(1, event.width))
+
+    def _on_mousewheel(self, event: Any) -> None:
+        if self.obs_scroll_canvas is not None and event.delta:
+            self.obs_scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def toggle_config_section(self) -> None:
+        if self.obs_config_body is None or self.btn_toggle_config is None:
+            return
+        self._is_config_collapsed = not self._is_config_collapsed
+        if self._is_config_collapsed:
+            self.obs_config_body.pack_forget()
+            self.btn_toggle_config.config(text="▸ Expand Session Configuration")
+        else:
+            self.obs_config_body.pack(fill="x", pady=(4, 0))
+            self.btn_toggle_config.config(text="▾ Collapse Session Configuration")
+        self._on_inner_configure()
+
+    # ------------------------------------------------------------------
     # UI Construction
     # ------------------------------------------------------------------
     def build_ui(self, parent: ttk.Frame) -> None:
         p = self.panel
 
-        # 1) Safety banner
-        controls_frame = ttk.LabelFrame(parent, text="Observation Session Configuration", padding=5)
-        controls_frame.pack(fill="x", pady=(0, 3))
+        # Scrollable outer container so tables, chart & history never collapse at 1280x720
+        scroll_host = ttk.Frame(parent)
+        scroll_host.pack(fill="both", expand=True)
+        scroll_host.rowconfigure(0, weight=1)
+        scroll_host.columnconfigure(0, weight=1)
 
+        self.obs_scroll_canvas = tk.Canvas(
+            scroll_host, highlightthickness=0, borderwidth=0, background="#eef2f6"
+        )
+        self.obs_scroll_bar = ttk.Scrollbar(
+            scroll_host, orient="vertical", command=self.obs_scroll_canvas.yview
+        )
+        self.obs_scroll_canvas.configure(yscrollcommand=self.obs_scroll_bar.set)
+        self.obs_scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        self.obs_scroll_bar.grid(row=0, column=1, sticky="ns")
+
+        self.obs_scroll_inner = ttk.Frame(self.obs_scroll_canvas, padding=(2, 2, 6, 6))
+        self._scroll_window_id = self.obs_scroll_canvas.create_window(
+            (0, 0), window=self.obs_scroll_inner, anchor="nw"
+        )
+        self.obs_scroll_inner.bind("<Configure>", self._on_inner_configure)
+        self.obs_scroll_canvas.bind("<Configure>", self._on_canvas_configure)
+        self.obs_scroll_canvas.bind(
+            "<Enter>",
+            lambda _e: (
+                self.obs_scroll_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+                if self.obs_scroll_canvas
+                else None
+            ),
+        )
+        self.obs_scroll_canvas.bind(
+            "<Leave>",
+            lambda _e: (
+                self.obs_scroll_canvas.unbind_all("<MouseWheel>")
+                if self.obs_scroll_canvas
+                else None
+            ),
+        )
+
+        container = self.obs_scroll_inner
+
+        # ==================================================================
+        # 1) Session Configuration (Collapsible)
+        # ==================================================================
+        controls_frame = ttk.LabelFrame(
+            container, text="1. Observation Session Configuration", padding=6
+        )
+        controls_frame.pack(fill="x", pady=(0, 8))
+
+        cfg_header = ttk.Frame(controls_frame)
+        cfg_header.pack(fill="x")
         p.obs_safety_label = ttk.Label(
-            controls_frame,
+            cfg_header,
             text=(
                 "Phase 46 Observation Center: EXECUTION_AUTHORITY=NONE | NO_DEMONSTRATED_EDGE. "
-                "Offline Synthetic Mode validates lifecycle plumbing only. "
-                "Genuine prospective observation is BLOCKED until a candidate qualifies and contract is authorized."
+                "Offline Synthetic Mode validates lifecycle plumbing only; Genuine Mode is BLOCKED."
             ),
             font=("Segoe UI", 8, "bold"),
             foreground="#9c3414",
-            wraplength=1040,
+            wraplength=820,
             justify="left",
         )
-        p.obs_safety_label.pack(anchor="w", pady=(0, 3))
+        p.obs_safety_label.pack(side="left", fill="x", expand=True)
+
+        self.btn_toggle_config = ttk.Button(
+            cfg_header,
+            text="▾ Collapse Session Configuration",
+            command=self.toggle_config_section,
+        )
+        self.btn_toggle_config.pack(side="right", padx=(8, 0))
+
+        self.obs_config_body = ttk.Frame(controls_frame)
+        self.obs_config_body.pack(fill="x", pady=(4, 0))
 
         # Row 1: Mode & Eligibility
-        r1 = ttk.Frame(controls_frame)
+        r1 = ttk.Frame(self.obs_config_body)
         r1.pack(fill="x", pady=2)
-        ttk.Label(r1, text="Observation Mode:", width=20).pack(side="left")
+        ttk.Label(r1, text="Observation Mode:", width=18).pack(side="left")
         p.var_obs_mode = tk.StringVar(value="synthetic")
         p.rb_obs_synth = ttk.Radiobutton(
             r1,
@@ -202,14 +296,14 @@ class ObservationCenterController:
         p.lbl_obs_eligibility.pack(side="right", padx=4)
 
         # Row 2: Model, Timeframe, Prediction Duration
-        r2 = ttk.Frame(controls_frame)
+        r2 = ttk.Frame(self.obs_config_body)
         r2.pack(fill="x", pady=2)
-        ttk.Label(r2, text="Model / Fixture:", width=20).pack(side="left")
-        p.combo_obs_model = ttk.Combobox(r2, state="readonly", width=44)
+        ttk.Label(r2, text="Model / Fixture:", width=18).pack(side="left")
+        p.combo_obs_model = ttk.Combobox(r2, state="readonly", width=40)
         p.combo_obs_model.pack(side="left", padx=4)
         p.combo_obs_model.bind("<<ComboboxSelected>>", self.on_model_selected)
 
-        ttk.Label(r2, text="Timeframe:", width=11).pack(side="left", padx=(10, 2))
+        ttk.Label(r2, text="Timeframe:", width=10).pack(side="left", padx=(8, 2))
         p.combo_obs_timeframe = ttk.Combobox(
             r2, state="readonly", width=11, values=list(_TF_DISPLAY_TO_SEC.keys())
         )
@@ -223,34 +317,34 @@ class ObservationCenterController:
             font=("Segoe UI", 9, "bold"),
             foreground="#20364a",
         )
-        p.lbl_obs_horizon.pack(side="left", padx=(12, 4))
+        p.lbl_obs_horizon.pack(side="left", padx=(10, 4))
 
         # Row 3: Account (Genuine), Duration, Pace
-        r3 = ttk.Frame(controls_frame)
+        r3 = ttk.Frame(self.obs_config_body)
         r3.pack(fill="x", pady=2)
-        ttk.Label(r3, text="Vault Account (Genuine):", width=20).pack(side="left")
-        p.combo_obs_account = ttk.Combobox(r3, state="disabled", width=28)
+        ttk.Label(r3, text="Vault Account:", width=18).pack(side="left")
+        p.combo_obs_account = ttk.Combobox(r3, state="disabled", width=26)
         p.combo_obs_account.pack(side="left", padx=4)
 
-        ttk.Label(r3, text="Duration (min):", width=14).pack(side="left", padx=(10, 2))
+        ttk.Label(r3, text="Duration (min):", width=13).pack(side="left", padx=(8, 2))
         p.combo_obs_duration = ttk.Combobox(
             r3, state="readonly", width=6, values=["15", "30", "60", "120"]
         )
         p.combo_obs_duration.set("15")
         p.combo_obs_duration.pack(side="left", padx=4)
 
-        ttk.Label(r3, text="Sim Pace:", width=9).pack(side="left", padx=(10, 2))
+        ttk.Label(r3, text="Sim Pace:", width=9).pack(side="left", padx=(8, 2))
         p.combo_obs_pace = ttk.Combobox(
             r3, state="readonly", width=21, values=list(_PACE_MAP.keys())
         )
         p.combo_obs_pace.set("Interactive (120ms/bar)")
         p.combo_obs_pace.pack(side="left", padx=4)
 
-        # Row 3b: Campaign & Slot (kept for Phase 40B/40C compatibility)
-        r3b = ttk.Frame(controls_frame)
+        # Row 3b: Campaign & Slot (Phase 40B/40C compatibility)
+        r3b = ttk.Frame(self.obs_config_body)
         r3b.pack(fill="x", pady=2)
-        ttk.Label(r3b, text="Research Campaign:", width=20).pack(side="left")
-        p.combo_obs_campaign = ttk.Combobox(r3b, state="readonly", width=24)
+        ttk.Label(r3b, text="Research Campaign:", width=18).pack(side="left")
+        p.combo_obs_campaign = ttk.Combobox(r3b, state="readonly", width=22)
         p.combo_obs_campaign.pack(side="left", padx=4)
         p.combo_obs_campaign.bind(
             "<<ComboboxSelected>>",
@@ -264,7 +358,7 @@ class ObservationCenterController:
         )
         p.lbl_campaign_blinding.pack(side="left", padx=(10, 4))
 
-        # Row 4: Action Buttons
+        # Row 4: Action Buttons (always visible even if config body collapsed)
         r4 = ttk.Frame(controls_frame)
         r4.pack(fill="x", pady=(6, 2))
         p.btn_start_obs = ttk.Button(r4, text="Start Observation", command=p.start_observation)
@@ -289,9 +383,11 @@ class ObservationCenterController:
         )
         p.btn_verify_inputs.pack(side="left", padx=4)
 
-        # 2) Live Monitoring & Chart
-        live_frame = ttk.LabelFrame(parent, text="Live Monitoring & Performance", padding=5)
-        live_frame.pack(fill="x", pady=3)
+        # ==================================================================
+        # 2) Live Monitoring & Performance
+        # ==================================================================
+        live_frame = ttk.LabelFrame(container, text="2. Live Monitoring & Performance", padding=6)
+        live_frame.pack(fill="x", pady=(0, 8))
 
         p.obs_progress_bar = ttk.Progressbar(live_frame, mode="determinate")
         p.obs_progress_bar.pack(fill="x", pady=(0, 4))
@@ -301,9 +397,31 @@ class ObservationCenterController:
             text="State: IDLE | Source: Disconnected | Elapsed: 0.0s | Latest Candle: N/A | Latest Pred: N/A",
             font=("Segoe UI", 9, "bold"),
             foreground="#20364a",
-            wraplength=1040,
+            wraplength=980,
         )
-        p.lbl_obs_status.pack(anchor="w", pady=2)
+        p.lbl_obs_status.pack(anchor="w", pady=(0, 4))
+
+        # Compact 4-card KPI grid
+        kpi_grid = ttk.Frame(live_frame)
+        kpi_grid.pack(fill="x", pady=(0, 4))
+        for ci in range(4):
+            kpi_grid.columnconfigure(ci, weight=1, uniform="kpi")
+
+        def _make_kpi_card(col_idx: int, title: str, initial: str) -> ttk.Label:
+            card = ttk.LabelFrame(kpi_grid, text=title, padding=(6, 4))
+            card.grid(row=0, column=col_idx, sticky="nsew", padx=(0 if col_idx == 0 else 4, 0))
+            lbl = ttk.Label(card, text=initial, font=("Consolas", 9), foreground="#17324d")
+            lbl.pack(anchor="w")
+            return lbl
+
+        self.lbl_kpi_opps = _make_kpi_card(
+            0, "Opportunities", "Total: 0 | Sel: 0\nCov: N/A | Abst: 0"
+        )
+        self.lbl_kpi_preds = _make_kpi_card(1, "Pending & Resolved", "Pending: 0\nResolved: 0")
+        self.lbl_kpi_resolved = _make_kpi_card(2, "Accuracy (W/L/T)", "W:0 / L:0 / T:0\nAcc: N/A")
+        self.lbl_kpi_baseline = _make_kpi_card(
+            3, "Baseline & 85% Hyp.", "Baseline: N/A\nExp/BE: N/A"
+        )
 
         p.lbl_obs_kpis = ttk.Label(
             live_frame,
@@ -311,10 +429,10 @@ class ObservationCenterController:
                 "Opportunities: 0 | Selected: 0 | Pending: 0 | Resolved: 0 (W:0 / L:0 / T:0) | "
                 "Abstentions: 0 | Accuracy: N/A | Coverage: N/A | Baseline: N/A"
             ),
-            font=("Consolas", 9),
-            foreground="#17324d",
+            font=("Consolas", 8),
+            foreground="#476582",
         )
-        p.lbl_obs_kpis.pack(anchor="w", pady=2)
+        p.lbl_obs_kpis.pack(anchor="w", pady=(2, 1))
 
         p.lbl_obs_payout = ttk.Label(
             live_frame,
@@ -322,11 +440,19 @@ class ObservationCenterController:
             font=("Segoe UI", 8, "italic"),
             foreground="#5a6872",
         )
-        p.lbl_obs_payout.pack(anchor="w", pady=(0, 4))
+        p.lbl_obs_payout.pack(anchor="w", pady=(0, 6))
 
-        # Split area: Treeview (left) + Cumulative Accuracy Chart (right)
+        # Prediction Table (left, with V+H scrollbars) + Cumulative Accuracy Chart (right, min height 170px)
         mid_frame = ttk.Frame(live_frame)
         mid_frame.pack(fill="both", expand=True)
+        mid_frame.columnconfigure(0, weight=3)
+        mid_frame.columnconfigure(1, weight=2)
+        mid_frame.rowconfigure(0, weight=1, minsize=175)
+
+        tree_box = ttk.Frame(mid_frame)
+        tree_box.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        tree_box.rowconfigure(0, weight=1)
+        tree_box.columnconfigure(0, weight=1)
 
         cols = (
             "model_id",
@@ -340,40 +466,61 @@ class ObservationCenterController:
             "exp_dig",
             "be_gap",
         )
-        p.obs_tree = ttk.Treeview(mid_frame, columns=cols, show="headings", height=3)
+        p.obs_tree = ttk.Treeview(tree_box, columns=cols, show="headings", height=5)
         headers = {
-            "model_id": ("Model ID", 180, "w"),
+            "model_id": ("Model ID", 190, "w"),
             "predictions": ("Total", 55, "e"),
             "pending": ("Pending", 60, "e"),
-            "trades": ("W/L/T", 75, "center"),
+            "trades": ("W/L/T", 80, "center"),
             "win_rate": ("Win%", 70, "e"),
             "matched_maj": ("Baseline%", 75, "e"),
-            "ci_95": ("Wilson 95%", 115, "center"),
-            "exp_bin": ("Exp Bin", 70, "e"),
-            "exp_dig": ("Exp Dig", 70, "e"),
-            "be_gap": ("BE Gap", 65, "e"),
+            "ci_95": ("Wilson 95%", 120, "center"),
+            "exp_bin": ("Exp Bin", 75, "e"),
+            "exp_dig": ("Exp Dig", 75, "e"),
+            "be_gap": ("BE Gap", 70, "e"),
         }
         for col, (title, w, anc) in headers.items():
             p.obs_tree.heading(col, text=title)
-            p.obs_tree.column(col, width=w, anchor=cast(Literal["w", "e", "center"], anc))
-        p.obs_tree.pack(side="left", fill="both", expand=True, padx=(0, 6))
+            p.obs_tree.column(
+                col,
+                width=w,
+                minwidth=max(50, w - 20),
+                stretch=False,
+                anchor=cast(Literal["w", "e", "center"], anc),
+            )
 
+        obs_vsb = ttk.Scrollbar(tree_box, orient="vertical", command=p.obs_tree.yview)
+        obs_hsb = ttk.Scrollbar(tree_box, orient="horizontal", command=p.obs_tree.xview)
+        p.obs_tree.configure(yscrollcommand=obs_vsb.set, xscrollcommand=obs_hsb.set)
+        p.obs_tree.grid(row=0, column=0, sticky="nsew")
+        obs_vsb.grid(row=0, column=1, sticky="ns")
+        obs_hsb.grid(row=1, column=0, sticky="ew")
+
+        chart_box = ttk.Frame(mid_frame)
+        chart_box.grid(row=0, column=1, sticky="nsew")
+        chart_box.rowconfigure(0, weight=1, minsize=175)
+        chart_box.columnconfigure(0, weight=1)
         p.obs_chart_canvas = tk.Canvas(
-            mid_frame,
-            width=300,
-            height=90,
+            chart_box,
+            width=360,
+            height=175,
             bg="#ffffff",
             highlightthickness=1,
             highlightbackground="#cfd8e3",
         )
-        p.obs_chart_canvas.pack(side="right", fill="y")
+        p.obs_chart_canvas.grid(row=0, column=0, sticky="nsew")
+        p.obs_chart_canvas.bind(
+            "<Configure>", lambda _e: self._draw_accuracy_chart(self._accuracy_history)
+        )
         self._draw_accuracy_chart([])
 
-        # 3) Session History & Evidence
+        # ==================================================================
+        # 3) Session History & Sealed Evidence
+        # ==================================================================
         hist_frame = ttk.LabelFrame(
-            parent, text="Observation Session History & Sealed Evidence", padding=5
+            container, text="3. Observation Session History & Sealed Evidence", padding=6
         )
-        hist_frame.pack(fill="both", expand=True, pady=3)
+        hist_frame.pack(fill="x", pady=(0, 8))
 
         hist_btns = ttk.Frame(hist_frame)
         hist_btns.pack(fill="x", pady=(0, 4))
@@ -394,31 +541,62 @@ class ObservationCenterController:
         )
         p.btn_export_obs_evidence.pack(side="left", padx=4)
 
+        hist_tree_box = ttk.Frame(hist_frame)
+        hist_tree_box.pack(fill="both", expand=True)
+        hist_tree_box.rowconfigure(0, weight=1)
+        hist_tree_box.columnconfigure(0, weight=1)
+
         hist_cols = ("session_id", "provenance", "tf", "model_id", "state", "resolved", "accuracy")
-        p.obs_history_tree = ttk.Treeview(hist_frame, columns=hist_cols, show="headings", height=3)
+        p.obs_history_tree = ttk.Treeview(
+            hist_tree_box, columns=hist_cols, show="headings", height=5
+        )
         for col, title, w, anc in [
             ("session_id", "Session ID", 220, "w"),
             ("provenance", "Provenance", 100, "center"),
-            ("tf", "TF", 50, "center"),
-            ("model_id", "Candidate / Fixture", 220, "w"),
-            ("state", "State", 130, "center"),
-            ("resolved", "Resolved", 70, "e"),
-            ("accuracy", "Accuracy", 80, "e"),
+            ("tf", "TF", 55, "center"),
+            ("model_id", "Candidate / Fixture", 230, "w"),
+            ("state", "State", 145, "center"),
+            ("resolved", "Resolved", 75, "e"),
+            ("accuracy", "Accuracy", 85, "e"),
         ]:
             p.obs_history_tree.heading(col, text=title)
-            p.obs_history_tree.column(col, width=w, anchor=cast(Literal["w", "e", "center"], anc))
-        p.obs_history_tree.pack(fill="both", expand=True)
+            p.obs_history_tree.column(
+                col,
+                width=w,
+                minwidth=max(50, w - 20),
+                stretch=False,
+                anchor=cast(Literal["w", "e", "center"], anc),
+            )
 
-        # Bounded diagnostics / event log
-        p.obs_log_text = tk.Text(
-            parent, height=3, wrap="word", font=("Consolas", 9), state="disabled"
+        hist_vsb = ttk.Scrollbar(hist_tree_box, orient="vertical", command=p.obs_history_tree.yview)
+        hist_hsb = ttk.Scrollbar(
+            hist_tree_box, orient="horizontal", command=p.obs_history_tree.xview
         )
-        p.obs_log_text.pack(fill="both", expand=True, pady=(3, 0))
+        p.obs_history_tree.configure(yscrollcommand=hist_vsb.set, xscrollcommand=hist_hsb.set)
+        p.obs_history_tree.grid(row=0, column=0, sticky="nsew")
+        hist_vsb.grid(row=0, column=1, sticky="ns")
+        hist_hsb.grid(row=1, column=0, sticky="ew")
+
+        # ==================================================================
+        # 4) Diagnostics & Event Log
+        # ==================================================================
+        log_frame = ttk.LabelFrame(container, text="4. Diagnostics & Event Log", padding=6)
+        log_frame.pack(fill="x", pady=(0, 4))
+        log_frame.columnconfigure(0, weight=1)
+
+        p.obs_log_text = tk.Text(
+            log_frame, height=5, wrap="word", font=("Consolas", 9), state="disabled"
+        )
+        log_vsb = ttk.Scrollbar(log_frame, orient="vertical", command=p.obs_log_text.yview)
+        p.obs_log_text.configure(yscrollcommand=log_vsb.set)
+        p.obs_log_text.grid(row=0, column=0, sticky="nsew")
+        log_vsb.grid(row=0, column=1, sticky="ns")
 
         self.start_polling()
         self.refresh_models()
         self.refresh_session_history()
         self.on_mode_changed()
+        self._on_inner_configure()
 
     # ------------------------------------------------------------------
     # Configuration state handlers
@@ -695,6 +873,25 @@ class ObservationCenterController:
                 f"Abstentions: {abstains} | Accuracy: {acc_str} | Coverage: {cov_str} | Baseline: {base_str}"
             )
         )
+        payout_summary = (
+            f"{first_m.expectancy_binary_pct:+.2f}% / {first_m.break_even_gap_binary * 100:+.2f}%"
+            if (first_m and (wins + losses) > 0)
+            else "N/A"
+        )
+        self._update_kpi_cards(
+            opps=prog.accepted_opportunities_count,
+            selected=selected,
+            cov_str=cov_str,
+            abstains=abstains,
+            pending=pending,
+            resolved=resolved,
+            wins=wins,
+            losses=losses,
+            ties=ties,
+            acc_str=acc_str,
+            base_str=base_str,
+            payout_str=payout_summary,
+        )
         if first_m and (wins + losses) > 0:
             p.lbl_obs_payout.config(
                 text=(
@@ -760,14 +957,31 @@ class ObservationCenterController:
             )
         )
         # Update KPIs from final diagnostics
+        selected_final = diag.total_predictions - diag.skipped_abstain_count
+        acc_final = f"{diag.win_rate_decisive * 100:.2f}%" if diag.resolved_count > 0 else "N/A"
+        cov_final = f"{diag.coverage * 100:.1f}%" if diag.total_predictions > 0 else "N/A"
         p.lbl_obs_kpis.config(
             text=(
-                f"Opportunities: {diag.total_predictions} | Selected: {diag.total_predictions - diag.skipped_abstain_count} | "
+                f"Opportunities: {diag.total_predictions} | Selected: {selected_final} | "
                 f"Pending: {diag.pending_count} | Resolved: {diag.resolved_count} "
                 f"(W:{diag.win_count} / L:{diag.loss_count} / T:{diag.tie_count}) | "
                 f"Abstentions: {diag.skipped_abstain_count} | "
-                f"Accuracy: {diag.win_rate_decisive * 100:.2f}% | Coverage: {diag.coverage * 100:.1f}%"
+                f"Accuracy: {acc_final} | Coverage: {cov_final}"
             )
+        )
+        self._update_kpi_cards(
+            opps=diag.total_predictions,
+            selected=selected_final,
+            cov_str=cov_final,
+            abstains=diag.skipped_abstain_count,
+            pending=diag.pending_count,
+            resolved=diag.resolved_count,
+            wins=diag.win_count,
+            losses=diag.loss_count,
+            ties=diag.tie_count,
+            acc_str=acc_final,
+            base_str="N/A",
+            payout_str="See table",
         )
         self._append_log(
             f"[Phase 46] Session {sr.session_id} finished: {sr.termination_reason} "
@@ -785,6 +999,33 @@ class ObservationCenterController:
         self.panel.lbl_obs_status.config(text=f"State: FAILED | Error: {err_msg}")
         self._append_log(f"[Phase 46] ERROR: {err_msg}")
 
+    def _update_kpi_cards(
+        self,
+        *,
+        opps: int,
+        selected: int,
+        cov_str: str,
+        abstains: int,
+        pending: int,
+        resolved: int,
+        wins: int,
+        losses: int,
+        ties: int,
+        acc_str: str,
+        base_str: str,
+        payout_str: str,
+    ) -> None:
+        if self.lbl_kpi_opps is not None:
+            self.lbl_kpi_opps.config(
+                text=f"Total: {opps} | Sel: {selected}\nCov: {cov_str} | Abst: {abstains}"
+            )
+        if self.lbl_kpi_preds is not None:
+            self.lbl_kpi_preds.config(text=f"Pending: {pending}\nResolved: {resolved}")
+        if self.lbl_kpi_resolved is not None:
+            self.lbl_kpi_resolved.config(text=f"W:{wins} / L:{losses} / T:{ties}\nAcc: {acc_str}")
+        if self.lbl_kpi_baseline is not None:
+            self.lbl_kpi_baseline.config(text=f"Baseline: {base_str}\nExp/BE: {payout_str}")
+
     # ------------------------------------------------------------------
     # Cumulative Accuracy Chart (Tkinter Canvas)
     # ------------------------------------------------------------------
@@ -793,8 +1034,12 @@ class ObservationCenterController:
         if canvas is None:
             return
         canvas.delete("all")
-        w = int(canvas.cget("width"))
-        h = int(canvas.cget("height"))
+        w = max(
+            260, canvas.winfo_width() if canvas.winfo_width() > 20 else int(canvas.cget("width"))
+        )
+        h = max(
+            170, canvas.winfo_height() if canvas.winfo_height() > 20 else int(canvas.cget("height"))
+        )
         pad_l, pad_r, pad_t, pad_b = 34, 10, 14, 18
         pw = w - pad_l - pad_r
         ph = h - pad_t - pad_b

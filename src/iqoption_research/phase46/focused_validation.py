@@ -213,20 +213,156 @@ def _compute_breakdowns(pred_records: list[dict[str, Any]], _horizon_bars: int) 
 
 
 def _run_focused_nested(runner: Any, completed_like_records: list[dict[str, Any]], populations: dict[int, tuple[Any, list[Any]]], cross_tf: dict[int, list[Any]]) -> dict[str, Any]:
+    """Run focused nested chronological evaluation for the three confirmed candidates.
+
+    Phase45._nested_evaluation only targets logistic-regression finalists in its generic path.
+    Here we execute an explicit, honest nested protocol per candidate (same dev populations,
+    chronological folds, embargo/purge analogues via offset windows) and report fold-level results.
+    """
+    from iqoption_research.ml.calibration.calibrator import CalibrationMethod, ProbabilityCalibrator
+    from iqoption_research.ml.targets.specs import TiePolicy
+    from iqoption_research.ml.targets_v3 import MultiHorizonTargetEngine
+    from iqoption_research.ml.walk_forward import create_model_instance
+    from iqoption_research.phase45.evaluation import balanced_accuracy, class_distribution, recompute_prediction_bootstrap
+    from iqoption_research.research.features.scalers import StandardScaler
+
+    def _meta(rec: dict[str, Any], key: str) -> Any:
+        meta = rec.get("metadata_summary")
+        return rec.get(key) or (meta.get(key) if isinstance(meta, dict) else None)
+
     tree_ids = {
         "p45_046_M15_M15_H2_random_forest_native_only",
         "p45_029_M5_M5_H3_hist_gradient_boosting_native_only",
         "p45_004_M1_M1_H1_random_forest_native_only",
     }
-    results: dict[str, Any] = {"status": "COMPLETED", "note": "Focused nested emphasis for confirmed tree-based candidates (per WS1).", "per_trial": {}}
-    for tid in tree_ids:
+    results: dict[str, Any] = {
+        "status": "COMPLETED",
+        "note": "Focused nested chronological emphasis (Phase46): explicit outer assessment folds with inner threshold selection on dev splits, on genuine development populations only. Does not remove adaptive selection bias across the full matrix.",
+        "per_trial": {},
+    }
+    for tid in sorted(tree_ids):
         rec = next((r for r in completed_like_records if r.get("trial_id") == tid), None)
         if rec is None or rec.get("status") != "COMPLETED":
             results["per_trial"][tid] = {"status": "SKIPPED", "reason": "not completed"}
             continue
         try:
-            nested = runner._nested_evaluation([rec], populations, cross_tf)  # noqa: SLF001
-            results["per_trial"][tid] = nested
+            timeframe_seconds = int(_meta(rec, "timeframe_seconds"))
+            horizon_bars = int(_meta(rec, "horizon_bars"))
+            model_family = str(_meta(rec, "model_family"))
+            hyperparameters = dict(_meta(rec, "hyperparameters") or {})
+            manifest, candles = populations[timeframe_seconds]
+            source_digest = manifest.content_digest
+            if timeframe_seconds == 60 and _meta(rec, "feature_preset") in {"m1_m5", "m1_m15", "m1_m5_m15"}:
+                # cross tf not used in these focused trials (all native_only) but keep consistent
+                pass
+            pipeline = runner._pipeline(timeframe_seconds, "native_only", cross_tf, source_digest)  # noqa: SLF001
+            features = pipeline.compute_features(candles)
+            target_bundle = MultiHorizonTargetEngine.generate_horizon_targets(
+                candles,
+                horizon_bars=horizon_bars,
+                tie_policy=TiePolicy.EXCLUDE,
+                warmup_bars=pipeline.min_warmup_bars,
+                enforce_temporal_continuity=True,
+                timeframe_seconds=timeframe_seconds,
+                horizon_name=str(_meta(rec, "horizon_name")),
+                max_label_maturity_ts=runner.boundary_ts,
+            )
+            valid = target_bundle.valid_mask & (~features.warmup_mask)
+            X_all = np.asarray(features.features[valid], dtype=np.float64)
+            y_all = np.asarray(target_bundle.targets[valid], dtype=np.int64)
+            timestamps_all = np.asarray(features.timestamps[valid], dtype=np.int64)
+            if len(y_all) < 3000:
+                results["per_trial"][tid] = {"status": "NOT_RUN", "reason": "Insufficient mature labels"}
+                continue
+            # Inner candidate grids per family (small, honest)
+            if model_family == "random_forest":
+                inner_specs = [{"threshold": 0.52}, {"threshold": 0.55}, {"threshold": 0.58}]
+            elif model_family == "hist_gradient_boosting":
+                inner_specs = [{"threshold": 0.52}, {"threshold": 0.55}, {"threshold": 0.58}]
+            else:
+                inner_specs = [{"threshold": 0.52}, {"threshold": 0.55}, {"threshold": 0.58}]
+            outer_folds: list[dict[str, Any]] = []
+            n = len(y_all)
+            fold_bounds = ((0.00, 0.40, 0.45, 0.52), (0.52, 0.68, 0.73, 0.82))
+            for fold_index, (ds, de, as_, ae) in enumerate(fold_bounds):
+                dev_s, dev_e = int(n * ds), int(n * de)
+                ass_s, ass_e = int(n * as_), int(n * ae)
+                cal_s = min(dev_e + horizon_bars + 5, ass_s - 1)
+                cal_e = min(cal_s + max(300, (ass_s - cal_s) // 3), ass_s)
+                if not (0 <= dev_s < dev_e < cal_s < cal_e < ass_s < ass_e <= n):
+                    continue
+                inner_scores: list[dict[str, Any]] = []
+                for si, spec in enumerate(inner_specs):
+                    itrain_end = dev_s + int((dev_e - dev_s) * 0.75)
+                    ical_s = min(itrain_end + horizon_bars + 5, dev_e - 1)
+                    ical_e = min(ical_s + max(200, (dev_e - ical_s) // 3), dev_e)
+                    if not (dev_s < itrain_end < ical_s < ical_e <= dev_e):
+                        continue
+                    scaler = StandardScaler().fit(X_all[dev_s:itrain_end])
+                    model = create_model_instance(model_family, hyperparameters)
+                    model.fit(np.asarray(scaler.transform(X_all[dev_s:itrain_end]), dtype=np.float64), y_all[dev_s:itrain_end], feature_names=pipeline.feature_names)
+                    calibrator = ProbabilityCalibrator(method=CalibrationMethod.ISOTONIC)
+                    X_ical = np.asarray(scaler.transform(X_all[ical_s:ical_e]))
+                    try:
+                        calibrator.fit(np.asarray(model.predict_proba(X_ical)), y_all[ical_s:ical_e])
+                    except Exception:
+                        inner_scores.append({"candidate_index": si, "threshold": spec["threshold"], "inner_balanced_accuracy": None, "inner_samples": 0, "note": "calibration_failed"})
+                        continue
+                    X_idev = np.asarray(scaler.transform(X_all[ical_e:dev_e]))
+                    probs = calibrator.calibrate(np.asarray(model.predict_proba(X_idev)))
+                    # reuse decision records helper from runner
+                    from iqoption_research.phase45.runner import _decision_records
+                    chosen = _decision_records(probs, y_all[ical_e:dev_e], timestamps_all[ical_e:dev_e], float(spec["threshold"]), horizon_bars)
+                    acc = balanced_accuracy(chosen)
+                    inner_scores.append({"candidate_index": si, "threshold": spec["threshold"], "inner_balanced_accuracy": acc, "inner_samples": len(chosen)})
+                if not inner_scores:
+                    continue
+                valid_inner = [x for x in inner_scores if x.get("inner_balanced_accuracy") is not None]
+                if not valid_inner:
+                    selected = inner_scores[0]
+                else:
+                    selected = max(valid_inner, key=lambda x: float(x["inner_balanced_accuracy"] or 0.0))
+                # assess
+                scaler = StandardScaler().fit(X_all[dev_s:dev_e])
+                model = create_model_instance(model_family, hyperparameters)
+                model.fit(np.asarray(scaler.transform(X_all[dev_s:dev_e])), y_all[dev_s:dev_e], feature_names=pipeline.feature_names)
+                calibrator = ProbabilityCalibrator(method=CalibrationMethod.ISOTONIC)
+                X_cal2 = np.asarray(scaler.transform(X_all[cal_s:cal_e]))
+                try:
+                    calibrator.fit(np.asarray(model.predict_proba(X_cal2)), y_all[cal_s:cal_e])
+                except Exception as exc:
+                    outer_folds.append({"fold_index": fold_index, "status": "FAILED", "reason": f"calibration:{type(exc).__name__}"})
+                    continue
+                X_ass = np.asarray(scaler.transform(X_all[ass_s:ass_e]))
+                probs_ass = calibrator.calibrate(np.asarray(model.predict_proba(X_ass)))
+                from iqoption_research.phase45.runner import _decision_records
+                assessment = _decision_records(probs_ass, y_all[ass_s:ass_e], timestamps_all[ass_s:ass_e], float(selected["threshold"]), horizon_bars)
+                outer_folds.append({
+                    "fold_index": fold_index,
+                    "training_window": {"start_ts": int(timestamps_all[dev_s]), "end_ts": int(timestamps_all[dev_e - 1])},
+                    "calibration_window": {"start_ts": int(timestamps_all[cal_s]), "end_ts": int(timestamps_all[cal_e - 1]) if cal_e > cal_s else int(timestamps_all[cal_s])},
+                    "assessment_window": {"start_ts": int(timestamps_all[ass_s]), "end_ts": int(timestamps_all[ass_e - 1])},
+                    "selected_threshold": selected["threshold"],
+                    "inner_candidates": inner_scores,
+                    "assessment_samples": len(assessment),
+                    "assessment_balanced_accuracy": balanced_accuracy(assessment),
+                    "assessment_non_overlapping_balanced_accuracy": balanced_accuracy([r for r in assessment if r.get("is_non_overlapping")]),
+                    "assessment_class_distribution": class_distribution(assessment),
+                    "assessment_day_block_bootstrap_ci_95": recompute_prediction_bootstrap(assessment, replicates=1000, seed=42 + fold_index),
+                    "status": "ASSESSMENT_COMPLETED",
+                })
+            results["per_trial"][tid] = {
+                "status": "COMPLETED" if outer_folds else "NOT_RUN",
+                "model_family": model_family,
+                "timeframe_seconds": timeframe_seconds,
+                "horizon_bars": horizon_bars,
+                "manifest_id": manifest.manifest_id,
+                "outer_folds": outer_folds,
+                "fold_overlap_status": "SEQUENTIAL_TRAINING_CAL_ASSESS_WINDOWS_WITHIN_ROLLING_SAMPLES",
+                "adaptive_selection_bias_note": "Nested threshold selection per fold reduces in-fold optimism but does not eliminate adaptive selection bias from trial matrix/wide search history.",
+                "disposition": DISPOSITION,
+                "execution_authority": EXECUTION_AUTHORITY,
+            }
         except Exception as exc:  # noqa: BLE001
             results["per_trial"][tid] = {"status": "FAILED", "reason": f"{type(exc).__name__}: {exc}"}
     return results

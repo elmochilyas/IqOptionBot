@@ -68,7 +68,7 @@ def publish_focused_validation(repo_root: Path, result: Any) -> dict[str, str]:
         ["Trial", "TF", "Horizon", "Model", "Status", "10k CI lo", "10k CI hi", "Notes"],
         rows,
     ))
-    lines.extend(["", "## Nested emphasis (tree-based)", "", "```json"])
+    lines.extend(["", "## Nested emphasis (tree-based, explicit Phase46 nested protocol)", "", "```json"])
     lines.append(json.dumps(data.get("nested_summary", {}), indent=2, sort_keys=True))
     lines.append("```")
     lines.extend(["", "## Governance note", "", "- This report is DEVELOPMENT_RESEARCH only.", "- No execution authority. No demonstrated edge claimed.", "- Negatives/inconclusives preserved."])

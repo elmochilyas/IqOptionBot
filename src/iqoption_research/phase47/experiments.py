@@ -328,6 +328,7 @@ def _operational_coverage_policies(
     fold_te_ts: list[np.ndarray],
     horizon_bars: int,
     timeframe_seconds: int,
+    fold_majority_dirs: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[float, list[dict[str, Any]]]]:
     """Fit confidence thresholds strictly on each fold's calibration split and apply unchanged to test."""
     policies: list[dict[str, Any]] = []
@@ -343,8 +344,8 @@ def _operational_coverage_policies(
         thresholds_used: list[float] = []
         recs_for_target: list[dict[str, Any]] = []
 
-        for p_cal, p_te, y_te, ts_te in zip(
-            fold_cal_probs, fold_te_probs, fold_te_y, fold_te_ts, strict=True
+        for f_i, (p_cal, p_te, y_te, ts_te) in enumerate(
+            zip(fold_cal_probs, fold_te_probs, fold_te_y, fold_te_ts, strict=True)
         ):
             if cov_target >= 1.0:
                 tau = 0.50
@@ -358,7 +359,12 @@ def _operational_coverage_policies(
                 sel_p.append(p_te[mask])
                 sel_y.append(y_te[mask])
                 sel_ts.append(ts_te[mask])
-                recs_for_target.extend(_decision_records(p_te, y_te, ts_te, tau, horizon_bars))
+                fold_recs = _decision_records(p_te, y_te, ts_te, tau, horizon_bars)
+                if fold_majority_dirs is not None and f_i < len(fold_majority_dirs):
+                    f_maj = fold_majority_dirs[f_i]
+                    for r in fold_recs:
+                        r["fold_majority_dir"] = f_maj
+                recs_for_target.extend(fold_recs)
 
         records_by_target[cov_target] = recs_for_target
         if not sel_y:
@@ -437,7 +443,8 @@ def _day_block_matched_p_value(
             continue
         day = datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d")
         m_win = 1 if r.get("decision") == r.get("true_dir") else 0
-        b_win = 1 if majority_dir == r.get("true_dir") else 0
+        rec_maj = str(r.get("fold_majority_dir") or majority_dir)
+        b_win = 1 if rec_maj == r.get("true_dir") else 0
         by_day[day].append((m_win, b_win))
 
     days = sorted(by_day.keys())
@@ -461,12 +468,16 @@ def _day_block_matched_p_value(
     centered = deltas - float(np.mean(deltas))
     obs_delta = obs_m - obs_b
     p_val = float(np.mean(centered >= obs_delta))
+    fold_dirs_present = sorted({
+        str(r["fold_majority_dir"]) for r in decisive if r.get("fold_majority_dir")
+    })
     return {
         "status": "VERIFIED",
         "day_count": len(days),
         "selected_samples": len(decisive),
         "model_accuracy": round(obs_m, 5),
-        "matched_majority_direction": majority_dir,
+        "matched_majority_direction": "FOLD_SPECIFIC" if fold_dirs_present else majority_dir,
+        "fold_majority_directions_observed": fold_dirs_present or [majority_dir],
         "matched_baseline_accuracy": round(obs_b, 5),
         "delta_vs_matched_baseline": round(obs_delta, 5),
         "p_value": max(1.0 / replicates, p_val),
@@ -639,6 +650,7 @@ def run_phase47_research(
         calibration_failures: list[dict[str, Any]] = []
         all_records: list[dict[str, Any]] = []
         train_up_rates: list[float] = []
+        fold_majority_dirs: list[str] = []
 
         for f_idx, (_, tr_e_r, te_e_r) in enumerate(fold_bounds):
             tr_end = int(n * tr_e_r)
@@ -649,7 +661,9 @@ def run_phase47_research(
             te_e = int(n * te_e_r)
             if not (100 < tr_end < cal_s < cal_e < te_s < te_e <= n):
                 continue
-            train_up_rates.append(float(np.mean(y_all[:tr_end])))
+            tr_up_rate = float(np.mean(y_all[:tr_end]))
+            train_up_rates.append(tr_up_rate)
+            fold_majority_dirs.append("UP" if tr_up_rate >= 0.5 else "DOWN")
             scaler = StandardScaler().fit(X_all[:tr_end])
             X_tr = np.asarray(scaler.transform(X_all[:tr_end]), dtype=np.float64)
             X_cal = np.asarray(scaler.transform(X_all[cal_s:cal_e]), dtype=np.float64)
@@ -702,6 +716,7 @@ def run_phase47_research(
             all_ts,
             spec.horizon_bars,
             spec.timeframe_seconds,
+            fold_majority_dirs=fold_majority_dirs,
         )
 
         # Preserve ALL prediction-level records locally (never truncate!) with cryptographic digest
@@ -916,9 +931,9 @@ def run_phase47_research(
     holm_p = holm_adjust(valid_pvals) if valid_pvals else []
     for fr, hp in zip(finalist_results, holm_p, strict=True):
         fr["holm_adjusted_vs_matched_baseline"] = hp
-        ci = fr.get("day_block_10k") or {}
-        if ci and float(ci.get("ci_lower", 0.0)) > BREAK_EVEN_85_PAYOUT and hp.get("rejected"):
-            fr["qualifies"] = True
+        # Development-only data must NEVER set genuine confirmatory eligibility
+        fr["qualifies"] = False
+        fr["confirmatory_eligibility"] = "BLOCKED_DEVELOPMENT_DATA_ONLY"
 
     # WS4 Target formulation comparison
     target_comparisons: dict[str, Any] = {}

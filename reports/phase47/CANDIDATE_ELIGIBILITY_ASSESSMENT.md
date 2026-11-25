@@ -5,7 +5,8 @@
 ## 1. Candidate Qualification Outcomes
 No Phase 47 candidate clears the preserved Stage C / Phase 40C qualification gates:
 - All three 10,000-replicate UTC day-block 95% CI lower bounds (`53.09%` M1 H15, `53.54%` M5 H6, `53.83%` M15 H4) under the operational calibration-fitted 10%-target policy remain below the hypothetical 54.05% break-even threshold (85% payout sensitivity).
-- Holm-Bonferroni adjusted p-values vs. matched training-fitted majority baseline (`0.0795` across all 3 finalists) do not reject at `alpha = 0.05`.
+- Holm-Bonferroni adjusted p-values vs. fold-specific training-fitted majority baseline (`0.3249` M1 H15, `0.6816` M5 H6, `0.6816` M15 H4; raw p-values `0.1083`, `0.3408`, `0.4571`) do not reject at `alpha = 0.05`.
+- Even if any development-only metric appeared favorable, development data cannot establish genuine confirmatory eligibility (`confirmatory_eligibility = BLOCKED_DEVELOPMENT_DATA_ONLY`).
 - **Decision:** **0 candidates qualified for confirmatory freezing.**
 
 ## 2. Corrected Prospective Observation Duration Estimates

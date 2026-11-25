@@ -72,6 +72,7 @@
 [
   {
     "break_even_85": 0.5405405405405405,
+    "confirmatory_eligibility": "BLOCKED_DEVELOPMENT_DATA_ONLY",
     "day_block_10k": {
       "alpha": 0.05,
       "balanced_accuracy": 0.5588161157237364,
@@ -95,21 +96,24 @@
       "index": 0,
       "limitation": "Holm adjustment controls family-wise error for pre-specified tests only; it does NOT eliminate adaptive selection bias from development trials.",
       "method": "HOLM",
-      "p_adjusted": 0.0795,
-      "p_value": 0.0795,
-      "rank": 3,
+      "p_adjusted": 0.3249,
+      "p_value": 0.1083,
+      "rank": 1,
       "rejected": false
     },
     "horizon_bars": 15,
     "matched_baseline_comparison": {
       "day_count": 8,
-      "delta_vs_matched_baseline": 0.06157,
-      "matched_baseline_accuracy": 0.49722,
-      "matched_majority_direction": "DOWN",
-      "model_accuracy": 0.5588,
-      "p_value": 0.0795,
+      "delta_vs_matched_baseline": 0.05038,
+      "fold_majority_directions_observed": [
+        "DOWN"
+      ],
+      "matched_baseline_accuracy": 0.5048,
+      "matched_majority_direction": "FOLD_SPECIFIC",
+      "model_accuracy": 0.55518,
+      "p_value": 0.1083,
       "replicates": 10000,
-      "selected_samples": 2160,
+      "selected_samples": 2084,
       "status": "VERIFIED"
     },
     "model_family": "hist_gradient_boosting",
@@ -140,6 +144,7 @@
   },
   {
     "break_even_85": 0.5405405405405405,
+    "confirmatory_eligibility": "BLOCKED_DEVELOPMENT_DATA_ONLY",
     "day_block_10k": {
       "alpha": 0.05,
       "balanced_accuracy": 0.566057740009922,
@@ -163,21 +168,24 @@
       "index": 1,
       "limitation": "Holm adjustment controls family-wise error for pre-specified tests only; it does NOT eliminate adaptive selection bias from development trials.",
       "method": "HOLM",
-      "p_adjusted": 0.0795,
-      "p_value": 0.0017,
-      "rank": 1,
+      "p_adjusted": 0.6816,
+      "p_value": 0.3408,
+      "rank": 2,
       "rejected": false
     },
     "horizon_bars": 6,
     "matched_baseline_comparison": {
       "day_count": 25,
-      "delta_vs_matched_baseline": 0.0979,
-      "matched_baseline_accuracy": 0.47652,
-      "matched_majority_direction": "DOWN",
-      "model_accuracy": 0.57443,
-      "p_value": 0.0017,
+      "delta_vs_matched_baseline": 0.0108,
+      "fold_majority_directions_observed": [
+        "DOWN"
+      ],
+      "matched_baseline_accuracy": 0.52326,
+      "matched_majority_direction": "FOLD_SPECIFIC",
+      "model_accuracy": 0.53405,
+      "p_value": 0.3408,
       "replicates": 10000,
-      "selected_samples": 1001,
+      "selected_samples": 1204,
       "status": "VERIFIED"
     },
     "model_family": "hist_gradient_boosting",
@@ -208,6 +216,7 @@
   },
   {
     "break_even_85": 0.5405405405405405,
+    "confirmatory_eligibility": "BLOCKED_DEVELOPMENT_DATA_ONLY",
     "day_block_10k": {
       "alpha": 0.05,
       "balanced_accuracy": 0.5911655517165331,
@@ -231,21 +240,24 @@
       "index": 2,
       "limitation": "Holm adjustment controls family-wise error for pre-specified tests only; it does NOT eliminate adaptive selection bias from development trials.",
       "method": "HOLM",
-      "p_adjusted": 0.0795,
-      "p_value": 0.0314,
-      "rank": 2,
+      "p_adjusted": 0.6816,
+      "p_value": 0.4571,
+      "rank": 3,
       "rejected": false
     },
     "horizon_bars": 4,
     "matched_baseline_comparison": {
       "day_count": 37,
-      "delta_vs_matched_baseline": 0.07066,
-      "matched_baseline_accuracy": 0.52248,
-      "matched_majority_direction": "DOWN",
-      "model_accuracy": 0.59315,
-      "p_value": 0.0314,
+      "delta_vs_matched_baseline": 0.00372,
+      "fold_majority_directions_observed": [
+        "DOWN"
+      ],
+      "matched_baseline_accuracy": 0.51024,
+      "matched_majority_direction": "FOLD_SPECIFIC",
+      "model_accuracy": 0.51397,
+      "p_value": 0.4571,
       "replicates": 10000,
-      "selected_samples": 467,
+      "selected_samples": 1611,
       "status": "VERIFIED"
     },
     "model_family": "hist_gradient_boosting",

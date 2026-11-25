@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from iqoption_research.phase45.evaluation import holm_adjust
 from iqoption_research.phase47.experiments import (
     Phase47TrialSpec,
     _day_block_matched_p_value,
@@ -142,3 +143,71 @@ def test_reporting_separates_operational_and_retrospective_curves(tmp_path: Path
     cov_md = (tmp_path / paths["accuracy_vs_coverage_md"]).read_text(encoding="utf-8")
     assert "Operational Calibration-Fitted Policies" in cov_md
     assert "Retrospective Test-Quantile Diagnostic" in cov_md
+
+
+def test_holm_adjust_regression_example() -> None:
+    adjusted = holm_adjust([0.0795, 0.0017, 0.0314], alpha=0.05)
+    assert [round(float(item["p_adjusted"]), 4) for item in adjusted] == [0.0795, 0.0051, 0.0628]
+    assert [bool(item["rejected"]) for item in adjusted] == [False, True, False]
+
+
+def test_day_block_matched_p_value_uses_fold_specific_majority_dir() -> None:
+    # 5 days in fold 1 (fold_majority_dir='UP', true_dir='UP') -> baseline wins all 5
+    # 5 days in fold 2 (fold_majority_dir='DOWN', true_dir='DOWN') -> baseline wins all 5
+    # Model always predicts 'UP' -> wins 5/10 days (50% vs fold-specific baseline 100%)
+    records = [
+        {
+            "timestamp": 1_700_000_000 + d * 86400 + i * 60,
+            "decision": "UP",
+            "true_dir": "UP",
+            "fold_majority_dir": "UP",
+        }
+        for d in range(5)
+        for i in range(5)
+    ] + [
+        {
+            "timestamp": 1_700_000_000 + d * 86400 + i * 60,
+            "decision": "UP",
+            "true_dir": "DOWN",
+            "fold_majority_dir": "DOWN",
+        }
+        for d in range(5, 10)
+        for i in range(5)
+    ]
+    res = _day_block_matched_p_value(records, majority_dir="UP", replicates=200, seed=11)
+    assert res["status"] == "VERIFIED"
+    assert res["matched_majority_direction"] == "FOLD_SPECIFIC"
+    assert res["fold_majority_directions_observed"] == ["DOWN", "UP"]
+    assert res["model_accuracy"] == 0.5
+    assert res["matched_baseline_accuracy"] == 1.0
+
+
+def test_development_only_results_never_set_confirmatory_eligibility(tmp_path: Path) -> None:
+    res = {
+        "ledger": [],
+        "finalists": [
+            {
+                "trial_id": "dev_only_candidate",
+                "timeframe": "M5",
+                "horizon_bars": 6,
+                "model_family": "hist_gradient_boosting",
+                "selected_samples": 500,
+                "day_block_10k": {"mean": 0.60, "ci_lower": 0.56, "ci_upper": 0.64},
+                "matched_baseline_comparison": {
+                    "p_value": 0.0001,
+                    "delta_vs_matched_baseline": 0.08,
+                },
+                "holm_adjusted_vs_matched_baseline": {"p_adjusted": 0.0003, "rejected": True},
+                "qualifies": False,
+                "confirmatory_eligibility": "BLOCKED_DEVELOPMENT_DATA_ONLY",
+            }
+        ],
+        "nested_validation": {},
+        "target_comparisons": {},
+        "error_analysis": {},
+    }
+    paths = publish_phase47_reports(tmp_path, res)
+    comp_md = (tmp_path / paths["model_comparison_md"]).read_text(encoding="utf-8")
+    assert "BLOCKED_DEVELOPMENT_DATA_ONLY" in comp_md
+    assert '"qualifies": false' in comp_md
+    assert res["finalists"][0]["qualifies"] is False

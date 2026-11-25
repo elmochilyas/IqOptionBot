@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Any
 
+from iqoption_research.desktop.phase45_panel import Phase45ResearchPanel
 from iqoption_research.ml.data_audit import DataCoverageReport, audit_market_datasets
 from iqoption_research.ml.experiment_plan import build_standard_phase42_experiment_plan
 from iqoption_research.ml.experiment_runner import ExperimentRunner, ExperimentSuiteSummary
@@ -91,6 +92,9 @@ class ModelLaboratoryPanel:
         self.mh_frame = ttk.Frame(self.sub_notebook, padding=10)
         self.sub_notebook.add(self.mh_frame, text="Multi-Horizon & Regimes (Phase 43)")
         self._build_multi_horizon_tab()
+
+        # Tab 5: Phase 45 Historical Research
+        self.phase45_panel = Phase45ResearchPanel(self.dashboard, self.sub_notebook)
 
         # Initial refresh
         self.refresh()
@@ -362,7 +366,10 @@ class ModelLaboratoryPanel:
         widget.configure(state="disabled")
 
     def busy(self) -> bool:
-        return self.active_future is not None and not self.active_future.done()
+        phase45_busy = (
+            self.phase45_panel.busy() if getattr(self, "phase45_panel", None) is not None else False
+        )
+        return phase45_busy or (self.active_future is not None and not self.active_future.done())
 
     def refresh(self) -> None:
         """Scan snapshots and models offline via dashboard executor."""
@@ -545,6 +552,9 @@ class ModelLaboratoryPanel:
 
     def tick(self) -> None:
         """Polled by dashboard.tick() to handle completed background tasks."""
+        phase45_panel = getattr(self, "phase45_panel", None)
+        if phase45_panel is not None:
+            phase45_panel.tick()
         if self.active_future is None or not self.active_future.done():
             return
 

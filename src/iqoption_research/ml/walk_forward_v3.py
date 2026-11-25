@@ -154,6 +154,9 @@ def run_walk_forward_v3_evaluation(
     bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
     min_train_samples: int | None = None,
     enforce_family_constraint: bool = False,
+    timeframe_seconds: int = 60,
+    horizon_name: str | None = None,
+    max_label_maturity_ts: int | None = None,
 ) -> WalkForwardV3Report:
     """Execute chronological walk-forward validation for a specified horizon and model."""
     hp = hyperparameters or {}
@@ -174,6 +177,9 @@ def run_walk_forward_v3_evaluation(
         tie_policy=TiePolicy.EXCLUDE,
         warmup_bars=pipeline.min_warmup_bars,
         enforce_temporal_continuity=True,
+        timeframe_seconds=timeframe_seconds,
+        horizon_name=horizon_name,
+        max_label_maturity_ts=max_label_maturity_ts,
     )
     targets_all = target_bundle.targets
     valid_mask_all = target_bundle.valid_mask & (~feat_matrix.warmup_mask)

@@ -150,10 +150,10 @@ def holm_adjust(p_values: Sequence[float], alpha: float = 0.05) -> list[dict[str
     order = sorted(range(count), key=lambda idx: values[idx])
     adjusted = [0.0] * count
     running_max = 0.0
-    for rank in range(count - 1, -1, -1):
+    for rank in range(count):
         original_index = order[rank]
         running_max = max(running_max, (count - rank) * values[original_index])
-        adjusted[original_index] = min(1.0, running_max)
+        adjusted[original_index] = round(min(1.0, running_max), 12)
 
     rank_by_index = {original_index: rank + 1 for rank, original_index in enumerate(order)}
     return [

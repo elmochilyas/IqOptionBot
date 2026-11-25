@@ -122,8 +122,10 @@ def test_balanced_accuracy_and_class_distribution() -> None:
 def test_holm_adjustment_math_and_limitation() -> None:
     adjusted = holm_adjust([0.01, 0.04, 0.03], alpha=0.05)
     assert [item["p_value"] for item in adjusted] == pytest.approx([0.01, 0.04, 0.03])
-    assert [item["p_adjusted"] for item in adjusted] == pytest.approx([0.06, 0.04, 0.06])
-    assert [item["rejected"] for item in adjusted] == [False, True, False]
+    assert [item["p_adjusted"] for item in adjusted] == pytest.approx([0.03, 0.06, 0.06])
+    regression = holm_adjust([0.0795, 0.0017, 0.0314], alpha=0.05)
+    assert [item["p_adjusted"] for item in regression] == pytest.approx([0.0795, 0.0051, 0.0628])
+    assert [item["rejected"] for item in adjusted] == [True, False, False]
     assert [item["rank"] for item in adjusted] == [1, 3, 2]
     assert all(
         "does NOT eliminate adaptive selection bias" in item["limitation"] for item in adjusted

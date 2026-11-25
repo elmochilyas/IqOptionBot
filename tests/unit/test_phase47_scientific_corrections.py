@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+import pytest
 
 from iqoption_research.phase45.evaluation import holm_adjust
 from iqoption_research.phase47.experiments import (
@@ -211,3 +214,75 @@ def test_development_only_results_never_set_confirmatory_eligibility(tmp_path: P
     assert "BLOCKED_DEVELOPMENT_DATA_ONLY" in comp_md
     assert '"qualifies": false' in comp_md
     assert res["finalists"][0]["qualifies"] is False
+
+
+def _assert_finalist_population_consistency(data: dict[str, Any]) -> None:
+    ledger_by_id = {t["trial_id"]: t for t in data.get("ledger", [])}
+    for fr in data.get("finalists", []):
+        tid = fr["trial_id"]
+        entry = ledger_by_id[tid]
+        op10 = next(
+            p
+            for p in entry["operational_coverage_policies"]
+            if abs(float(p["target_coverage"]) - 0.10) < 1e-9
+        )
+        matched = fr["matched_baseline_comparison"]
+        boot = fr["day_block_10k"]
+        if (
+            fr["selected_samples"] != matched["selected_samples"]
+            or fr["selected_samples"] != op10["selected"]
+        ):
+            raise ValueError(f"{tid}: selected_samples mismatch")
+        if fr["non_overlapping_samples"] != op10["non_overlapping_selected"]:
+            raise ValueError(f"{tid}: non_overlapping_samples mismatch")
+        if fr["fold_thresholds_cal"] != op10["fold_thresholds_cal"]:
+            raise ValueError(f"{tid}: fold_thresholds_cal mismatch")
+        if fr.get("predictions_sha256") != entry.get("predictions_sha256"):
+            raise ValueError(f"{tid}: predictions_sha256 mismatch")
+        if round(float(boot["point_estimate"]), 5) != round(
+            float(matched["model_accuracy"]), 5
+        ) or round(float(boot["point_estimate"]), 5) != round(
+            float(op10["directional_accuracy"]), 5
+        ):
+            raise ValueError(f"{tid}: point estimate / accuracy mismatch")
+        if fr["qualifies"] is not False:
+            raise ValueError(f"{tid}: development finalist must not qualify")
+
+
+def test_finalist_population_consistency_rejects_mismatch_and_passes_ledger() -> None:
+    bad_data: dict[str, Any] = {
+        "ledger": [
+            {
+                "trial_id": "t_bad",
+                "predictions_sha256": "abc",
+                "operational_coverage_policies": [
+                    {
+                        "target_coverage": 0.10,
+                        "selected": 100,
+                        "non_overlapping_selected": 40,
+                        "fold_thresholds_cal": [0.55, 0.56, 0.57],
+                        "directional_accuracy": 0.55,
+                    }
+                ],
+            }
+        ],
+        "finalists": [
+            {
+                "trial_id": "t_bad",
+                "predictions_sha256": "abc",
+                "selected_samples": 120,
+                "non_overlapping_samples": 40,
+                "fold_thresholds_cal": [0.55, 0.56, 0.57],
+                "day_block_10k": {"point_estimate": 0.55},
+                "matched_baseline_comparison": {"selected_samples": 100, "model_accuracy": 0.55},
+                "qualifies": False,
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="selected_samples mismatch"):
+        _assert_finalist_population_consistency(bad_data)
+
+    ledger_path = Path("reports/phase47/experiment_ledger.json")
+    if ledger_path.exists():
+        data = json.loads(ledger_path.read_text(encoding="utf-8"))
+        _assert_finalist_population_consistency(data)

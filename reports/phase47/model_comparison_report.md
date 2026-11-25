@@ -30,7 +30,7 @@
 | p47_017_M1_H15_logistic_regression_p47_full_native | M1 H15 (15m) | logistic_regression | p47_full_native | 0.50918 | 0.50862 | 0.54551 | 0.54557 | 0.24993 |
 | p47_018_M1_H15_random_forest_p47_full_native | M1 H15 (15m) | random_forest | p47_full_native | 0.50156 | 0.50115 | 0.54784 | 0.54784 | 0.2512 |
 | p47_019_M1_H15_extra_trees_p47_full_native | M1 H15 (15m) | extra_trees | p47_full_native | 0.50545 | 0.50504 | 0.51793 | 0.51826 | 0.25101 |
-| p47_020_M1_H15_hist_gradient_boosting_p47_full_native | M1 H15 (15m) | hist_gradient_boosting | p47_full_native | 0.51557 | 0.51502 | 0.5588 | 0.5588 | 0.25074 |
+| p47_020_M1_H15_hist_gradient_boosting_p47_full_native | M1 H15 (15m) | hist_gradient_boosting | p47_full_native | 0.50887 | 0.50837 | 0.55518 | 0.56518 | 0.25153 |
 | p47_021_M5_H3_logistic_regression_p47_full_native | M5 H3 (15m) | logistic_regression | p47_full_native | 0.51767 | 0.51331 | 0.53834 | 0.53191 | 0.25074 |
 | p47_022_M5_H3_random_forest_p47_full_native | M5 H3 (15m) | random_forest | p47_full_native | 0.52483 | 0.52115 | 0.53281 | 0.53295 | 0.25061 |
 | p47_023_M5_H3_extra_trees_p47_full_native | M5 H3 (15m) | extra_trees | p47_full_native | 0.52451 | 0.52568 | 0.54312 | 0.55531 | 0.25042 |
@@ -38,7 +38,7 @@
 | p47_025_M5_H6_logistic_regression_p47_full_native | M5 H6 (30m) | logistic_regression | p47_full_native | 0.52784 | 0.52302 | 0.54958 | 0.56042 | 0.24956 |
 | p47_026_M5_H6_random_forest_p47_full_native | M5 H6 (30m) | random_forest | p47_full_native | 0.52065 | 0.50348 | 0.55236 | 0.56128 | 0.24925 |
 | p47_027_M5_H6_extra_trees_p47_full_native | M5 H6 (30m) | extra_trees | p47_full_native | 0.53404 | 0.5261 | 0.55984 | 0.55538 | 0.24906 |
-| p47_028_M5_H6_hist_gradient_boosting_p47_full_native | M5 H6 (30m) | hist_gradient_boosting | p47_full_native | 0.52 | 0.51262 | 0.57443 | 0.5764 | 0.24941 |
+| p47_028_M5_H6_hist_gradient_boosting_p47_full_native | M5 H6 (30m) | hist_gradient_boosting | p47_full_native | 0.52114 | 0.51347 | 0.53405 | 0.5781 | 0.24954 |
 | p47_029_M15_H1_logistic_regression_p47_full_native | M15 H1 (15m) | logistic_regression | p47_full_native | 0.51981 | 0.51391 | 0.54815 | 0.50826 | 0.24971 |
 | p47_030_M15_H1_random_forest_p47_full_native | M15 H1 (15m) | random_forest | p47_full_native | 0.51946 | 0.51734 | 0.53213 | 0.54135 | 0.25123 |
 | p47_031_M15_H1_extra_trees_p47_full_native | M15 H1 (15m) | extra_trees | p47_full_native | 0.51633 | 0.51635 | 0.55378 | 0.5567 | 0.25066 |
@@ -50,7 +50,7 @@
 | p47_037_M15_H4_logistic_regression_p47_full_native | M15 H4 (60m) | logistic_regression | p47_full_native | 0.53768 | 0.52723 | 0.56567 | 0.56567 | 0.24866 |
 | p47_038_M15_H4_random_forest_p47_full_native | M15 H4 (60m) | random_forest | p47_full_native | 0.53908 | 0.52811 | 0.52573 | 0.62348 | 0.2488 |
 | p47_039_M15_H4_extra_trees_p47_full_native | M15 H4 (60m) | extra_trees | p47_full_native | 0.54118 | 0.54018 | 0.59259 | 0.58824 | 0.24783 |
-| p47_040_M15_H4_hist_gradient_boosting_p47_full_native | M15 H4 (60m) | hist_gradient_boosting | p47_full_native | 0.52296 | 0.52596 | 0.59315 | 0.59315 | 0.24818 |
+| p47_040_M15_H4_hist_gradient_boosting_p47_full_native | M15 H4 (60m) | hist_gradient_boosting | p47_full_native | 0.517 | 0.51928 | 0.51397 | 0.5617 | 0.24981 |
 | p47_041_M1_H15_hist_gradient_boosting_p47_xtf_context | M1 H15 (15m) | hist_gradient_boosting | p47_xtf_context | 0.50996 | 0.50965 | 0.50186 | 0.45316 | 0.25034 |
 | p47_042_M1_H15_prob_ensemble_p47_full_native | M1 H15 (15m) | prob_ensemble | p47_full_native | 0.51043 | 0.50956 | 0.50471 | 0.52288 | 0.25005 |
 | p47_043_M1_H15_hist_gradient_boosting_p47_full_native_regime | M1 H15 (15m) | hist_gradient_boosting | p47_full_native | 0.51697 | 0.51681 | 0.5423 | 0.52381 | 0.24924 |
@@ -75,20 +75,20 @@
     "confirmatory_eligibility": "BLOCKED_DEVELOPMENT_DATA_ONLY",
     "day_block_10k": {
       "alpha": 0.05,
-      "balanced_accuracy": 0.5588161157237364,
-      "bootstrap_mean": 0.5692419081392998,
-      "ci_lower": 0.5308976093820478,
-      "ci_upper": 0.6075862068965517,
-      "point_estimate": 0.5587962962962963,
+      "balanced_accuracy": 0.5553301942405753,
+      "bootstrap_mean": 0.5664352385001132,
+      "ci_lower": 0.5243568691844553,
+      "ci_upper": 0.6085136078157711,
+      "point_estimate": 0.5551823416506718,
       "replicates": 10000,
       "seed": 67
     },
     "disposition": "NO_DEMONSTRATED_EDGE",
     "feature_preset": "p47_full_native",
     "fold_thresholds_cal": [
-      0.54836,
-      0.5321,
-      0.58033
+      0.54879,
+      0.53479,
+      0.56716
     ],
     "holm_adjusted_vs_matched_baseline": {
       "alpha": 0.05,
@@ -117,18 +117,19 @@
       "status": "VERIFIED"
     },
     "model_family": "hist_gradient_boosting",
-    "non_overlapping_samples": 201,
+    "non_overlapping_samples": 202,
     "population_id": "gov_eurusd_60s_f8fecd191001_op10pct",
+    "predictions_sha256": "0bc7f73e55f2d8f076e827d3163e7969d2d2533200fda41f3f36140b9e157d3a",
     "qualifies": false,
-    "selected_samples": 2160,
+    "selected_samples": 2084,
     "selection_method": "OPERATIONAL_CAL_THRESHOLD_FOR_10PCT_TARGET",
     "timeframe": "M1",
     "trial_id": "p47_020_M1_H15_hist_gradient_boosting_p47_full_native",
     "two_day_10k": {
       "block_count": 4,
       "block_unit": "UTC_2DAY_BLOCK",
-      "ci_lower": 0.5471428571428572,
-      "ci_upper": 0.5960912052117264,
+      "ci_lower": 0.5410511851597389,
+      "ci_upper": 0.603739982190561,
       "dependence_model": "CORRELATED",
       "limitations": [
         "adaptive_selection_bias",
@@ -136,9 +137,9 @@
         "temporal_dependence",
         "no_independent_evidence"
       ],
-      "point_estimate": 0.5587962962962963,
+      "point_estimate": 0.5551823416506718,
       "replicates": 10000,
-      "seed": 167,
+      "seed": 67,
       "status": "VERIFIED"
     }
   },
@@ -147,20 +148,20 @@
     "confirmatory_eligibility": "BLOCKED_DEVELOPMENT_DATA_ONLY",
     "day_block_10k": {
       "alpha": 0.05,
-      "balanced_accuracy": 0.566057740009922,
-      "bootstrap_mean": 0.5794427289307835,
-      "ci_lower": 0.5354497354497354,
-      "ci_upper": 0.6234357224118316,
-      "point_estimate": 0.5744255744255744,
+      "balanced_accuracy": 0.5439217963608207,
+      "bootstrap_mean": 0.5393578426649746,
+      "ci_lower": 0.4964850615114236,
+      "ci_upper": 0.5822306238185255,
+      "point_estimate": 0.5340531561461794,
       "replicates": 10000,
       "seed": 75
     },
     "disposition": "NO_DEMONSTRATED_EDGE",
     "feature_preset": "p47_full_native",
     "fold_thresholds_cal": [
-      0.53676,
-      0.50816,
-      0.59701
+      0.54643,
+      0.50715,
+      0.59134
     ],
     "holm_adjusted_vs_matched_baseline": {
       "alpha": 0.05,
@@ -189,18 +190,19 @@
       "status": "VERIFIED"
     },
     "model_family": "hist_gradient_boosting",
-    "non_overlapping_samples": 356,
+    "non_overlapping_samples": 395,
     "population_id": "gov_eurusd_300s_624de4f68f22_op10pct",
+    "predictions_sha256": "d07e5b8cc11d9c6e0f5126cb991ca892205b870ad6e2a2968a311fbab58de19e",
     "qualifies": false,
-    "selected_samples": 1001,
+    "selected_samples": 1204,
     "selection_method": "OPERATIONAL_CAL_THRESHOLD_FOR_10PCT_TARGET",
     "timeframe": "M5",
     "trial_id": "p47_028_M5_H6_hist_gradient_boosting_p47_full_native",
     "two_day_10k": {
       "block_count": 13,
       "block_unit": "UTC_2DAY_BLOCK",
-      "ci_lower": 0.5267249757045676,
-      "ci_upper": 0.6352112676056338,
+      "ci_lower": 0.49904580152671757,
+      "ci_upper": 0.5863586358635864,
       "dependence_model": "CORRELATED",
       "limitations": [
         "adaptive_selection_bias",
@@ -208,9 +210,9 @@
         "temporal_dependence",
         "no_independent_evidence"
       ],
-      "point_estimate": 0.5744255744255744,
+      "point_estimate": 0.5340531561461794,
       "replicates": 10000,
-      "seed": 175,
+      "seed": 75,
       "status": "VERIFIED"
     }
   },
@@ -219,20 +221,20 @@
     "confirmatory_eligibility": "BLOCKED_DEVELOPMENT_DATA_ONLY",
     "day_block_10k": {
       "alpha": 0.05,
-      "balanced_accuracy": 0.5911655517165331,
-      "bootstrap_mean": 0.5935453714136416,
-      "ci_lower": 0.5383211678832117,
-      "ci_upper": 0.6487695749440716,
-      "point_estimate": 0.5931477516059958,
+      "balanced_accuracy": 0.5201608799829776,
+      "bootstrap_mean": 0.5154856096478386,
+      "ci_lower": 0.47286405158516925,
+      "ci_upper": 0.5581071677105081,
+      "point_estimate": 0.5139664804469274,
       "replicates": 10000,
       "seed": 87
     },
     "disposition": "NO_DEMONSTRATED_EDGE",
     "feature_preset": "p47_full_native",
     "fold_thresholds_cal": [
-      0.52542,
-      0.62069,
-      0.53333
+      0.52297,
+      0.64629,
+      0.50487
     ],
     "holm_adjusted_vs_matched_baseline": {
       "alpha": 0.05,
@@ -261,18 +263,19 @@
       "status": "VERIFIED"
     },
     "model_family": "hist_gradient_boosting",
-    "non_overlapping_samples": 207,
+    "non_overlapping_samples": 463,
     "population_id": "gov_eurusd_900s_399632518d0e_op10pct",
+    "predictions_sha256": "ba75d7ff72bd3980026ac9d02c581910fcce0c3a7ca3c1bf8473cc400c6ccff2",
     "qualifies": false,
-    "selected_samples": 467,
+    "selected_samples": 1611,
     "selection_method": "OPERATIONAL_CAL_THRESHOLD_FOR_10PCT_TARGET",
     "timeframe": "M15",
     "trial_id": "p47_040_M15_H4_hist_gradient_boosting_p47_full_native",
     "two_day_10k": {
       "block_count": 19,
       "block_unit": "UTC_2DAY_BLOCK",
-      "ci_lower": 0.5374732334047109,
-      "ci_upper": 0.6537634408602151,
+      "ci_lower": 0.47336561743341404,
+      "ci_upper": 0.5534441805225653,
       "dependence_model": "CORRELATED",
       "limitations": [
         "adaptive_selection_bias",
@@ -280,9 +283,9 @@
         "temporal_dependence",
         "no_independent_evidence"
       ],
-      "point_estimate": 0.5931477516059958,
+      "point_estimate": 0.5139664804469274,
       "replicates": 10000,
-      "seed": 187,
+      "seed": 87,
       "status": "VERIFIED"
     }
   }

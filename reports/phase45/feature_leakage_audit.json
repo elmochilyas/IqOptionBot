@@ -1,0 +1,138 @@
+{
+  "STATUS": "PASS",
+  "boundary_ts": 1794477600,
+  "checks": {
+    "as_of_alignment_rule": {
+      "counts": {
+        "as_of_join_count": 121422,
+        "future_join_violations": 0,
+        "missing_required_timeframes": []
+      },
+      "rule": "Use htf.to_ts <= base.to_ts decision_ts via bisect over completed HTF bars; from_ts remains candle-window provenance only",
+      "status": "PASS"
+    },
+    "boundary_exclusion": {
+      "counts": {
+        "boundary_timestamp_violations": 0,
+        "boundary_touching_feature_rows": 3,
+        "unsupported_timeframe_keys": []
+      },
+      "rule": "No candle may start at/after boundary_ts or finish after boundary_ts; from_ts < boundary_ts <= to_ts is an allowed final decision row",
+      "status": "PASS"
+    },
+    "label_maturity_rule": {
+      "counts": {
+        "boundary_touching_feature_rows": 3,
+        "maturity_enforcement": "targets_v3.max_label_maturity_ts",
+        "population_boundary_violations": 0
+      },
+      "rule": "targets_v3.max_label_maturity_ts rejects labels whose maturity candle.to_ts is >= boundary_ts; feature rows with to_ts == boundary_ts are retained",
+      "status": "PASS"
+    },
+    "native_separation": {
+      "counts": {
+        "derived_provenance_candles": 0,
+        "timeframes_audited": [
+          60,
+          300,
+          900
+        ],
+        "unsupported_timeframe_keys": []
+      },
+      "rule": "Native 60/300/900 populations only; no derived/resampled provenance",
+      "status": "PASS"
+    },
+    "normalization_policy": {
+      "counts": {
+        "future_dependent_normalizations": 0
+      },
+      "rule": "No population-level or future-dependent normalization; fixed ratios only",
+      "status": "PASS"
+    },
+    "warmup_gap_reset": {
+      "counts": {
+        "continuity_gaps": 115,
+        "incomplete_candles": 0,
+        "warmup_bars": 2360
+      },
+      "rule": "Rolling windows and warmup masks restart when continuity breaks",
+      "status": "PASS"
+    }
+  },
+  "counts": {
+    "boundary_timestamp_violations": 0,
+    "boundary_touching_feature_rows": 3,
+    "candles_by_timeframe": {
+      "300": 59387,
+      "60": 60711,
+      "900": 30768
+    },
+    "continuity_gaps": 115,
+    "derived_provenance_candles": 0,
+    "future_join_violations": 0,
+    "timeframes": [
+      60,
+      300,
+      900
+    ],
+    "warmup_bars_per_segment": 2360
+  },
+  "execution_authority": "NONE",
+  "feature_preset": "m1_m5_m15",
+  "pre_boundary_population_accepted": true,
+  "research_conclusion": "NO_DEMONSTRATED_EDGE",
+  "status": "PASS",
+  "timeframe_audits": {
+    "300": {
+      "boundary_from_ts_violations": 0,
+      "boundary_to_ts_violations": 0,
+      "boundary_touching_candles": 1,
+      "candle_count": 59387,
+      "continuity_gap_count": 41,
+      "derived_provenance_count": 0,
+      "duplicate_from_ts_count": 0,
+      "incomplete_count": 0,
+      "misaligned_bucket_count": 0,
+      "native_separation_ok": true,
+      "segment_count": 42,
+      "timeframe_seconds": 300,
+      "warmup_bars_per_segment": 840,
+      "wrong_duration_count": 0,
+      "wrong_size_count": 0
+    },
+    "60": {
+      "boundary_from_ts_violations": 0,
+      "boundary_to_ts_violations": 0,
+      "boundary_touching_candles": 1,
+      "candle_count": 60711,
+      "continuity_gap_count": 8,
+      "derived_provenance_count": 0,
+      "duplicate_from_ts_count": 0,
+      "incomplete_count": 0,
+      "misaligned_bucket_count": 0,
+      "native_separation_ok": true,
+      "segment_count": 9,
+      "timeframe_seconds": 60,
+      "warmup_bars_per_segment": 180,
+      "wrong_duration_count": 0,
+      "wrong_size_count": 0
+    },
+    "900": {
+      "boundary_from_ts_violations": 0,
+      "boundary_to_ts_violations": 0,
+      "boundary_touching_candles": 1,
+      "candle_count": 30768,
+      "continuity_gap_count": 66,
+      "derived_provenance_count": 0,
+      "duplicate_from_ts_count": 0,
+      "incomplete_count": 0,
+      "misaligned_bucket_count": 0,
+      "native_separation_ok": true,
+      "segment_count": 67,
+      "timeframe_seconds": 900,
+      "warmup_bars_per_segment": 1340,
+      "wrong_duration_count": 0,
+      "wrong_size_count": 0
+    }
+  }
+}

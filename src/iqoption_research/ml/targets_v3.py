@@ -72,6 +72,7 @@ class HorizonTargetBundle:
     non_overlapping_valid_count: int
     ties_count: int
     gap_invalidations_count: int
+    boundary_invalidations_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +85,7 @@ class HorizonTargetBundle:
             "non_overlapping_valid_count": self.non_overlapping_valid_count,
             "ties_count": self.ties_count,
             "gap_invalidations_count": self.gap_invalidations_count,
+            "boundary_invalidations_count": self.boundary_invalidations_count,
         }
 
 
@@ -124,8 +126,15 @@ class MultiHorizonTargetEngine:
         warmup_bars: int = 50,
         enforce_temporal_continuity: bool = True,
         timeframe_seconds: int = 60,
+        horizon_name: str | None = None,
+        max_label_maturity_ts: int | None = None,
     ) -> HorizonTargetBundle:
-        """Generate direction, return, and volatility targets for a single horizon."""
+        """Generate direction, return, and volatility targets for a single horizon.
+
+        ``max_label_maturity_ts`` is a fail-closed boundary for Phase 45 development
+        populations: a label is invalid when its maturity candle closes at or after
+        that timestamp, even if the decision candle is earlier.
+        """
         if not candles:
             raise TargetGenerationError("Candle sequence cannot be empty")
 
@@ -163,6 +172,14 @@ class MultiHorizonTargetEngine:
                 if prefix_gaps[t + h] - prefix_gaps[t] > 0:
                     valid_mask[t] = False
                     gap_invalidations += 1
+
+        boundary_invalidations = 0
+        if max_label_maturity_ts is not None:
+            maturity_closes = to_ts[h:]
+            maturity_violation = maturity_closes >= max_label_maturity_ts
+            newly_invalid = maturity_violation[:valid_len] & valid_mask[:valid_len]
+            boundary_invalidations = int(np.sum(newly_invalid))
+            valid_mask[:valid_len] = valid_mask[:valid_len] & (~maturity_violation[:valid_len])
 
         # Binary Direction Targets
         ties_count = 0
@@ -210,7 +227,7 @@ class MultiHorizonTargetEngine:
             if valid_mask[t]:
                 non_overlapping_mask[t] = True
 
-        h_name = HORIZON_NAMES.get(h, f"H{h}")
+        h_name = horizon_name or HORIZON_NAMES.get(h, f"H{h}")
         rolling_valid = int(np.sum(valid_mask))
         non_overlapping_valid = int(np.sum(non_overlapping_mask))
 
@@ -230,6 +247,7 @@ class MultiHorizonTargetEngine:
             non_overlapping_valid_count=non_overlapping_valid,
             ties_count=ties_count,
             gap_invalidations_count=gap_invalidations,
+            boundary_invalidations_count=boundary_invalidations,
         )
 
     @classmethod

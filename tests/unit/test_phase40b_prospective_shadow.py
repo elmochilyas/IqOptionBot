@@ -671,7 +671,9 @@ def test_shadow_panel_prospective_tab_initialization(
 
         # Validate zero-order execution safety invariant in banner
         assert hasattr(panel, "obs_safety_label")
-        assert "EXECUTION_AUTHORITY: NONE" in panel.obs_safety_label.cget("text")
+        text = panel.obs_safety_label.cget("text")
+        assert "EXECUTION_AUTHORITY=NONE" in text or "EXECUTION_AUTHORITY: NONE" in text
+        assert "NO_DEMONSTRATED_EDGE" in text
     finally:
         with contextlib.suppress(Exception):
             tk_root.destroy()

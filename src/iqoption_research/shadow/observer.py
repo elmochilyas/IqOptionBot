@@ -734,8 +734,8 @@ class ProspectiveShadowObserver:
                 self.inputs_journal.record_candle(
                     c,
                     candle_source="WARMUP",
-                    symbol="EURUSD",
-                    timeframe=60,
+                    symbol=config.symbol,
+                    timeframe=int(config.timeframe),
                 )
 
         if self.diagnostics_journal is not None:
@@ -838,9 +838,15 @@ class ProspectiveShadowObserver:
         c = event.candle
         self._last_received_utc = event.received_at_utc
 
-        # Instrument & candle validation
-        if c.symbol != "EURUSD" or c.size.value != 60:
-            logger.warning("Rejected candle with unexpected instrument or size: %s", c)
+        # Instrument & candle validation (config-driven; Phase 46 may use other native TFs)
+        if c.symbol != self.config.symbol or int(c.size.value) != int(self.config.timeframe):
+            logger.warning(
+                "Rejected candle with unexpected instrument or size: got %s/%ss, expected %s/%ss",
+                c.symbol,
+                int(c.size.value),
+                self.config.symbol,
+                int(self.config.timeframe),
+            )
             return
 
         if not c.is_complete:
@@ -924,7 +930,7 @@ class ProspectiveShadowObserver:
                 c,
                 candle_source="STREAM_BAR",
                 symbol=c.symbol,
-                timeframe=c.size.value,
+                timeframe=int(c.size.value),
                 receipt_wall_epoch=event.received_at_utc_ts,
                 is_complete=c.is_complete,
             )
@@ -952,7 +958,8 @@ class ProspectiveShadowObserver:
 
         # 4. Strict prospective commitment deadline checks
         cutoff_ts = c.to_ts
-        entry_window_end_ts = cutoff_ts + 60
+        tf_sec = int(self.config.timeframe)
+        entry_window_end_ts = cutoff_ts + tf_sec
         deadline_ts = (
             entry_window_end_ts
             - self.config.commitment_safety_margin_seconds
@@ -1041,7 +1048,8 @@ class ProspectiveShadowObserver:
         for model_id, engine in self.engines.items():
             rec = self.records[model_id]
             model_horizon_bars = max(1, getattr(rec, "horizon_bars", 1))
-            model_maturity_ts = cutoff_ts + (model_horizon_bars * 60)
+            tf_sec = int(self.config.timeframe)
+            model_maturity_ts = cutoff_ts + (model_horizon_bars * tf_sec)
             model_maturity_iso = datetime.fromtimestamp(model_maturity_ts, UTC).isoformat()
             try:
                 pred_out = engine.predict(self._candle_buffer, decision_ts=cutoff_ts)
@@ -1053,7 +1061,7 @@ class ProspectiveShadowObserver:
                     model_id=model_id,
                     artifact_hash=rec.bundle_sha256,
                     symbol="EURUSD",
-                    timeframe=60,
+                    timeframe=int(self.config.timeframe),
                     feature_cutoff_ts=cutoff_ts,
                     feature_cutoff_utc=datetime.fromtimestamp(cutoff_ts, UTC).isoformat(),
                     data_availability_ts=int(event.received_at_utc_ts),
@@ -1361,8 +1369,8 @@ class ProspectiveShadowObserver:
                             self.inputs_journal.record_candle(
                                 wc,
                                 candle_source="WARMUP",
-                                symbol="EURUSD",
-                                timeframe=60,
+                                symbol=self.config.symbol,
+                                timeframe=int(self.config.timeframe),
                             )
                         if self._candle_buffer:
                             if wc.from_ts != self._candle_buffer[-1].to_ts:

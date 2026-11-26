@@ -264,3 +264,293 @@ def test_settlement_parsing_and_consistency_check() -> None:
     res_bad = adapter.parse_settlement(order, bad_win_payload)
     assert res_bad.is_financially_consistent is False
     assert "non-positive profit" in res_bad.consistency_note
+
+
+class _MockedNetworkSocket:
+    """In-memory WebSocket boundary speaking genuine IQ Option protocol frames."""
+
+    def __init__(
+        self,
+        *,
+        profile_payload: dict[str, object],
+        balances_payload: list[dict[str, object]],
+        emit_timesync: bool = True,
+        emit_balance_changed: dict[str, object] | None = None,
+        emit_stream_candle: dict[str, object] | None = None,
+    ) -> None:
+        import asyncio
+
+        self.profile_payload = profile_payload
+        self.balances_payload = balances_payload
+        self.emit_timesync = emit_timesync
+        self.emit_balance_changed = emit_balance_changed
+        self.emit_stream_candle = emit_stream_candle
+        self.sent: list[dict[str, object]] = []
+        self.incoming: asyncio.Queue[str] = asyncio.Queue()
+        self.closed = False
+
+    def __aiter__(self) -> _MockedNetworkSocket:
+        return self
+
+    async def __anext__(self) -> str:
+        if self.closed and self.incoming.empty():
+            raise StopAsyncIteration
+        item = await self.incoming.get()
+        if item == "__CLOSE__":
+            raise StopAsyncIteration
+        return item
+
+    async def close(self) -> None:
+        self.closed = True
+        await self.incoming.put("__CLOSE__")
+
+    async def send(self, wire: str) -> None:
+        import json
+        import time
+
+        frame = json.loads(wire)
+        self.sent.append(frame)
+        name = frame.get("name")
+        if name == "authenticate":
+            await self.incoming.put(json.dumps({"name": "authenticated", "msg": True}))
+            if self.emit_timesync:
+                await self.incoming.put(
+                    json.dumps({"name": "timeSync", "msg": int(time.time() * 1000)})
+                )
+            return
+        if name == "sendMessage":
+            inner = frame["msg"]
+            inner_name = inner["name"]
+            if inner_name == "get-profile":
+                await self.incoming.put(
+                    json.dumps({
+                        "name": "profile",
+                        "request_id": frame["request_id"],
+                        "msg": self.profile_payload,
+                    })
+                )
+                if self.emit_balance_changed is not None:
+                    await self.incoming.put(
+                        json.dumps({"name": "balance-changed", "msg": self.emit_balance_changed})
+                    )
+                return
+            if inner_name == "get-balances":
+                await self.incoming.put(
+                    json.dumps({
+                        "name": "balances",
+                        "status": 0,
+                        "request_id": frame["request_id"],
+                        "msg": self.balances_payload,
+                    })
+                )
+                return
+        if name == "subscribeMessage" and self.emit_stream_candle is not None:
+            await self.incoming.put(
+                json.dumps({"name": "candle-generated", "msg": self.emit_stream_candle})
+            )
+
+
+def _assert_no_prohibited_frames(sent_frames: list[dict[str, object]]) -> None:
+    forbidden = {
+        "buy",
+        "sell",
+        "order",
+        "trade",
+        "change_balance",
+        "switch_balance",
+        "api_profile_changebalance",
+    }
+    for frame in sent_frames:
+        raw = str(frame).lower()
+        for kw in forbidden:
+            assert kw not in raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case_name", "profile_payload", "balances_payload", "balance_changed", "emit_timesync"),
+    [
+        (
+            "active_real",
+            {"user_id": 10, "balance_id": "real_1"},
+            [
+                {"id": "real_1", "type": 1, "amount": 500.0},
+                {"id": "prac_4", "type": 4, "amount": 10000.0},
+            ],
+            None,
+            True,
+        ),
+        (
+            "unverified_practice",
+            {"user_id": 10, "balance_id": "prac_4"},
+            [
+                {"id": "real_1", "type": 1, "amount": 500.0},
+                {"id": "prac_4", "type": 4, "amount": 10000.0},
+            ],
+            None,
+            True,
+        ),
+        (
+            "unknown_wallet",
+            {"user_id": 10, "balance_id": "unknown_999"},
+            [{"id": "prac_4", "type": 4, "amount": 10000.0}],
+            None,
+            True,
+        ),
+        (
+            "conflicting_wallet",
+            {"user_id": 10, "balance_id": "real_1"},
+            [
+                {"id": "real_1", "type": 1, "amount": 500.0},
+                {"id": "prac_4", "type": 4, "amount": 10000.0},
+            ],
+            {"current_balance": {"id": "prac_4", "type": 4}},
+            True,
+        ),
+        (
+            "missing_clock_sync",
+            {"user_id": 10, "balance_id": "prac_4"},
+            [{"id": "prac_4", "type": 4, "amount": 10000.0}],
+            None,
+            False,
+        ),
+    ],
+)
+async def test_phase48_transport_connect_real_client_fails_closed_without_subscription(
+    case_name: str,
+    profile_payload: dict[str, object],
+    balances_payload: list[dict[str, object]],
+    balance_changed: dict[str, object] | None,
+    emit_timesync: bool,
+) -> None:
+    """Exercise actual IQOptionReadOnlyMultiTransport.connect() + AsyncIQOption + AccountStatus."""
+    from unittest.mock import AsyncMock, patch
+
+    from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+    from iqoption_research.phase48.transport import IQOptionReadOnlyMultiTransport, ProvenanceError
+    from iqoption_research.security.credentials import Credentials
+
+    wire = _MockedNetworkSocket(
+        profile_payload=profile_payload,
+        balances_payload=balances_payload,
+        emit_timesync=emit_timesync,
+        emit_balance_changed=balance_changed,
+    )
+    creds = Credentials(email="operator@example.invalid", password="mock_password_123")
+    connector = "iqoption_research.connectors.iqoption.client"
+
+    with (
+        patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-token")),
+        patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)) as m_logout,
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire)),
+    ):
+        transport = IQOptionReadOnlyMultiTransport(
+            creds,
+            timeframes=(60, 300, 900),
+            require_practice_account=True,
+        )
+        assert transport._client._config.timing_market_data_only is False
+        with pytest.raises(ProvenanceError) as exc_info:
+            await transport.connect()
+
+        # Must never fail with missing-property AttributeError
+        assert not isinstance(exc_info.value, AttributeError)
+        assert transport.is_connected is False
+        assert transport._client.is_closed is True
+        m_logout.assert_awaited()
+        # No stream subscriptions may occur when account verification or clock check fails
+        assert not any(f.get("name") == "subscribeMessage" for f in wire.sent), case_name
+        _assert_no_prohibited_frames(wire.sent)
+
+
+@pytest.mark.asyncio
+async def test_phase48_transport_connect_handles_verified_practice_status_and_streams() -> None:
+    """Verify real typed AccountStatus + PracticeVerification(is_verified=True) allows streaming."""
+    import time
+    from dataclasses import replace
+    from unittest.mock import AsyncMock, patch
+
+    from iqoption_research.connectors.iqoption.client import AsyncIQOption
+    from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+    from iqoption_research.models.account import (
+        AccountStatus,
+        PracticeStatus,
+        WalletIndicator,
+        WalletSource,
+    )
+    from iqoption_research.models.connection import ConnectionConfig
+    from iqoption_research.phase48.transport import IQOptionReadOnlyMultiTransport
+    from iqoption_research.security.credentials import Credentials
+
+    now_sec = (int(time.time()) // 60) * 60
+    candle_msg = {
+        "active_id": 1,
+        "size": 60,
+        "from": now_sec - 60,
+        "to": now_sec,
+        "at": now_sec * 1_000_000_000,
+        "open": 1.0850,
+        "close": 1.0855,
+        "min": 1.0849,
+        "max": 1.0856,
+        "volume": 42,
+        "bid": 1.0854,
+        "ask": 1.0856,
+    }
+    wire = _MockedNetworkSocket(
+        profile_payload={"user_id": 10, "balance_id": "prac_4"},
+        balances_payload=[{"id": "prac_4", "type": 4, "amount": 10000.0}],
+        emit_timesync=True,
+        emit_stream_candle=candle_msg,
+    )
+    creds = Credentials(email="operator@example.invalid", password="mock_password_123")
+    connector = "iqoption_research.connectors.iqoption.client"
+
+    client = AsyncIQOption(
+        credentials=creds,
+        offline=False,
+        config=ConnectionConfig(max_reconnect_attempts=0, timing_market_data_only=False),
+    )
+    orig_get_account_status = client.get_account_status
+
+    async def _verified_typed_status() -> AccountStatus:
+        real_status = await orig_get_account_status()
+        return replace(
+            real_status,
+            indicators=(WalletIndicator(WalletSource.SIMULATED_SESSION, "prac_4"),),
+        )
+
+    with (
+        patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-token")),
+        patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)),
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire)),
+        patch.object(client, "get_account_status", side_effect=_verified_typed_status),
+    ):
+        transport = IQOptionReadOnlyMultiTransport(
+            creds,
+            timeframes=(60,),
+            require_practice_account=True,
+            client_override=client,
+        )
+        await transport.connect()
+        try:
+            assert transport.is_connected is True
+            assert transport.last_practice_verification is not None
+            assert transport.last_practice_verification.is_verified is True
+            assert (
+                transport.last_practice_verification.status
+                is PracticeStatus.VERIFIED_ACTIVE_PRACTICE
+            )
+
+            ev = await transport.next_event(timeout_seconds=2.0)
+            assert ev is not None
+            assert ev.candle.symbol == "EURUSD"
+            assert ev.timeframe_seconds == 60
+            assert ev.clock_sync_status == "SYNCHRONIZED_AND_FRESH"
+            assert ev.server_time_fresh is True
+            assert any(f.get("name") == "subscribeMessage" for f in wire.sent)
+            _assert_no_prohibited_frames(wire.sent)
+        finally:
+            await transport.disconnect()
+            assert transport.is_connected is False
+            assert client.is_closed is True

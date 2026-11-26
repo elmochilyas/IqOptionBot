@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import queue
+import re
 import shutil
 import threading
 import time
@@ -86,6 +87,20 @@ _TF_DISPLAY_TO_SEC: dict[str, int] = {
 }
 _TF_SEC_TO_DISPLAY: dict[int, str] = {v: k for k, v in _TF_DISPLAY_TO_SEC.items()}
 
+_EMAIL_RE = re.compile(r"[A-Za-z0-9_.+-]+@[A-Za-z0-9-]+\.[A-Za-z0-9-.]+")
+_SECRET_KV_RE = re.compile(r"(?i)\b(ssid|token|password|secret|key)\s*[:=]\s*[^\s,;]+")
+
+
+def _sanitize_error_message(raw: object, *, max_len: int = 280) -> str:
+    """Redact potential credentials/emails and normalize whitespace for UI display."""
+    text = str(raw or "").replace("\r", " ").replace("\n", " ").strip()
+    text = _EMAIL_RE.sub("[REDACTED_EMAIL]", text)
+    text = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > max_len:
+        return text[: max_len - 3] + "..."
+    return text
+
 
 class ObservationCenterMixin:
     """Mixin/helper methods attached to ShadowEvaluationPanel for the Phase 46 Observation Center."""
@@ -140,8 +155,15 @@ class ObservationCenterController:
         self.p48_filter_cand: ttk.Combobox | None = None
         self.p48_filter_status: ttk.Combobox | None = None
         self.lbl_p48_auth_status: ttk.Label | None = None
+        self.btn_p48_refresh: ttk.Button | None = None
         self.rb_obs_p48_genuine: ttk.Radiobutton | None = None
         self.btn_p48_synth_demo: ttk.Button | None = None
+        self._legacy_model_row: ttk.Frame | None = None
+        self._account_duration_row: ttk.Frame | None = None
+        self._sim_pace_lbl: ttk.Label | None = None
+        self._auth_row: ttk.Frame | None = None
+        self._controls_frame: ttk.LabelFrame | None = None
+        self._live_frame: ttk.LabelFrame | None = None
 
     @property
     def is_running(self) -> bool:
@@ -207,6 +229,28 @@ class ObservationCenterController:
     def _on_canvas_configure(self, event: Any) -> None:
         if self.obs_scroll_canvas is not None and self._scroll_window_id is not None:
             self.obs_scroll_canvas.itemconfigure(self._scroll_window_id, width=max(1, event.width))
+        self._update_responsive_wraplengths(max(320, int(event.width) - 48))
+
+    def _update_responsive_wraplengths(self, avail_width: int) -> None:
+        p = self.panel
+
+        def _set_wrap(lbl: ttk.Label | None, target: int) -> None:
+            if lbl is None:
+                return
+            t = max(240, target)
+            with contextlib.suppress(tk.TclError, ValueError):
+                cur = int(lbl.cget("wraplength") or 0)
+                if abs(cur - t) > 4:
+                    lbl.configure(wraplength=t)
+
+        _set_wrap(getattr(p, "obs_safety_label", None), avail_width - 220)
+        _set_wrap(getattr(p, "lbl_obs_eligibility", None), avail_width - 20)
+        _set_wrap(getattr(p, "lbl_obs_status", None), avail_width - 20)
+        btn_w = 190
+        if self.btn_p48_refresh is not None:
+            with contextlib.suppress(tk.TclError):
+                btn_w = max(160, self.btn_p48_refresh.winfo_reqwidth() + 24)
+        _set_wrap(self.lbl_p48_auth_status, avail_width - btn_w - 24)
 
     def _on_mousewheel(self, event: Any) -> None:
         if self.obs_scroll_canvas is not None and event.delta:
@@ -278,6 +322,7 @@ class ObservationCenterController:
             container, text="1. Observation Session Configuration", padding=6
         )
         controls_frame.pack(fill="x", pady=(0, 8))
+        self._controls_frame = controls_frame
 
         cfg_header = ttk.Frame(controls_frame)
         cfg_header.pack(fill="x")
@@ -304,7 +349,7 @@ class ObservationCenterController:
         self.obs_config_body = ttk.Frame(controls_frame)
         self.obs_config_body.pack(fill="x", pady=(4, 0))
 
-        # Row 1: Mode & Eligibility
+        # Row 1: Mode & Wrapped Eligibility Banner
         r1 = ttk.Frame(self.obs_config_body)
         r1.pack(fill="x", pady=2)
         ttk.Label(r1, text="Observation Mode:", width=18).pack(side="left")
@@ -334,17 +379,22 @@ class ObservationCenterController:
         )
         p.rb_obs_live.pack(side="left", padx=6)
 
+        r1_elig = ttk.Frame(self.obs_config_body)
+        r1_elig.pack(fill="x", pady=(1, 3))
         p.lbl_obs_eligibility = ttk.Label(
-            r1,
+            r1_elig,
             text="SYNTHETIC_FIXTURE (Lifecycle Demo Only)",
             font=("Segoe UI", 9, "bold"),
             foreground="#1b4d3e",
+            wraplength=920,
+            justify="left",
         )
-        p.lbl_obs_eligibility.pack(side="right", padx=4)
+        p.lbl_obs_eligibility.pack(side="left", fill="x", expand=True, padx=4)
 
-        # Row 2: Model, Timeframe, Prediction Duration
+        # Row 2: Legacy Model, Timeframe, Prediction Duration (hidden in genuine exploratory mode)
         r2 = ttk.Frame(self.obs_config_body)
         r2.pack(fill="x", pady=2)
+        self._legacy_model_row = r2
         ttk.Label(r2, text="Model / Fixture:", width=18).pack(side="left")
         p.combo_obs_model = ttk.Combobox(r2, state="readonly", width=40)
         p.combo_obs_model.pack(side="left", padx=4)
@@ -366,9 +416,10 @@ class ObservationCenterController:
         )
         p.lbl_obs_horizon.pack(side="left", padx=(10, 4))
 
-        # Row 3: Account (Genuine), Duration, Pace
+        # Row 3: Account (Genuine), Duration, Pace (Sim Pace hidden in genuine exploratory mode)
         r3 = ttk.Frame(self.obs_config_body)
         r3.pack(fill="x", pady=2)
+        self._account_duration_row = r3
         ttk.Label(r3, text="Vault Account:", width=18).pack(side="left")
         p.combo_obs_account = ttk.Combobox(r3, state="disabled", width=26)
         p.combo_obs_account.pack(side="left", padx=4)
@@ -383,7 +434,8 @@ class ObservationCenterController:
         p.combo_obs_duration.set("15")
         p.combo_obs_duration.pack(side="left", padx=4)
 
-        ttk.Label(r3, text="Sim Pace:", width=9).pack(side="left", padx=(8, 2))
+        self._sim_pace_lbl = ttk.Label(r3, text="Sim Pace:", width=9)
+        self._sim_pace_lbl.pack(side="left", padx=(8, 2))
         p.combo_obs_pace = ttk.Combobox(
             r3, state="readonly", width=21, values=list(_PACE_MAP.keys())
         )
@@ -441,18 +493,24 @@ class ObservationCenterController:
 
         auth_row = ttk.Frame(p48_cfg)
         auth_row.pack(fill="x", pady=(3, 1))
+        self._auth_row = auth_row
+        auth_row.columnconfigure(0, weight=1)
+        auth_row.columnconfigure(1, weight=0)
         self.lbl_p48_auth_status = ttk.Label(
             auth_row,
             text="Campaign Gate: Checking Phase 48 authorization...",
             font=("Segoe UI", 8, "bold"),
             foreground="#9c3414",
+            wraplength=760,
+            justify="left",
         )
-        self.lbl_p48_auth_status.pack(side="left")
-        ttk.Button(
+        self.lbl_p48_auth_status.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.btn_p48_refresh = ttk.Button(
             auth_row,
             text="Refresh Models & Contract",
             command=self._refresh_p48_governance_status,
-        ).pack(side="right", padx=4)
+        )
+        self.btn_p48_refresh.grid(row=0, column=1, sticky="ne", padx=4)
 
         # Row 4: Action Buttons (always visible even if config body collapsed)
         r4 = ttk.Frame(controls_frame)
@@ -491,6 +549,7 @@ class ObservationCenterController:
         # ==================================================================
         live_frame = ttk.LabelFrame(container, text="2. Live Monitoring & Performance", padding=6)
         live_frame.pack(fill="x", pady=(0, 8))
+        self._live_frame = live_frame
 
         p.obs_progress_bar = ttk.Progressbar(live_frame, mode="determinate")
         p.obs_progress_bar.pack(fill="x", pady=(0, 4))
@@ -500,9 +559,10 @@ class ObservationCenterController:
             text="State: IDLE | Source: Disconnected | Elapsed: 0.0s | Latest Candle: N/A | Latest Pred: N/A",
             font=("Segoe UI", 9, "bold"),
             foreground="#20364a",
-            wraplength=980,
+            wraplength=920,
+            justify="left",
         )
-        p.lbl_obs_status.pack(anchor="w", pady=(0, 4))
+        p.lbl_obs_status.pack(fill="x", anchor="w", pady=(0, 4))
 
         # Compact 4-card KPI grid
         kpi_grid = ttk.Frame(live_frame)
@@ -823,11 +883,38 @@ class ObservationCenterController:
             else:
                 p.combo_obs_model.set("")
 
+    def _set_legacy_controls_visible(self, visible: bool) -> None:
+        p = self.panel
+        if self._legacy_model_row is not None:
+            if visible:
+                if not self._legacy_model_row.winfo_ismapped():
+                    if self._account_duration_row is not None:
+                        self._legacy_model_row.pack(
+                            fill="x", pady=2, before=self._account_duration_row
+                        )
+                    else:
+                        self._legacy_model_row.pack(fill="x", pady=2)
+            elif self._legacy_model_row.winfo_ismapped():
+                self._legacy_model_row.pack_forget()
+        if self._sim_pace_lbl is not None and hasattr(p, "combo_obs_pace"):
+            if visible:
+                if not self._sim_pace_lbl.winfo_ismapped():
+                    self._sim_pace_lbl.pack(side="left", padx=(8, 2))
+                if not p.combo_obs_pace.winfo_ismapped():
+                    p.combo_obs_pace.pack(side="left", padx=4)
+            else:
+                if self._sim_pace_lbl.winfo_ismapped():
+                    self._sim_pace_lbl.pack_forget()
+                if p.combo_obs_pace.winfo_ismapped():
+                    p.combo_obs_pace.pack_forget()
+        self._on_inner_configure()
+
     def on_mode_changed(self) -> None:
         p = self.panel
         mode = p.var_obs_mode.get()
         self.refresh_models()
         if mode == "exploratory_genuine":
+            self._set_legacy_controls_visible(False)
             p.combo_obs_account.config(state="readonly")
             auth_ok, msg = self._refresh_p48_governance_status()
             p.lbl_obs_eligibility.config(
@@ -837,6 +924,7 @@ class ObservationCenterController:
             if not self._is_running:
                 p.btn_start_obs.config(state="normal" if auth_ok else "disabled")
         elif mode == "live":
+            self._set_legacy_controls_visible(True)
             p.combo_obs_account.config(state="readonly")
             p.lbl_obs_eligibility.config(
                 text="BLOCKED: Phase 46 confirmatory contract UNAUTHORIZED (0 qualified candidates)",
@@ -845,6 +933,7 @@ class ObservationCenterController:
             if not self._is_running:
                 p.btn_start_obs.config(state="disabled")
         else:
+            self._set_legacy_controls_visible(True)
             p.combo_obs_account.config(state="disabled")
             p.lbl_obs_eligibility.config(
                 text="SYNTHETIC_FIXTURE (Offline Lifecycle Demo Only)",
@@ -858,12 +947,17 @@ class ObservationCenterController:
 
     def _refresh_p48_governance_status(self) -> tuple[bool, str]:
         models_dir = default_models_dir(self.root)
+        selected_cids = self._selected_p48_candidate_ids()
+        selected_set = set(selected_cids)
         loaded_digests: dict[str, str] = {}
+        selected_model_failures: list[str] = []
         for spec in CANDIDATE_SPECS:
             cid = spec.frozen_candidate_id
             lbl = self._p48_candidate_status_lbls.get(cid)
             bdir = models_dir / cid
             if not bdir.is_dir():
+                if cid in selected_set:
+                    selected_model_failures.append(f"{cid}: MISSING BUNDLE")
                 if lbl is not None:
                     lbl.config(text="MISSING BUNDLE", foreground="#9c3414")
                 continue
@@ -879,8 +973,11 @@ class ObservationCenterController:
                         foreground="#1b4d3e",
                     )
             except Exception as exc:  # noqa: BLE001
+                err_txt = _sanitize_error_message(exc, max_len=120)
+                if cid in selected_set:
+                    selected_model_failures.append(f"{cid}: {err_txt}")
                 if lbl is not None:
-                    lbl.config(text=f"TAMPERED/INVALID: {exc}", foreground="#9c3414")
+                    lbl.config(text=f"MODEL ARTIFACT INVALID: {err_txt}", foreground="#9c3414")
 
         cpath = default_campaign_contract_path(self.root)
         contract = load_campaign_contract(cpath) if cpath.is_file() else None
@@ -900,28 +997,77 @@ class ObservationCenterController:
             else None
         )
         stage_spec = get_stage_spec(contract, contract.authorized_stage) if contract else None
+        allow_drain = bool(stage_spec and stage_spec.allow_outcome_drain)
+        drain_min = stage_spec.max_outcome_drain_minutes if stage_spec else 0
+        if (
+            contract is not None
+            and stage_spec is not None
+            and contract.replacement_authorization is not None
+            and usage_store is not None
+            and len(usage_store.list_consumed(contract.contract_id, stage_spec.stage_id))
+            >= stage_spec.target_sessions
+        ):
+            allow_drain = False
+            drain_min = 0
+
         res = validate_campaign_authorization(
             contract,
-            requested_candidate_ids=self._selected_p48_candidate_ids(),
+            requested_candidate_ids=selected_cids,
             requested_duration_minutes=dur,
             loaded_artifact_digests=loaded_digests,
             account_ref=acct,
             is_genuine_mode=True,
-            requested_allow_outcome_drain=bool(stage_spec and stage_spec.allow_outcome_drain),
-            requested_drain_minutes=(stage_spec.max_outcome_drain_minutes if stage_spec else 0),
+            requested_allow_outcome_drain=allow_drain,
+            requested_drain_minutes=drain_min,
             usage_store=usage_store,
         )
-        msg = (
-            "AUTHORIZED: Phase 48 Supervised Exploratory Campaign"
-            if res.authorized
-            else f"BLOCKED: {res.status} ({res.reasons[0] if res.reasons else 'Unauthorized'})"
-        )
+        can_run = res.authorized and not selected_model_failures
+        if selected_model_failures:
+            msg = (
+                f"BLOCKED — MODEL FAILURE ({len(selected_model_failures)}/{max(1, len(selected_cids))} "
+                f"selected artifacts invalid): {_sanitize_error_message(selected_model_failures[0])}"
+            )
+        elif res.authorized:
+            msg = (
+                f"AUTHORIZED ({len(selected_cids)}/{len(selected_cids)} models verified, "
+                "0 model failures): Phase 48 Supervised Exploratory Campaign"
+            )
+        elif res.exhausted_stage_budget:
+            stage_lbl = contract.authorized_stage if contract else "STAGE_A_15M"
+            last_note = ""
+            if usage_store is not None and contract is not None and contract.authorized_stage:
+                recs = usage_store.list_consumed(contract.contract_id, contract.authorized_stage)
+                if recs:
+                    last = recs[-1]
+                    last_state = last.get("lifecycle_state") or last.get("status")
+                    last_note = f" [last: {last.get('session_id')} -> {last_state}]"
+            msg = (
+                f"BLOCKED — AUTHORIZATION EXHAUSTED (Models Verified, 0 Model Failures): "
+                f"Stage {stage_lbl} session budget consumed{last_note}. "
+                "Replacement requires explicit owner CLI authorization."
+            )
+        else:
+            reason = _sanitize_error_message(
+                res.reasons[0] if res.reasons else "Unauthorized", max_len=200
+            )
+            msg = (
+                f"BLOCKED — AUTHORIZATION ({len(selected_cids)} selected models verified): "
+                f"{res.status} — {reason}"
+            )
+
         if self.lbl_p48_auth_status is not None:
             self.lbl_p48_auth_status.config(
                 text=msg,
-                foreground="#1b4d3e" if res.authorized else "#9c3414",
+                foreground="#1b4d3e" if can_run else "#9c3414",
             )
-        return res.authorized, msg
+        if self.panel.var_obs_mode.get() == "exploratory_genuine":
+            self.panel.lbl_obs_eligibility.config(
+                text=msg,
+                foreground="#1b4d3e" if can_run else "#9c3414",
+            )
+            if not self._is_running:
+                self.panel.btn_start_obs.config(state="normal" if can_run else "disabled")
+        return can_run, msg
 
     def on_model_selected(self, _event: Any = None) -> None:
         p = self.panel
@@ -1087,6 +1233,10 @@ class ObservationCenterController:
 
         session_id = f"p48_synth_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
         self._active_session_id = session_id
+        p.lbl_obs_status.config(
+            text=f"State: INITIALIZING | Source: SYNTHETIC_ACCEPTANCE_FEED | Session: {session_id}",
+            foreground="#20364a",
+        )
         dur = int(p.combo_obs_duration.get() or 15)
         if dur not in SUPPORTED_SESSION_DURATIONS_MINUTES:
             dur = 15
@@ -1236,6 +1386,14 @@ class ObservationCenterController:
         usage_store = CampaignUsageStore(
             default_campaign_usage_path(self.root, contract.contract_id)
         )
+        if (
+            stage_spec is not None
+            and contract.replacement_authorization is not None
+            and len(usage_store.list_consumed(contract.contract_id, stage_spec.stage_id))
+            >= stage_spec.target_sessions
+        ):
+            allow_drain = False
+            drain_min = 0
         session_id = f"p48_gen_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
 
         auth_res = validate_campaign_authorization(
@@ -1300,6 +1458,10 @@ class ObservationCenterController:
         self._p48_multi_series = {}
         p.btn_start_obs.config(state="disabled")
         p.btn_cancel_obs.config(state="normal")
+        p.lbl_obs_status.config(
+            text=f"State: CONNECTING | Session: {session_id} | Connecting read-only broker session...",
+            foreground="#20364a",
+        )
         if self.btn_p48_synth_demo is not None:
             self.btn_p48_synth_demo.config(state="disabled")
 
@@ -1394,15 +1556,38 @@ class ObservationCenterController:
             self.btn_p48_synth_demo.config(state="normal")
         self.on_mode_changed()
         p.obs_progress_bar["value"] = 100
-        p.lbl_obs_status.config(
-            text=(
-                f"State: {res.status} | {res.evidence_classification} | "
-                f"Integrity: {'VERIFIED' if res.integrity_verified else 'FAILED'} | "
-                f"Elapsed: {res.elapsed_seconds:.1f}s"
-            )
+        sanitized_reason = _sanitize_error_message(getattr(res, "stop_reason", ""))
+        is_err = res.status in (
+            "FAILED_STARTUP",
+            "FAILED_PROVENANCE",
+            "INTERRUPTED_DISCONNECT",
+            "INTERRUPTED_STALE",
         )
+        status_text = (
+            f"State: {res.status} | {res.evidence_classification} | "
+            f"Integrity: {'VERIFIED' if res.integrity_verified else 'FAILED'} | "
+            f"Elapsed: {res.elapsed_seconds:.1f}s"
+        )
+        if is_err and sanitized_reason:
+            status_text += f"\nError: {sanitized_reason}"
+        p.lbl_obs_status.config(
+            text=status_text,
+            foreground="#9c3414" if is_err else "#20364a",
+        )
+        if res.status == "FAILED_STARTUP":
+            per_diag = getattr(res, "per_candidate_diagnostics", {}) or {}
+            for cid, diag in per_diag.items():
+                lbl = self._p48_kpi_labels.get(cid)
+                if lbl is not None:
+                    mf = getattr(diag, "model_failures", 0)
+                    lbl.config(
+                        text=(
+                            f"Warmup: 0/60 | Startup failed ({mf} model failures)\n"
+                            "Session ended before stream subscription"
+                        )
+                    )
         self._append_log(
-            f"[Phase 48] Session {res.session_id} finished ({res.status}): {res.stop_reason}"
+            f"[Phase 48] Session {res.session_id} finished ({res.status}): {sanitized_reason}"
         )
         self.refresh_session_history()
 
@@ -1749,10 +1934,19 @@ class ObservationCenterController:
         if gen_id != self._generation_id or self._is_destroyed:
             return
         self._is_running = False
+        if self.btn_p48_synth_demo is not None:
+            self.btn_p48_synth_demo.config(state="normal")
         self.on_mode_changed()
         self.panel.btn_cancel_obs.config(state="disabled")
-        self.panel.lbl_obs_status.config(text=f"State: FAILED | Error: {err_msg}")
-        self._append_log(f"[Phase 46] ERROR: {err_msg}")
+        sanitized = _sanitize_error_message(err_msg)
+        state_lbl = (
+            "FAILED_STARTUP" if self.panel.var_obs_mode.get() == "exploratory_genuine" else "FAILED"
+        )
+        self.panel.lbl_obs_status.config(
+            text=f"State: {state_lbl} | Error: {sanitized}",
+            foreground="#9c3414",
+        )
+        self._append_log(f"[Observation] {state_lbl}: {sanitized}")
 
     def _update_kpi_cards(
         self,

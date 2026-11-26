@@ -13,6 +13,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
+import threading
+import time
+import uuid
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -61,6 +67,61 @@ class ExploratoryCampaignStage(StrEnum):
     STAGE_B_120M = "STAGE_B_120M"
     STAGE_C_240M = "STAGE_C_240M"
     STAGE_D_480M = "STAGE_D_480M"
+
+
+class SessionLifecycleState(StrEnum):
+    """Durable lifecycle states for supervised Phase 48 observation sessions."""
+
+    RESERVED = "RESERVED"
+    CONNECTING = "CONNECTING"
+    FAILED_STARTUP = "FAILED_STARTUP"
+    RUNNING = "RUNNING"
+    INTERRUPTED = "INTERRUPTED"
+    CANCELLED = "CANCELLED"
+    COMPLETED = "COMPLETED"
+
+
+_VALID_LIFECYCLE_TRANSITIONS: dict[SessionLifecycleState, frozenset[SessionLifecycleState]] = {
+    SessionLifecycleState.RESERVED: frozenset({
+        SessionLifecycleState.CONNECTING,
+        SessionLifecycleState.FAILED_STARTUP,
+        SessionLifecycleState.CANCELLED,
+    }),
+    SessionLifecycleState.CONNECTING: frozenset({
+        SessionLifecycleState.FAILED_STARTUP,
+        SessionLifecycleState.RUNNING,
+        SessionLifecycleState.INTERRUPTED,
+        SessionLifecycleState.CANCELLED,
+    }),
+    SessionLifecycleState.RUNNING: frozenset({
+        SessionLifecycleState.INTERRUPTED,
+        SessionLifecycleState.CANCELLED,
+        SessionLifecycleState.COMPLETED,
+    }),
+    SessionLifecycleState.FAILED_STARTUP: frozenset(),
+    SessionLifecycleState.INTERRUPTED: frozenset(),
+    SessionLifecycleState.CANCELLED: frozenset(),
+    SessionLifecycleState.COMPLETED: frozenset(),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class StageReplacementAuthorization:
+    """Explicit owner sign-off for one bounded Stage A replacement attempt."""
+
+    replacement_grant_id: str
+    stage_id: str
+    previous_failed_session_id: str
+    previous_failed_status: str
+    previous_failed_reason_summary: str
+    authorized_by: str
+    authorized_at_utc: str
+    expires_at_utc: str
+    max_attempts: int = 1
+    session_duration_minutes: int = 15
+    allow_outcome_drain: bool = False
+    max_outcome_drain_minutes: int = 0
+    review_note: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +178,7 @@ class ExploratoryCampaignContract:
     authorization_note: str = ""
     authorization_signature_sha256: str = ""
     contract_sha256: str = ""
+    replacement_authorization: StageReplacementAuthorization | None = None
 
     def canonical_payload(self) -> dict[str, Any]:
         """Return canonical dictionary of immutable contract terms (excluding auth sig)."""
@@ -165,7 +227,7 @@ class ExploratoryCampaignContract:
         cryptographic proof of identity. When hmac_key is provided, it computes
         HMAC-SHA256 using that local owner secret.
         """
-        payload = {
+        payload: dict[str, Any] = {
             "contract_sha256": self.contract_sha256 or self.compute_contract_sha256(),
             "authorization_status": self.authorization_status,
             "authorized_stage": self.authorized_stage,
@@ -176,6 +238,8 @@ class ExploratoryCampaignContract:
             "authorization_mechanism": self.authorization_mechanism,
             "allowed_account_ref": self.allowed_account_ref,
         }
+        if self.replacement_authorization is not None:
+            payload["replacement_authorization"] = asdict(self.replacement_authorization)
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         if hmac_key is not None:
             return hmac.new(hmac_key, raw, hashlib.sha256).hexdigest()
@@ -197,12 +261,36 @@ class ExploratoryCampaignContract:
             "authorization_signature_sha256": self.authorization_signature_sha256,
             "contract_sha256": self.contract_sha256 or self.compute_contract_sha256(),
         })
+        if self.replacement_authorization is not None:
+            d["replacement_authorization"] = asdict(self.replacement_authorization)
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExploratoryCampaignContract:
         """Deserialize contract from dictionary."""
         stages = tuple(ExploratoryStageSpec(**s) for s in data.get("stage_plan", ()))
+        repl_raw = data.get("replacement_authorization")
+        repl = (
+            StageReplacementAuthorization(
+                replacement_grant_id=str(repl_raw["replacement_grant_id"]),
+                stage_id=str(repl_raw["stage_id"]),
+                previous_failed_session_id=str(repl_raw["previous_failed_session_id"]),
+                previous_failed_status=str(repl_raw["previous_failed_status"]),
+                previous_failed_reason_summary=str(
+                    repl_raw.get("previous_failed_reason_summary", "")
+                ),
+                authorized_by=str(repl_raw["authorized_by"]),
+                authorized_at_utc=str(repl_raw["authorized_at_utc"]),
+                expires_at_utc=str(repl_raw["expires_at_utc"]),
+                max_attempts=int(repl_raw.get("max_attempts", 1)),
+                session_duration_minutes=int(repl_raw.get("session_duration_minutes", 15)),
+                allow_outcome_drain=bool(repl_raw.get("allow_outcome_drain", False)),
+                max_outcome_drain_minutes=int(repl_raw.get("max_outcome_drain_minutes", 0)),
+                review_note=str(repl_raw.get("review_note", "")),
+            )
+            if isinstance(repl_raw, dict)
+            else None
+        )
         return cls(
             contract_id=str(data["contract_id"]),
             protocol_version=str(data["protocol_version"]),
@@ -253,6 +341,7 @@ class ExploratoryCampaignContract:
             authorization_note=str(data.get("authorization_note", "")),
             authorization_signature_sha256=str(data.get("authorization_signature_sha256", "")),
             contract_sha256=str(data.get("contract_sha256", "")),
+            replacement_authorization=repl,
         )
 
 
@@ -265,6 +354,7 @@ class AuthorizationCheckResult:
     reasons: tuple[str, ...] = field(default_factory=tuple)
     contract_id: str | None = None
     contract_sha256: str | None = None
+    exhausted_stage_budget: bool = False
 
 
 def build_default_proposed_campaign_contract(
@@ -409,11 +499,59 @@ def build_default_proposed_campaign_contract(
     return replace(contract, contract_sha256=contract.compute_contract_sha256())
 
 
+_USAGE_LOCKS_GUARD = threading.Lock()
+_USAGE_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _get_usage_lock(path: Path) -> threading.RLock:
+    key = str(path.resolve())
+    with _USAGE_LOCKS_GUARD:
+        lock = _USAGE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _USAGE_LOCKS[key] = lock
+        return lock
+
+
 class CampaignUsageStore:
     """Durable, atomic session consumption ledger preventing duplicate/excess runs."""
 
     def __init__(self, path: Path) -> None:
-        self.path = path
+        self.path = Path(path).resolve()
+
+    @contextmanager
+    def _locked(self, timeout_seconds: float = 10.0) -> Generator[None, None, None]:
+        """Acquire both in-process thread lock and cross-process exclusive lockfile."""
+        tlock = _get_usage_lock(self.path)
+        with tlock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = self.path.with_name(f"{self.path.name}.lock")
+            deadline = time.monotonic() + timeout_seconds
+            fd: int | None = None
+            while fd is None:
+                try:
+                    fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                except FileExistsError:
+                    # Recover from crashed lock holders older than 60s
+                    try:
+                        age = time.time() - lock_path.stat().st_mtime
+                        if age > 60.0:
+                            lock_path.unlink(missing_ok=True)
+                            continue
+                    except OSError:
+                        pass
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Timed out waiting for usage store lock: {lock_path}"
+                        ) from None
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                try:
+                    os.close(fd)
+                finally:
+                    lock_path.unlink(missing_ok=True)
 
     def _read(self) -> dict[str, Any]:
         if not self.path.is_file():
@@ -425,21 +563,45 @@ class CampaignUsageStore:
 
     def _write_atomic(self, payload: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.path.with_suffix(".tmp")
+        tmp_path = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        Path(tmp_path).replace(self.path)
+        tmp_path.replace(self.path)
 
     def list_consumed(self, contract_id: str, stage_id: str) -> list[dict[str, Any]]:
-        data = self._read()
-        return [
-            s
-            for s in data.get("consumed_sessions", [])
-            if s.get("contract_id") == contract_id and s.get("stage_id") == stage_id
-        ]
+        with self._locked():
+            data = self._read()
+            return [
+                dict(s)
+                for s in data.get("consumed_sessions", [])
+                if s.get("contract_id") == contract_id and s.get("stage_id") == stage_id
+            ]
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        with self._locked():
+            data = self._read()
+            for s in data.get("consumed_sessions", []):
+                if s.get("session_id") == session_id:
+                    return dict(s)
+            return None
 
     def has_session(self, session_id: str) -> bool:
-        data = self._read()
-        return any(s.get("session_id") == session_id for s in data.get("consumed_sessions", []))
+        return self.get_session(session_id) is not None
+
+    def has_replacement_for(self, failed_session_id: str) -> bool:
+        with self._locked():
+            data = self._read()
+            return any(
+                s.get("replacement_for_session_id") == failed_session_id
+                for s in data.get("consumed_sessions", [])
+            )
+
+    def has_used_replacement_grant(self, replacement_grant_id: str) -> bool:
+        with self._locked():
+            data = self._read()
+            return any(
+                s.get("replacement_grant_id") == replacement_grant_id
+                for s in data.get("consumed_sessions", [])
+            )
 
     def reserve_session(
         self,
@@ -448,36 +610,304 @@ class CampaignUsageStore:
         session_id: str,
         stage_id: str,
         max_sessions: int,
+        replacement_grant_id: str | None = None,
+        replacement_for_session_id: str | None = None,
     ) -> None:
         """Atomically reserve one authorized session slot before broker connection."""
-        data = self._read()
-        sessions = list(data.get("consumed_sessions", []))
-        if any(s.get("session_id") == session_id for s in sessions):
-            raise ValueError(f"Duplicate session_id {session_id} already consumed.")
-        stage_count = sum(
-            1
-            for s in sessions
-            if s.get("contract_id") == contract.contract_id and s.get("stage_id") == stage_id
-        )
-        if stage_count >= max_sessions:
-            raise ValueError(
-                f"Authorized session budget exhausted for {stage_id}: "
-                f"{stage_count}/{max_sessions} consumed."
+        with self._locked():
+            data = self._read()
+            sessions = list(data.get("consumed_sessions", []))
+            if any(s.get("session_id") == session_id for s in sessions):
+                raise ValueError(f"Duplicate session_id {session_id} already consumed.")
+            if replacement_for_session_id and session_id == replacement_for_session_id:
+                raise ValueError("Replacement session must use a new session_id.")
+
+            stage_sessions = [
+                s
+                for s in sessions
+                if s.get("contract_id") == contract.contract_id and s.get("stage_id") == stage_id
+            ]
+            stage_count = len(stage_sessions)
+
+            if replacement_grant_id is not None or replacement_for_session_id is not None:
+                if not replacement_grant_id or not replacement_for_session_id:
+                    raise ValueError(
+                        "Both replacement_grant_id and replacement_for_session_id are required."
+                    )
+                if not any(
+                    s.get("session_id") == replacement_for_session_id for s in stage_sessions
+                ):
+                    raise ValueError(
+                        f"Referenced failed session {replacement_for_session_id!r} not found in {stage_id}."
+                    )
+                if any(s.get("replacement_grant_id") == replacement_grant_id for s in sessions):
+                    raise ValueError(
+                        f"Replacement grant {replacement_grant_id!r} already consumed."
+                    )
+                if any(
+                    s.get("replacement_for_session_id") == replacement_for_session_id
+                    for s in sessions
+                ):
+                    raise ValueError(
+                        f"Failed session {replacement_for_session_id!r} already has a replacement."
+                    )
+                effective_cap = max_sessions + 1
+                if stage_count >= effective_cap:
+                    raise ValueError(
+                        f"Authorized session budget (with replacement) exhausted for {stage_id}: "
+                        f"{stage_count}/{effective_cap} consumed."
+                    )
+            elif stage_count >= max_sessions:
+                raise ValueError(
+                    f"Authorized session budget exhausted for {stage_id}: "
+                    f"{stage_count}/{max_sessions} consumed."
+                )
+
+            now_utc = datetime.now(UTC).isoformat()
+            entry: dict[str, Any] = {
+                "contract_id": contract.contract_id,
+                "stage_id": stage_id,
+                "session_id": session_id,
+                "reserved_at_utc": now_utc,
+                "updated_at_utc": now_utc,
+                "status": SessionLifecycleState.RESERVED.value,
+                "lifecycle_state": SessionLifecycleState.RESERVED.value,
+                "state_history": [
+                    {"state": SessionLifecycleState.RESERVED.value, "at_utc": now_utc}
+                ],
+            }
+            if replacement_grant_id and replacement_for_session_id:
+                entry["replacement_grant_id"] = replacement_grant_id
+                entry["replacement_for_session_id"] = replacement_for_session_id
+            sessions.append(entry)
+            data["consumed_sessions"] = sessions
+            self._write_atomic(data)
+
+    def transition_session(
+        self,
+        session_id: str,
+        new_state: SessionLifecycleState | str,
+        *,
+        reason: str = "",
+        error_type: str = "",
+        runtime_status: str = "",
+    ) -> dict[str, Any]:
+        """Atomically transition an existing session usage record to a durable lifecycle state."""
+        target = SessionLifecycleState(new_state)
+        with self._locked():
+            data = self._read()
+            sessions = list(data.get("consumed_sessions", []))
+            idx = next(
+                (i for i, s in enumerate(sessions) if s.get("session_id") == session_id),
+                None,
             )
-        sessions.append({
-            "contract_id": contract.contract_id,
-            "stage_id": stage_id,
-            "session_id": session_id,
-            "reserved_at_utc": datetime.now(UTC).isoformat(),
-            "status": "RESERVED",
-        })
-        data["consumed_sessions"] = sessions
-        self._write_atomic(data)
+            if idx is None:
+                raise KeyError(f"Session {session_id!r} not found in usage store.")
+            entry = dict(sessions[idx])
+            raw_cur = str(
+                entry.get("lifecycle_state")
+                or entry.get("status")
+                or SessionLifecycleState.RESERVED.value
+            )
+            current = SessionLifecycleState(raw_cur)
+            if target != current and target not in _VALID_LIFECYCLE_TRANSITIONS[current]:
+                raise ValueError(
+                    f"Invalid lifecycle transition for {session_id}: {current.value} -> {target.value}"
+                )
+            now_utc = datetime.now(UTC).isoformat()
+            history = list(entry.get("state_history") or [])
+            if not history:
+                history.append({
+                    "state": current.value,
+                    "at_utc": entry.get("reserved_at_utc") or now_utc,
+                })
+            if target != current:
+                hist_item: dict[str, Any] = {"state": target.value, "at_utc": now_utc}
+                if reason:
+                    hist_item["reason"] = reason[:240]
+                history.append(hist_item)
+
+            entry["status"] = target.value
+            entry["lifecycle_state"] = target.value
+            entry["updated_at_utc"] = now_utc
+            entry["state_history"] = history
+            if reason:
+                entry["stop_reason"] = reason[:500]
+            if error_type:
+                entry["error_type"] = error_type
+            if runtime_status:
+                entry["runtime_status"] = runtime_status
+
+            sessions[idx] = entry
+            data["consumed_sessions"] = sessions
+            self._write_atomic(data)
+            return dict(entry)
 
 
 def default_campaign_usage_path(repo_root: Path, contract_id: str) -> Path:
     """Return default durable session consumption path for a campaign contract."""
     return Path(repo_root).resolve() / PHASE48_CAMPAIGNS_DIR / f"{contract_id}.usage.json"
+
+
+def verify_failed_startup_session(
+    *,
+    usage_store: CampaignUsageStore,
+    sessions_dir: Path,
+    contract_id: str,
+    stage_id: str,
+    failed_session_id: str,
+) -> tuple[str, str]:
+    """Verify a previous Stage A session failed at startup with zero predictions/inputs."""
+    if stage_id != ExploratoryCampaignStage.STAGE_A_15M.value:
+        raise ValueError("Replacement authorization is only supported for STAGE_A_15M.")
+    rec = usage_store.get_session(failed_session_id)
+    if rec is None:
+        raise ValueError(f"Failed session {failed_session_id!r} not found in CampaignUsageStore.")
+    if rec.get("contract_id") != contract_id or rec.get("stage_id") != stage_id:
+        raise ValueError(
+            f"Session {failed_session_id!r} belongs to {rec.get('contract_id')}/{rec.get('stage_id')}, "
+            f"not {contract_id}/{stage_id}."
+        )
+    if usage_store.has_replacement_for(failed_session_id):
+        raise ValueError(
+            f"Failed session {failed_session_id!r} already has an authorized/consumed replacement."
+        )
+
+    rec_state = str(rec.get("lifecycle_state") or rec.get("status") or "")
+    sdir = Path(sessions_dir) / failed_session_id
+    meta_path = sdir / "session.json"
+    if not meta_path.is_file():
+        raise ValueError(f"Missing session metadata for failed session {failed_session_id!r}.")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if meta.get("session_id") != failed_session_id or not bool(meta.get("is_genuine_mode")):
+        raise ValueError(f"Session {failed_session_id!r} is not a genuine Phase 48 session.")
+    if meta.get("campaign_contract_id") != contract_id:
+        raise ValueError(f"Session {failed_session_id!r} contract_id mismatch.")
+
+    per_diag = meta.get("per_candidate_diagnostics", {})
+    if any(
+        int(d.get("total_opportunities", 0)) > 0 or int(d.get("selected_predictions", 0)) > 0
+        for d in per_diag.values()
+        if isinstance(d, dict)
+    ):
+        raise ValueError(
+            f"Session {failed_session_id!r} recorded predictions/opportunities; not a startup failure."
+        )
+
+    for jsonl_name in ("inputs.jsonl", "predictions.jsonl"):
+        jpath = sdir / jsonl_name
+        if jpath.is_file() and jpath.read_text(encoding="utf-8").strip():
+            raise ValueError(
+                f"Session {failed_session_id!r} has non-empty {jsonl_name}; not a startup failure."
+            )
+
+    sess_status = str(meta.get("status", ""))
+    is_new_failed_startup = (
+        rec_state == SessionLifecycleState.FAILED_STARTUP.value
+        and sess_status == SessionLifecycleState.FAILED_STARTUP.value
+    )
+    # Pre-Phase-49.1 startup failure left usage record RESERVED and session.json INTERRUPTED_DISCONNECT/FAILED_PROVENANCE.
+    is_legacy_failed_startup = (
+        rec_state == SessionLifecycleState.RESERVED.value
+        and sess_status in ("FAILED_STARTUP", "INTERRUPTED_DISCONNECT", "FAILED_PROVENANCE")
+    )
+    if not (is_new_failed_startup or is_legacy_failed_startup):
+        raise ValueError(
+            f"Session {failed_session_id!r} is not an eligible FAILED_STARTUP session "
+            f"(usage={rec_state}, session={sess_status})."
+        )
+
+    return sess_status, str(meta.get("stop_reason", ""))
+
+
+def authorize_stage_a_replacement(
+    contract: ExploratoryCampaignContract,
+    *,
+    failed_session_id: str,
+    authorized_by: str,
+    allowed_account_ref: str,
+    review_note: str,
+    usage_store: CampaignUsageStore,
+    sessions_dir: Path,
+    authorized_at_utc: str | None = None,
+    hours_valid: int = 24,
+    expires_at_utc: str | None = None,
+    hmac_key: bytes | None = None,
+) -> ExploratoryCampaignContract:
+    """Explicitly authorize ONE bounded 15m Stage A replacement attempt after a failed startup.
+
+    Preserves the original failed session and usage history untouched; never resets or deletes
+    usage records; prohibits outcome drain; prevents duplicate or unattended retries.
+    """
+    owner = authorized_by.strip()
+    note = review_note.strip()
+    acct = allowed_account_ref.strip()
+    if not owner:
+        raise ValueError("authorized_by must be non-empty")
+    if not note:
+        raise ValueError("review_note must be non-empty when authorizing a replacement")
+    if not acct or acct == "OWNER_VAULT_PRACTICE_ACCOUNT_UNASSIGNED":
+        raise ValueError("allowed_account_ref must identify an explicit vault account reference")
+    if hours_valid <= 0:
+        raise ValueError("hours_valid must be positive")
+    if contract.authorization_status != CampaignAuthorizationStatus.AUTHORIZED_ACTIVE.value:
+        raise ValueError(
+            f"Contract authorization_status must be AUTHORIZED_ACTIVE (got {contract.authorization_status})."
+        )
+    if contract.authorized_stage != ExploratoryCampaignStage.STAGE_A_15M.value:
+        raise ValueError(
+            f"Replacement authorization only applies to STAGE_A_15M (got {contract.authorized_stage})."
+        )
+    if contract.allowed_account_ref != acct:
+        raise ValueError("allowed_account_ref does not match authorized contract account.")
+    if contract.contract_sha256 != contract.compute_contract_sha256():
+        raise ValueError("Campaign contract SHA-256 mismatch; cannot authorize replacement.")
+
+    stage_consumed = usage_store.list_consumed(
+        contract.contract_id, ExploratoryCampaignStage.STAGE_A_15M.value
+    )
+    if len(stage_consumed) >= 2:
+        raise ValueError(
+            "Stage A replacement budget already consumed (maximum 1 original + 1 replacement)."
+        )
+
+    prev_status, prev_reason = verify_failed_startup_session(
+        usage_store=usage_store,
+        sessions_dir=sessions_dir,
+        contract_id=contract.contract_id,
+        stage_id=ExploratoryCampaignStage.STAGE_A_15M.value,
+        failed_session_id=failed_session_id,
+    )
+
+    now_dt = datetime.fromisoformat(authorized_at_utc) if authorized_at_utc else datetime.now(UTC)
+    exp_str = expires_at_utc or (now_dt + timedelta(hours=hours_valid)).isoformat()
+    mech = "LOCAL_HMAC_SHA256_V1" if hmac_key is not None else "LOCAL_UNKEYED_INTEGRITY_DIGEST_V1"
+    repl = StageReplacementAuthorization(
+        replacement_grant_id=f"p48_repl_{uuid.uuid4().hex[:12]}",
+        stage_id=ExploratoryCampaignStage.STAGE_A_15M.value,
+        previous_failed_session_id=failed_session_id,
+        previous_failed_status=prev_status,
+        previous_failed_reason_summary=prev_reason[:240],
+        authorized_by=owner,
+        authorized_at_utc=now_dt.isoformat(),
+        expires_at_utc=exp_str,
+        max_attempts=1,
+        session_duration_minutes=15,
+        allow_outcome_drain=False,
+        max_outcome_drain_minutes=0,
+        review_note=note,
+    )
+    updated = replace(
+        contract,
+        authorized_by=owner,
+        authorized_at_utc=now_dt.isoformat(),
+        expires_at_utc=exp_str,
+        authorization_mechanism=mech,
+        authorization_note=f"Stage A replacement for {failed_session_id}: {note}",
+        replacement_authorization=repl,
+    )
+    sig = updated.compute_authorization_digest(hmac_key=hmac_key)
+    return replace(updated, authorization_signature_sha256=sig)
 
 
 def authorize_campaign_contract(
@@ -525,6 +955,7 @@ def authorize_campaign_contract(
         authorization_mechanism=mech,
         authorization_note=authorization_note.strip(),
         contract_sha256=contract_hash,
+        replacement_authorization=None,
     )
     sig = updated.compute_authorization_digest(hmac_key=hmac_key)
     return replace(updated, authorization_signature_sha256=sig)
@@ -580,6 +1011,7 @@ def validate_campaign_authorization(
         )
 
     reasons: list[str] = []
+    exhausted_stage_budget = False
     if contract is None:
         return AuthorizationCheckResult(
             authorized=False,
@@ -649,12 +1081,73 @@ def validate_campaign_authorization(
         if usage_store is not None:
             if session_id and usage_store.has_session(session_id):
                 reasons.append(f"Session {session_id} was already consumed (no restarts).")
+            repl = contract.replacement_authorization
+            if session_id and repl is not None and session_id == repl.previous_failed_session_id:
+                reasons.append(f"Replacement attempt cannot reuse failed session_id {session_id}.")
             consumed = len(usage_store.list_consumed(contract.contract_id, stage_spec.stage_id))
             if consumed >= stage_spec.target_sessions:
-                reasons.append(
-                    f"Authorized session count exhausted for {stage_spec.stage_id} "
-                    f"({consumed}/{stage_spec.target_sessions})."
-                )
+                if (
+                    repl is not None
+                    and stage_spec.stage_id == ExploratoryCampaignStage.STAGE_A_15M.value
+                ):
+                    repl_errors: list[str] = []
+                    if repl.stage_id != ExploratoryCampaignStage.STAGE_A_15M.value:
+                        repl_errors.append("Replacement authorization must target STAGE_A_15M.")
+                    if repl.max_attempts != 1:
+                        repl_errors.append("Replacement authorization max_attempts must be 1.")
+                    if repl.session_duration_minutes != 15 or requested_duration_minutes != 15:
+                        repl_errors.append("Replacement attempt is strictly bounded to 15 minutes.")
+                    if (
+                        repl.allow_outcome_drain
+                        or repl.max_outcome_drain_minutes != 0
+                        or requested_allow_outcome_drain
+                        or requested_drain_minutes > 0
+                    ):
+                        repl_errors.append("Replacement Stage A attempt prohibits outcome drain.")
+                    if not repl.authorized_by.strip() or not repl.review_note.strip():
+                        repl_errors.append(
+                            "Replacement authorization missing authorized_by or review_note."
+                        )
+                    try:
+                        repl_exp_dt = datetime.fromisoformat(repl.expires_at_utc)
+                        if check_now >= repl_exp_dt:
+                            repl_errors.append(
+                                f"Replacement authorization expired at {repl.expires_at_utc}."
+                            )
+                    except ValueError:
+                        repl_errors.append("Invalid replacement expires_at_utc timestamp.")
+                    prev_rec = usage_store.get_session(repl.previous_failed_session_id)
+                    if (
+                        prev_rec is None
+                        or prev_rec.get("contract_id") != contract.contract_id
+                        or prev_rec.get("stage_id") != ExploratoryCampaignStage.STAGE_A_15M.value
+                    ):
+                        repl_errors.append(
+                            f"Referenced failed session {repl.previous_failed_session_id} "
+                            "not found in Stage A usage history."
+                        )
+                    if usage_store.has_replacement_for(repl.previous_failed_session_id):
+                        exhausted_stage_budget = True
+                        repl_errors.append(
+                            f"Replacement for {repl.previous_failed_session_id} was already consumed."
+                        )
+                    if usage_store.has_used_replacement_grant(repl.replacement_grant_id):
+                        exhausted_stage_budget = True
+                        repl_errors.append(
+                            f"Replacement grant {repl.replacement_grant_id} was already consumed."
+                        )
+                    if consumed >= stage_spec.target_sessions + 1:
+                        exhausted_stage_budget = True
+                        repl_errors.append(
+                            f"Stage A replacement budget exhausted ({consumed}/{stage_spec.target_sessions + 1})."
+                        )
+                    reasons.extend(repl_errors)
+                else:
+                    exhausted_stage_budget = True
+                    reasons.append(
+                        f"Authorized session count exhausted for {stage_spec.stage_id} "
+                        f"({consumed}/{stage_spec.target_sessions})."
+                    )
 
     if not requested_candidate_ids:
         reasons.append("At least one exploratory candidate must be selected.")
@@ -684,6 +1177,7 @@ def validate_campaign_authorization(
             reasons=tuple(reasons),
             contract_id=contract.contract_id,
             contract_sha256=contract.contract_sha256,
+            exhausted_stage_budget=exhausted_stage_budget,
         )
 
     return AuthorizationCheckResult(

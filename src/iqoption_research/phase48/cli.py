@@ -10,11 +10,12 @@ from typing import Annotated
 import typer
 
 from iqoption_research.phase48.artifacts import default_models_dir, verify_exploratory_bundle
-from iqoption_research.phase48.constants import CANDIDATE_SPECS
+from iqoption_research.phase48.constants import CANDIDATE_SPECS, PHASE48_SESSIONS_DIR
 from iqoption_research.phase48.evidence import verify_phase48_session_integrity
 from iqoption_research.phase48.governance import (
     CampaignUsageStore,
     authorize_campaign_contract,
+    authorize_stage_a_replacement,
     build_default_proposed_campaign_contract,
     default_campaign_contract_path,
     default_campaign_usage_path,
@@ -53,24 +54,129 @@ def status_cmd(
     if cpath.is_file():
         contract = load_campaign_contract(cpath)
         usage = CampaignUsageStore(default_campaign_usage_path(root, contract.contract_id))
-        consumed = (
-            len(usage.list_consumed(contract.contract_id, contract.authorized_stage))
+        consumed_records = (
+            usage.list_consumed(contract.contract_id, contract.authorized_stage)
             if contract.authorized_stage
-            else 0
+            else []
         )
-        contract_info = {
+        consumed = len(consumed_records)
+        repl = contract.replacement_authorization
+        contract_info: dict[str, object] = {
             "contract_id": contract.contract_id,
             "authorization_status": contract.authorization_status,
             "authorized_stage": contract.authorized_stage,
             "authorized_by": contract.authorized_by,
             "expires_at_utc": contract.expires_at_utc,
             "consumed_sessions_in_stage": consumed,
+            "consumed_session_records": [
+                {
+                    "session_id": r.get("session_id"),
+                    "lifecycle_state": r.get("lifecycle_state") or r.get("status"),
+                    "runtime_status": r.get("runtime_status"),
+                    "replacement_for_session_id": r.get("replacement_for_session_id"),
+                }
+                for r in consumed_records
+            ],
+            "replacement_authorization": (
+                {
+                    "replacement_grant_id": repl.replacement_grant_id,
+                    "previous_failed_session_id": repl.previous_failed_session_id,
+                    "session_duration_minutes": repl.session_duration_minutes,
+                    "allow_outcome_drain": repl.allow_outcome_drain,
+                    "expires_at_utc": repl.expires_at_utc,
+                    "consumed": usage.has_used_replacement_grant(repl.replacement_grant_id),
+                }
+                if repl is not None
+                else None
+            ),
             "authorization_mechanism": contract.authorization_mechanism,
         }
     else:
         contract_info = {"authorization_status": "NOT_INITIALIZED"}
 
     typer.echo(json.dumps({"bundles": bundles, "contract": contract_info}, indent=2))
+
+
+@phase48_app.command("authorize-replacement")
+def authorize_replacement_cmd(
+    failed_session_id: str = typer.Option(
+        ...,
+        "--failed-session-id",
+        help="Session ID of the reviewed FAILED_STARTUP Stage A attempt.",
+    ),
+    account_id: str = typer.Option(..., "--account-id", help="Canonical Windows Vault account ID."),
+    owner: str = typer.Option(..., "--owner", help="Explicit owner identifier signing off."),
+    review_note: str = typer.Option(
+        ..., "--review-note", help="Mandatory owner review note explaining the failed startup."
+    ),
+    hours_valid: int = typer.Option(24, "--hours-valid", help="Hours until authorization expires."),
+    allow_unverified_vault: bool = typer.Option(
+        False,
+        "--allow-unverified-vault",
+        help="Skip Windows Vault account lookup (for offline testing only).",
+    ),
+    repo_root: Annotated[Path, typer.Option("--repo-root", help="Repository root path.")] = Path(),
+) -> None:
+    """Explicitly authorize ONE bounded 15m Stage A replacement attempt after failed startup."""
+    root = repo_root.resolve()
+    mdir = default_models_dir(root)
+    for spec in CANDIDATE_SPECS:
+        verify_exploratory_bundle(mdir / spec.frozen_candidate_id)
+
+    if not allow_unverified_vault:
+        from iqoption_research.auth.vault import WindowsCredentialVault
+
+        store = WindowsCredentialVault().account_store()
+        known_ids = {a.account_id for a in store.list_accounts()}
+        if account_id not in known_ids:
+            typer.echo(f"Error: account_id {account_id!r} not found in Windows Vault.", err=True)
+            raise typer.Exit(code=2)
+
+    cpath = default_campaign_contract_path(root)
+    if not cpath.is_file():
+        typer.echo("Error: No campaign contract file found.", err=True)
+        raise typer.Exit(code=1)
+
+    contract = load_campaign_contract(cpath)
+    usage = CampaignUsageStore(default_campaign_usage_path(root, contract.contract_id))
+    sessions_dir = root / PHASE48_SESSIONS_DIR
+    key_env = os.environ.get("IQOPTION_PHASE48_OWNER_KEY")
+    hmac_key = key_env.encode("utf-8") if key_env else None
+    try:
+        updated = authorize_stage_a_replacement(
+            contract,
+            failed_session_id=failed_session_id,
+            authorized_by=owner,
+            allowed_account_ref=account_id,
+            review_note=review_note,
+            usage_store=usage,
+            sessions_dir=sessions_dir,
+            hours_valid=hours_valid,
+            hmac_key=hmac_key,
+        )
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    save_campaign_contract(updated, cpath)
+    repl = updated.replacement_authorization
+    typer.echo(
+        json.dumps(
+            {
+                "status": updated.authorization_status,
+                "contract_path": str(cpath),
+                "authorized_stage": updated.authorized_stage,
+                "replacement_grant_id": repl.replacement_grant_id if repl else None,
+                "previous_failed_session_id": repl.previous_failed_session_id if repl else None,
+                "session_duration_minutes": repl.session_duration_minutes if repl else None,
+                "allow_outcome_drain": repl.allow_outcome_drain if repl else None,
+                "expires_at_utc": updated.expires_at_utc,
+                "authorization_mechanism": updated.authorization_mechanism,
+                "contract_sha256": updated.contract_sha256,
+            },
+            indent=2,
+        )
+    )
 
 
 @phase48_app.command("authorize")

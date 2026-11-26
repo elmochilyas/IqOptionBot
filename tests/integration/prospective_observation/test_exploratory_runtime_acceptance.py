@@ -349,3 +349,202 @@ async def test_cancel_while_waiting_and_exact_deadline_stop(tmp_path: Path) -> N
     res_dead = await ParallelObservationRuntime(cfg_dead, repo_root=tmp_path).run(t_dead)
     assert res_dead.status == "COMPLETED"
     assert res_dead.per_candidate_diagnostics[cids[0]].total_opportunities == 0
+
+
+async def test_genuine_startup_failure_and_authorized_replacement_lifecycle(
+    tmp_path: Path,
+) -> None:
+    """Verify genuine FAILED_STARTUP lifecycle, replacement authorization, and preservation."""
+    from dataclasses import replace as dc_replace
+    from unittest.mock import AsyncMock, patch
+
+    from iqoption_research.connectors.iqoption.client import AsyncIQOption
+    from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+    from iqoption_research.models.account import AccountStatus, WalletIndicator, WalletSource
+    from iqoption_research.models.connection import ConnectionConfig
+    from iqoption_research.phase48.governance import (
+        CampaignUsageStore,
+        SessionLifecycleState,
+        authorize_campaign_contract,
+        authorize_stage_a_replacement,
+        build_default_proposed_campaign_contract,
+    )
+    from iqoption_research.phase48.transport import IQOptionReadOnlyMultiTransport
+    from iqoption_research.security.credentials import Credentials
+    from tests.unit.observation.test_transport import _MockedNetworkSocket
+
+    models_dir = tmp_path / "data" / "phase48" / "models"
+    cids_list: list[str] = []
+    digests: dict[str, str] = {}
+    for idx in range(3):
+        m = create_synthetic_frozen_bundle(models_dir, idx)
+        cids_list.append(m.frozen_candidate_id)
+        digests[m.frozen_candidate_id] = m.bundle_sha256
+    cids = (cids_list[0],)
+
+    proposed = build_default_proposed_campaign_contract(digests)
+    contract = authorize_campaign_contract(
+        proposed,
+        authorized_by="owner@local",
+        allowed_account_ref="vault_1",
+        authorized_stage="STAGE_A_15M",
+    )
+    usage_path = tmp_path / "data" / "phase48" / "campaigns" / f"{contract.contract_id}.usage.json"
+    usage = CampaignUsageStore(usage_path)
+    sessions_dir = tmp_path / "data" / "phase48" / "sessions"
+    creds = Credentials(email="operator@example.invalid", password="mock_password_123")
+    connector = "iqoption_research.connectors.iqoption.client"
+
+    # 1. First Stage A attempt fails startup because live protocol cannot prove active practice
+    wire_fail = _MockedNetworkSocket(
+        profile_payload={"user_id": 10, "balance_id": "prac_4"},
+        balances_payload=[{"id": "prac_4", "type": 4, "amount": 10000.0}],
+        emit_timesync=True,
+    )
+    with (
+        patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-1")),
+        patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)),
+        patch.object(
+            IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire_fail)
+        ),
+    ):
+        t1 = IQOptionReadOnlyMultiTransport(creds, timeframes=(60,), require_practice_account=True)
+        cfg1 = ParallelObservationConfig(
+            session_id="p48_gen_attempt_1",
+            candidate_ids=cids,
+            duration_minutes=15,
+            is_genuine_mode=True,
+            account_ref="vault_1",
+            campaign_contract=contract,
+            models_dir=models_dir,
+            sessions_dir=sessions_dir,
+            usage_store_path=usage_path,
+        )
+        res1 = await ParallelObservationRuntime(cfg1, repo_root=tmp_path).run(t1)
+
+    assert res1.status == SessionLifecycleState.FAILED_STARTUP.value
+    assert res1.lifecycle_state == SessionLifecycleState.FAILED_STARTUP.value
+    assert res1.integrity_verified is True
+    assert not any(f.get("name") == "subscribeMessage" for f in wire_fail.sent)
+    rec1 = usage.get_session("p48_gen_attempt_1")
+    assert rec1 is not None and rec1["lifecycle_state"] == "FAILED_STARTUP"
+
+    # Original session cannot restart and second un-authorized attempt is blocked
+    with pytest.raises(GovernanceBlockedError):
+        ParallelObservationRuntime(cfg1, repo_root=tmp_path)
+    cfg2_blocked = ParallelObservationConfig(
+        session_id="p48_gen_attempt_2",
+        candidate_ids=cids,
+        duration_minutes=15,
+        is_genuine_mode=True,
+        account_ref="vault_1",
+        campaign_contract=contract,
+        models_dir=models_dir,
+        sessions_dir=sessions_dir,
+        usage_store_path=usage_path,
+    )
+    with pytest.raises(GovernanceBlockedError):
+        ParallelObservationRuntime(cfg2_blocked, repo_root=tmp_path)
+
+    # 2. Owner explicitly authorizes ONE Stage A replacement referencing p48_gen_attempt_1
+    repl_contract = authorize_stage_a_replacement(
+        contract,
+        failed_session_id="p48_gen_attempt_1",
+        authorized_by="owner@local",
+        allowed_account_ref="vault_1",
+        review_note="Reviewed startup failure; approved single 15m replacement",
+        usage_store=usage,
+        sessions_dir=sessions_dir,
+    )
+
+    base_dt = datetime(2026, 11, 20, 12, 0, 0, tzinfo=UTC)
+    warmup_candles = _make_candles(60, 75, base_dt - timedelta(minutes=75))
+    wire_ok = _MockedNetworkSocket(
+        profile_payload={"user_id": 10, "balance_id": "prac_4"},
+        balances_payload=[{"id": "prac_4", "type": 4, "amount": 10000.0}],
+        emit_timesync=True,
+    )
+    client_ok = AsyncIQOption(
+        credentials=creds,
+        offline=False,
+        config=ConnectionConfig(max_reconnect_attempts=0, timing_market_data_only=False),
+    )
+    orig_status = client_ok.get_account_status
+
+    async def _verified_status() -> AccountStatus:
+        s = await orig_status()
+        return dc_replace(
+            s, indicators=(WalletIndicator(WalletSource.SIMULATED_SESSION, "prac_4"),)
+        )
+
+    from iqoption_research.market_data.fetch import CandleFetchResult
+    from iqoption_research.market_data.validation import assess_data_quality
+
+    async def _warmup_fetch(*_args: object, **_kwargs: object) -> CandleFetchResult:
+        return CandleFetchResult(
+            symbol="EURUSD",
+            size=CandleSize.MIN_1,
+            candles=tuple(warmup_candles),
+            errors=(),
+            quality=assess_data_quality(warmup_candles, expected_size=60, is_historical=True),
+            fetched_at=datetime.now(UTC),
+            raw_count=len(warmup_candles),
+            source="iqoption",
+            completion_clock_ns=int(datetime.now(UTC).timestamp()) * 1_000_000_000,
+            request_id="candles-1",
+            server_time_fresh=True,
+        )
+
+    with (
+        patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-2")),
+        patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)),
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire_ok)),
+        patch.object(client_ok, "get_account_status", side_effect=_verified_status),
+        patch.object(client_ok, "get_candles", side_effect=_warmup_fetch),
+    ):
+        t2 = IQOptionReadOnlyMultiTransport(
+            creds,
+            timeframes=(60,),
+            require_practice_account=True,
+            client_override=client_ok,
+        )
+        cfg2 = ParallelObservationConfig(
+            session_id="p48_gen_attempt_2",
+            candidate_ids=cids,
+            duration_minutes=15,
+            is_genuine_mode=True,
+            account_ref="vault_1",
+            campaign_contract=repl_contract,
+            models_dir=models_dir,
+            sessions_dir=sessions_dir,
+            usage_store_path=usage_path,
+            simulated_duration_seconds=0.0,
+        )
+        res2 = await ParallelObservationRuntime(cfg2, repo_root=tmp_path).run(t2)
+
+    assert res2.status == "COMPLETED"
+    assert res2.lifecycle_state == "COMPLETED"
+    assert res2.integrity_verified is True
+
+    # Both original failed session and replacement record are preserved
+    assert (res1.session_dir / "session.json").is_file()
+    assert len(usage.list_consumed(contract.contract_id, "STAGE_A_15M")) == 2
+    rec2 = usage.get_session("p48_gen_attempt_2")
+    assert rec2 is not None
+    assert rec2["lifecycle_state"] == "COMPLETED"
+    assert rec2["replacement_for_session_id"] == "p48_gen_attempt_1"
+
+    # A third attempt must remain blocked
+    cfg3_blocked = ParallelObservationConfig(
+        session_id="p48_gen_attempt_3",
+        candidate_ids=cids,
+        duration_minutes=15,
+        is_genuine_mode=True,
+        account_ref="vault_1",
+        campaign_contract=repl_contract,
+        models_dir=models_dir,
+        sessions_dir=sessions_dir,
+        usage_store_path=usage_path,
+    )
+    with pytest.raises(GovernanceBlockedError):
+        ParallelObservationRuntime(cfg3_blocked, repo_root=tmp_path)

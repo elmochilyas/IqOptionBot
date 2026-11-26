@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from iqoption_research.connectors.iqoption.client import AsyncIQOption
+from iqoption_research.models.account import PracticeVerification
 from iqoption_research.models.connection import ConnectionConfig
 from iqoption_research.models.market import Candle
 from iqoption_research.phase47.features import MIN_WARMUP_BARS_P47
@@ -150,20 +151,28 @@ class IQOptionReadOnlyMultiTransport:
         else:
             cfg = ConnectionConfig(
                 max_reconnect_attempts=0,  # No automatic reconnect on genuine sessions
-                timing_market_data_only=True,
+                # Must be False so validate_outgoing_frame permits candle-generated
+                # subscribeMessage/unsubscribeMessage while still blocking all trading/wallet frames.
+                timing_market_data_only=False,
             )
             self._client = AsyncIQOption(credentials=credentials, offline=False, config=cfg)
         self._client.assert_read_only()
         self._queue: asyncio.Queue[MarketFeedEvent | Exception | None] = asyncio.Queue(maxsize=2048)
         self._stream_tasks: list[asyncio.Task[None]] = []
         self._connected = False
+        self._last_practice_verification: PracticeVerification | None = None
         now_m = time.monotonic()
         self._last_heartbeat_mono = now_m
         self._last_heartbeat_by_tf: dict[int, float] = dict.fromkeys(self._timeframes, now_m)
 
     @property
     def is_connected(self) -> bool:
-        return self._connected and self._client.monitor.state.is_connected()
+        if not self._connected:
+            return False
+        state = getattr(self._client, "state", None)
+        if state is not None and hasattr(state, "is_connected"):
+            return bool(state.is_connected())
+        return bool(self._client.monitor.state.is_connected())
 
     @property
     def is_synthetic(self) -> bool:
@@ -173,24 +182,74 @@ class IQOptionReadOnlyMultiTransport:
     def last_heartbeat_mono(self) -> float:
         return self._last_heartbeat_mono
 
+    @property
+    def last_practice_verification(self) -> PracticeVerification | None:
+        return self._last_practice_verification
+
     def last_heartbeat_for_tf(self, timeframe_seconds: int) -> float:
         return self._last_heartbeat_by_tf.get(int(timeframe_seconds), self._last_heartbeat_mono)
 
+    def _read_clock_state(self) -> tuple[bool, int | None, str, bool]:
+        """Read clock freshness, server_time_ns, sync status, and step flag via public interface."""
+        diag = getattr(self._client, "clock_diagnostics", None)
+        is_fresh = bool(getattr(self._client, "is_server_time_fresh", False))
+        if diag is not None:
+            status_obj = getattr(diag, "status", None)
+            sync_status = str(getattr(status_obj, "value", status_obj or "UNKNOWN"))
+            step_detected = bool(getattr(diag, "step_detected", False))
+            diag_fresh = bool(getattr(diag, "is_fresh", is_fresh))
+            server_ns = getattr(diag, "server_time_ns", None)
+            return (
+                is_fresh and diag_fresh and not step_detected,
+                int(server_ns) if server_ns is not None else None,
+                sync_status,
+                step_detected,
+            )
+        ws = getattr(self._client, "ws", None) or getattr(self._client, "_ws", None)
+        if ws is None:
+            return False, None, "NEVER_SYNCHRONIZED", False
+        ws_diag = getattr(ws, "clock_diagnostics", None)
+        status_obj = getattr(ws_diag, "status", None)
+        sync_status = str(getattr(status_obj, "value", "SYNCHRONIZED_AND_FRESH"))
+        step_detected = bool(getattr(ws_diag, "step_detected", False))
+        server_ns = getattr(ws_diag, "server_time_ns", None) if ws_diag is not None else None
+        if server_ns is None:
+            server_ns = getattr(ws, "server_time_ns", None)
+        return (
+            bool(ws.is_server_time_fresh) and not step_detected,
+            int(server_ns) if server_ns is not None else None,
+            sync_status,
+            step_detected,
+        )
+
     async def connect(self) -> None:
         """Connect read-only session, verify practice status & clock, start streams."""
-        await self._client.connect()
-        if self._require_practice_account:
-            acct_status = await self._client.get_account_status()
-            practice = acct_status.practice_verification()
-            if not practice.is_practice_verified:
-                await self._client.close()
+        try:
+            await self._client.connect()
+            if self._require_practice_account:
+                acct_status = await self._client.get_account_status()
+                practice = acct_status.practice_verification()
+                self._last_practice_verification = practice
+                if not practice.is_verified:
+                    raise ProvenanceError(
+                        "Genuine exploratory pilot requires a verified PRACTICE account "
+                        f"(status={practice.status.value}: {practice.message})."
+                    )
+            wait_sync = getattr(self._client, "wait_for_server_time_sync", None)
+            if callable(wait_sync):
+                req_timeout = float(getattr(self._client, "request_timeout", 10.0))
+                await wait_sync(timeout=min(req_timeout, 10.0))
+            clock_fresh, server_ns, sync_status, step_detected = self._read_clock_state()
+            if not clock_fresh or server_ns is None or step_detected:
                 raise ProvenanceError(
-                    "Genuine exploratory pilot requires a verified PRACTICE account."
+                    f"Broker clock synchronization unavailable on connect (status={sync_status})."
                 )
-        ws = getattr(self._client, "_ws", None)
-        if ws is not None and (not ws.is_server_time_fresh or ws.server_time_ns is None):
-            await self._client.close()
-            raise ProvenanceError("Broker clock synchronization unavailable on connect.")
+        except Exception:
+            self._connected = False
+            with contextlib.suppress(Exception):
+                await self._client.close()
+            raise
+
         self._connected = True
         now_m = time.monotonic()
         self._last_heartbeat_mono = now_m
@@ -215,12 +274,12 @@ class IQOptionReadOnlyMultiTransport:
                     raise ProvenanceError(
                         f"Unaligned stream candle boundaries: {candle.from_ts}..{candle.to_ts}"
                     )
-                ws = getattr(self._client, "_ws", None)
-                if ws is None or not ws.is_server_time_fresh or ws.server_time_ns is None:
+                clock_fresh, server_ns, sync_status, step_detected = self._read_clock_state()
+                if not clock_fresh or server_ns is None or step_detected:
                     raise ProvenanceError(
-                        f"Broker server clock stale or unavailable for {tf}s stream."
+                        f"Broker server clock stale or unavailable for {tf}s stream "
+                        f"(status={sync_status})."
                     )
-                server_ns = int(ws.server_time_ns)
                 server_sec = server_ns // 1_000_000_000
                 if candle.to_ts > server_sec + 1:
                     raise ProvenanceError(
@@ -231,8 +290,6 @@ class IQOptionReadOnlyMultiTransport:
                         f"Stale streaming candle age {server_sec - candle.to_ts}s > "
                         f"{self._max_data_age_seconds}s."
                     )
-                diag = getattr(ws, "clock_diagnostics", None)
-                sync_status = str(getattr(getattr(diag, "sync_status", None), "value", "SYNCED"))
                 ev = MarketFeedEvent(
                     candle=candle,
                     timeframe_seconds=tf,
@@ -240,7 +297,7 @@ class IQOptionReadOnlyMultiTransport:
                     received_mono=now_m,
                     request_id="",  # Streaming push has no broker request_id; never fabricate one
                     source_provenance=f"{candle.provenance}:{candle.identity_provenance}",
-                    server_time_fresh=bool(ws.is_server_time_fresh),
+                    server_time_fresh=clock_fresh,
                     is_synthetic=False,
                     verified_server_time_ns=server_ns,
                     clock_sync_status=sync_status,
@@ -260,7 +317,12 @@ class IQOptionReadOnlyMultiTransport:
         now_m = time.monotonic()
         self._last_heartbeat_mono = now_m
         self._last_heartbeat_by_tf[int(timeframe_seconds)] = now_m
-        if not res.server_time_fresh or res.completion_clock_ns is None:
+        res_clock = getattr(res, "clock_diagnostics", None)
+        if (
+            not res.server_time_fresh
+            or res.completion_clock_ns is None
+            or (res_clock is not None and (not res_clock.is_fresh or res_clock.step_detected))
+        ):
             raise ProvenanceError(f"Server time not fresh during {timeframe_seconds}s warmup")
         if res.errors:
             raise ProvenanceError(
@@ -274,13 +336,13 @@ class IQOptionReadOnlyMultiTransport:
         receipt = {
             "symbol": res.symbol,
             "timeframe_seconds": int(res.size),
-            "request_id": res.request_id,
+            "request_id": res.request_id or "",
             "source": res.source,
             "raw_count": res.raw_count,
             "closed_count": len(closed),
             "contiguous_tail_bars": contiguous_tail,
             "completion_clock_ns": res.completion_clock_ns,
-            "server_time_fresh": res.server_time_fresh,
+            "server_time_fresh": bool(res.server_time_fresh),
             "first_from_ts": closed[0].from_ts,
             "last_to_ts": closed[-1].to_ts,
             "fetched_at": res.fetched_at.isoformat(),

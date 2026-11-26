@@ -41,6 +41,11 @@ def install_sealed_read_guard(project: Path) -> set[str]:
     def audit(event: str, args: tuple[Any, ...]) -> None:
         if event == "open" and args:
             check(args[0])
+        elif event == "socket.connect" and len(args) >= 2:
+            addr = args[1]
+            host = addr[0] if isinstance(addr, tuple) and addr else str(addr)
+            if host not in ("127.0.0.1", "::1", "localhost", ""):
+                raise PermissionError(f"EXTERNAL_NETWORK_DENIED_BY_OFFLINE_TEST_GUARD: {host}")
 
     original = pq.read_table
 

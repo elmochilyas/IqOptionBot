@@ -187,6 +187,11 @@ class ObservationCenterController:
         if self._observer_ref:
             with contextlib.suppress(Exception):
                 self._observer_ref[0].cancel()
+        if self._p48_runtime is not None:
+            with contextlib.suppress(Exception):
+                self._p48_runtime.cancel()
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=2.0)
         if self._poll_after_id is not None:
             with contextlib.suppress(tk.TclError):
                 self.panel.dashboard.window.after_cancel(self._poll_after_id)
@@ -1521,6 +1526,11 @@ class ObservationCenterController:
         if self._observer_ref:
             with contextlib.suppress(Exception):
                 self._observer_ref[0].cancel()
+        if self._p48_runtime is not None:
+            with contextlib.suppress(Exception):
+                self._p48_runtime.cancel()
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=2.0)
         if self._p48_runtime is not None:
             with contextlib.suppress(Exception):
                 self._p48_runtime.cancel()

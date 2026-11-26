@@ -1,0 +1,62 @@
+name: Full Regression & Performance Suite
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/iqoption_research/market_data/collection_engine.py"
+      - "src/iqoption_research/market_data/parquet_storage.py"
+      - "src/iqoption_research/desktop/collection_center_panel.py"
+      - "tests/performance/**"
+
+permissions:
+  contents: read
+
+env:
+  IQOPTION_EMAIL: ""
+  IQOPTION_PASSWORD: ""
+  IQOPTION_SSID: ""
+  OPENAI_API_KEY: ""
+  CI: "true"
+  PYTHONUNBUFFERED: "1"
+  TERM: "dumb"
+  NO_COLOR: "1"
+  OMP_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  NUMEXPR_NUM_THREADS: "1"
+
+jobs:
+  performance-regression:
+    name: Full-Scale Performance & Stress Regression
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+      - name: Install pinned dependencies and dev requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .[dev]
+      - name: Run Performance & Stress Suite
+        continue-on-error: true
+        env:
+          PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code.txt
+        run: python scripts/ci_pytest.py -m "performance"
+      - name: Verify Pytest Exit Code
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'pytest_exit_code.txt'
+          if (-not (Test-Path $path)) { throw "Pytest exit code file is missing: $path" }
+          $code = (Get-Content $path -Raw).Trim()
+          if ($code -ne '0') { throw "Performance suite failed with exit code $code" }

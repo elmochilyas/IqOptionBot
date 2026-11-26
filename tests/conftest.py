@@ -6,8 +6,23 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Normalize terminal output for CLI testing to prevent ANSI styling artifacts
+# Normalize terminal output and prevent BLAS/OpenMP CPU oversubscription under parallel workers
 os.environ.setdefault("TERM", "dumb")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("IQOPTION_EMAIL", "")
+os.environ.setdefault("IQOPTION_PASSWORD", "")
+os.environ.setdefault("IQOPTION_SSID", "")
+os.environ.setdefault("OPENAI_API_KEY", "")
+
+if sys.platform == "win32":
+    _tcl_root = Path(sys.base_prefix) / "tcl"
+    if (_tcl_root / "tcl8.6").is_dir():
+        os.environ.setdefault("TCL_LIBRARY", str(_tcl_root / "tcl8.6"))
+    if (_tcl_root / "tk8.6").is_dir():
+        os.environ.setdefault("TK_LIBRARY", str(_tcl_root / "tk8.6"))
 
 import pytest
 
@@ -204,3 +219,40 @@ def replay_workspace(tmp_path: Path) -> tuple[Path, str, str]:
         notes="Phase 40C LR Candidate for Replay",
     )
     return tmp_path, snapshot_id, cand.model_id
+
+
+_PRIMARY_LAYER_MARKERS = frozenset({"unit", "integration", "desktop", "e2e", "performance"})
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Enforce strict test-layer classification for every collected test."""
+    tests_root = Path(__file__).resolve().parent
+    unclassified: list[str] = []
+
+    for item in items:
+        try:
+            rel_parts = Path(str(item.fspath)).resolve().relative_to(tests_root).parts
+        except ValueError:
+            rel_parts = ()
+
+        top_dir = rel_parts[0] if rel_parts else ""
+        if top_dir in _PRIMARY_LAYER_MARKERS:
+            if not any(m.name in _PRIMARY_LAYER_MARKERS for m in item.iter_markers()):
+                item.add_marker(getattr(pytest.mark, top_dir))
+        elif top_dir == "scientific":
+            if not any(m.name in _PRIMARY_LAYER_MARKERS for m in item.iter_markers()):
+                item.add_marker(pytest.mark.unit)
+            item.add_marker(pytest.mark.scientific)
+
+        if len(rel_parts) >= 2 and rel_parts[1] in ("security", "governance", "evidence_pipeline"):
+            item.add_marker(pytest.mark.security)
+        if len(rel_parts) >= 2 and rel_parts[1] in ("features", "evaluation"):
+            item.add_marker(pytest.mark.scientific)
+
+        if not any(m.name in _PRIMARY_LAYER_MARKERS for m in item.iter_markers()):
+            unclassified.append(item.nodeid)
+
+    if unclassified:
+        raise pytest.UsageError(
+            f"Unclassified tests without a primary layer marker: {unclassified[:5]}"
+        )

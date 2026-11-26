@@ -126,6 +126,15 @@ addopts = [
     "--strict-config",
     "-v",
 ]
+markers = [
+    "unit: Small, deterministic, isolated tests of individual functions or components",
+    "integration: Multi-module tests with local persistence, mocked transports, or model pipelines",
+    "desktop: Tkinter rendering, event handling, worker coordination, and app lifecycle",
+    "e2e: Complete offline user workflows",
+    "performance: Large-scale datasets, resource consumption, responsiveness, and stress tests",
+    "scientific: Statistical correctness, causal features, leakage protection, evaluation methodology, and governance",
+    "security: Read-only posture, no order/wallet mutations, credential isolation, protected-data guards, and evidence integrity",
+]
 
 [tool.mypy]
 python_version = "3.12"

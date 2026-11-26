@@ -1,0 +1,29 @@
+{
+  "total_collected": 3062,
+  "total_unique": 3062,
+  "union_unique": 3062,
+  "mandatory_pr_ci_unique": 3056,
+  "profile_counts": {
+    "security-governance": 181,
+    "unit-tests": 1630,
+    "scientific-tests": 545,
+    "integration-tests": 439,
+    "desktop-cc": 79,
+    "desktop-oc": 9,
+    "desktop-ws": 135,
+    "e2e-tests": 38,
+    "performance": 6
+  },
+  "omitted_count": 0,
+  "omitted_nodes": [],
+  "overlaps": [],
+  "static_skip_or_xfail_count": 1,
+  "static_skip_or_xfail": [
+    {
+      "nodeid": "tests/unit/market_data/test_probe.py::test_windows_liveness_never_signals_process",
+      "reasons": [
+        "Windows process query"
+      ]
+    }
+  ]
+}

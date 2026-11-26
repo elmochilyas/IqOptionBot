@@ -1,0 +1,4623 @@
+{
+  "total_test_files": 215,
+  "phase_named_files": 177,
+  "total_collected_tests": 0,
+  "files_with_cross_test_imports": [
+    {
+      "file": "tests/integration/test_phase22_blitz_observation.py",
+      "imports": [
+        "tests.integration.test_phase19_practice_observation"
+      ]
+    },
+    {
+      "file": "tests/integration/test_phase23_history_observation.py",
+      "imports": [
+        "tests.integration.test_phase19_practice_observation",
+        "tests.integration.test_phase22_blitz_observation",
+        "tests.unit.test_phase23_history_monitor"
+      ]
+    },
+    {
+      "file": "tests/integration/test_phase24_offline_research.py",
+      "imports": [
+        "tests.unit.test_phase24_evaluation"
+      ]
+    },
+    {
+      "file": "tests/integration/test_phase25_expansion_and_research.py",
+      "imports": [
+        "tests.integration.test_phase11_expansion_robustness",
+        "tests.unit.test_phase24_evaluation"
+      ]
+    },
+    {
+      "file": "tests/integration/test_phase26_history.py",
+      "imports": [
+        "tests.unit.test_phase24_evaluation"
+      ]
+    },
+    {
+      "file": "tests/integration/test_phase27_boundary.py",
+      "imports": [
+        "tests.unit.test_phase24_evaluation"
+      ]
+    },
+    {
+      "file": "tests/integration/test_phase28_prospective.py",
+      "imports": [
+        "tests.integration.test_phase27_boundary",
+        "tests.unit.test_phase24_evaluation"
+      ]
+    },
+    {
+      "file": "tests/integration/test_phase29_observation.py",
+      "imports": [
+        "tests.integration.test_phase27_boundary",
+        "tests.integration.test_phase28_prospective",
+        "tests.unit.test_phase24_evaluation"
+      ]
+    },
+    {
+      "file": "tests/integration/test_phase30_study.py",
+      "imports": [
+        "tests.unit.test_phase30_contract"
+      ]
+    },
+    {
+      "file": "tests/integration/test_phase34_shadow.py",
+      "imports": [
+        "tests.integration.test_market_data_authorization"
+      ]
+    },
+    {
+      "file": "tests/integration/test_phase35_shadow_clock.py",
+      "imports": [
+        "tests.integration.test_phase34_shadow"
+      ]
+    },
+    {
+      "file": "tests/integration/test_phase8_auth_lifecycle.py",
+      "imports": [
+        "tests.unit.test_phase8_secure_auth"
+      ]
+    },
+    {
+      "file": "tests/integration/test_workstation_v2.py",
+      "imports": [
+        "tests.unit.test_extended_collection",
+        "tests.unit.test_phase38_prospective_pilot"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase18_final_readiness.py",
+      "imports": [
+        "tests.unit.test_phase18_iqoption_live_transport"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase18_practice_selection_fix.py",
+      "imports": [
+        "tests.unit.test_phase18_iqoption_live_transport"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase18_practice_session_selection.py",
+      "imports": [
+        "tests.unit.test_phase18_iqoption_live_transport"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase25_research.py",
+      "imports": [
+        "tests.unit.test_phase24_evaluation"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase29_alignment.py",
+      "imports": [
+        "tests.integration.test_phase28_prospective"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase30_contract.py",
+      "imports": [
+        "tests.conftest",
+        "tests.unit.test_phase24_evaluation"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase37_prospective_cohort_evaluation.py",
+      "imports": [
+        "tests.unit.test_phase36_prospective_evaluation"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase38_prospective_pilot.py",
+      "imports": [
+        "tests.unit.test_phase36_prospective_evaluation",
+        "tests.unit.test_phase37_prospective_cohort_evaluation"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase40b_baseline_reporting.py",
+      "imports": [
+        "tests.unit.test_phase40b_prospective_shadow"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase40c_adversarial_hardening.py",
+      "imports": [
+        "tests.unit.test_phase40c_replay"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase40c_production_contract.py",
+      "imports": [
+        "tests.unit.test_phase40c_replay"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase44_calendar_scale.py",
+      "imports": [
+        "tests.unit.test_phase44_collection_coordinator"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase44_cli_cancel_e2e.py",
+      "imports": [
+        "tests.unit.test_phase43_data_inventory",
+        "tests.unit.test_phase44_account_selection"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase44_collection_coordinator.py",
+      "imports": [
+        "tests.unit.test_phase43_data_inventory"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase44_cross_job_storage.py",
+      "imports": [
+        "tests.unit.test_phase44_collection_coordinator"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase44_desktop_workflow_e2e.py",
+      "imports": [
+        "tests.unit.test_phase43_data_inventory",
+        "tests.unit.test_phase44_account_selection"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase44_expanded_population.py",
+      "imports": [
+        "tests.unit.test_phase44_population_contract"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase44_lifecycle_locking.py",
+      "imports": [
+        "tests.unit.test_phase43_data_inventory"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase44_pagination_boundary.py",
+      "imports": [
+        "tests.unit.test_phase44_collection_coordinator"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase44_segmented_batches.py",
+      "imports": [
+        "tests.unit.test_phase44_collection_coordinator"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase44_snapshot_integrity_regressions.py",
+      "imports": [
+        "tests.unit.test_phase44_receipt_tampering"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase44_weekend_response.py",
+      "imports": [
+        "tests.unit.test_phase44_collection_coordinator"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase45_governance.py",
+      "imports": [
+        "tests.unit.test_phase45_evidence"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase48_desktop_ui.py",
+      "imports": [
+        "tests.unit.test_phase48_governance_and_artifacts"
+      ]
+    },
+    {
+      "file": "tests/unit/test_phase48_offline_acceptance.py",
+      "imports": [
+        "tests.unit.test_phase48_governance_and_artifacts"
+      ]
+    },
+    {
+      "file": "tests/unit/test_research_desktop.py",
+      "imports": [
+        "tests.unit.test_phase38_prospective_pilot"
+      ]
+    }
+  ],
+  "files_with_sleep": [
+    "tests/integration/test_account_data_requests.py",
+    "tests/integration/test_connection_lifecycle.py",
+    "tests/integration/test_live_observation_runtime.py",
+    "tests/integration/test_phase27_boundary.py",
+    "tests/integration/test_phase32_cli_and_session.py",
+    "tests/integration/test_phase34_shadow.py",
+    "tests/integration/test_phase35_shadow_clock.py",
+    "tests/integration/test_phase8_continuous_runtime.py",
+    "tests/integration/test_workstation_v2.py",
+    "tests/unit/test_balance_protocol_diagnostics.py",
+    "tests/unit/test_extended_collection.py",
+    "tests/unit/test_phase35_clock_freshness.py",
+    "tests/unit/test_phase40b_live_collector_stream.py",
+    "tests/unit/test_phase44_cli_cancel_e2e.py",
+    "tests/unit/test_phase44_desktop_workflow_e2e.py",
+    "tests/unit/test_phase44_lifecycle_locking.py",
+    "tests/unit/test_phase44_verification_responsiveness.py",
+    "tests/unit/test_phase46_desktop_observation_center.py",
+    "tests/unit/test_phase48_desktop_ui.py",
+    "tests/unit/test_phase48_offline_acceptance.py",
+    "tests/unit/test_v2_market_close_regression.py"
+  ],
+  "files_with_tk": [
+    "tests/unit/test_collection_center_layout.py",
+    "tests/unit/test_desktop_laboratory.py",
+    "tests/unit/test_phase39_scientific_review_corrections.py",
+    "tests/unit/test_phase40a_shadow_evaluation.py",
+    "tests/unit/test_phase40b_prospective_shadow.py",
+    "tests/unit/test_phase41_failure_intelligence.py",
+    "tests/unit/test_phase44_desktop_workflow_e2e.py",
+    "tests/unit/test_phase44_verification_responsiveness.py",
+    "tests/unit/test_phase45_desktop.py",
+    "tests/unit/test_phase46_desktop_observation_center.py",
+    "tests/unit/test_phase48_desktop_ui.py"
+  ],
+  "files_with_tracemalloc": [
+    "tests/unit/test_phase44_calendar_scale.py",
+    "tests/unit/test_phase48_offline_acceptance.py"
+  ],
+  "files_with_subprocess": [
+    "tests/integration/test_workstation_v2.py",
+    "tests/unit/test_phase44_foreign_worker.py",
+    "tests/unit/test_phase46_smoke.py",
+    "tests/unit/test_research_desktop.py"
+  ],
+  "files": {
+    "tests/integration/test_account_data_requests.py": {
+      "file": "tests/integration/test_account_data_requests.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.protocol",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.models.account",
+        "iqoption_research.models.connection",
+        "iqoption_research.security.credentials"
+      ],
+      "test_imports": [],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_connection_lifecycle.py": {
+      "file": "tests/integration/test_connection_lifecycle.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.protocol",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.models.connection",
+        "iqoption_research.monitoring.diagnostics",
+        "iqoption_research.monitoring.status",
+        "iqoption_research.security.credentials"
+      ],
+      "test_imports": [],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_live_observation_runtime.py": {
+      "file": "tests/integration/test_live_observation_runtime.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.auth.manager",
+        "iqoption_research.auth.provider",
+        "iqoption_research.bot.controller",
+        "iqoption_research.bot.runtime",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.protocol",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.inference.loader",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.models.account",
+        "iqoption_research.models.connection",
+        "iqoption_research.observation.adapter"
+      ],
+      "test_imports": [],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_market_data_authorization.py": {
+      "file": "tests/integration/test_market_data_authorization.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.models.connection",
+        "iqoption_research.timing.supervised_session"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_multi_horizon_volatility.py": {
+      "file": "tests/integration/test_multi_horizon_volatility.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.ml.phase10",
+        "iqoption_research.ml.phase14",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_offline_flow.py": {
+      "file": "tests/integration/test_offline_flow.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.cli.commands.simulate",
+        "iqoption_research.cli.main",
+        "iqoption_research.connectors.simulation",
+        "iqoption_research.market_data.storage"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase10_authentic_ai.py": {
+      "file": "tests/integration/test_phase10_authentic_ai.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.ml.phase10",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase11_expansion_robustness.py": {
+      "file": "tests/integration/test_phase11_expansion_robustness.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.ml.phase10",
+        "iqoption_research.ml.tracking.artifacts",
+        "iqoption_research.models.market",
+        "iqoption_research.research.phase11"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase12_forward_sync.py": {
+      "file": "tests/integration/test_phase12_forward_sync.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.commands",
+        "iqoption_research.cli.main",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.market_data.candles",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.market_data.forward_sync",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_phase13_research.py": {
+      "file": "tests/integration/test_phase13_research.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.bot.runtime",
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.market_data.sessions",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.ml.phase10",
+        "iqoption_research.ml.phase13",
+        "iqoption_research.ml.tracking.artifacts",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase15_opportunity_detection.py": {
+      "file": "tests/integration/test_phase15_opportunity_detection.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.ml.phase10",
+        "iqoption_research.ml.phase15",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase16_modular_execution_e2e.py": {
+      "file": "tests/integration/test_phase16_modular_execution_e2e.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.bot.journal",
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.adapters.digital",
+        "iqoption_research.execution.broker_readiness",
+        "iqoption_research.execution.execution_engine",
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.modes",
+        "iqoption_research.execution.risk",
+        "iqoption_research.models.account",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase17_practice_verification_e2e.py": {
+      "file": "tests/integration/test_phase17_practice_verification_e2e.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.broker_readiness",
+        "iqoption_research.execution.execution_engine",
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.modes",
+        "iqoption_research.execution.practice_transport",
+        "iqoption_research.execution.risk",
+        "iqoption_research.execution.state_machine",
+        "iqoption_research.models.account",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase18_iqoption_practice_workflow_e2e.py": {
+      "file": "tests/integration/test_phase18_iqoption_practice_workflow_e2e.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.commands.execution_cmd",
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.broker_readiness",
+        "iqoption_research.execution.execution_engine",
+        "iqoption_research.execution.live_practice_transport",
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.modes",
+        "iqoption_research.execution.state_machine",
+        "iqoption_research.models.account",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase19_practice_observation.py": {
+      "file": "tests/integration/test_phase19_practice_observation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.commands.practice_watch",
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.practice_observation",
+        "iqoption_research.execution.practice_observer",
+        "iqoption_research.models.account",
+        "iqoption_research.security.credentials"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_phase20_active_account_diagnostics.py": {
+      "file": "tests/integration/test_phase20_active_account_diagnostics.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.commands.practice_watch",
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.practice_observation",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_phase21_active_wallet_authority.py": {
+      "file": "tests/integration/test_phase21_active_wallet_authority.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.practice_observation",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase22_blitz_observation.py": {
+      "file": "tests/integration/test_phase22_blitz_observation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.commands.practice_watch",
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.practice_observation"
+      ],
+      "test_imports": [
+        "tests.integration.test_phase19_practice_observation"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_phase23_history_observation.py": {
+      "file": "tests/integration/test_phase23_history_observation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.commands.practice_watch",
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.practice_observation"
+      ],
+      "test_imports": [
+        "tests.integration.test_phase19_practice_observation",
+        "tests.integration.test_phase22_blitz_observation",
+        "tests.unit.test_phase23_history_monitor"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_phase24_offline_research.py": {
+      "file": "tests/integration/test_phase24_offline_research.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.models.market",
+        "iqoption_research.research.evaluation_audit",
+        "iqoption_research.research.phase24"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase24_evaluation"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase25_expansion_and_research.py": {
+      "file": "tests/integration/test_phase25_expansion_and_research.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.ml.phase10",
+        "iqoption_research.research.phase24",
+        "iqoption_research.research.phase25",
+        "iqoption_research.research.phase25_data"
+      ],
+      "test_imports": [
+        "tests.integration.test_phase11_expansion_robustness",
+        "tests.unit.test_phase24_evaluation"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_phase26_history.py": {
+      "file": "tests/integration/test_phase26_history.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.market_data.history_expansion"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase24_evaluation"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_phase27_boundary.py": {
+      "file": "tests/integration/test_phase27_boundary.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.history_boundary"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase24_evaluation"
+      ],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_phase28_prospective.py": {
+      "file": "tests/integration/test_phase28_prospective.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.tracking.artifacts",
+        "iqoption_research.research.phase28_audit",
+        "iqoption_research.research.prospective",
+        "iqoption_research.research.prospective_report"
+      ],
+      "test_imports": [
+        "tests.integration.test_phase27_boundary",
+        "tests.unit.test_phase24_evaluation"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_phase29_observation.py": {
+      "file": "tests/integration/test_phase29_observation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.ml.phase10",
+        "iqoption_research.ml.targets.generator",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.research",
+        "iqoption_research.research.observation_report",
+        "iqoption_research.research.prospective",
+        "iqoption_research.research.target_alignment"
+      ],
+      "test_imports": [
+        "tests.integration.test_phase27_boundary",
+        "tests.integration.test_phase28_prospective",
+        "tests.unit.test_phase24_evaluation"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_phase30_study.py": {
+      "file": "tests/integration/test_phase30_study.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collector",
+        "iqoption_research.ml.tracking.artifacts",
+        "iqoption_research.research",
+        "iqoption_research.research.aligned_data",
+        "iqoption_research.research.phase28_audit",
+        "iqoption_research.research.prospective"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase30_contract"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase31_diagnostics.py": {
+      "file": "tests/integration/test_phase31_diagnostics.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.timing.reconstruction"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase32_cli_and_session.py": {
+      "file": "tests/integration/test_phase32_cli_and_session.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.models.account",
+        "iqoption_research.security.credentials",
+        "iqoption_research.timing.instrumentation",
+        "iqoption_research.timing.supervised_session"
+      ],
+      "test_imports": [],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase33_end_to_end_correlation.py": {
+      "file": "tests/integration/test_phase33_end_to_end_correlation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.protocol",
+        "iqoption_research.models.connection",
+        "iqoption_research.timing.evidence",
+        "iqoption_research.timing.instrumentation"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase33_supervised_readiness.py": {
+      "file": "tests/integration/test_phase33_supervised_readiness.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.timing.instrumentation",
+        "iqoption_research.timing.supervised_session"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase34_shadow.py": {
+      "file": "tests/integration/test_phase34_shadow.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.inference.pipeline",
+        "iqoption_research.market_data.candles",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.connection",
+        "iqoption_research.models.market",
+        "iqoption_research.research.backtest.models",
+        "iqoption_research.timing.evidence",
+        "iqoption_research.timing.reliability",
+        "iqoption_research.timing.shadow",
+        "iqoption_research.timing.supervised_session"
+      ],
+      "test_imports": [
+        "tests.integration.test_market_data_authorization"
+      ],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/integration/test_phase35_shadow_clock.py": {
+      "file": "tests/integration/test_phase35_shadow_clock.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.models.clock",
+        "iqoption_research.models.connection",
+        "iqoption_research.timing.shadow",
+        "iqoption_research.timing.supervised_session"
+      ],
+      "test_imports": [
+        "tests.integration.test_phase34_shadow"
+      ],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase3_end_to_end.py": {
+      "file": "tests/integration/test_phase3_end_to_end.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.importer",
+        "iqoption_research.research.backtest.engine",
+        "iqoption_research.research.backtest.metrics",
+        "iqoption_research.research.backtest.payoffs",
+        "iqoption_research.research.backtest.reports",
+        "iqoption_research.research.backtest.strategies",
+        "iqoption_research.research.datasets.loader",
+        "iqoption_research.research.datasets.splitter",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.research.features.scalers"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase42_e2e_research.py": {
+      "file": "tests/integration/test_phase42_e2e_research.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.data_audit",
+        "iqoption_research.ml.experiment_plan",
+        "iqoption_research.ml.experiment_runner",
+        "iqoption_research.ml.failure_analysis",
+        "iqoption_research.ml.freezer",
+        "iqoption_research.ml.partitions",
+        "iqoption_research.research.dataset_manager"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase43_e2e_research.py": {
+      "file": "tests/integration/test_phase43_e2e_research.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.data_inventory",
+        "iqoption_research.market_data.timeframe_engine",
+        "iqoption_research.ml.experiment_matrix",
+        "iqoption_research.ml.exposure_registry",
+        "iqoption_research.ml.features_v3",
+        "iqoption_research.ml.freezer",
+        "iqoption_research.ml.partitions",
+        "iqoption_research.ml.preflight",
+        "iqoption_research.ml.regimes",
+        "iqoption_research.ml.targets_v3",
+        "iqoption_research.ml.walk_forward_v3",
+        "iqoption_research.models.market",
+        "iqoption_research.shadow.engine",
+        "iqoption_research.shadow.evaluator",
+        "iqoption_research.shadow.journal",
+        "iqoption_research.shadow.registry"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase44_e2e_collection.py": {
+      "file": "tests/integration/test_phase44_e2e_collection.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.ml.h15_research_v4",
+        "iqoption_research.ml.preflight",
+        "iqoption_research.models.market",
+        "iqoption_research.research.dataset_manager"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase7_reliability_e2e.py": {
+      "file": "tests/integration/test_phase7_reliability_e2e.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.bot.controller",
+        "iqoption_research.bot.session",
+        "iqoption_research.execution.broker_readiness",
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.risk",
+        "iqoption_research.execution.safety",
+        "iqoption_research.inference.loader",
+        "iqoption_research.inference.pipeline",
+        "iqoption_research.ml.calibration.calibrator",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.tracking.artifacts",
+        "iqoption_research.models.account",
+        "iqoption_research.models.market",
+        "iqoption_research.research.backtest.models",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.research.features.scalers",
+        "iqoption_research.streaming.buffer",
+        "iqoption_research.streaming.events"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase8_auth_lifecycle.py": {
+      "file": "tests/integration/test_phase8_auth_lifecycle.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.auth.manager",
+        "iqoption_research.auth.provider",
+        "iqoption_research.auth.state",
+        "iqoption_research.auth.vault",
+        "iqoption_research.cli.commands",
+        "iqoption_research.cli.main",
+        "iqoption_research.security.credentials"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase8_secure_auth"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase8_continuous_runtime.py": {
+      "file": "tests/integration/test_phase8_continuous_runtime.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.auth.manager",
+        "iqoption_research.auth.provider",
+        "iqoption_research.bot.controller",
+        "iqoption_research.bot.runtime",
+        "iqoption_research.cli.main",
+        "iqoption_research.inference.provenance",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.models.market",
+        "iqoption_research.observation.adapter",
+        "iqoption_research.observation.heartbeat"
+      ],
+      "test_imports": [],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_phase9_historical_backfill.py": {
+      "file": "tests/integration/test_phase9_historical_backfill.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.commands",
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.candles",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_prediction_journal_runtime.py": {
+      "file": "tests/integration/test_prediction_journal_runtime.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.auth.manager",
+        "iqoption_research.auth.provider",
+        "iqoption_research.bot.controller",
+        "iqoption_research.bot.journal",
+        "iqoption_research.bot.runtime",
+        "iqoption_research.bot.session",
+        "iqoption_research.cli.main",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_session_reuse_lifecycle.py": {
+      "file": "tests/integration/test_session_reuse_lifecycle.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.protocol",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.models.connection",
+        "iqoption_research.monitoring.status",
+        "iqoption_research.security.credentials"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/integration/test_workstation_v2.py": {
+      "file": "tests/integration/test_workstation_v2.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.cli.commands",
+        "iqoption_research.cli.main",
+        "iqoption_research.desktop",
+        "iqoption_research.desktop.app",
+        "iqoption_research.desktop.core",
+        "iqoption_research.desktop.workstation",
+        "iqoption_research.market_data",
+        "iqoption_research.market_data.extended_store"
+      ],
+      "test_imports": [
+        "tests.unit.test_extended_collection",
+        "tests.unit.test_phase38_prospective_pilot"
+      ],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": true,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_account_diagnostics_session_isolation.py": {
+      "file": "tests/unit/test_account_diagnostics_session_isolation.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.execution.account_diagnostics",
+        "iqoption_research.execution.safety",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_auditor_regressions.py": {
+      "file": "tests/unit/test_auditor_regressions.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.protocol",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.models.account",
+        "iqoption_research.models.connection"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_authentic_candle_instrument_identification.py": {
+      "file": "tests/unit/test_authentic_candle_instrument_identification.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.auth.manager",
+        "iqoption_research.auth.provider",
+        "iqoption_research.auth.state",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.protocol",
+        "iqoption_research.market_data.candles",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.market_data.instruments",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.connection",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_balance_protocol_diagnostics.py": {
+      "file": "tests/unit/test_balance_protocol_diagnostics.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.cli.commands.execution_cmd",
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.practice_observer",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_candles.py": {
+      "file": "tests/unit/test_candles.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.market_data.candles",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_challenger_m2_adversarial.py": {
+      "file": "tests/unit/test_challenger_m2_adversarial.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.generator",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.models.market",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.research.features.scalers"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_collection_center_layout.py": {
+      "file": "tests/unit/test_collection_center_layout.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.desktop.collection_center_panel"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": true,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_credentials.py": {
+      "file": "tests/unit/test_credentials.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.models.account",
+        "iqoption_research.security.credentials",
+        "iqoption_research.security.logging"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_dataset_manager.py": {
+      "file": "tests/unit/test_dataset_manager.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.research.dataset_manager"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_desktop_laboratory.py": {
+      "file": "tests/unit/test_desktop_laboratory.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.desktop",
+        "iqoption_research.desktop.laboratory_panel"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": true,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_extended_collection.py": {
+      "file": "tests/unit/test_extended_collection.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.market_data",
+        "iqoption_research.market_data.extended",
+        "iqoption_research.market_data.extended_store",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.clock",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_followup_regressions.py": {
+      "file": "tests/unit/test_followup_regressions.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.ws_client"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_http_auth.py": {
+      "file": "tests/unit/test_http_auth.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.http_auth"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_malformed_data.py": {
+      "file": "tests/unit/test_malformed_data.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.protocol",
+        "iqoption_research.market_data.candles"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_model_laboratory.py": {
+      "file": "tests/unit/test_model_laboratory.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.laboratory",
+        "iqoption_research.research.dataset_manager"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase16_adapters.py": {
+      "file": "tests/unit/test_phase16_adapters.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.adapters.binary",
+        "iqoption_research.execution.adapters.digital",
+        "iqoption_research.execution.adapters.forex",
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.modes",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase16_capability_matrix.py": {
+      "file": "tests/unit/test_phase16_capability_matrix.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.capability_matrix",
+        "iqoption_research.execution.models"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase16_execution_modes.py": {
+      "file": "tests/unit/test_phase16_execution_modes.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.broker_readiness",
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.modes",
+        "iqoption_research.execution.safety",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase16_restart_recovery.py": {
+      "file": "tests/unit/test_phase16_restart_recovery.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.state_machine"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase16_risk_and_emergency.py": {
+      "file": "tests/unit/test_phase16_risk_and_emergency.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.risk"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase16_state_machine.py": {
+      "file": "tests/unit/test_phase16_state_machine.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.risk",
+        "iqoption_research.execution.state_machine"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase17_practice_protocol.py": {
+      "file": "tests/unit/test_phase17_practice_protocol.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.practice_transport"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase17_practice_transport.py": {
+      "file": "tests/unit/test_phase17_practice_transport.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.modes",
+        "iqoption_research.execution.practice_transport",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase18_final_readiness.py": {
+      "file": "tests/unit/test_phase18_final_readiness.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.live_practice_transport",
+        "iqoption_research.execution.modes",
+        "iqoption_research.execution.practice_transport",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase18_iqoption_live_transport"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase18_history_recovery.py": {
+      "file": "tests/unit/test_phase18_history_recovery.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.practice_history",
+        "iqoption_research.execution.practice_observer",
+        "iqoption_research.market_data.instruments",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase18_iqoption_live_transport.py": {
+      "file": "tests/unit/test_phase18_iqoption_live_transport.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.execution.live_practice_transport",
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.modes",
+        "iqoption_research.execution.practice_transport"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase18_practice_balance_routing.py": {
+      "file": "tests/unit/test_phase18_practice_balance_routing.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.account_diagnostics",
+        "iqoption_research.execution.modes",
+        "iqoption_research.execution.practice_transport",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase18_practice_observer.py": {
+      "file": "tests/unit/test_phase18_practice_observer.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.practice_observer",
+        "iqoption_research.models.account",
+        "iqoption_research.security.credentials"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase18_practice_selection_fix.py": {
+      "file": "tests/unit/test_phase18_practice_selection_fix.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.live_practice_transport",
+        "iqoption_research.execution.modes",
+        "iqoption_research.execution.practice_transport",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase18_iqoption_live_transport"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase18_practice_session_selection.py": {
+      "file": "tests/unit/test_phase18_practice_session_selection.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.live_practice_transport",
+        "iqoption_research.execution.modes",
+        "iqoption_research.execution.practice_transport",
+        "iqoption_research.execution.safety",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase18_iqoption_live_transport"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase22_blitz_diagnostics.py": {
+      "file": "tests/unit/test_phase22_blitz_diagnostics.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.blitz_diagnostics",
+        "iqoption_research.execution.practice_history",
+        "iqoption_research.execution.practice_observer"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase23_history_monitor.py": {
+      "file": "tests/unit/test_phase23_history_monitor.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.blitz_diagnostics",
+        "iqoption_research.execution.history_monitor"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase24_evaluation.py": {
+      "file": "tests/unit/test_phase24_evaluation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.authentic_training",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.phase10",
+        "iqoption_research.models.market",
+        "iqoption_research.research.evaluation_audit",
+        "iqoption_research.research.evaluation_metrics",
+        "iqoption_research.research.phase24"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase25_research.py": {
+      "file": "tests/unit/test_phase25_research.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.research.backtest.payoffs",
+        "iqoption_research.research.evaluation_metrics",
+        "iqoption_research.research.phase25",
+        "iqoption_research.research.phase25_data",
+        "iqoption_research.research.phase25_protocol"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase24_evaluation"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase29_alignment.py": {
+      "file": "tests/unit/test_phase29_alignment.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.tracking.artifacts",
+        "iqoption_research.research.observation_contract",
+        "iqoption_research.research.observation_report",
+        "iqoption_research.research.observation_session",
+        "iqoption_research.research.prospective",
+        "iqoption_research.research.target_alignment"
+      ],
+      "test_imports": [
+        "tests.integration.test_phase28_prospective"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase2_practice_and_correlation_regressions.py": {
+      "file": "tests/unit/test_phase2_practice_and_correlation_regressions.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.models.account",
+        "iqoption_research.models.connection"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase30_contract.py": {
+      "file": "tests/unit/test_phase30_contract.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.tracking.artifacts",
+        "iqoption_research.research.aligned_contract",
+        "iqoption_research.research.aligned_data",
+        "iqoption_research.research.aligned_study"
+      ],
+      "test_imports": [
+        "tests.conftest",
+        "tests.unit.test_phase24_evaluation"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase31_timing.py": {
+      "file": "tests/unit/test_phase31_timing.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.timing.blitz_audit",
+        "iqoption_research.timing.feasibility",
+        "iqoption_research.timing.protocol",
+        "iqoption_research.timing.reconstruction",
+        "iqoption_research.timing.taxonomy"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase32_timing_instrumentation.py": {
+      "file": "tests/unit/test_phase32_timing_instrumentation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.timing.evidence",
+        "iqoption_research.timing.instrumentation",
+        "iqoption_research.timing.pipeline_audit",
+        "iqoption_research.timing.replay",
+        "iqoption_research.timing.supervised_session"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase33_evidence_integrity.py": {
+      "file": "tests/unit/test_phase33_evidence_integrity.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.timing.evidence",
+        "iqoption_research.timing.instrumentation"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase34_reliability.py": {
+      "file": "tests/unit/test_phase34_reliability.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.timing.evidence",
+        "iqoption_research.timing.instrumentation",
+        "iqoption_research.timing.reliability"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase35_clock_freshness.py": {
+      "file": "tests/unit/test_phase35_clock_freshness.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.models.clock",
+        "iqoption_research.models.connection",
+        "iqoption_research.timing.evidence",
+        "iqoption_research.timing.instrumentation",
+        "iqoption_research.timing.reliability",
+        "iqoption_research.timing.taxonomy"
+      ],
+      "test_imports": [],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase36_prospective_evaluation.py": {
+      "file": "tests/unit/test_phase36_prospective_evaluation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.models.market",
+        "iqoption_research.research.prospective_eval",
+        "iqoption_research.timing.evidence",
+        "iqoption_research.timing.instrumentation"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase37_prospective_cohort_evaluation.py": {
+      "file": "tests/unit/test_phase37_prospective_cohort_evaluation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.models.market",
+        "iqoption_research.research",
+        "iqoption_research.research.prospective_cohort",
+        "iqoption_research.research.prospective_eval",
+        "iqoption_research.timing.evidence",
+        "iqoption_research.timing.instrumentation"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase36_prospective_evaluation"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase38_prospective_pilot.py": {
+      "file": "tests/unit/test_phase38_prospective_pilot.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.research.prospective",
+        "iqoption_research.research.prospective_cohort",
+        "iqoption_research.research.prospective_eval",
+        "iqoption_research.research.prospective_pilot",
+        "iqoption_research.timing.evidence",
+        "iqoption_research.timing.instrumentation"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase36_prospective_evaluation",
+        "tests.unit.test_phase37_prospective_cohort_evaluation"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase39_scientific_review_corrections.py": {
+      "file": "tests/unit/test_phase39_scientific_review_corrections.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.desktop.laboratory_panel",
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.extended",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.ml.laboratory",
+        "iqoption_research.ml.models.base",
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.generator",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.models.clock",
+        "iqoption_research.models.market",
+        "iqoption_research.research.dataset_manager",
+        "iqoption_research.research.datasets.splitter",
+        "iqoption_research.research.features.pipeline"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": true,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase3_backtest.py": {
+      "file": "tests/unit/test_phase3_backtest.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.models.market",
+        "iqoption_research.research.backtest.engine",
+        "iqoption_research.research.backtest.metrics",
+        "iqoption_research.research.backtest.payoffs",
+        "iqoption_research.research.backtest.reports",
+        "iqoption_research.research.backtest.strategies",
+        "iqoption_research.research.features.pipeline"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase3_historical_quality.py": {
+      "file": "tests/unit/test_phase3_historical_quality.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.market_data.candles",
+        "iqoption_research.market_data.instruments",
+        "iqoption_research.market_data.sessions",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase3_importer.py": {
+      "file": "tests/unit/test_phase3_importer.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.importer"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase3_research.py": {
+      "file": "tests/unit/test_phase3_research.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.market_data.sufficiency",
+        "iqoption_research.models.market",
+        "iqoption_research.research.datasets.integrity",
+        "iqoption_research.research.datasets.loader",
+        "iqoption_research.research.datasets.splitter",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.research.features.scalers"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase3_storage.py": {
+      "file": "tests/unit/test_phase3_storage.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.market_data.sufficiency",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase40a_shadow_evaluation.py": {
+      "file": "tests/unit/test_phase40a_shadow_evaluation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.desktop.shadow_panel",
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.laboratory",
+        "iqoption_research.models.market",
+        "iqoption_research.research.dataset_manager",
+        "iqoption_research.research.prospective",
+        "iqoption_research.shadow.engine",
+        "iqoption_research.shadow.evaluator",
+        "iqoption_research.shadow.journal",
+        "iqoption_research.shadow.registry",
+        "iqoption_research.shadow.replay"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": true,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase40b_baseline_reporting.py": {
+      "file": "tests/unit/test_phase40b_baseline_reporting.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.shadow.baseline",
+        "iqoption_research.shadow.evaluator",
+        "iqoption_research.shadow.journal",
+        "iqoption_research.shadow.observer",
+        "iqoption_research.shadow.registry"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase40b_prospective_shadow"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase40b_live_collector_stream.py": {
+      "file": "tests/unit/test_phase40b_live_collector_stream.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data",
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.extended",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.ml.laboratory",
+        "iqoption_research.models.account",
+        "iqoption_research.models.clock",
+        "iqoption_research.models.market",
+        "iqoption_research.research.dataset_manager",
+        "iqoption_research.shadow.observer",
+        "iqoption_research.shadow.registry",
+        "iqoption_research.shadow.streaming"
+      ],
+      "test_imports": [],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase40b_prospective_shadow.py": {
+      "file": "tests/unit/test_phase40b_prospective_shadow.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.auth.accounts",
+        "iqoption_research.cli.commands.shadow_cmd",
+        "iqoption_research.desktop.shadow_panel",
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.laboratory",
+        "iqoption_research.models.market",
+        "iqoption_research.research.dataset_manager",
+        "iqoption_research.shadow.evaluator",
+        "iqoption_research.shadow.journal",
+        "iqoption_research.shadow.observer",
+        "iqoption_research.shadow.registry",
+        "iqoption_research.shadow.streaming"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": true,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase40c_adversarial_hardening.py": {
+      "file": "tests/unit/test_phase40c_adversarial_hardening.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.campaign.analysis",
+        "iqoption_research.campaign.models",
+        "iqoption_research.campaign.registry",
+        "iqoption_research.campaign.scheduler",
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.models.market",
+        "iqoption_research.shadow.diagnostics_journal",
+        "iqoption_research.shadow.inputs_journal",
+        "iqoption_research.shadow.journal",
+        "iqoption_research.shadow.observer",
+        "iqoption_research.shadow.registry",
+        "iqoption_research.shadow.replay_engine",
+        "iqoption_research.shadow.streaming"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase40c_replay"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase40c_analysis.py": {
+      "file": "tests/unit/test_phase40c_analysis.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.campaign.analysis",
+        "iqoption_research.campaign.models",
+        "iqoption_research.campaign.registry",
+        "iqoption_research.campaign.scheduler",
+        "iqoption_research.cli.main",
+        "iqoption_research.shadow.journal"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase40c_campaign.py": {
+      "file": "tests/unit/test_phase40c_campaign.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.campaign.manager",
+        "iqoption_research.campaign.models",
+        "iqoption_research.campaign.registry",
+        "iqoption_research.campaign.scheduler",
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.laboratory",
+        "iqoption_research.research.dataset_manager",
+        "iqoption_research.shadow.registry"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase40c_diagnostics_and_inputs.py": {
+      "file": "tests/unit/test_phase40c_diagnostics_and_inputs.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.laboratory",
+        "iqoption_research.models.market",
+        "iqoption_research.research.dataset_manager",
+        "iqoption_research.shadow.diagnostics_journal",
+        "iqoption_research.shadow.inputs_journal",
+        "iqoption_research.shadow.observer",
+        "iqoption_research.shadow.registry",
+        "iqoption_research.shadow.streaming",
+        "iqoption_research.shadow.timing_diagnostics"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase40c_production_contract.py": {
+      "file": "tests/unit/test_phase40c_production_contract.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.campaign.analysis",
+        "iqoption_research.campaign.manager",
+        "iqoption_research.campaign.models",
+        "iqoption_research.campaign.registry",
+        "iqoption_research.campaign.scheduler",
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.laboratory",
+        "iqoption_research.models.market",
+        "iqoption_research.research.dataset_manager",
+        "iqoption_research.shadow.inputs_journal",
+        "iqoption_research.shadow.journal",
+        "iqoption_research.shadow.observer",
+        "iqoption_research.shadow.registry",
+        "iqoption_research.shadow.streaming"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase40c_replay"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase40c_replay.py": {
+      "file": "tests/unit/test_phase40c_replay.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.shadow.journal",
+        "iqoption_research.shadow.observer",
+        "iqoption_research.shadow.registry",
+        "iqoption_research.shadow.replay_engine",
+        "iqoption_research.shadow.streaming"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase41_failure_intelligence.py": {
+      "file": "tests/unit/test_phase41_failure_intelligence.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.desktop.diagnostics_panel",
+        "iqoption_research.diagnostics.experiments",
+        "iqoption_research.diagnostics.failure_intelligence",
+        "iqoption_research.diagnostics.microstructure",
+        "iqoption_research.diagnostics.parity",
+        "iqoption_research.diagnostics.targets",
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.generator",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.models.market",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.shadow.engine",
+        "iqoption_research.shadow.registry"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": true,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase41_remediation.py": {
+      "file": "tests/unit/test_phase41_remediation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.diagnostics.alignment",
+        "iqoption_research.diagnostics.experiments",
+        "iqoption_research.diagnostics.targets",
+        "iqoption_research.ml.decision.policy",
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.models.market",
+        "iqoption_research.research.dataset_manager"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase42_adversarial.py": {
+      "file": "tests/unit/test_phase42_adversarial.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.ml.data_audit",
+        "iqoption_research.ml.decision.policy",
+        "iqoption_research.ml.experiment_plan",
+        "iqoption_research.ml.experiment_runner",
+        "iqoption_research.ml.freezer",
+        "iqoption_research.ml.partitions",
+        "iqoption_research.research.dataset_manager",
+        "iqoption_research.shadow.engine",
+        "iqoption_research.shadow.registry"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase42_cli.py": {
+      "file": "tests/unit/test_phase42_cli.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.ml.experiment_plan",
+        "iqoption_research.ml.experiment_runner",
+        "iqoption_research.ml.freezer",
+        "iqoption_research.ml.partitions",
+        "iqoption_research.research.dataset_manager"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase42_data_audit.py": {
+      "file": "tests/unit/test_phase42_data_audit.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.data_audit"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase42_features_v2.py": {
+      "file": "tests/unit/test_phase42_features_v2.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.features_v2",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase42_models.py": {
+      "file": "tests/unit/test_phase42_models.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.models.tabular"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase42_partitions.py": {
+      "file": "tests/unit/test_phase42_partitions.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.partitions",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase42_walk_forward.py": {
+      "file": "tests/unit/test_phase42_walk_forward.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.features_v2",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.models.tabular",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.ml.walk_forward",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase43_adversarial.py": {
+      "file": "tests/unit/test_phase43_adversarial.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.timeframe_engine",
+        "iqoption_research.ml.exposure_registry",
+        "iqoption_research.ml.features_v3",
+        "iqoption_research.ml.freezer",
+        "iqoption_research.ml.partitions",
+        "iqoption_research.ml.regimes",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.ml.targets_v3",
+        "iqoption_research.ml.walk_forward_v3",
+        "iqoption_research.models.market",
+        "iqoption_research.shadow.evaluator",
+        "iqoption_research.shadow.journal",
+        "iqoption_research.shadow.observer",
+        "iqoption_research.shadow.registry"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase43_cli.py": {
+      "file": "tests/unit/test_phase43_cli.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.commands.research_cmd"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase43_data_inventory.py": {
+      "file": "tests/unit/test_phase43_data_inventory.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.market_data.data_inventory",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase43_features_regimes.py": {
+      "file": "tests/unit/test_phase43_features_regimes.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.features_v3",
+        "iqoption_research.ml.regimes"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase43_preflight_regressions.py": {
+      "file": "tests/unit/test_phase43_preflight_regressions.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.calibration.metrics",
+        "iqoption_research.ml.features_v2",
+        "iqoption_research.ml.freezer",
+        "iqoption_research.ml.partitions",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.ml.walk_forward",
+        "iqoption_research.ml.walk_forward_v3",
+        "iqoption_research.models.market",
+        "iqoption_research.research.dataset_manager",
+        "iqoption_research.shadow.registry"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase43_prospective_compatibility.py": {
+      "file": "tests/unit/test_phase43_prospective_compatibility.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.freezer",
+        "iqoption_research.ml.partitions",
+        "iqoption_research.shadow.evaluator",
+        "iqoption_research.shadow.journal",
+        "iqoption_research.shadow.observer",
+        "iqoption_research.shadow.registry"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase43_runner_override.py": {
+      "file": "tests/unit/test_phase43_runner_override.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.preflight",
+        "iqoption_research.models.market",
+        "iqoption_research.research.prospective"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase43_timeframes_targets.py": {
+      "file": "tests/unit/test_phase43_timeframes_targets.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.timeframe_engine",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.ml.targets_v3",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase43_walk_forward_v3.py": {
+      "file": "tests/unit/test_phase43_walk_forward_v3.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.experiment_matrix",
+        "iqoption_research.ml.features_v3",
+        "iqoption_research.ml.preflight",
+        "iqoption_research.ml.walk_forward_v3"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_account_selection.py": {
+      "file": "tests/unit/test_phase44_account_selection.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.auth.manager",
+        "iqoption_research.auth.provider",
+        "iqoption_research.auth.vault",
+        "iqoption_research.cli.commands",
+        "iqoption_research.cli.main"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_calendar_scale.py": {
+      "file": "tests/unit/test_phase44_calendar_scale.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.market_data.sessions"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase44_collection_coordinator"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": true,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase44_cli.py": {
+      "file": "tests/unit/test_phase44_cli.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_cli_cancel_e2e.py": {
+      "file": "tests/unit/test_phase44_cli_cancel_e2e.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.auth.vault",
+        "iqoption_research.cli.commands",
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase43_data_inventory",
+        "tests.unit.test_phase44_account_selection"
+      ],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_cli_synthetic_pages.py": {
+      "file": "tests/unit/test_phase44_cli_synthetic_pages.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.commands",
+        "iqoption_research.cli.main",
+        "iqoption_research.market_data",
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.market_data.synthetic_collection_fixture",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_collection_coordinator.py": {
+      "file": "tests/unit/test_phase44_collection_coordinator.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase43_data_inventory"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_crash_recovery.py": {
+      "file": "tests/unit/test_phase44_crash_recovery.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_cross_job_storage.py": {
+      "file": "tests/unit/test_phase44_cross_job_storage.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.market_data.parquet_storage"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase44_collection_coordinator"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_desktop_workflow_e2e.py": {
+      "file": "tests/unit/test_phase44_desktop_workflow_e2e.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.auth.vault",
+        "iqoption_research.cli.commands",
+        "iqoption_research.desktop",
+        "iqoption_research.desktop.app",
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase43_data_inventory",
+        "tests.unit.test_phase44_account_selection"
+      ],
+      "has_sleep": true,
+      "has_tk": true,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_discontinuity_audit.py": {
+      "file": "tests/unit/test_phase44_discontinuity_audit.py",
+      "is_phase_named": true,
+      "prod_imports": [],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_expanded_population.py": {
+      "file": "tests/unit/test_phase44_expanded_population.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.experiment_matrix",
+        "iqoption_research.ml.preflight"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase44_population_contract"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_foreign_worker.py": {
+      "file": "tests/unit/test_phase44_foreign_worker.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": true,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_h15_v4.py": {
+      "file": "tests/unit/test_phase44_h15_v4.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.h15_research_v4",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_lifecycle_locking.py": {
+      "file": "tests/unit/test_phase44_lifecycle_locking.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase43_data_inventory"
+      ],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_pagination_boundary.py": {
+      "file": "tests/unit/test_phase44_pagination_boundary.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase44_collection_coordinator"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase44_population_contract.py": {
+      "file": "tests/unit/test_phase44_population_contract.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.h15_research_v4",
+        "iqoption_research.ml.preflight",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_preflight.py": {
+      "file": "tests/unit/test_phase44_preflight.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.preflight",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_receipt_tampering.py": {
+      "file": "tests/unit/test_phase44_receipt_tampering.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.market_data.instruments",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_retained_job_recovery.py": {
+      "file": "tests/unit/test_phase44_retained_job_recovery.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_schedule_timezone.py": {
+      "file": "tests/unit/test_phase44_schedule_timezone.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data",
+        "iqoption_research.market_data.sessions"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_segmented_batches.py": {
+      "file": "tests/unit/test_phase44_segmented_batches.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase44_collection_coordinator"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase44_snapshot_integrity_regressions.py": {
+      "file": "tests/unit/test_phase44_snapshot_integrity_regressions.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.research.prospective"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase44_receipt_tampering"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_verification_responsiveness.py": {
+      "file": "tests/unit/test_phase44_verification_responsiveness.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.desktop",
+        "iqoption_research.desktop.app",
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [
+        "tests.fixtures.synthetic_market"
+      ],
+      "has_sleep": true,
+      "has_tk": true,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase44_weekend_response.py": {
+      "file": "tests/unit/test_phase44_weekend_response.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase44_collection_coordinator"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase44_windows_lock_probe.py": {
+      "file": "tests/unit/test_phase44_windows_lock_probe.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase45_desktop.py": {
+      "file": "tests/unit/test_phase45_desktop.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.desktop",
+        "iqoption_research.desktop.laboratory_panel",
+        "iqoption_research.desktop.phase45_panel"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": true,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase45_evaluation.py": {
+      "file": "tests/unit/test_phase45_evaluation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.campaign.analysis",
+        "iqoption_research.ml.walk_forward_v3",
+        "iqoption_research.phase45.evaluation"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase45_evidence.py": {
+      "file": "tests/unit/test_phase45_evidence.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.collection_engine",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.preflight",
+        "iqoption_research.models.market",
+        "iqoption_research.phase45.evidence",
+        "iqoption_research.research.prospective"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase45_features.py": {
+      "file": "tests/unit/test_phase45_features.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.timeframe_engine",
+        "iqoption_research.models.market",
+        "iqoption_research.phase45",
+        "iqoption_research.phase45.features"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase45_governance.py": {
+      "file": "tests/unit/test_phase45_governance.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.preflight",
+        "iqoption_research.phase45.governance"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase45_evidence"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase45_reporting.py": {
+      "file": "tests/unit/test_phase45_reporting.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.phase45.reporting",
+        "iqoption_research.phase45.runner"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase45_runner.py": {
+      "file": "tests/unit/test_phase45_runner.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.preflight",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.ml.targets_v3",
+        "iqoption_research.models.market",
+        "iqoption_research.phase45.runner"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase46_analysis.py": {
+      "file": "tests/unit/test_phase46_analysis.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.phase46.analysis",
+        "iqoption_research.phase46.observation.runtime",
+        "iqoption_research.phase46.observation.synthetic_fixtures",
+        "iqoption_research.shadow.journal"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase46_desktop_observation_center.py": {
+      "file": "tests/unit/test_phase46_desktop_observation_center.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.desktop.shadow_panel"
+      ],
+      "test_imports": [],
+      "has_sleep": true,
+      "has_tk": true,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase46_full_synthetic_lifecycle.py": {
+      "file": "tests/unit/test_phase46_full_synthetic_lifecycle.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.market_data.catalog",
+        "iqoption_research.market_data.parquet_storage",
+        "iqoption_research.ml.laboratory",
+        "iqoption_research.models.market",
+        "iqoption_research.phase46.analysis",
+        "iqoption_research.phase46.observation.runtime",
+        "iqoption_research.research.dataset_manager",
+        "iqoption_research.shadow.journal",
+        "iqoption_research.shadow.observer",
+        "iqoption_research.shadow.registry"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase46_observation_lifecycle.py": {
+      "file": "tests/unit/test_phase46_observation_lifecycle.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.models.market",
+        "iqoption_research.phase46.observation.runtime",
+        "iqoption_research.shadow.registry"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase46_observation_synthetic.py": {
+      "file": "tests/unit/test_phase46_observation_synthetic.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.models.market",
+        "iqoption_research.phase46.observation.synthetic_fixtures",
+        "iqoption_research.shadow.streaming"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase46_runtime_regression.py": {
+      "file": "tests/unit/test_phase46_runtime_regression.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.phase46.observation.runtime",
+        "iqoption_research.phase46.observation.synthetic_fixtures",
+        "iqoption_research.shadow.journal",
+        "iqoption_research.shadow.observer"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase46_smoke.py": {
+      "file": "tests/unit/test_phase46_smoke.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.phase46.constants"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": true,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase47_features_and_targets.py": {
+      "file": "tests/unit/test_phase47_features_and_targets.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.phase46.observation.synthetic_fixtures",
+        "iqoption_research.phase47.constants",
+        "iqoption_research.phase47.experiments",
+        "iqoption_research.phase47.features",
+        "iqoption_research.phase47.targets"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase47_reporting.py": {
+      "file": "tests/unit/test_phase47_reporting.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.phase47.reporting",
+        "iqoption_research.phase47.signal_discovery"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase47_scientific_corrections.py": {
+      "file": "tests/unit/test_phase47_scientific_corrections.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.phase45.evaluation",
+        "iqoption_research.phase47.experiments",
+        "iqoption_research.phase47.reporting"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase48_desktop_ui.py": {
+      "file": "tests/unit/test_phase48_desktop_ui.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.desktop.shadow_panel",
+        "iqoption_research.models.market",
+        "iqoption_research.phase48.constants",
+        "iqoption_research.phase48.governance",
+        "iqoption_research.phase48.transport",
+        "iqoption_research.security.credentials"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase48_governance_and_artifacts"
+      ],
+      "has_sleep": true,
+      "has_tk": true,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase48_governance_and_artifacts.py": {
+      "file": "tests/unit/test_phase48_governance_and_artifacts.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.calibration.calibrator",
+        "iqoption_research.ml.walk_forward",
+        "iqoption_research.phase47.features",
+        "iqoption_research.phase48.artifacts",
+        "iqoption_research.phase48.constants",
+        "iqoption_research.phase48.governance",
+        "iqoption_research.research.features.scalers"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase48_offline_acceptance.py": {
+      "file": "tests/unit/test_phase48_offline_acceptance.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.models.market",
+        "iqoption_research.phase48.constants",
+        "iqoption_research.phase48.evidence",
+        "iqoption_research.phase48.runtime",
+        "iqoption_research.phase48.transport"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase48_governance_and_artifacts"
+      ],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": true,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase4_adversarial_boundary.py": {
+      "file": "tests/unit/test_phase4_adversarial_boundary.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.models.adapters",
+        "iqoption_research.ml.models.base",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.models.tabular"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase4_adversarial_decision.py": {
+      "file": "tests/unit/test_phase4_adversarial_decision.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.calibration.abstention",
+        "iqoption_research.ml.calibration.calibrator",
+        "iqoption_research.ml.decision.engine",
+        "iqoption_research.research.backtest.models"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase4_adversarial_m5.py": {
+      "file": "tests/unit/test_phase4_adversarial_m5.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.evaluation.holdout",
+        "iqoption_research.ml.evaluation.walk_forward",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.specs"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase4_adversarial_m6.py": {
+      "file": "tests/unit/test_phase4_adversarial_m6.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.evaluation.comparison",
+        "iqoption_research.ml.hybrid.assistant",
+        "iqoption_research.ml.hybrid.base",
+        "iqoption_research.ml.hybrid.mock",
+        "iqoption_research.ml.hybrid.openai_adapter",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.specs"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase4_adversarial_stress.py": {
+      "file": "tests/unit/test_phase4_adversarial_stress.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.generator",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.models.market",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.research.features.scalers"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase4_backtest_integration.py": {
+      "file": "tests/unit/test_phase4_backtest_integration.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.calibration.abstention",
+        "iqoption_research.ml.decision.engine",
+        "iqoption_research.ml.decision.strategy",
+        "iqoption_research.ml.evaluation.holdout",
+        "iqoption_research.ml.models.base",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.models.market",
+        "iqoption_research.research.backtest.engine",
+        "iqoption_research.research.backtest.metrics",
+        "iqoption_research.research.backtest.models",
+        "iqoption_research.research.backtest.payoffs",
+        "iqoption_research.research.datasets.integrity",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.research.features.scalers"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase4_baseline.py": {
+      "file": "tests/unit/test_phase4_baseline.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.connectors.base",
+        "iqoption_research.models.account",
+        "iqoption_research.models.market",
+        "iqoption_research.research.backtest.engine",
+        "iqoption_research.research.datasets.loader",
+        "iqoption_research.research.features.pipeline"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase4_calibration.py": {
+      "file": "tests/unit/test_phase4_calibration.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.calibration.calibrator",
+        "iqoption_research.ml.calibration.metrics",
+        "iqoption_research.ml.models.base"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase4_calibration_adversarial.py": {
+      "file": "tests/unit/test_phase4_calibration_adversarial.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.calibration.calibrator",
+        "iqoption_research.ml.calibration.metrics"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase4_cli.py": {
+      "file": "tests/unit/test_phase4_cli.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.ml.pipeline",
+        "iqoption_research.ml.tracking.artifacts",
+        "iqoption_research.ml.tracking.tracker"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase4_comparison.py": {
+      "file": "tests/unit/test_phase4_comparison.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.evaluation.comparison",
+        "iqoption_research.ml.evaluation.holdout",
+        "iqoption_research.ml.evaluation.walk_forward",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.specs"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase4_dataset.py": {
+      "file": "tests/unit/test_phase4_dataset.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.models.market",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.research.features.scalers"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase4_decision.py": {
+      "file": "tests/unit/test_phase4_decision.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.calibration.abstention",
+        "iqoption_research.ml.decision.engine",
+        "iqoption_research.research.backtest.models"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase4_ensembles.py": {
+      "file": "tests/unit/test_phase4_ensembles.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.ensembles.base",
+        "iqoption_research.ml.ensembles.stacking",
+        "iqoption_research.ml.ensembles.voting",
+        "iqoption_research.ml.ensembles.weighted",
+        "iqoption_research.ml.models.base",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.models.tabular"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase4_hybrid.py": {
+      "file": "tests/unit/test_phase4_hybrid.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.hybrid.assistant",
+        "iqoption_research.ml.hybrid.base",
+        "iqoption_research.ml.hybrid.mock",
+        "iqoption_research.ml.hybrid.openai_adapter",
+        "iqoption_research.ml.models.base",
+        "iqoption_research.research.backtest.metrics"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase4_m5_adversarial.py": {
+      "file": "tests/unit/test_phase4_m5_adversarial.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.calibration.abstention",
+        "iqoption_research.ml.decision.engine",
+        "iqoption_research.ml.decision.strategy",
+        "iqoption_research.ml.evaluation.holdout",
+        "iqoption_research.ml.models.base",
+        "iqoption_research.models.market",
+        "iqoption_research.research.backtest.engine",
+        "iqoption_research.research.backtest.models",
+        "iqoption_research.research.backtest.payoffs",
+        "iqoption_research.research.datasets.integrity",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.research.features.scalers"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase4_models.py": {
+      "file": "tests/unit/test_phase4_models.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.models.adapters",
+        "iqoption_research.ml.models.base",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.models.tabular"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase4_pipeline.py": {
+      "file": "tests/unit/test_phase4_pipeline.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.calibration.calibrator",
+        "iqoption_research.ml.evaluation.holdout",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.pipeline",
+        "iqoption_research.ml.reporting",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.ml.tracking.artifacts"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase4_targets.py": {
+      "file": "tests/unit/test_phase4_targets.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.targets.generator",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.models.market",
+        "iqoption_research.research.features.pipeline"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase4_tracking.py": {
+      "file": "tests/unit/test_phase4_tracking.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.calibration.calibrator",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.specs",
+        "iqoption_research.ml.tracking.artifacts",
+        "iqoption_research.ml.tracking.tracker",
+        "iqoption_research.research.features.scalers"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase4_walk_forward.py": {
+      "file": "tests/unit/test_phase4_walk_forward.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.calibration.abstention",
+        "iqoption_research.ml.calibration.calibrator",
+        "iqoption_research.ml.decision.engine",
+        "iqoption_research.ml.evaluation.walk_forward",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.targets.dataset",
+        "iqoption_research.ml.targets.specs"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_phase5_account_safety.py": {
+      "file": "tests/unit/test_phase5_account_safety.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.safety",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase5_paper_engine.py": {
+      "file": "tests/unit/test_phase5_paper_engine.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.engine",
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.risk",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.models.account",
+        "iqoption_research.research.backtest.models"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase5_risk_controller.py": {
+      "file": "tests/unit/test_phase5_risk_controller.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.risk"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase5_state_machine.py": {
+      "file": "tests/unit/test_phase5_state_machine.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.risk",
+        "iqoption_research.execution.state_machine"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase5_streaming_parity.py": {
+      "file": "tests/unit/test_phase5_streaming_parity.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.streaming.buffer",
+        "iqoption_research.streaming.events"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase6_bot.py": {
+      "file": "tests/unit/test_phase6_bot.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.bot.controller",
+        "iqoption_research.execution.risk",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.tracking.artifacts",
+        "iqoption_research.observation.adapter",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.research.features.scalers"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase6_broker_readiness.py": {
+      "file": "tests/unit/test_phase6_broker_readiness.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.broker_readiness",
+        "iqoption_research.execution.models",
+        "iqoption_research.execution.risk",
+        "iqoption_research.execution.safety",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase6_inference.py": {
+      "file": "tests/unit/test_phase6_inference.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.inference.loader",
+        "iqoption_research.inference.pipeline",
+        "iqoption_research.inference.validation",
+        "iqoption_research.ml.calibration.calibrator",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.ml.models.baselines",
+        "iqoption_research.ml.tracking.artifacts",
+        "iqoption_research.research.backtest.models",
+        "iqoption_research.research.datasets.integrity",
+        "iqoption_research.research.features.pipeline",
+        "iqoption_research.research.features.scalers"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase6_observation.py": {
+      "file": "tests/unit/test_phase6_observation.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.models.market",
+        "iqoption_research.observation.adapter",
+        "iqoption_research.observation.clock",
+        "iqoption_research.observation.heartbeat",
+        "iqoption_research.observation.reconnect",
+        "iqoption_research.streaming.events"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase7_account_diagnostics.py": {
+      "file": "tests/unit/test_phase7_account_diagnostics.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.execution.account_diagnostics",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase8_authentic_data_and_ml.py": {
+      "file": "tests/unit/test_phase8_authentic_data_and_ml.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.commands.bot_cmd",
+        "iqoption_research.inference.validation",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.ml.authentic_training",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.models.market",
+        "iqoption_research.research.features.pipeline"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase8_collector_pagination.py": {
+      "file": "tests/unit/test_phase8_collector_pagination.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.market_data.collector",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.ml.fixtures",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_phase8_secure_auth.py": {
+      "file": "tests/unit/test_phase8_secure_auth.py",
+      "is_phase_named": true,
+      "prod_imports": [
+        "iqoption_research.auth.browser_research",
+        "iqoption_research.auth.config",
+        "iqoption_research.auth.manager",
+        "iqoption_research.auth.mfa",
+        "iqoption_research.auth.provider",
+        "iqoption_research.auth.session",
+        "iqoption_research.auth.state",
+        "iqoption_research.auth.vault",
+        "iqoption_research.execution.account_diagnostics",
+        "iqoption_research.models.account",
+        "iqoption_research.security.credentials"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_post_connection_safety.py": {
+      "file": "tests/unit/test_post_connection_safety.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.cli.commands.probe",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.account",
+        "iqoption_research.models.market",
+        "iqoption_research.security.credentials"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_practice_history_connection_diagnostics.py": {
+      "file": "tests/unit/test_practice_history_connection_diagnostics.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.cli.commands.execution_cmd",
+        "iqoption_research.cli.main",
+        "iqoption_research.execution.live_practice_transport",
+        "iqoption_research.execution.modes",
+        "iqoption_research.execution.practice_history",
+        "iqoption_research.execution.practice_observer",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_practice_status.py": {
+      "file": "tests/unit/test_practice_status.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_prediction_journal.py": {
+      "file": "tests/unit/test_prediction_journal.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.bot.journal",
+        "iqoption_research.bot.session",
+        "iqoption_research.cli.main",
+        "iqoption_research.inference.pipeline",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_reconnection.py": {
+      "file": "tests/unit/test_reconnection.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.protocol",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.models.connection"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_research_desktop.py": {
+      "file": "tests/unit/test_research_desktop.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.auth.vault",
+        "iqoption_research.cli",
+        "iqoption_research.cli.commands.timing_cmd",
+        "iqoption_research.cli.main",
+        "iqoption_research.desktop",
+        "iqoption_research.desktop.app",
+        "iqoption_research.desktop.core",
+        "iqoption_research.research.prospective_pilot",
+        "iqoption_research.security.credentials",
+        "iqoption_research.timing"
+      ],
+      "test_imports": [
+        "tests.unit.test_phase38_prospective_pilot"
+      ],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": true,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_shutdown.py": {
+      "file": "tests/unit/test_shutdown.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.simulation",
+        "iqoption_research.models.connection"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_tls_policy.py": {
+      "file": "tests/unit/test_tls_policy.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.cli.commands.security_check",
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.security.endpoints",
+        "iqoption_research.security.tls"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_trading_rejection.py": {
+      "file": "tests/unit/test_trading_rejection.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.client",
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.protocol",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.connectors.simulation",
+        "iqoption_research.market_data.collection_engine"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_v2_market_close_regression.py": {
+      "file": "tests/unit/test_v2_market_close_regression.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.cli.commands",
+        "iqoption_research.cli.main",
+        "iqoption_research.desktop.workstation",
+        "iqoption_research.market_data",
+        "iqoption_research.market_data.extended",
+        "iqoption_research.market_data.extended_store",
+        "iqoption_research.market_data.fetch",
+        "iqoption_research.market_data.sessions",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.clock",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": true,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": true,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_validation.py": {
+      "file": "tests/unit/test_validation.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.market_data.candles",
+        "iqoption_research.market_data.validation",
+        "iqoption_research.models.market"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    },
+    "tests/unit/test_wallet_verification.py": {
+      "file": "tests/unit/test_wallet_verification.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.cli.main",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.models.account"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_workstation_accounts.py": {
+      "file": "tests/unit/test_workstation_accounts.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.auth.accounts",
+        "iqoption_research.auth.vault",
+        "iqoption_research.desktop.workstation",
+        "iqoption_research.timing"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": true
+    },
+    "tests/unit/test_ws_auth.py": {
+      "file": "tests/unit/test_ws_auth.py",
+      "is_phase_named": false,
+      "prod_imports": [
+        "iqoption_research.connectors.iqoption.exceptions",
+        "iqoption_research.connectors.iqoption.protocol",
+        "iqoption_research.connectors.iqoption.ws_client",
+        "iqoption_research.models.connection"
+      ],
+      "test_imports": [],
+      "has_sleep": false,
+      "has_tk": false,
+      "has_subprocess": false,
+      "has_tracemalloc": false,
+      "has_skip": false,
+      "has_xfail": false,
+      "has_parametrize": false
+    }
+  }
+}

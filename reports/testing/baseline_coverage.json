@@ -1,0 +1,79 @@
+{
+  "total_executable_lines": 53216,
+  "covered_lines": 44132,
+  "overall_line_coverage_pct": 82.93,
+  "by_domain": {
+    "auth_and_connectors": {
+      "total": 2487,
+      "covered": 2160,
+      "files": 19,
+      "line_coverage_pct": 86.85
+    },
+    "campaign_authorization": {
+      "total": 840,
+      "covered": 764,
+      "files": 6,
+      "line_coverage_pct": 90.95
+    },
+    "cli": {
+      "total": 5204,
+      "covered": 3123,
+      "files": 30,
+      "line_coverage_pct": 60.01
+    },
+    "dataset_governance": {
+      "total": 6296,
+      "covered": 5548,
+      "files": 43,
+      "line_coverage_pct": 88.12
+    },
+    "desktop_app": {
+      "total": 4317,
+      "covered": 3222,
+      "files": 13,
+      "line_coverage_pct": 74.64
+    },
+    "evidence_integrity": {
+      "total": 1034,
+      "covered": 900,
+      "files": 7,
+      "line_coverage_pct": 87.04
+    },
+    "market_data_and_collection": {
+      "total": 6797,
+      "covered": 6067,
+      "files": 40,
+      "line_coverage_pct": 89.26
+    },
+    "ml_training_calibration_eval": {
+      "total": 13521,
+      "covered": 11737,
+      "files": 81,
+      "line_coverage_pct": 86.81
+    },
+    "other": {
+      "total": 29,
+      "covered": 28,
+      "files": 3,
+      "line_coverage_pct": 96.55
+    },
+    "prospective_observation": {
+      "total": 6596,
+      "covered": 5394,
+      "files": 43,
+      "line_coverage_pct": 81.78
+    },
+    "read_only_transport": {
+      "total": 456,
+      "covered": 388,
+      "files": 8,
+      "line_coverage_pct": 85.09
+    },
+    "security": {
+      "total": 5639,
+      "covered": 4801,
+      "files": 28,
+      "line_coverage_pct": 85.14
+    }
+  }
+}

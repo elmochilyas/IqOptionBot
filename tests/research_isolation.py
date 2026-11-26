@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import sqlite3
 import sys
+from collections.abc import MutableMapping
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,39 +20,123 @@ import pyarrow.parquet as pq
 from iqoption_research.market_data.collector import HistoricalDataCollector
 from iqoption_research.models.market import Candle, CandleSize
 
+CREDENTIAL_ENV_VARS: tuple[str, ...] = (
+    "IQOPTION_EMAIL",
+    "IQOPTION_PASSWORD",
+    "IQOPTION_SSID",
+    "IQOPTION_2FA_CODE",
+    "IQOPTION_ACCOUNT_ID",
+    "OPENAI_API_KEY",
+)
+_CREDENTIAL_KEY_MARKERS: tuple[str, ...] = (
+    "EMAIL",
+    "PASS",
+    "SECRET",
+    "TOKEN",
+    "KEY",
+    "SSID",
+    "CREDENTIAL",
+    "AUTH",
+)
 
-def install_sealed_read_guard(project: Path) -> set[str]:
-    """Deny real sealed shard opens, including native Arrow reads, for the entire test process."""
+_NETWORK_GUARD_INSTALLED = False
+_SEALED_READ_GUARD_INSTALLED = False
+_DENIED_SEALED_PATHS: set[str] = set()
+
+
+def scrub_credential_environment(environ: MutableMapping[str, str] | None = None) -> list[str]:
+    """Clear real credential environment variables so local secrets never leak into tests."""
+    target = os.environ if environ is None else environ
+    scrubbed: list[str] = []
+    keys = set(CREDENTIAL_ENV_VARS)
+    for key in list(target.keys()):
+        upper = key.upper()
+        if upper.startswith("IQOPTION_") and any(
+            marker in upper for marker in _CREDENTIAL_KEY_MARKERS
+        ):
+            keys.add(key)
+    for key in sorted(keys):
+        if target.get(key):
+            scrubbed.append(key)
+        target[key] = ""
+    return scrubbed
+
+
+def is_network_isolation_installed() -> bool:
+    """Return whether the process-wide external network audit guard is active."""
+    return _NETWORK_GUARD_INSTALLED
+
+
+def install_network_isolation_guard() -> bool:
+    """Unconditionally block non-loopback socket.connect calls for offline test safety."""
+    global _NETWORK_GUARD_INSTALLED
+    if _NETWORK_GUARD_INSTALLED:
+        return False
+
+    def _network_audit(event: str, args: tuple[Any, ...]) -> None:
+        if event == "socket.connect" and len(args) >= 2:
+            addr = args[1]
+            if isinstance(addr, tuple) and addr:
+                host = addr[0]
+                if isinstance(host, bytes):
+                    host = host.decode("ascii", errors="ignore")
+                if host not in ("127.0.0.1", "::1", "localhost", ""):
+                    raise PermissionError(f"EXTERNAL_NETWORK_DENIED_BY_OFFLINE_TEST_GUARD: {host}")
+
+    sys.addaudithook(_network_audit)
+    _NETWORK_GUARD_INSTALLED = True
+    return True
+
+
+def discover_sealed_holdout_paths(project: Path) -> set[str]:
+    """Discover sealed holdout dataset shards from catalog.db when present locally."""
     catalog = project / "data/datasets/catalog.db"
-    if not catalog.is_file():
+    audit_ref = project / "docs/phase29/review/dataset_audit.json"
+    if not catalog.is_file() or not audit_ref.is_file():
         return set()
-    reference = json.loads((project / "docs/phase29/review/dataset_audit.json").read_text())[
-        "original_holdout"
-    ]
+    reference = json.loads(audit_ref.read_text(encoding="utf-8"))["original_holdout"]
     with closing(sqlite3.connect(catalog.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
         rows = connection.execute(
             "SELECT file_path FROM dataset_catalog WHERE from_ts<=? AND to_ts>=?",
             (reference["original_last_open_ts"] + 60, reference["original_start_ts"]),
         )
-        denied = {str((catalog.parent / path).resolve()).casefold() for (path,) in rows}
+        return {str((catalog.parent / path).resolve()).casefold() for (path,) in rows}
 
-    def check(path: Any) -> None:
-        if isinstance(path, (str, Path)) and str(Path(path).resolve()).casefold() in denied:
-            raise PermissionError("SEALED_HOLDOUT_READ_DENIED_BY_TEST_GUARD")
 
-    def audit(event: str, args: tuple[Any, ...]) -> None:
-        if event == "open" and args:
-            check(args[0])
+def install_sealed_read_guard(project: Path) -> set[str]:
+    """Install offline network/credential guards unconditionally and sealed-shard guards if present."""
+    global _SEALED_READ_GUARD_INSTALLED
+    scrub_credential_environment()
+    install_network_isolation_guard()
 
-    original = pq.read_table
+    denied = discover_sealed_holdout_paths(project)
+    if not denied:
+        return set()
 
-    def guarded_read(source: Any, *args: Any, **kwargs: Any) -> Any:
-        check(source)
-        return original(source, *args, **kwargs)
+    _DENIED_SEALED_PATHS.update(denied)
+    if not _SEALED_READ_GUARD_INSTALLED:
 
-    sys.addaudithook(audit)
-    pq.read_table = guarded_read
-    return denied
+        def check(path: Any) -> None:
+            if (
+                isinstance(path, (str, Path))
+                and str(Path(path).resolve()).casefold() in _DENIED_SEALED_PATHS
+            ):
+                raise PermissionError("SEALED_HOLDOUT_READ_DENIED_BY_TEST_GUARD")
+
+        def audit(event: str, args: tuple[Any, ...]) -> None:
+            if event == "open" and args:
+                check(args[0])
+
+        original = pq.read_table
+
+        def guarded_read(source: Any, *args: Any, **kwargs: Any) -> Any:
+            check(source)
+            return original(source, *args, **kwargs)
+
+        sys.addaudithook(audit)
+        pq.read_table = guarded_read
+        _SEALED_READ_GUARD_INSTALLED = True
+    return set(_DENIED_SEALED_PATHS)
 
 
 def build_legacy_workspace(root: Path, project: Path) -> Path:

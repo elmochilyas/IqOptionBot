@@ -613,6 +613,10 @@ class ShadowEvaluationPanel:
         model_id = self.combo_obs_model.get()
         mode = self.var_obs_mode.get()
 
+        if mode == "exploratory_genuine":
+            self.observation_center.start_genuine_exploratory_observation()
+            return
+
         if mode == "synthetic" and (
             self.observation_center.is_synthetic_fixture(model_id) or not self.candidates
         ):

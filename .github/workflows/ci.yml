@@ -198,17 +198,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -e .[dev]
-      - name: Run Desktop UI Suite
+      - name: Run Desktop UI Suite (Collection & Observation Centers)
         continue-on-error: true
         env:
-          PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code.txt
-        run: python scripts/ci_pytest.py -m "desktop and not performance"
-      - name: Verify Pytest Exit Code
+          PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code_1.txt
+        run: python scripts/ci_pytest.py tests/desktop/collection_center tests/desktop/observation_center -m "desktop and not performance"
+      - name: Run Desktop UI Suite (Workstation)
+        continue-on-error: true
+        env:
+          PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code_2.txt
+        run: python scripts/ci_pytest.py tests/desktop/workstation -m "desktop and not performance"
+      - name: Verify Pytest Exit Codes
         run: |
-          $path = Join-Path $env:RUNNER_TEMP 'pytest_exit_code.txt'
-          if (-not (Test-Path $path)) { throw "Pytest exit code file is missing: $path" }
-          $code = (Get-Content $path -Raw).Trim()
-          if ($code -ne '0') { throw "Pytest failed with exit code $code" }
+          foreach ($f in @('pytest_exit_code_1.txt', 'pytest_exit_code_2.txt')) {
+            $path = Join-Path $env:RUNNER_TEMP $f
+            if (-not (Test-Path $path)) { throw "Pytest exit code file is missing: $path" }
+            $code = (Get-Content $path -Raw).Trim()
+            if ($code -ne '0') { throw "$f failed with exit code $code" }
+          }
 
   e2e-tests:
     name: Offline End-to-End Tests

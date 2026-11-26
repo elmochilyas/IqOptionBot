@@ -12,7 +12,7 @@ from iqoption_research.timing.reconstruction import reconstruct_all_timing_evide
 
 
 def test_reconstruct_all_timing_evidence_on_repo_checkpoints(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     evidence = reconstruct_all_timing_evidence(root)
 
     assert "checkpoints" in evidence

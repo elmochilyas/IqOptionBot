@@ -16,7 +16,7 @@ from iqoption_research.market_data.collection_engine import (
 
 @pytest.mark.asyncio
 async def test_retained_failed_job_recovery_in_copy(tmp_path):
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     job = "collect_eurusd_20261124_152833_2b516905"
     checkpoint = root / "data/collection_checkpoints" / f"{job}.json"
     if not checkpoint.exists():

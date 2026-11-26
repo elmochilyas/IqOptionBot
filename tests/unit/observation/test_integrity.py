@@ -25,7 +25,7 @@ def clean_clock() -> ClockDiscipline:
 
 @pytest.fixture
 def project_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[3]
 
 
 def test_observation_hash_covers_all_scientifically_relevant_stage_fields(

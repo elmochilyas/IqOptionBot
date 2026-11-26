@@ -369,7 +369,7 @@ def test_coverage_note_included_for_all_early_terminations(session: ExtendedColl
 
 def test_original_november_20_evidence_is_intact(tmp_path: Path) -> None:
     """The eight-candle session from Nov 20 must exist unchanged on disk."""
-    evidence_root = Path(__file__).resolve().parents[2] / "data/extended_collection"
+    evidence_root = Path(__file__).resolve().parents[3] / "data/extended_collection"
     target = evidence_root / "collection_a20ad775b77d4f2bab787f540b2d6890"
     if not target.exists():
         pytest.skip("Historical evidence directory not present in this environment")

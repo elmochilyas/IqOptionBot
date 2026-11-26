@@ -15,7 +15,7 @@ def test_phase46_constants() -> None:
 
 
 def test_run_phase46_script_help() -> None:
-    repo = Path(__file__).resolve().parents[2]
+    repo = Path(__file__).resolve().parents[3]
     script = repo / "scripts" / "run_phase46_research.py"
     proc = subprocess.run(  # noqa: S603
         [sys.executable, str(script), "--help"],

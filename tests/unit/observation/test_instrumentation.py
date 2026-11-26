@@ -170,7 +170,7 @@ def test_sanitization_and_evidence_registry(tmp_path: Path) -> None:
     assert cleaned["safe_value"] == 42
 
     # Registry creation and persistence
-    project_root = Path(__file__).resolve().parents[2]
+    project_root = Path(__file__).resolve().parents[3]
     clock = ClockDiscipline()
     recorder = TimingRecorder("reg_test_session", clock=clock, enable_clock_stability_check=False)
     recorder.start_candle_observation(1795000000)
@@ -345,7 +345,7 @@ def test_evidence_file_overwrite_prevention(tmp_path: Path) -> None:
     reg = TimingEvidenceRegistry.create(
         session_id="immut_session",
         operational_mode="OFFLINE_SIMULATION",
-        project_root=Path(__file__).resolve().parents[2],
+        project_root=Path(__file__).resolve().parents[3],
         clock=clock,
         observations=recorder.observations,
     )
@@ -381,7 +381,7 @@ def test_evidence_duplicate_candle_boundary_rejection() -> None:
         TimingEvidenceRegistry.create(
             session_id="dup_boundary_session",
             operational_mode="OFFLINE_SIMULATION",
-            project_root=Path(__file__).resolve().parents[2],
+            project_root=Path(__file__).resolve().parents[3],
             clock=clock,
             observations=recorder.observations,
         )
@@ -442,7 +442,7 @@ def test_evidence_integrity_detects_tampered_observation_contents() -> None:
     reg = TimingEvidenceRegistry.create(
         session_id="tamper_test",
         operational_mode="OFFLINE_SIMULATION",
-        project_root=Path(__file__).resolve().parents[2],
+        project_root=Path(__file__).resolve().parents[3],
         clock=clock,
         observations=recorder.observations,
     )
@@ -486,7 +486,7 @@ def test_race_safe_create_only_persistence_fails_closed_on_collision(
     reg = TimingEvidenceRegistry.create(
         session_id="race_test",
         operational_mode="OFFLINE_SIMULATION",
-        project_root=Path(__file__).resolve().parents[2],
+        project_root=Path(__file__).resolve().parents[3],
         clock=clock,
         observations=recorder.observations,
     )

@@ -266,7 +266,7 @@ async def test_end_to_end_genuine_request_id_correlation_two_consecutive_candles
     registry = TimingEvidenceRegistry.create(
         session_id=recorder.session_id,
         operational_mode="OPERATOR_SUPERVISED_LIVE",
-        project_root=Path(__file__).resolve().parents[2],
+        project_root=Path(__file__).resolve().parents[3],
         clock=clock,
         observations=recorder.observations,
     )
@@ -548,7 +548,7 @@ async def test_connection_interruption_fails_closed_and_saves_partial_evidence(
     registry = TimingEvidenceRegistry.create(
         session_id=recorder.session_id,
         operational_mode="OFFLINE_SIMULATION",
-        project_root=Path(__file__).resolve().parents[2],
+        project_root=Path(__file__).resolve().parents[3],
         clock=clock,
         observations=recorder.observations,
     )

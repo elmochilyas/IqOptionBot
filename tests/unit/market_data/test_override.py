@@ -31,7 +31,7 @@ from tests.fixtures.synthetic_market import (
 )
 
 PRE_BOUNDARY_START_TS: int = DEFAULT_PROTECTED_HOLDOUT_START_TS - 5_000_000
-_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_phase43_experiments.py"
+_SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "run_phase43_experiments.py"
 
 
 def _load_runner_module() -> Any:

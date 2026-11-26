@@ -35,6 +35,23 @@ from iqoption_research.phase46.observation.synthetic_fixtures import (
     get_synthetic_fixture,
     provision_synthetic_fixture_workspace,
 )
+from iqoption_research.phase48.artifacts import default_models_dir, verify_exploratory_bundle
+from iqoption_research.phase48.constants import (
+    CANDIDATE_SPECS,
+    PHASE48_SESSIONS_DIR,
+    SUPPORTED_SESSION_DURATIONS_MINUTES,
+)
+from iqoption_research.phase48.evidence import verify_phase48_session_integrity
+from iqoption_research.phase48.governance import (
+    default_campaign_contract_path,
+    load_campaign_contract,
+    validate_campaign_authorization,
+)
+from iqoption_research.phase48.runtime import (
+    ParallelObservationConfig,
+    ParallelObservationProgress,
+    ParallelObservationRuntime,
+)
 from iqoption_research.shadow.journal import (
     DEFAULT_SHADOW_SESSIONS_DIR,
     OutcomeStatus,
@@ -108,6 +125,19 @@ class ObservationCenterController:
             f"{fx.fixture_id} ({fx.timeframe_label} / H{fx.horizon_bars})": fx.timeframe_seconds
             for fx in PHASE46_SYNTHETIC_FIXTURES
         }
+        # Phase 48 multi-model exploratory state
+        self._p48_candidate_vars: dict[str, tk.BooleanVar] = {}
+        self._p48_candidate_status_lbls: dict[str, ttk.Label] = {}
+        self._p48_kpi_labels: dict[str, ttk.Label] = {}
+        self._p48_multi_series: dict[str, list[float]] = {}
+        self._p48_recent_rows: list[dict[str, Any]] = []
+        self._p48_runtime: ParallelObservationRuntime | None = None
+        self.p48_pred_tree: ttk.Treeview | None = None
+        self.p48_filter_cand: ttk.Combobox | None = None
+        self.p48_filter_status: ttk.Combobox | None = None
+        self.lbl_p48_auth_status: ttk.Label | None = None
+        self.rb_obs_p48_genuine: ttk.Radiobutton | None = None
+        self.btn_p48_synth_demo: ttk.Button | None = None
 
     @property
     def is_running(self) -> bool:
@@ -272,20 +302,28 @@ class ObservationCenterController:
         p.var_obs_mode = tk.StringVar(value="synthetic")
         p.rb_obs_synth = ttk.Radiobutton(
             r1,
-            text="Offline Synthetic Demonstration (Phase 46)",
+            text="Offline Synthetic Demonstration",
             variable=p.var_obs_mode,
             value="synthetic",
             command=self.on_mode_changed,
         )
         p.rb_obs_synth.pack(side="left", padx=4)
+        self.rb_obs_p48_genuine = ttk.Radiobutton(
+            r1,
+            text="Genuine Exploratory (Phase 48)",
+            variable=p.var_obs_mode,
+            value="exploratory_genuine",
+            command=self.on_mode_changed,
+        )
+        self.rb_obs_p48_genuine.pack(side="left", padx=6)
         p.rb_obs_live = ttk.Radiobutton(
             r1,
-            text="Genuine Observation (Blocked — Unauthorized)",
+            text="Confirmatory (Blocked)",
             variable=p.var_obs_mode,
             value="live",
             command=self.on_mode_changed,
         )
-        p.rb_obs_live.pack(side="left", padx=8)
+        p.rb_obs_live.pack(side="left", padx=6)
 
         p.lbl_obs_eligibility = ttk.Label(
             r1,
@@ -328,7 +366,10 @@ class ObservationCenterController:
 
         ttk.Label(r3, text="Duration (min):", width=13).pack(side="left", padx=(8, 2))
         p.combo_obs_duration = ttk.Combobox(
-            r3, state="readonly", width=6, values=["15", "30", "60", "120"]
+            r3,
+            state="readonly",
+            width=6,
+            values=[str(d) for d in SUPPORTED_SESSION_DURATIONS_MINUTES],
         )
         p.combo_obs_duration.set("15")
         p.combo_obs_duration.pack(side="left", padx=4)
@@ -358,6 +399,52 @@ class ObservationCenterController:
         )
         p.lbl_campaign_blinding.pack(side="left", padx=(10, 4))
 
+        # Row 3c: Phase 48 Exploratory Multi-Model Candidates & Authorization Gate
+        p48_cfg = ttk.LabelFrame(
+            self.obs_config_body,
+            text="Phase 48 Exploratory Candidates (EXPLORATORY_FROZEN_RESEARCH_CANDIDATE | NO_DEMONSTRATED_EDGE)",
+            padding=4,
+        )
+        p48_cfg.pack(fill="x", pady=(4, 2))
+        for spec in CANDIDATE_SPECS:
+            row_c = ttk.Frame(p48_cfg)
+            row_c.pack(fill="x", pady=1)
+            var = tk.BooleanVar(value=True)
+            self._p48_candidate_vars[spec.frozen_candidate_id] = var
+            cb = ttk.Checkbutton(
+                row_c,
+                text=(
+                    f"[{spec.candidate_slot}] {spec.frozen_candidate_id} "
+                    f"({spec.timeframe_label} / H{spec.horizon_bars}={spec.prediction_minutes}m)"
+                ),
+                variable=var,
+                command=self._refresh_p48_governance_status,
+            )
+            cb.pack(side="left")
+            st_lbl = ttk.Label(
+                row_c,
+                text="Checking artifact...",
+                font=("Consolas", 8),
+                foreground="#476582",
+            )
+            st_lbl.pack(side="right", padx=4)
+            self._p48_candidate_status_lbls[spec.frozen_candidate_id] = st_lbl
+
+        auth_row = ttk.Frame(p48_cfg)
+        auth_row.pack(fill="x", pady=(3, 1))
+        self.lbl_p48_auth_status = ttk.Label(
+            auth_row,
+            text="Campaign Gate: Checking Phase 48 authorization...",
+            font=("Segoe UI", 8, "bold"),
+            foreground="#9c3414",
+        )
+        self.lbl_p48_auth_status.pack(side="left")
+        ttk.Button(
+            auth_row,
+            text="Refresh Models & Contract",
+            command=self._refresh_p48_governance_status,
+        ).pack(side="right", padx=4)
+
         # Row 4: Action Buttons (always visible even if config body collapsed)
         r4 = ttk.Frame(controls_frame)
         r4.pack(fill="x", pady=(6, 2))
@@ -382,6 +469,13 @@ class ObservationCenterController:
             command=lambda: p._prompt_verify_inputs(),  # noqa: SLF001
         )
         p.btn_verify_inputs.pack(side="left", padx=4)
+
+        self.btn_p48_synth_demo = ttk.Button(
+            r4,
+            text="Run Phase 48 Multi-Model Demo (Offline)",
+            command=self.start_phase48_synthetic_demo,
+        )
+        self.btn_p48_synth_demo.pack(side="left", padx=(8, 4))
 
         # ==================================================================
         # 2) Live Monitoring & Performance
@@ -515,6 +609,106 @@ class ObservationCenterController:
         self._draw_accuracy_chart([])
 
         # ==================================================================
+        # 2b) Phase 48 Parallel Multi-Model Exploratory Evaluation
+        # ==================================================================
+        p48_live = ttk.LabelFrame(
+            container,
+            text="2b. Phase 48 Parallel Multi-Model Exploratory Cards & Live Prediction Stream",
+            padding=6,
+        )
+        p48_live.pack(fill="x", pady=(0, 8))
+
+        p48_cards = ttk.Frame(p48_live)
+        p48_cards.pack(fill="x", pady=(0, 4))
+        for idx_c, spec in enumerate(CANDIDATE_SPECS):
+            p48_cards.columnconfigure(idx_c, weight=1, uniform="p48kpi")
+            cframe = ttk.LabelFrame(
+                p48_cards,
+                text=f"[{spec.candidate_slot}] {spec.timeframe_label} H{spec.horizon_bars} ({spec.prediction_minutes}m)",
+                padding=(6, 4),
+            )
+            cframe.grid(row=0, column=idx_c, sticky="nsew", padx=(0 if idx_c == 0 else 4, 0))
+            klbl = ttk.Label(
+                cframe,
+                text="Warmup: 0/60 | Opps: 0 | Sel: 0\nPending: 0 | Res: 0 (W:0/L:0) | Acc: N/A",
+                font=("Consolas", 8),
+                foreground="#17324d",
+            )
+            klbl.pack(anchor="w")
+            self._p48_kpi_labels[spec.frozen_candidate_id] = klbl
+
+        flt_row = ttk.Frame(p48_live)
+        flt_row.pack(fill="x", pady=(2, 2))
+        ttk.Label(flt_row, text="Filter Candidate:").pack(side="left")
+        self.p48_filter_cand = ttk.Combobox(
+            flt_row,
+            state="readonly",
+            width=32,
+            values=["ALL"] + [s.frozen_candidate_id for s in CANDIDATE_SPECS],
+        )
+        self.p48_filter_cand.set("ALL")
+        self.p48_filter_cand.pack(side="left", padx=4)
+        self.p48_filter_cand.bind("<<ComboboxSelected>>", lambda _e: self._render_p48_predictions())
+
+        ttk.Label(flt_row, text="Filter Status:").pack(side="left", padx=(8, 2))
+        self.p48_filter_status = ttk.Combobox(
+            flt_row,
+            state="readonly",
+            width=14,
+            values=["ALL", "PENDING", "RESOLVED", "ABSTAIN"],
+        )
+        self.p48_filter_status.set("ALL")
+        self.p48_filter_status.pack(side="left", padx=4)
+        self.p48_filter_status.bind(
+            "<<ComboboxSelected>>", lambda _e: self._render_p48_predictions()
+        )
+
+        p48_tree_box = ttk.Frame(p48_live)
+        p48_tree_box.pack(fill="x", pady=(2, 0))
+        p48_tree_box.rowconfigure(0, weight=1)
+        p48_tree_box.columnconfigure(0, weight=1)
+        p48_cols = (
+            "decision_time",
+            "candidate",
+            "timeframe",
+            "horizon",
+            "direction",
+            "cal_prob",
+            "status",
+            "actual_dir",
+            "outcome",
+            "maturity_time",
+        )
+        self.p48_pred_tree = ttk.Treeview(p48_tree_box, columns=p48_cols, show="headings", height=5)
+        p48_headers = {
+            "decision_time": ("Decision Time", 145, "w"),
+            "candidate": ("Candidate", 200, "w"),
+            "timeframe": ("TF", 50, "center"),
+            "horizon": ("Horizon", 70, "center"),
+            "direction": ("Direction", 75, "center"),
+            "cal_prob": ("Cal Prob", 75, "e"),
+            "status": ("Status", 90, "center"),
+            "actual_dir": ("Actual Dir", 80, "center"),
+            "outcome": ("Outcome", 85, "center"),
+            "maturity_time": ("Maturity Time", 145, "w"),
+        }
+        for col, (title, w, anc) in p48_headers.items():
+            self.p48_pred_tree.heading(col, text=title)
+            self.p48_pred_tree.column(
+                col,
+                width=w,
+                minwidth=max(45, w - 15),
+                stretch=False,
+                anchor=cast(Literal["w", "e", "center"], anc),
+            )
+        p48_vsb = ttk.Scrollbar(p48_tree_box, orient="vertical", command=self.p48_pred_tree.yview)
+        p48_hsb = ttk.Scrollbar(p48_tree_box, orient="horizontal", command=self.p48_pred_tree.xview)
+        self.p48_pred_tree.configure(yscrollcommand=p48_vsb.set, xscrollcommand=p48_hsb.set)
+        self.p48_pred_tree.grid(row=0, column=0, sticky="nsew")
+        p48_vsb.grid(row=0, column=1, sticky="ns")
+        p48_hsb.grid(row=1, column=0, sticky="ew")
+
+        # ==================================================================
         # 3) Session History & Sealed Evidence
         # ==================================================================
         hist_frame = ttk.LabelFrame(
@@ -595,6 +789,7 @@ class ObservationCenterController:
         self.start_polling()
         self.refresh_models()
         self.refresh_session_history()
+        self._refresh_p48_governance_status()
         self.on_mode_changed()
         self._on_inner_configure()
 
@@ -623,10 +818,19 @@ class ObservationCenterController:
         p = self.panel
         mode = p.var_obs_mode.get()
         self.refresh_models()
-        if mode == "live":
+        if mode == "exploratory_genuine":
+            p.combo_obs_account.config(state="readonly")
+            auth_ok, msg = self._refresh_p48_governance_status()
+            p.lbl_obs_eligibility.config(
+                text=msg,
+                foreground="#1b4d3e" if auth_ok else "#9c3414",
+            )
+            if not self._is_running:
+                p.btn_start_obs.config(state="normal" if auth_ok else "disabled")
+        elif mode == "live":
             p.combo_obs_account.config(state="readonly")
             p.lbl_obs_eligibility.config(
-                text="BLOCKED: Phase 46 contract UNAUTHORIZED (0 qualified candidates in WS2)",
+                text="BLOCKED: Phase 46 confirmatory contract UNAUTHORIZED (0 qualified candidates)",
                 foreground="#9c3414",
             )
             if not self._is_running:
@@ -639,6 +843,65 @@ class ObservationCenterController:
             )
             if not self._is_running:
                 p.btn_start_obs.config(state="normal")
+
+    def _selected_p48_candidate_ids(self) -> tuple[str, ...]:
+        return tuple(cid for cid, var in self._p48_candidate_vars.items() if var.get())
+
+    def _refresh_p48_governance_status(self) -> tuple[bool, str]:
+        models_dir = default_models_dir(self.root)
+        loaded_digests: dict[str, str] = {}
+        for spec in CANDIDATE_SPECS:
+            cid = spec.frozen_candidate_id
+            lbl = self._p48_candidate_status_lbls.get(cid)
+            bdir = models_dir / cid
+            if not bdir.is_dir():
+                if lbl is not None:
+                    lbl.config(text="MISSING BUNDLE", foreground="#9c3414")
+                continue
+            try:
+                man = verify_exploratory_bundle(bdir)
+                loaded_digests[cid] = man.bundle_sha256
+                if lbl is not None:
+                    lbl.config(
+                        text=(
+                            f"EXPLORATORY_FROZEN | tau={man.frozen_confidence_threshold:.4f} | "
+                            f"sha={man.bundle_sha256[:10]}"
+                        ),
+                        foreground="#1b4d3e",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                if lbl is not None:
+                    lbl.config(text=f"TAMPERED/INVALID: {exc}", foreground="#9c3414")
+
+        cpath = default_campaign_contract_path(self.root)
+        contract = load_campaign_contract(cpath) if cpath.is_file() else None
+        acct = ""
+        if hasattr(self.panel, "combo_obs_account"):
+            acct = str(self.panel.combo_obs_account.get() or "")
+        dur = 15
+        if hasattr(self.panel, "combo_obs_duration"):
+            with contextlib.suppress(ValueError):
+                dur = int(self.panel.combo_obs_duration.get() or 15)
+
+        res = validate_campaign_authorization(
+            contract,
+            requested_candidate_ids=self._selected_p48_candidate_ids(),
+            requested_duration_minutes=dur,
+            loaded_artifact_digests=loaded_digests,
+            account_ref=acct,
+            is_genuine_mode=True,
+        )
+        msg = (
+            "AUTHORIZED: Phase 48 Supervised Exploratory Campaign"
+            if res.authorized
+            else f"BLOCKED: {res.status} ({res.reasons[0] if res.reasons else 'Unauthorized'})"
+        )
+        if self.lbl_p48_auth_status is not None:
+            self.lbl_p48_auth_status.config(
+                text=msg,
+                foreground="#1b4d3e" if res.authorized else "#9c3414",
+            )
+        return res.authorized, msg
 
     def on_model_selected(self, _event: Any = None) -> None:
         p = self.panel
@@ -774,13 +1037,291 @@ class ObservationCenterController:
         self._worker_thread.start()
         return True
 
+    def start_phase48_synthetic_demo(self) -> bool:
+        """Run an offline Phase 48 parallel multi-model synthetic demonstration."""
+        import asyncio
+        import math
+        from datetime import timedelta
+
+        from iqoption_research.models.market import Candle, CandleSize
+        from iqoption_research.phase48.transport import SyntheticMultiTimeframeTransport
+
+        if self._is_running:
+            return False
+        cids = self._selected_p48_candidate_ids()
+        if not cids:
+            messagebox.showwarning("Phase 48", "Select at least one exploratory candidate.")
+            return False
+
+        p = self.panel
+        self._cancel_event.clear()
+        self._generation_id += 1
+        gen_id = self._generation_id
+        self._is_running = True
+        self._p48_recent_rows = []
+        self._p48_multi_series = {}
+        p.btn_start_obs.config(state="disabled")
+        p.btn_cancel_obs.config(state="normal")
+        if self.btn_p48_synth_demo is not None:
+            self.btn_p48_synth_demo.config(state="disabled")
+
+        session_id = f"p48_synth_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+        self._active_session_id = session_id
+        dur = int(p.combo_obs_duration.get() or 15)
+        if dur not in SUPPORTED_SESSION_DURATIONS_MINUTES:
+            dur = 15
+
+        self._append_log(
+            f"[Phase 48] Starting offline multi-model synthetic demo ({len(cids)} candidates, {dur}m window)..."
+        )
+
+        def _build_synth_candles(tf_sec: int, count: int, start_dt: datetime) -> list[Candle]:
+            out: list[Candle] = []
+            price = 1.0850
+            for i in range(count):
+                delta = 0.00025 * math.sin(i * 0.35 + tf_sec) + 0.00008 * math.cos(i * 0.13)
+                o = price
+                c = o + delta
+                h = max(o, c) + 0.00018
+                lo = min(o, c) - 0.00018
+                ts_dt = start_dt + timedelta(seconds=i * tf_sec)
+                from_ts = int(ts_dt.timestamp())
+                out.append(
+                    Candle(
+                        active_id=1,
+                        symbol="EURUSD",
+                        size=CandleSize(tf_sec),
+                        from_ts=from_ts,
+                        to_ts=from_ts + tf_sec,
+                        at_ts=from_ts + tf_sec,
+                        open=round(o, 5),
+                        high=round(h, 5),
+                        low=round(lo, 5),
+                        close=round(c, 5),
+                        bid=round(c, 5),
+                        ask=round(c + 0.0001, 5),
+                        volume=100 + (i % 25),
+                        is_complete=True,
+                        provenance="SYNTHETIC_ACCEPTANCE_FEED",
+                    )
+                )
+                price = c
+            return out
+
+        def worker() -> None:
+            try:
+                base_dt = datetime(2026, 11, 20, 12, 0, 0, tzinfo=UTC)
+                warmup_by_tf = {
+                    60: _build_synth_candles(60, 80, base_dt - timedelta(minutes=80)),
+                    300: _build_synth_candles(300, 80, base_dt - timedelta(minutes=400)),
+                    900: _build_synth_candles(900, 80, base_dt - timedelta(minutes=1200)),
+                }
+                events: list[tuple[int, Candle]] = []
+                m1_stream = _build_synth_candles(60, 90, base_dt)
+                m5_stream = _build_synth_candles(300, 18, base_dt)
+                m15_stream = _build_synth_candles(900, 6, base_dt)
+                for c in m1_stream:
+                    events.append((60, c))
+                for c in m5_stream:
+                    events.append((300, c))
+                for c in m15_stream:
+                    events.append((900, c))
+                events.sort(key=lambda item: (item[1].timestamp_utc, item[0]))
+
+                transport = SyntheticMultiTimeframeTransport(
+                    warmup_by_tf=warmup_by_tf,
+                    events=events,
+                    step_delay_seconds=0.01,
+                )
+                cfg = ParallelObservationConfig(
+                    session_id=session_id,
+                    candidate_ids=cids,
+                    duration_minutes=dur,
+                    is_genuine_mode=False,
+                    simulated_duration_seconds=30.0,
+                )
+                rt = ParallelObservationRuntime(cfg, repo_root=self.root)
+                self._p48_runtime = rt
+
+                def _on_prog(prog: ParallelObservationProgress) -> None:
+                    self._post_ui(lambda: self._apply_p48_progress(gen_id, prog))
+
+                res = asyncio.run(rt.run(transport, progress_callback=_on_prog))
+                self._post_ui(lambda: self._on_p48_finished(gen_id, res))
+            except Exception as exc:  # noqa: BLE001
+                err_msg = f"{type(exc).__name__}: {exc}"
+                self._post_ui(lambda: self._on_worker_error(gen_id, err_msg))
+
+        self._worker_thread = threading.Thread(target=worker, name="phase48-synth-obs", daemon=True)
+        self._worker_thread.start()
+        return True
+
+    def _apply_p48_progress(self, gen_id: int, prog: ParallelObservationProgress) -> None:
+        if gen_id != self._generation_id or self._is_destroyed:
+            return
+        p = self.panel
+        total = max(1.0, prog.elapsed_seconds + prog.remaining_seconds)
+        p.obs_progress_bar["value"] = min(100, int((prog.elapsed_seconds / total) * 100))
+        p.lbl_obs_status.config(
+            text=(
+                f"State: {prog.status} | Classification: {prog.evidence_classification} | "
+                f"Elapsed: {prog.elapsed_seconds:.1f}s | Remaining: {prog.remaining_seconds:.1f}s"
+            )
+        )
+        series_map: dict[str, list[float]] = {}
+        for cid, st in prog.per_candidate.items():
+            lbl = self._p48_kpi_labels.get(cid)
+            acc = st.get("accuracy")
+            acc_str = f"{acc * 100:.1f}%" if acc is not None else "N/A"
+            if lbl is not None:
+                lbl.config(
+                    text=(
+                        f"Warmup: {st['warmup_bars_loaded']}/{st['warmup_required']} | "
+                        f"Opps: {st['opportunities']} | Sel: {st['selected']}\n"
+                        f"Pending: {st['pending']} | Res: {st['resolved']} "
+                        f"(W:{st['correct']}/L:{st['incorrect']}) | Acc: {acc_str}"
+                    )
+                )
+            series_map[cid] = list(st.get("accuracy_series", []))
+        self._p48_multi_series = series_map
+        self._draw_multi_accuracy_chart(series_map)
+        self._p48_recent_rows = list(prog.recent_predictions)
+        self._render_p48_predictions()
+
+    def _on_p48_finished(self, gen_id: int, res: Any) -> None:
+        if gen_id != self._generation_id or self._is_destroyed:
+            return
+        p = self.panel
+        self._is_running = False
+        self._p48_runtime = None
+        p.btn_cancel_obs.config(state="disabled")
+        if self.btn_p48_synth_demo is not None:
+            self.btn_p48_synth_demo.config(state="normal")
+        self.on_mode_changed()
+        p.obs_progress_bar["value"] = 100
+        p.lbl_obs_status.config(
+            text=(
+                f"State: {res.status} | {res.evidence_classification} | "
+                f"Integrity: {'VERIFIED' if res.integrity_verified else 'FAILED'} | "
+                f"Elapsed: {res.elapsed_seconds:.1f}s"
+            )
+        )
+        self._append_log(
+            f"[Phase 48] Session {res.session_id} finished ({res.status}): {res.stop_reason}"
+        )
+        self.refresh_session_history()
+
+    def _render_p48_predictions(self) -> None:
+        tree = self.p48_pred_tree
+        if tree is None:
+            return
+        for item in tree.get_children():
+            tree.delete(item)
+        f_cand = self.p48_filter_cand.get() if self.p48_filter_cand else "ALL"
+        f_stat = self.p48_filter_status.get() if self.p48_filter_status else "ALL"
+        for row in self._p48_recent_rows:
+            cid = str(row.get("candidate_id", ""))
+            dec = str(row.get("decision", ""))
+            if f_cand != "ALL" and cid != f_cand:
+                continue
+            status = "ABSTAIN" if dec == "ABSTAIN" else "PENDING"
+            if f_stat != "ALL" and status != f_stat:
+                continue
+            dt_str = datetime.fromtimestamp(int(row["decision_timestamp"]), UTC).strftime(
+                "%Y-%m-%d %H:%M"
+            )
+            mat_str = datetime.fromtimestamp(int(row["maturity_timestamp"]), UTC).strftime(
+                "%Y-%m-%d %H:%M"
+            )
+            tf_lbl = {60: "M1", 300: "M5", 900: "M15"}.get(int(row["timeframe_seconds"]), "?")
+            prob = max(float(row["prob_up"]), float(row["prob_down"]))
+            tree.insert(
+                "",
+                "end",
+                values=(
+                    dt_str,
+                    cid,
+                    tf_lbl,
+                    f"H{row['horizon_bars']}",
+                    dec,
+                    f"{prob * 100:.2f}%",
+                    status,
+                    "PENDING",
+                    "PENDING",
+                    mat_str,
+                ),
+            )
+
+    def _draw_multi_accuracy_chart(self, series_map: dict[str, list[float]]) -> None:
+        canvas = getattr(self.panel, "obs_chart_canvas", None)
+        if canvas is None:
+            return
+        canvas.delete("all")
+        w = max(
+            260, canvas.winfo_width() if canvas.winfo_width() > 20 else int(canvas.cget("width"))
+        )
+        h = max(
+            170, canvas.winfo_height() if canvas.winfo_height() > 20 else int(canvas.cget("height"))
+        )
+        pad_l, pad_r, pad_t, pad_b = 34, 10, 18, 20
+        pw = w - pad_l - pad_r
+        ph = h - pad_t - pad_b
+        canvas.create_text(
+            w // 2,
+            8,
+            text="Phase 48 Multi-Model Cumulative Accuracy (Separate Series)",
+            font=("Segoe UI", 8, "bold"),
+            fill="#17324d",
+        )
+        canvas.create_rectangle(pad_l, pad_t, w - pad_r, h - pad_b, outline="#b8c4d0")
+        y50 = pad_t + ph * 0.50
+        canvas.create_line(pad_l, y50, w - pad_r, y50, fill="#9aa5b1", dash=(3, 3))
+        canvas.create_text(pad_l - 16, y50, text="50%", font=("Segoe UI", 7), fill="#52606d")
+
+        colors = ["#1d4ed8", "#0f766e", "#b45309"]
+        any_pts = False
+        for idx, (cid, vals) in enumerate(sorted(series_map.items())):
+            color = colors[idx % len(colors)]
+            canvas.create_text(
+                pad_l + 6 + idx * 95,
+                h - 8,
+                anchor="w",
+                text=f"● {cid.split('_')[3].upper()}",
+                font=("Segoe UI", 7, "bold"),
+                fill=color,
+            )
+            if not vals:
+                continue
+            any_pts = True
+            pts: list[float] = []
+            n = len(vals)
+            for i, v in enumerate(vals):
+                x = pad_l + (pw * (i / max(1, n - 1))) if n > 1 else pad_l + pw / 2
+                y = pad_t + ph * (1.0 - max(0.0, min(1.0, float(v))))
+                pts.extend([x, y])
+            if len(pts) >= 4:
+                canvas.create_line(*pts, fill=color, width=2)
+            elif len(pts) == 2:
+                canvas.create_oval(pts[0] - 3, pts[1] - 3, pts[0] + 3, pts[1] + 3, fill=color)
+        if not any_pts:
+            canvas.create_text(
+                pad_l + pw // 2,
+                pad_t + ph // 2,
+                text="No resolved Phase 48 predictions yet",
+                font=("Segoe UI", 8, "italic"),
+                fill="#7b8794",
+            )
+
     def cancel_synthetic_observation(self) -> None:
         self._cancel_event.set()
         if self._observer_ref:
             with contextlib.suppress(Exception):
                 self._observer_ref[0].cancel()
+        if self._p48_runtime is not None:
+            with contextlib.suppress(Exception):
+                self._p48_runtime.cancel()
         self.panel.btn_cancel_obs.config(state="disabled")
-        self._append_log("[Phase 46] Cancellation requested; sealing partial evidence...")
+        self._append_log("[Observation] Cancellation requested; sealing partial evidence...")
 
     def _build_progress_snapshot(
         self,
@@ -1101,7 +1642,11 @@ class ObservationCenterController:
         self._sessions_index.clear()
 
         candidates_dirs: list[Path] = []
-        for rel in (f"data/phase46/{DEFAULT_SHADOW_SESSIONS_DIR}", DEFAULT_SHADOW_SESSIONS_DIR):
+        for rel in (
+            PHASE48_SESSIONS_DIR,
+            f"data/phase46/{DEFAULT_SHADOW_SESSIONS_DIR}",
+            DEFAULT_SHADOW_SESSIONS_DIR,
+        ):
             base = self.root / rel
             if base.exists():
                 for child in sorted(base.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
@@ -1118,6 +1663,31 @@ class ObservationCenterController:
             if sid in self._sessions_index:
                 continue
             self._sessions_index[sid] = sdir
+            if str(meta.get("schema_version", "")).startswith("phase48") or sid.startswith("p48_"):
+                is_gen = bool(meta.get("is_genuine_mode", False))
+                prov = "GENUINE_EXPLORATORY" if is_gen else "SYNTHETIC_P48"
+                cids = meta.get("candidate_ids", [])
+                mid_str = (
+                    f"{len(cids)} models" if len(cids) > 1 else (cids[0] if cids else "unknown")
+                )
+                tf_lbl = "MULTI" if len(cids) > 1 else "NATIVE"
+                state = str(meta.get("status", "UNKNOWN"))
+                per_diag = meta.get("per_candidate_diagnostics", {})
+                resolved = sum(
+                    int(d.get("correct_outcomes", 0))
+                    + int(d.get("incorrect_outcomes", 0))
+                    + int(d.get("ties", 0))
+                    for d in per_diag.values()
+                )
+                acc_str = "Per-Model"
+                tree.insert(
+                    "",
+                    "end",
+                    iid=sid,
+                    values=(sid, prov, tf_lbl, mid_str, state, resolved, acc_str),
+                )
+                continue
+
             is_synth = bool(meta.get("is_synthetic", False))
             prov = "SYNTHETIC" if is_synth else "GENUINE"
             tf_sec = int(meta.get("timeframe", 60))
@@ -1172,9 +1742,14 @@ class ObservationCenterController:
             messagebox.showinfo("No Session", "No observation session selected or available.")
             return
         sdir = self._sessions_index[sid]
-        ver = verify_session_integrity(sdir)
-        ok = bool(ver.get("is_valid", False))
-        issues = list(ver.get("errors", []))
+        if (sdir / "session_manifest.json").is_file() and (
+            "phase48" in str(sdir) or sid.startswith("p48_")
+        ):
+            ok, issues = verify_phase48_session_integrity(sdir)
+        else:
+            ver = verify_session_integrity(sdir)
+            ok = bool(ver.get("is_valid", False))
+            issues = list(ver.get("errors", []))
         msg = f"=== SESSION INTEGRITY ({sid}) ===\nValid: {ok}"
         if issues:
             msg += "\nIssues:\n" + "\n".join(f"  - {i}" for i in issues)

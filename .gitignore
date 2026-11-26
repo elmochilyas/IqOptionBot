@@ -44,6 +44,8 @@ reports/*
 !reports/phase43/
 !reports/phase45/
 !reports/phase46/
+!reports/phase47/
+!reports/phase48/
 
 # Generated research workspaces, agent state, and archives
 data/*

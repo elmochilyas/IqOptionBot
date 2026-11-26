@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import joblib
@@ -26,10 +26,12 @@ from iqoption_research.phase48.artifacts import (
 from iqoption_research.phase48.constants import CANDIDATE_SPECS, DISPOSITION, EXECUTION_AUTHORITY
 from iqoption_research.phase48.governance import (
     CampaignAuthorizationStatus,
+    CampaignUsageStore,
     ResearchPathwayTier,
     authorize_campaign_contract,
     build_default_proposed_campaign_contract,
     load_campaign_contract,
+    revoke_campaign_contract,
     save_campaign_contract,
     validate_campaign_authorization,
 )
@@ -221,3 +223,96 @@ def test_artifact_integrity_verification_and_tamper_rejection(tmp_path: Path) ->
     (bdir / "model.joblib").write_bytes(b"corrupted_bytes")
     with pytest.raises(ArtifactIntegrityError):
         load_verified_exploratory_bundle(bdir)
+
+
+def test_stage_a_enforces_duration_drain_expiration_revocation_and_usage(tmp_path: Path) -> None:
+    m1 = create_synthetic_frozen_bundle(tmp_path, 0)
+    proposed = build_default_proposed_campaign_contract({m1.frozen_candidate_id: m1.bundle_sha256})
+    authorized = authorize_campaign_contract(
+        proposed,
+        authorized_by="owner@example.local",
+        allowed_account_ref="vault_practice_eur",
+        authorized_stage="STAGE_A_15M",
+        hours_valid=2,
+        hmac_key=b"test-owner-secret",
+    )
+
+    # Stage A rejects longer durations (120m)
+    bad_dur = validate_campaign_authorization(
+        authorized,
+        requested_candidate_ids=(m1.frozen_candidate_id,),
+        requested_duration_minutes=120,
+        loaded_artifact_digests={m1.frozen_candidate_id: m1.bundle_sha256},
+        account_ref="vault_practice_eur",
+        is_genuine_mode=True,
+        hmac_key=b"test-owner-secret",
+    )
+    assert bad_dur.authorized is False
+
+    # Stage A rejects outcome drain
+    bad_drain = validate_campaign_authorization(
+        authorized,
+        requested_candidate_ids=(m1.frozen_candidate_id,),
+        requested_duration_minutes=15,
+        loaded_artifact_digests={m1.frozen_candidate_id: m1.bundle_sha256},
+        account_ref="vault_practice_eur",
+        is_genuine_mode=True,
+        requested_allow_outcome_drain=True,
+        requested_drain_minutes=15,
+        hmac_key=b"test-owner-secret",
+    )
+    assert bad_drain.authorized is False
+
+    # Wrong HMAC key rejected
+    bad_key = validate_campaign_authorization(
+        authorized,
+        requested_candidate_ids=(m1.frozen_candidate_id,),
+        requested_duration_minutes=15,
+        loaded_artifact_digests={m1.frozen_candidate_id: m1.bundle_sha256},
+        account_ref="vault_practice_eur",
+        is_genuine_mode=True,
+        hmac_key=b"wrong-key",
+    )
+    assert bad_key.authorized is False
+
+    # Expired authorization rejected
+    expired = validate_campaign_authorization(
+        authorized,
+        requested_candidate_ids=(m1.frozen_candidate_id,),
+        requested_duration_minutes=15,
+        loaded_artifact_digests={m1.frozen_candidate_id: m1.bundle_sha256},
+        account_ref="vault_practice_eur",
+        is_genuine_mode=True,
+        now_utc=datetime.now(UTC) + timedelta(hours=5),
+        hmac_key=b"test-owner-secret",
+    )
+    assert expired.authorized is False
+
+    # Durable atomic session consumption accounting
+    usage = CampaignUsageStore(tmp_path / "usage.json")
+    usage.reserve_session(authorized, session_id="ses_1", stage_id="STAGE_A_15M", max_sessions=1)
+    exhausted = validate_campaign_authorization(
+        authorized,
+        requested_candidate_ids=(m1.frozen_candidate_id,),
+        requested_duration_minutes=15,
+        loaded_artifact_digests={m1.frozen_candidate_id: m1.bundle_sha256},
+        account_ref="vault_practice_eur",
+        is_genuine_mode=True,
+        usage_store=usage,
+        session_id="ses_2",
+        hmac_key=b"test-owner-secret",
+    )
+    assert exhausted.authorized is False
+
+    # Revocation rejected
+    revoked = revoke_campaign_contract(authorized, revoked_by="owner", reason="test")
+    rev_res = validate_campaign_authorization(
+        revoked,
+        requested_candidate_ids=(m1.frozen_candidate_id,),
+        requested_duration_minutes=15,
+        loaded_artifact_digests={m1.frozen_candidate_id: m1.bundle_sha256},
+        account_ref="vault_practice_eur",
+        is_genuine_mode=True,
+        hmac_key=b"test-owner-secret",
+    )
+    assert rev_res.authorized is False

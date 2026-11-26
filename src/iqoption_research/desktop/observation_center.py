@@ -43,7 +43,10 @@ from iqoption_research.phase48.constants import (
 )
 from iqoption_research.phase48.evidence import verify_phase48_session_integrity
 from iqoption_research.phase48.governance import (
+    CampaignUsageStore,
     default_campaign_contract_path,
+    default_campaign_usage_path,
+    get_stage_spec,
     load_campaign_contract,
     validate_campaign_authorization,
 )
@@ -131,6 +134,7 @@ class ObservationCenterController:
         self._p48_kpi_labels: dict[str, ttk.Label] = {}
         self._p48_multi_series: dict[str, list[float]] = {}
         self._p48_recent_rows: list[dict[str, Any]] = []
+        self._p48_recent_outcomes: dict[str, dict[str, Any]] = {}
         self._p48_runtime: ParallelObservationRuntime | None = None
         self.p48_pred_tree: ttk.Treeview | None = None
         self.p48_filter_cand: ttk.Combobox | None = None
@@ -876,13 +880,21 @@ class ObservationCenterController:
         cpath = default_campaign_contract_path(self.root)
         contract = load_campaign_contract(cpath) if cpath.is_file() else None
         acct = ""
-        if hasattr(self.panel, "combo_obs_account"):
+        if hasattr(self.panel, "_resolve_selected_account_id"):
+            acct = str(self.panel._resolve_selected_account_id() or "")  # noqa: SLF001
+        if not acct and hasattr(self.panel, "combo_obs_account"):
             acct = str(self.panel.combo_obs_account.get() or "")
         dur = 15
         if hasattr(self.panel, "combo_obs_duration"):
             with contextlib.suppress(ValueError):
                 dur = int(self.panel.combo_obs_duration.get() or 15)
 
+        usage_store = (
+            CampaignUsageStore(default_campaign_usage_path(self.root, contract.contract_id))
+            if contract is not None
+            else None
+        )
+        stage_spec = get_stage_spec(contract, contract.authorized_stage) if contract else None
         res = validate_campaign_authorization(
             contract,
             requested_candidate_ids=self._selected_p48_candidate_ids(),
@@ -890,6 +902,9 @@ class ObservationCenterController:
             loaded_artifact_digests=loaded_digests,
             account_ref=acct,
             is_genuine_mode=True,
+            requested_allow_outcome_drain=bool(stage_spec and stage_spec.allow_outcome_drain),
+            requested_drain_minutes=(stage_spec.max_outcome_drain_minutes if stage_spec else 0),
+            usage_store=usage_store,
         )
         msg = (
             "AUTHORIZED: Phase 48 Supervised Exploratory Campaign"
@@ -1156,6 +1171,180 @@ class ObservationCenterController:
         self._worker_thread.start()
         return True
 
+    def start_genuine_exploratory_observation(
+        self,
+        *,
+        transport_factory: Callable[[Any, tuple[int, ...]], Any] | None = None,
+        vault_factory: Callable[[], Any] | None = None,
+        confirm_override: bool | None = None,
+    ) -> bool:
+        """Start an explicitly authorized, supervised genuine Phase 48 exploratory session."""
+        import asyncio
+
+        from iqoption_research.phase48.transport import IQOptionReadOnlyMultiTransport
+
+        if self._is_running:
+            return False
+
+        p = self.panel
+        cids = self._selected_p48_candidate_ids()
+        if not cids:
+            messagebox.showwarning("Phase 48", "Select at least one exploratory candidate.")
+            return False
+
+        account_id = str(p._resolve_selected_account_id() or "")  # noqa: SLF001
+        if not account_id:
+            messagebox.showwarning(
+                "Account Required",
+                "Select a saved Windows Credential Vault account for genuine observation.",
+            )
+            return False
+
+        models_dir = default_models_dir(self.root)
+        loaded_digests: dict[str, str] = {}
+        selected_tfs: list[int] = []
+        for cid in cids:
+            try:
+                man = verify_exploratory_bundle(models_dir / cid)
+                loaded_digests[cid] = man.bundle_sha256
+                selected_tfs.append(man.native_timeframe_seconds)
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror(
+                    "Artifact Integrity Error",
+                    f"Frozen bundle verification failed for {cid}: {exc}",
+                )
+                return False
+
+        cpath = default_campaign_contract_path(self.root)
+        if not cpath.is_file():
+            messagebox.showwarning(
+                "Genuine Exploratory Blocked",
+                "No Phase 48 campaign contract found. Authorize via CLI first.",
+            )
+            return False
+
+        contract = load_campaign_contract(cpath)
+        dur = int(p.combo_obs_duration.get() or 15)
+        stage_spec = get_stage_spec(contract, contract.authorized_stage)
+        allow_drain = bool(stage_spec and stage_spec.allow_outcome_drain)
+        drain_min = stage_spec.max_outcome_drain_minutes if stage_spec else 0
+        usage_store = CampaignUsageStore(
+            default_campaign_usage_path(self.root, contract.contract_id)
+        )
+        session_id = f"p48_gen_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+
+        auth_res = validate_campaign_authorization(
+            contract,
+            requested_candidate_ids=cids,
+            requested_duration_minutes=dur,
+            loaded_artifact_digests=loaded_digests,
+            account_ref=account_id,
+            is_genuine_mode=True,
+            requested_allow_outcome_drain=allow_drain,
+            requested_drain_minutes=drain_min,
+            usage_store=usage_store,
+            session_id=session_id,
+        )
+        if not auth_res.authorized:
+            messagebox.showwarning(
+                "Genuine Exploratory Blocked",
+                f"{auth_res.status}:\n" + "\n".join(auth_res.reasons),
+            )
+            return False
+
+        display_acc = p.combo_obs_account.get() or account_id
+        confirmed = (
+            confirm_override
+            if confirm_override is not None
+            else messagebox.askyesno(
+                "Start Genuine Exploratory Observation?",
+                f"Campaign: {contract.contract_id} ({contract.authorized_stage})\n"
+                f"Account: {display_acc}\n"
+                f"Candidates: {', '.join(cids)}\n"
+                f"Duration: {dur} min (Drain: {drain_min} min)\n\n"
+                "Read-only market data only. execution_authority=NONE.\n"
+                "Proceed with supervised observation?",
+                parent=p.dashboard.window,
+            )
+        )
+        if not confirmed:
+            return False
+
+        try:
+            if vault_factory is not None:
+                vault = vault_factory()
+            else:
+                from iqoption_research.auth.vault import WindowsCredentialVault
+
+                vault = WindowsCredentialVault()
+            creds = vault.account_store().load(account_id)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(
+                "Vault Error",
+                f"Failed to load credentials from Windows Vault: {type(exc).__name__}",
+            )
+            return False
+
+        self._cancel_event.clear()
+        self._generation_id += 1
+        gen_id = self._generation_id
+        self._is_running = True
+        self._active_session_id = session_id
+        self._p48_recent_rows = []
+        self._p48_recent_outcomes = {}
+        self._p48_multi_series = {}
+        p.btn_start_obs.config(state="disabled")
+        p.btn_cancel_obs.config(state="normal")
+        if self.btn_p48_synth_demo is not None:
+            self.btn_p48_synth_demo.config(state="disabled")
+
+        self._append_log(
+            f"[Phase 48 Genuine] Starting supervised session {session_id} "
+            f"({contract.authorized_stage}, {dur}m, {len(cids)} models)..."
+        )
+
+        tfs_tuple = tuple(sorted(set(selected_tfs)))
+
+        def worker() -> None:
+            try:
+                transport = (
+                    transport_factory(creds, tfs_tuple)
+                    if transport_factory is not None
+                    else IQOptionReadOnlyMultiTransport(
+                        creds,
+                        timeframes=tfs_tuple,
+                        require_practice_account=contract.require_practice_account,
+                    )
+                )
+                cfg = ParallelObservationConfig(
+                    session_id=session_id,
+                    candidate_ids=cids,
+                    duration_minutes=dur,
+                    is_genuine_mode=True,
+                    account_ref=account_id,
+                    campaign_contract=contract,
+                    models_dir=models_dir,
+                    allow_outcome_drain=allow_drain,
+                    max_outcome_drain_minutes=drain_min,
+                )
+                rt = ParallelObservationRuntime(cfg, repo_root=self.root)
+                self._p48_runtime = rt
+
+                def _on_prog(prog: ParallelObservationProgress) -> None:
+                    self._post_ui(lambda: self._apply_p48_progress(gen_id, prog))
+
+                res = asyncio.run(rt.run(transport, progress_callback=_on_prog))
+                self._post_ui(lambda: self._on_p48_finished(gen_id, res))
+            except Exception as exc:  # noqa: BLE001
+                err_msg = f"{type(exc).__name__}: {exc}"
+                self._post_ui(lambda: self._on_worker_error(gen_id, err_msg))
+
+        self._worker_thread = threading.Thread(
+            target=worker, name="phase48-genuine-obs", daemon=True
+        )
+        self._worker_thread.start()
+        return True
+
     def _apply_p48_progress(self, gen_id: int, prog: ParallelObservationProgress) -> None:
         if gen_id != self._generation_id or self._is_destroyed:
             return
@@ -1186,6 +1375,7 @@ class ObservationCenterController:
         self._p48_multi_series = series_map
         self._draw_multi_accuracy_chart(series_map)
         self._p48_recent_rows = list(prog.recent_predictions)
+        self._p48_recent_outcomes = dict(prog.recent_outcomes)
         self._render_p48_predictions()
 
     def _on_p48_finished(self, gen_id: int, res: Any) -> None:
@@ -1222,9 +1412,23 @@ class ObservationCenterController:
         for row in self._p48_recent_rows:
             cid = str(row.get("candidate_id", ""))
             dec = str(row.get("decision", ""))
+            rid = str(row.get("record_id", ""))
             if f_cand != "ALL" and cid != f_cand:
                 continue
-            status = "ABSTAIN" if dec == "ABSTAIN" else "PENDING"
+            out = self._p48_recent_outcomes.get(rid)
+            if out is not None and str(out.get("resolution_status", "")) == "RESOLVED":
+                status = "RESOLVED"
+                actual_dir = str(out.get("actual_direction", "N/A"))
+                outcome_lbl = str(out.get("classification", "N/A"))
+            elif dec == "ABSTAIN":
+                status = "ABSTAIN"
+                actual_dir = str(out.get("actual_direction", "N/A")) if out else "PENDING"
+                outcome_lbl = "ABSTAIN"
+            else:
+                status = "PENDING"
+                actual_dir = "PENDING"
+                outcome_lbl = "PENDING"
+
             if f_stat != "ALL" and status != f_stat:
                 continue
             dt_str = datetime.fromtimestamp(int(row["decision_timestamp"]), UTC).strftime(
@@ -1246,8 +1450,8 @@ class ObservationCenterController:
                     dec,
                     f"{prob * 100:.2f}%",
                     status,
-                    "PENDING",
-                    "PENDING",
+                    actual_dir,
+                    outcome_lbl,
                     mat_str,
                 ),
             )
@@ -1730,6 +1934,13 @@ class ObservationCenterController:
             messagebox.showinfo("No Session", "No observation session selected or available.")
             return
         sdir = self._sessions_index[sid]
+        if "phase48" in str(sdir) or sid.startswith("p48_"):
+            meta = json.loads((sdir / "session.json").read_text(encoding="utf-8"))
+            self._append_log(
+                f"=== PHASE 48 DIAGNOSTICS ({meta.get('evidence_classification')}): {sid} ===\n"
+                + json.dumps(meta.get("per_candidate_diagnostics", {}), indent=2, sort_keys=True)
+            )
+            return
         diag = compute_phase46_session_diagnostics(session_id=sid, session_dir=sdir)
         self._append_log(
             f"=== WS6 DIAGNOSTICS ({'SYNTHETIC' if diag.is_synthetic else 'GENUINE'}): {sid} ===\n"
@@ -1772,6 +1983,42 @@ class ObservationCenterController:
 
         out_dir = target_base / sid
         out_dir.mkdir(parents=True, exist_ok=True)
+        if "phase48" in str(sdir) or sid.startswith("p48_"):
+            for fname in (
+                "session.json",
+                "session_manifest.json",
+                "inputs.jsonl",
+                "predictions.jsonl",
+                "outcomes.jsonl",
+                "diagnostics.jsonl",
+            ):
+                src_f = sdir / fname
+                if src_f.exists():
+                    shutil.copy2(src_f, out_dir / fname)
+            ok, issues = verify_phase48_session_integrity(sdir)
+            meta = json.loads((sdir / "session.json").read_text(encoding="utf-8"))
+            (out_dir / "verification_result.json").write_text(
+                json.dumps(
+                    {
+                        "session_id": sid,
+                        "verified_at_utc": datetime.now(UTC).isoformat(),
+                        "is_valid": ok,
+                        "issues": issues,
+                        "is_genuine_mode": bool(meta.get("is_genuine_mode", False)),
+                        "evidence_classification": meta.get("evidence_classification"),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            self._append_log(f"[Export] Phase 48 sealed evidence exported to {out_dir}")
+            messagebox.showinfo(
+                "Export Complete",
+                f"Phase 48 sealed evidence exported to:\n{out_dir}",
+            )
+            return out_dir
+
         diag = compute_phase46_session_diagnostics(session_id=sid, session_dir=sdir)
         json_p, md_p = write_phase46_synthetic_diagnostics_reports(diag, out_dir=out_dir)
 

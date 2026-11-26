@@ -1,13 +1,15 @@
-"""Phase 48 WS5, WS6, WS7 — Parallel Multi-Model Exploratory Observation Runtime.
+"""Phase 48 WS5, WS6, WS7 & 48.1 — Parallel Multi-Model Exploratory Observation Runtime.
 
 Supports simultaneous independent lifecycles for M1 H15, M5 H6, and M15 H4
 over a single shared read-only transport, with fail-closed governance,
-pre-maturity prediction commitment, bounded memory, and cooperative cancellation.
+atomic session consumption accounting, verified to_ts decision boundaries,
+pre-maturity prediction commitment, and cooperative cancellation.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 import time
 import uuid
@@ -43,9 +45,12 @@ from iqoption_research.phase48.evidence import (
     OutcomeResolutionRecord,
     Phase48SessionLedger,
     PredictionCommitmentRecord,
+    verify_phase48_session_integrity,
 )
 from iqoption_research.phase48.governance import (
+    CampaignUsageStore,
     ExploratoryCampaignContract,
+    default_campaign_usage_path,
     validate_campaign_authorization,
 )
 from iqoption_research.phase48.transport import (
@@ -71,6 +76,7 @@ class ParallelObservationConfig:
     campaign_contract: ExploratoryCampaignContract | None = None
     models_dir: Path | None = None
     sessions_dir: Path | None = None
+    usage_store_path: Path | None = None
     allow_outcome_drain: bool = False
     max_outcome_drain_minutes: int = 0
     stale_stream_timeout_seconds: float = 120.0
@@ -95,7 +101,8 @@ class _CandidateState:
     outcomes_by_id: dict[str, dict[str, Any]]
     accuracy_series: list[float]
     failure_cases: list[dict[str, Any]]
-    last_candle_ts: int | None = None
+    last_candle_close_ts: int | None = None
+    last_candle_digest: str = ""
     warmup_bars_loaded: int = 0
     warmup_complete: bool = False
     candle_gaps: int = 0
@@ -130,6 +137,7 @@ class ParallelObservationProgress:
     in_outcome_drain: bool
     per_candidate: dict[str, dict[str, Any]]
     recent_predictions: list[dict[str, Any]]
+    recent_outcomes: dict[str, dict[str, Any]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +165,7 @@ class ParallelObservationRuntime:
         config: ParallelObservationConfig,
         *,
         repo_root: Path,
+        hmac_key: bytes | None = None,
     ) -> None:
         if config.duration_minutes not in SUPPORTED_SESSION_DURATIONS_MINUTES:
             raise ValueError(
@@ -173,7 +182,6 @@ class ParallelObservationRuntime:
         self._sessions_dir = config.sessions_dir or (self.repo_root / PHASE48_SESSIONS_DIR)
         self.session_dir = self._sessions_dir / config.session_id
 
-        # 1. Load & cryptographically verify all selected candidate bundles BEFORE governance check
         self._bundles: dict[str, LoadedExploratoryBundle] = {}
         loaded_digests: dict[str, str] = {}
         for cid in config.candidate_ids:
@@ -182,7 +190,19 @@ class ParallelObservationRuntime:
             self._bundles[cid] = bundle
             loaded_digests[cid] = bundle.manifest.bundle_sha256
 
-        # 2. Fail-closed exploratory governance & campaign authorization gate
+        self._usage_store: CampaignUsageStore | None = None
+        if config.is_genuine_mode and config.campaign_contract is not None:
+            upath = config.usage_store_path or default_campaign_usage_path(
+                self.repo_root, config.campaign_contract.contract_id
+            )
+            self._usage_store = CampaignUsageStore(upath)
+
+        eff_key = hmac_key
+        if eff_key is None:
+            env_k = os.environ.get("IQOPTION_PHASE48_OWNER_KEY")
+            if env_k:
+                eff_key = env_k.encode("utf-8")
+
         auth_res = validate_campaign_authorization(
             config.campaign_contract,
             requested_candidate_ids=config.candidate_ids,
@@ -190,10 +210,18 @@ class ParallelObservationRuntime:
             loaded_artifact_digests=loaded_digests,
             account_ref=config.account_ref,
             is_genuine_mode=config.is_genuine_mode,
+            requested_allow_outcome_drain=config.allow_outcome_drain,
+            requested_drain_minutes=config.max_outcome_drain_minutes,
+            usage_store=self._usage_store,
+            session_id=config.session_id,
+            hmac_key=eff_key,
         )
         if not auth_res.authorized:
             raise GovernanceBlockedError(f"{auth_res.status}: " + "; ".join(auth_res.reasons))
 
+        self._campaign_sha256 = (
+            config.campaign_contract.contract_sha256 if config.campaign_contract else ""
+        )
         self._evidence_classification = (
             EXPLORATORY_EVIDENCE_CLASSIFICATION
             if config.is_genuine_mode
@@ -216,9 +244,29 @@ class ParallelObservationRuntime:
                 "Genuine exploratory mode cannot run on a synthetic transport."
             )
 
+        # Atomically reserve session budget before connecting to broker
+        if (
+            self.config.is_genuine_mode
+            and self._usage_store is not None
+            and self.config.campaign_contract is not None
+            and self.config.campaign_contract.authorized_stage
+        ):
+            stage_id = self.config.campaign_contract.authorized_stage
+            max_sess = 1
+            for s in self.config.campaign_contract.stage_plan:
+                if s.stage_id == stage_id:
+                    max_sess = s.target_sessions
+                    break
+            self._usage_store.reserve_session(
+                self.config.campaign_contract,
+                session_id=self.config.session_id,
+                stage_id=stage_id,
+                max_sessions=max_sess,
+            )
+
         ledger = Phase48SessionLedger(self.session_dir)
         started_utc = datetime.now(UTC).isoformat()
-        session_meta = {
+        session_meta: dict[str, Any] = {
             "session_id": self.config.session_id,
             "schema_version": "phase48.1",
             "is_genuine_mode": self.config.is_genuine_mode,
@@ -231,6 +279,7 @@ class ParallelObservationRuntime:
             "campaign_contract_id": (
                 self.config.campaign_contract.contract_id if self.config.campaign_contract else None
             ),
+            "campaign_contract_sha256": self._campaign_sha256,
             "status": "RUNNING",
         }
         ledger.write_session_metadata(session_meta)
@@ -271,7 +320,6 @@ class ParallelObservationRuntime:
 
         try:
             await transport.connect()
-            # Warmup per native timeframe
             warmup_by_tf: dict[int, list[Candle]] = {}
             for st in states.values():
                 tf = st.timeframe_seconds
@@ -303,11 +351,14 @@ class ParallelObservationRuntime:
                     for wc in warmup_by_tf[tf]:
                         if wc.is_complete:
                             st.candles.append(wc)
-                            st.last_candle_ts = int(wc.timestamp_utc.timestamp())
+                            st.last_candle_close_ts = int(wc.to_ts)
                     st.warmup_bars_loaded = len(st.candles)
                     st.warmup_complete = st.warmup_bars_loaded >= MIN_WARMUP_BARS_P47
 
-            # Main observation loop
+            active_tfs = sorted({
+                st.timeframe_seconds for st in states.values() if st.disabled_reason is None
+            })
+
             while True:
                 if self._cancel_event.is_set():
                     final_status = "CANCELLED"
@@ -329,31 +380,47 @@ class ParallelObservationRuntime:
                         break
 
                 ev = await transport.next_event(timeout_seconds=0.5)
+                if self._cancel_event.is_set():
+                    final_status = "CANCELLED"
+                    stop_reason = "Operator cancelled observation session."
+                    interruptions += 1
+                    break
+
+                now_m = time.monotonic()
                 if ev is None:
-                    # Check stale stream
+                    # Global and per-timeframe stale stream checks
                     if (
-                        time.monotonic() - transport.last_heartbeat_mono
+                        now_m - transport.last_heartbeat_mono
                         > self.config.stale_stream_timeout_seconds
                     ):
                         final_status = "INTERRUPTED_STALE"
                         stop_reason = "Stale market stream timeout exceeded (no auto-reconnect)."
                         interruptions += 1
                         break
+                    stale_tfs = [
+                        tf
+                        for tf in active_tfs
+                        if (now_m - transport.last_heartbeat_for_tf(tf))
+                        > self.config.stale_stream_timeout_seconds
+                    ]
+                    if stale_tfs:
+                        final_status = "INTERRUPTED_STALE"
+                        stop_reason = f"Stale timeframe stream(s): {stale_tfs} (no auto-reconnect)."
+                        interruptions += 1
+                        break
                     if transport.is_synthetic:
-                        # Synthetic EOF reached
                         break
                     self._emit_progress(
                         progress_callback,
                         states,
                         recent_predictions,
-                        elapsed,
-                        max(0.0, decision_window_sec - elapsed),
+                        now_m - start_mono,
+                        max(0.0, decision_window_sec - (now_m - start_mono)),
                         in_drain,
                         "RUNNING",
                     )
                     continue
 
-                # Provenance validation on every closed candle event
                 if (
                     not ev.source_provenance
                     or not ev.server_time_fresh
@@ -364,28 +431,35 @@ class ParallelObservationRuntime:
                             st.provenance_failures += 1
                     final_status = "FAILED_PROVENANCE"
                     stop_reason = (
-                        f"Provenance check failed on {ev.timeframe_seconds}s event "
-                        f"({ev.request_id})."
+                        f"Provenance or server-clock check failed on {ev.timeframe_seconds}s event."
                     )
                     interruptions += 1
                     ledger.append_diagnostic({
                         "type": "PROVENANCE_FAILURE",
                         "timeframe_seconds": ev.timeframe_seconds,
-                        "request_id": ev.request_id,
+                        "server_time_fresh": ev.server_time_fresh,
+                        "clock_sync_status": ev.clock_sync_status,
                         "at_utc": datetime.now(UTC).isoformat(),
                     })
                     break
 
                 ledger.append_input({
                     "timeframe_seconds": ev.timeframe_seconds,
-                    "candle_ts": int(ev.candle.timestamp_utc.timestamp()),
+                    "candle_open_ts": int(ev.candle.from_ts),
+                    "candle_close_ts": int(ev.candle.to_ts),
                     "close": ev.candle.close,
                     "candle_digest": ev.candle_digest(),
                     "request_id": ev.request_id,
                     "source_provenance": ev.source_provenance,
+                    "verified_server_time_ns": ev.verified_server_time_ns,
+                    "clock_sync_status": ev.clock_sync_status,
                     "is_synthetic": ev.is_synthetic,
                     "received_at_utc": ev.received_at_utc,
                 })
+
+                # Re-check deadline AFTER awaiting event before permitting new predictions
+                elapsed_after = time.monotonic() - start_mono
+                in_drain_after = elapsed_after >= decision_window_sec
 
                 for st in states.values():
                     if (
@@ -398,17 +472,16 @@ class ParallelObservationRuntime:
                         ev=ev,
                         ledger=ledger,
                         recent_predictions=recent_predictions,
-                        allow_new_predictions=not in_drain,
+                        allow_new_predictions=not in_drain_after,
                     )
 
-                elapsed = time.monotonic() - start_mono
                 self._emit_progress(
                     progress_callback,
                     states,
                     recent_predictions,
-                    elapsed,
-                    max(0.0, decision_window_sec - elapsed),
-                    in_drain,
+                    elapsed_after,
+                    max(0.0, decision_window_sec - elapsed_after),
+                    in_drain_after,
                     "RUNNING",
                 )
 
@@ -423,7 +496,6 @@ class ParallelObservationRuntime:
         finally:
             await transport.disconnect()
 
-        # Preserve any unresolved pending predictions explicitly without fabrication
         now_utc = datetime.now(UTC).isoformat()
         for st in states.values():
             for rid, pend in list(st.pending.items()):
@@ -433,6 +505,8 @@ class ParallelObservationRuntime:
                     candidate_id=st.candidate_id,
                     decision_timestamp=pend.commitment.decision_timestamp,
                     maturity_timestamp=pend.commitment.maturity_timestamp,
+                    outcome_candle_open_ts=None,
+                    outcome_candle_close_ts=None,
                     outcome_candle_close=None,
                     outcome_candle_digest="",
                     outcome_provenance="",
@@ -479,8 +553,6 @@ class ParallelObservationRuntime:
         ledger.write_session_metadata(session_meta)
         ledger.seal_manifest()
 
-        from iqoption_research.phase48.evidence import verify_phase48_session_integrity
-
         ok_integrity, _ = verify_phase48_session_integrity(self.session_dir)
 
         self._emit_progress(
@@ -515,29 +587,41 @@ class ParallelObservationRuntime:
         allow_new_predictions: bool,
     ) -> None:
         candle = ev.candle
-        ts = int(candle.timestamp_utc.timestamp())
+        open_ts = int(candle.from_ts)
+        close_ts = int(candle.to_ts)
+        c_digest = ev.candle_digest()
 
-        # Deduplication check
-        if st.last_candle_ts is not None and ts <= st.last_candle_ts:
-            st.duplicate_candles_rejected += 1
-            return
-
-        # Continuity / gap check
-        if st.last_candle_ts is not None and (ts - st.last_candle_ts) > st.timeframe_seconds:
-            st.candle_gaps += 1
+        # Duplicate / conflicting candle check
+        if st.last_candle_close_ts is not None:
+            if (
+                close_ts == st.last_candle_close_ts
+                and st.last_candle_digest
+                and c_digest != st.last_candle_digest
+            ):
+                raise ProvenanceError(
+                    f"Conflicting candle payload for {st.candidate_id} at close_ts={close_ts}"
+                )
+            if close_ts <= st.last_candle_close_ts:
+                st.duplicate_candles_rejected += 1
+                return
+            if (close_ts - st.last_candle_close_ts) > st.timeframe_seconds:
+                st.candle_gaps += 1
 
         st.candles.append(candle)
-        st.last_candle_ts = ts
+        st.last_candle_close_ts = close_ts
+        st.last_candle_digest = c_digest
         st.warmup_bars_loaded = len(st.candles)
         st.warmup_complete = st.warmup_bars_loaded >= MIN_WARMUP_BARS_P47
 
-        # 1. Resolve any matured pending predictions for this candidate
-        now_utc = datetime.now(UTC).isoformat()
+        now_dt = datetime.now(UTC)
+        now_utc = now_dt.isoformat()
+
+        # 1. Resolve matured pending predictions at close_ts == maturity_timestamp
         for rid, pend in list(st.pending.items()):
             mat_ts = pend.commitment.maturity_timestamp
-            if ts < mat_ts:
+            if close_ts < mat_ts:
                 continue
-            if ts == mat_ts:
+            if close_ts == mat_ts:
                 if candle.close > pend.reference_close:
                     actual_dir = "UP"
                 elif candle.close < pend.reference_close:
@@ -560,8 +644,10 @@ class ParallelObservationRuntime:
                     candidate_id=st.candidate_id,
                     decision_timestamp=pend.commitment.decision_timestamp,
                     maturity_timestamp=mat_ts,
+                    outcome_candle_open_ts=open_ts,
+                    outcome_candle_close_ts=close_ts,
                     outcome_candle_close=candle.close,
-                    outcome_candle_digest=ev.candle_digest(),
+                    outcome_candle_digest=c_digest,
                     outcome_provenance=ev.source_provenance,
                     resolution_status="RESOLVED",
                     actual_direction=actual_dir,
@@ -569,13 +655,14 @@ class ParallelObservationRuntime:
                     resolved_at_utc=now_utc,
                 )
             else:
-                # Gap jumped past maturity timestamp — never fabricate outcome
                 res_rec = OutcomeResolutionRecord(
                     record_id=rid,
                     session_id=self.config.session_id,
                     candidate_id=st.candidate_id,
                     decision_timestamp=pend.commitment.decision_timestamp,
                     maturity_timestamp=mat_ts,
+                    outcome_candle_open_ts=None,
+                    outcome_candle_close_ts=None,
                     outcome_candle_close=None,
                     outcome_candle_digest="",
                     outcome_provenance=ev.source_provenance,
@@ -599,10 +686,29 @@ class ParallelObservationRuntime:
                 if wins + losses > 0:
                     st.accuracy_series.append(wins / (wins + losses))
 
-        # 2. Generate new prediction if warmed up & within decision window
+        # 2. Generate new prediction only if within decision window & warmed up
         if not allow_new_predictions or not st.warmup_complete:
             return
         if len(st.pending) >= self.config.max_pending_per_candidate:
+            return
+
+        mat_ts = close_ts + (st.horizon_bars * st.timeframe_seconds)
+        verified_commit_ts = (
+            int(ev.verified_server_time_ns // 1_000_000_000)
+            if ev.verified_server_time_ns is not None
+            else int(now_dt.timestamp())
+        )
+        if verified_commit_ts >= mat_ts:
+            # Reject stale/late event whose outcome could already be known
+            st.provenance_failures += 1
+            ledger.append_diagnostic({
+                "type": "LATE_EVENT_REJECTED",
+                "candidate_id": st.candidate_id,
+                "candle_close_ts": close_ts,
+                "verified_commit_ts": verified_commit_ts,
+                "maturity_timestamp": mat_ts,
+                "at_utc": now_utc,
+            })
             return
 
         try:
@@ -628,18 +734,23 @@ class ParallelObservationRuntime:
                 decision = "ABSTAIN"
                 abstain_reason = f"Confidence {conf:.4f} < frozen threshold {tau:.4f}"
 
-            mat_ts = ts + (st.horizon_bars * st.timeframe_seconds)
-            rid = f"{st.candidate_id}_{ts}_{uuid.uuid4().hex[:8]}"
+            pred_utc = datetime.now(UTC).isoformat()
+            rid = f"{st.candidate_id}_{close_ts}_{uuid.uuid4().hex[:8]}"
             comm = PredictionCommitmentRecord(
                 record_id=rid,
                 session_id=self.config.session_id,
                 candidate_id=st.candidate_id,
+                candidate_artifact_digest=st.bundle.manifest.bundle_sha256,
+                campaign_contract_sha256=self._campaign_sha256,
                 timeframe_seconds=st.timeframe_seconds,
                 horizon_bars=st.horizon_bars,
-                decision_timestamp=ts,
-                feature_cutoff_ts=ts,
+                candle_open_ts=open_ts,
+                candle_close_ts=close_ts,
+                decision_timestamp=close_ts,
+                feature_cutoff_ts=close_ts,
                 feature_digest=feat_digest,
                 reference_candle_price=candle.close,
+                reference_candle_digest=c_digest,
                 prob_up=round(p_up, 6),
                 prob_down=round(p_down, 6),
                 confidence_threshold=tau,
@@ -647,7 +758,9 @@ class ParallelObservationRuntime:
                 abstention_reason=abstain_reason,
                 maturity_timestamp=mat_ts,
                 evidence_classification=self._evidence_classification,
-                committed_at_utc=now_utc,
+                predicted_at_utc=pred_utc,
+                committed_at_ts=verified_commit_ts,
+                committed_at_utc=pred_utc,
             ).sealed()
 
             ledger.append_prediction(comm)
@@ -656,13 +769,9 @@ class ParallelObservationRuntime:
             st.pending[rid] = _PendingPrediction(commitment=comm, reference_close=candle.close)
             recent_predictions.appendleft(comm_dict)
         except Exception as exc:  # noqa: BLE001
-            # Single-candidate failure isolation: disable only this candidate
             st.model_failures += 1
             st.disabled_reason = f"Model inference error: {type(exc).__name__}: {exc}"
-            st.failure_cases.append({
-                "timestamp": ts,
-                "error": st.disabled_reason,
-            })
+            st.failure_cases.append({"timestamp": close_ts, "error": st.disabled_reason})
             ledger.append_diagnostic({
                 "type": "CANDIDATE_MODEL_FAILURE",
                 "candidate_id": st.candidate_id,
@@ -683,7 +792,9 @@ class ParallelObservationRuntime:
         if cb is None:
             return
         per_cand: dict[str, dict[str, Any]] = {}
+        merged_outcomes: dict[str, dict[str, Any]] = {}
         for cid, st in states.items():
+            merged_outcomes.update(st.outcomes_by_id)
             wins = sum(
                 1 for o in st.outcomes_by_id.values() if o.get("classification") == "CORRECT"
             )
@@ -719,5 +830,6 @@ class ParallelObservationRuntime:
                 in_outcome_drain=in_drain,
                 per_candidate=per_cand,
                 recent_predictions=list(recent_predictions)[:50],
+                recent_outcomes=merged_outcomes,
             )
         )

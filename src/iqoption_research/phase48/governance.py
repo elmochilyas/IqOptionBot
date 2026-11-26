@@ -11,9 +11,10 @@ authorized campaign contract.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -110,6 +111,9 @@ class ExploratoryCampaignContract:
     authorized_stage: str | None = None
     authorized_by: str | None = None
     authorized_at_utc: str | None = None
+    expires_at_utc: str | None = None
+    require_practice_account: bool = True
+    authorization_mechanism: str = "LOCAL_UNKEYED_INTEGRITY_DIGEST_V1"
     authorization_note: str = ""
     authorization_signature_sha256: str = ""
     contract_sha256: str = ""
@@ -153,18 +157,29 @@ class ExploratoryCampaignContract:
         raw = json.dumps(self.canonical_payload(), sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
-    def compute_authorization_digest(self) -> str:
-        """Compute canonical SHA-256 binding owner authorization to exact contract terms."""
+    def compute_authorization_digest(self, *, hmac_key: bytes | None = None) -> str:
+        """Compute canonical integrity digest (or HMAC-SHA256 when keyed) binding owner sign-off.
+
+        Trust boundary: When hmac_key is None, this is an unkeyed SHA-256 integrity
+        digest that detects accidental corruption or UI tampering, not an external
+        cryptographic proof of identity. When hmac_key is provided, it computes
+        HMAC-SHA256 using that local owner secret.
+        """
         payload = {
             "contract_sha256": self.contract_sha256 or self.compute_contract_sha256(),
             "authorization_status": self.authorization_status,
             "authorized_stage": self.authorized_stage,
             "authorized_by": self.authorized_by,
             "authorized_at_utc": self.authorized_at_utc,
+            "expires_at_utc": self.expires_at_utc,
+            "require_practice_account": self.require_practice_account,
+            "authorization_mechanism": self.authorization_mechanism,
             "allowed_account_ref": self.allowed_account_ref,
         }
-        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        if hmac_key is not None:
+            return hmac.new(hmac_key, raw, hashlib.sha256).hexdigest()
+        return hashlib.sha256(raw).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize contract to JSON-compatible dictionary."""
@@ -175,6 +190,9 @@ class ExploratoryCampaignContract:
             "authorized_stage": self.authorized_stage,
             "authorized_by": self.authorized_by,
             "authorized_at_utc": self.authorized_at_utc,
+            "expires_at_utc": self.expires_at_utc,
+            "require_practice_account": self.require_practice_account,
+            "authorization_mechanism": self.authorization_mechanism,
             "authorization_note": self.authorization_note,
             "authorization_signature_sha256": self.authorization_signature_sha256,
             "contract_sha256": self.contract_sha256 or self.compute_contract_sha256(),
@@ -227,6 +245,11 @@ class ExploratoryCampaignContract:
             authorized_stage=data.get("authorized_stage"),
             authorized_by=data.get("authorized_by"),
             authorized_at_utc=data.get("authorized_at_utc"),
+            expires_at_utc=data.get("expires_at_utc"),
+            require_practice_account=bool(data.get("require_practice_account", True)),
+            authorization_mechanism=str(
+                data.get("authorization_mechanism", "LOCAL_UNKEYED_INTEGRITY_DIGEST_V1")
+            ),
             authorization_note=str(data.get("authorization_note", "")),
             authorization_signature_sha256=str(data.get("authorization_signature_sha256", "")),
             contract_sha256=str(data.get("contract_sha256", "")),
@@ -386,6 +409,77 @@ def build_default_proposed_campaign_contract(
     return replace(contract, contract_sha256=contract.compute_contract_sha256())
 
 
+class CampaignUsageStore:
+    """Durable, atomic session consumption ledger preventing duplicate/excess runs."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def _read(self) -> dict[str, Any]:
+        if not self.path.is_file():
+            return {"consumed_sessions": []}
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"consumed_sessions": []}
+        return data
+
+    def _write_atomic(self, payload: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        Path(tmp_path).replace(self.path)
+
+    def list_consumed(self, contract_id: str, stage_id: str) -> list[dict[str, Any]]:
+        data = self._read()
+        return [
+            s
+            for s in data.get("consumed_sessions", [])
+            if s.get("contract_id") == contract_id and s.get("stage_id") == stage_id
+        ]
+
+    def has_session(self, session_id: str) -> bool:
+        data = self._read()
+        return any(s.get("session_id") == session_id for s in data.get("consumed_sessions", []))
+
+    def reserve_session(
+        self,
+        contract: ExploratoryCampaignContract,
+        *,
+        session_id: str,
+        stage_id: str,
+        max_sessions: int,
+    ) -> None:
+        """Atomically reserve one authorized session slot before broker connection."""
+        data = self._read()
+        sessions = list(data.get("consumed_sessions", []))
+        if any(s.get("session_id") == session_id for s in sessions):
+            raise ValueError(f"Duplicate session_id {session_id} already consumed.")
+        stage_count = sum(
+            1
+            for s in sessions
+            if s.get("contract_id") == contract.contract_id and s.get("stage_id") == stage_id
+        )
+        if stage_count >= max_sessions:
+            raise ValueError(
+                f"Authorized session budget exhausted for {stage_id}: "
+                f"{stage_count}/{max_sessions} consumed."
+            )
+        sessions.append({
+            "contract_id": contract.contract_id,
+            "stage_id": stage_id,
+            "session_id": session_id,
+            "reserved_at_utc": datetime.now(UTC).isoformat(),
+            "status": "RESERVED",
+        })
+        data["consumed_sessions"] = sessions
+        self._write_atomic(data)
+
+
+def default_campaign_usage_path(repo_root: Path, contract_id: str) -> Path:
+    """Return default durable session consumption path for a campaign contract."""
+    return Path(repo_root).resolve() / PHASE48_CAMPAIGNS_DIR / f"{contract_id}.usage.json"
+
+
 def authorize_campaign_contract(
     contract: ExploratoryCampaignContract,
     *,
@@ -394,6 +488,10 @@ def authorize_campaign_contract(
     authorized_stage: str,
     authorization_note: str = "",
     authorized_at_utc: str | None = None,
+    hours_valid: int = 24,
+    expires_at_utc: str | None = None,
+    require_practice_account: bool = True,
+    hmac_key: bytes | None = None,
 ) -> ExploratoryCampaignContract:
     """Explicitly authorize an exploratory campaign contract on behalf of the owner.
 
@@ -405,24 +503,57 @@ def authorize_campaign_contract(
         raise ValueError("authorized_by must be non-empty")
     if not acct or acct == "OWNER_VAULT_PRACTICE_ACCOUNT_UNASSIGNED":
         raise ValueError("allowed_account_ref must identify an explicit vault account reference")
+    if hours_valid <= 0:
+        raise ValueError("hours_valid must be positive")
     valid_stages = {s.stage_id for s in contract.stage_plan}
     if authorized_stage not in valid_stages:
         raise ValueError(f"authorized_stage must be one of {sorted(valid_stages)}")
 
     contract_hash = contract.compute_contract_sha256()
-    ts = authorized_at_utc or datetime.now(UTC).isoformat()
+    now_dt = datetime.fromisoformat(authorized_at_utc) if authorized_at_utc else datetime.now(UTC)
+    exp_str = expires_at_utc or (now_dt + timedelta(hours=hours_valid)).isoformat()
+    mech = "LOCAL_HMAC_SHA256_V1" if hmac_key is not None else "LOCAL_UNKEYED_INTEGRITY_DIGEST_V1"
     updated = replace(
         contract,
         allowed_account_ref=acct,
         authorization_status=CampaignAuthorizationStatus.AUTHORIZED_ACTIVE.value,
         authorized_stage=authorized_stage,
         authorized_by=owner,
-        authorized_at_utc=ts,
+        authorized_at_utc=now_dt.isoformat(),
+        expires_at_utc=exp_str,
+        require_practice_account=require_practice_account,
+        authorization_mechanism=mech,
         authorization_note=authorization_note.strip(),
         contract_sha256=contract_hash,
     )
-    sig = updated.compute_authorization_digest()
+    sig = updated.compute_authorization_digest(hmac_key=hmac_key)
     return replace(updated, authorization_signature_sha256=sig)
+
+
+def revoke_campaign_contract(
+    contract: ExploratoryCampaignContract,
+    *,
+    revoked_by: str,
+    reason: str = "Operator revoked authorization",
+) -> ExploratoryCampaignContract:
+    """Revoke an active exploratory campaign contract."""
+    return replace(
+        contract,
+        authorization_status=CampaignAuthorizationStatus.REVOKED.value,
+        authorization_note=f"REVOKED by {revoked_by.strip()}: {reason.strip()}",
+    )
+
+
+def get_stage_spec(
+    contract: ExploratoryCampaignContract, stage_id: str | None
+) -> ExploratoryStageSpec | None:
+    """Lookup stage specification by stage_id."""
+    if not stage_id:
+        return None
+    for s in contract.stage_plan:
+        if s.stage_id == stage_id:
+            return s
+    return None
 
 
 def validate_campaign_authorization(
@@ -433,6 +564,12 @@ def validate_campaign_authorization(
     loaded_artifact_digests: dict[str, str],
     account_ref: str,
     is_genuine_mode: bool,
+    requested_allow_outcome_drain: bool = False,
+    requested_drain_minutes: int = 0,
+    usage_store: CampaignUsageStore | None = None,
+    session_id: str | None = None,
+    now_utc: datetime | None = None,
+    hmac_key: bytes | None = None,
 ) -> AuthorizationCheckResult:
     """Fail-closed authorization gate for exploratory observation sessions."""
     if not is_genuine_mode:
@@ -468,11 +605,56 @@ def validate_campaign_authorization(
         )
     if not contract.authorized_by or not contract.authorized_at_utc:
         reasons.append("Missing explicit authorized_by or authorized_at_utc owner sign-off.")
-    if (
+
+    check_now = now_utc or datetime.now(UTC)
+    if contract.expires_at_utc:
+        try:
+            exp_dt = datetime.fromisoformat(contract.expires_at_utc)
+            if check_now >= exp_dt:
+                reasons.append(f"Campaign authorization expired at {contract.expires_at_utc}.")
+        except ValueError:
+            reasons.append("Invalid expires_at_utc timestamp in contract.")
+
+    if contract.authorization_mechanism == "LOCAL_HMAC_SHA256_V1":
+        if hmac_key is None:
+            reasons.append("HMAC-signed contract requires owner HMAC key for verification.")
+        elif not contract.authorization_signature_sha256 or not hmac.compare_digest(
+            contract.authorization_signature_sha256,
+            contract.compute_authorization_digest(hmac_key=hmac_key),
+        ):
+            reasons.append("Invalid HMAC owner authorization signature.")
+    elif (
         not contract.authorization_signature_sha256
         or contract.authorization_signature_sha256 != contract.compute_authorization_digest()
     ):
         reasons.append("Missing or invalid owner authorization_signature_sha256.")
+
+    stage_spec = get_stage_spec(contract, contract.authorized_stage)
+    if stage_spec is None:
+        reasons.append(f"Invalid or missing authorized_stage: {contract.authorized_stage}.")
+    else:
+        if requested_duration_minutes != stage_spec.session_duration_minutes:
+            reasons.append(
+                f"Stage {stage_spec.stage_id} permits only {stage_spec.session_duration_minutes}m "
+                f"sessions (requested {requested_duration_minutes}m)."
+            )
+        if requested_allow_outcome_drain or requested_drain_minutes > 0:
+            if not stage_spec.allow_outcome_drain or not contract.allow_outcome_drain:
+                reasons.append(f"Outcome drain is prohibited under {stage_spec.stage_id}.")
+            elif requested_drain_minutes > stage_spec.max_outcome_drain_minutes:
+                reasons.append(
+                    f"Requested drain {requested_drain_minutes}m exceeds {stage_spec.stage_id} "
+                    f"max {stage_spec.max_outcome_drain_minutes}m."
+                )
+        if usage_store is not None:
+            if session_id and usage_store.has_session(session_id):
+                reasons.append(f"Session {session_id} was already consumed (no restarts).")
+            consumed = len(usage_store.list_consumed(contract.contract_id, stage_spec.stage_id))
+            if consumed >= stage_spec.target_sessions:
+                reasons.append(
+                    f"Authorized session count exhausted for {stage_spec.stage_id} "
+                    f"({consumed}/{stage_spec.target_sessions})."
+                )
 
     if not requested_candidate_ids:
         reasons.append("At least one exploratory candidate must be selected.")

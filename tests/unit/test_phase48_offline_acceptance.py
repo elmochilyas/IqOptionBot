@@ -241,3 +241,114 @@ async def test_bounded_memory_long_simulation_and_readonly_guard(tmp_path: Path)
     assert res.status == "COMPLETED"
     assert res.integrity_verified is True
     assert peak < 200 * 1024 * 1024  # Bounded well under 200 MB
+
+
+async def test_stale_server_time_blocks_predictions(tmp_path: Path) -> None:
+    models_dir, cids = _setup_three_bundles(tmp_path)
+    base_dt = datetime(2026, 11, 20, 12, 0, 0, tzinfo=UTC)
+    warmup_by_tf = {60: _make_candles(60, 70, base_dt - timedelta(minutes=70))}
+    events = [(60, c) for c in _make_candles(60, 5, base_dt)]
+    transport = SyntheticMultiTimeframeTransport(
+        warmup_by_tf=warmup_by_tf,
+        events=events,
+        inject_stale_server_time_at=1,
+    )
+    cfg = ParallelObservationConfig(
+        session_id="p48_stale_clock",
+        candidate_ids=(cids[0],),
+        duration_minutes=15,
+        is_genuine_mode=False,
+        models_dir=models_dir,
+        sessions_dir=tmp_path / "sessions",
+    )
+    res = await ParallelObservationRuntime(cfg, repo_root=tmp_path).run(transport)
+    assert res.status == "FAILED_PROVENANCE"
+    assert res.per_candidate_diagnostics[cids[0]].provenance_failures == 1
+    assert res.integrity_verified is True
+
+
+async def test_late_commitment_rejected_and_invalid_outcome_fails_verification(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    models_dir, cids = _setup_three_bundles(tmp_path)
+    base_dt = datetime(2026, 11, 20, 12, 0, 0, tzinfo=UTC)
+    warmup_by_tf = {60: _make_candles(60, 70, base_dt - timedelta(minutes=70))}
+    m1 = _make_candles(60, 20, base_dt)
+    transport = SyntheticMultiTimeframeTransport(
+        warmup_by_tf=warmup_by_tf,
+        events=[(60, c) for c in m1],
+    )
+    cfg = ParallelObservationConfig(
+        session_id="p48_verify_outcomes",
+        candidate_ids=(cids[0],),
+        duration_minutes=15,
+        is_genuine_mode=False,
+        models_dir=models_dir,
+        sessions_dir=tmp_path / "sessions",
+        simulated_duration_seconds=30.0,
+    )
+    res = await ParallelObservationRuntime(cfg, repo_root=tmp_path).run(transport)
+    assert res.status == "COMPLETED"
+    assert res.integrity_verified is True
+
+    # Tamper outcome classification in outcomes.jsonl -> verify_phase48_session_integrity must fail
+    out_path = res.session_dir / "outcomes.jsonl"
+    lines = out_path.read_text(encoding="utf-8").splitlines()
+    first = json.loads(lines[0])
+    first["classification"] = "TAMPERED_CLASS"
+    lines[0] = json.dumps(first, sort_keys=True)
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    ok, errs = verify_phase48_session_integrity(res.session_dir)
+    assert ok is False
+    assert errs
+
+
+async def test_cancel_while_waiting_and_exact_deadline_stop(tmp_path: Path) -> None:
+    import asyncio
+
+    models_dir, cids = _setup_three_bundles(tmp_path)
+    base_dt = datetime(2026, 11, 20, 12, 0, 0, tzinfo=UTC)
+    warmup_by_tf = {60: _make_candles(60, 70, base_dt - timedelta(minutes=70))}
+    events = [(60, c) for c in _make_candles(60, 15, base_dt)]
+    transport = SyntheticMultiTimeframeTransport(
+        warmup_by_tf=warmup_by_tf,
+        events=events,
+        step_delay_seconds=0.05,
+    )
+    cfg = ParallelObservationConfig(
+        session_id="p48_cancel_wait",
+        candidate_ids=(cids[0],),
+        duration_minutes=15,
+        is_genuine_mode=False,
+        models_dir=models_dir,
+        sessions_dir=tmp_path / "sessions",
+        simulated_duration_seconds=5.0,
+    )
+    rt = ParallelObservationRuntime(cfg, repo_root=tmp_path)
+
+    async def _cancel_soon() -> None:
+        await asyncio.sleep(0.12)
+        rt.cancel()
+
+    cancel_task = asyncio.create_task(_cancel_soon())
+    res = await rt.run(transport)
+    await cancel_task
+    assert res.status == "CANCELLED"
+    assert res.integrity_verified is True
+
+    # Deadline stop: simulated_duration_seconds=0.0 -> zero new predictions
+    cfg_dead = ParallelObservationConfig(
+        session_id="p48_deadline_zero",
+        candidate_ids=(cids[0],),
+        duration_minutes=15,
+        is_genuine_mode=False,
+        models_dir=models_dir,
+        sessions_dir=tmp_path / "sessions",
+        simulated_duration_seconds=0.0,
+    )
+    t_dead = SyntheticMultiTimeframeTransport(warmup_by_tf=warmup_by_tf, events=events)
+    res_dead = await ParallelObservationRuntime(cfg_dead, repo_root=tmp_path).run(t_dead)
+    assert res_dead.status == "COMPLETED"
+    assert res_dead.per_candidate_diagnostics[cids[0]].total_opportunities == 0

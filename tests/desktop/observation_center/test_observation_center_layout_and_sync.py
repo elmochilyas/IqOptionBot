@@ -24,8 +24,10 @@ def _make_mock_dashboard(root: Path, tk_root: tk.Tk) -> MagicMock:
     return dash
 
 
-def test_observation_center_genuine_mode_blocked_by_default(tmp_path: Path) -> None:
-    tk_root = tk.Tk()
+def test_observation_center_genuine_mode_blocked_by_default(
+    tmp_path: Path, obs_tk_root: tk.Tk
+) -> None:
+    tk_root = obs_tk_root
     try:
         dash = _make_mock_dashboard(tmp_path, tk_root)
         nb = ttk.Notebook(tk_root)
@@ -45,11 +47,10 @@ def test_observation_center_genuine_mode_blocked_by_default(tmp_path: Path) -> N
     finally:
         with contextlib.suppress(Exception):
             panel.shutdown()
-            tk_root.destroy()
 
 
-def test_observation_center_timeframe_sync_and_duration(tmp_path: Path) -> None:
-    tk_root = tk.Tk()
+def test_observation_center_timeframe_sync_and_duration(tmp_path: Path, obs_tk_root: tk.Tk) -> None:
+    tk_root = obs_tk_root
     try:
         dash = _make_mock_dashboard(tmp_path, tk_root)
         nb = ttk.Notebook(tk_root)
@@ -68,15 +69,14 @@ def test_observation_center_timeframe_sync_and_duration(tmp_path: Path) -> None:
     finally:
         with contextlib.suppress(Exception):
             panel.shutdown()
-            tk_root.destroy()
 
 
 def test_observation_center_full_synthetic_lifecycle_and_export(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, obs_tk_root: tk.Tk
 ) -> None:
     monkeypatch.setattr("tkinter.messagebox.showinfo", lambda *_a, **_kw: "ok")
     monkeypatch.setattr("tkinter.messagebox.showerror", lambda *_a, **_kw: "ok")
-    tk_root = tk.Tk()
+    tk_root = obs_tk_root
     try:
         dash = _make_mock_dashboard(tmp_path, tk_root)
         nb = ttk.Notebook(tk_root)
@@ -123,21 +123,13 @@ def test_observation_center_full_synthetic_lifecycle_and_export(
     finally:
         with contextlib.suppress(Exception):
             panel.shutdown()
-            tk_root.destroy()
-
-
-@pytest.fixture(scope="module")
-def _obs_tk_root() -> tk.Tk:
-    root = tk.Tk()
-    yield root
-    root.destroy()
 
 
 @pytest.mark.parametrize(("width", "height"), [(1280, 720), (1366, 768), (1920, 1080)])
 def test_observation_center_layout_non_collapsing_across_resolutions(
-    tmp_path: Path, width: int, height: int, _obs_tk_root: tk.Tk
+    tmp_path: Path, width: int, height: int, obs_tk_root: tk.Tk
 ) -> None:
-    tk_root = _obs_tk_root
+    tk_root = obs_tk_root
     try:
         tk_root.geometry(f"{width}x{height}")
         dash = _make_mock_dashboard(tmp_path, tk_root)

@@ -44,8 +44,10 @@ def _PumpTk(root_tk: tk.Tk, steps: int = 10) -> None:
         root_tk.update()
 
 
-def test_phase48_observation_center_controls_and_genuine_block(tmp_path: Path) -> None:
-    root_tk = tk.Tk()
+def test_phase48_observation_center_controls_and_genuine_block(
+    tmp_path: Path, obs_tk_root: tk.Tk
+) -> None:
+    root_tk = obs_tk_root
     root_tk.geometry("1280x720")
     try:
         nb = ttk.Notebook(root_tk)
@@ -79,7 +81,6 @@ def test_phase48_observation_center_controls_and_genuine_block(tmp_path: Path) -
             assert ctrl.is_running is False
     finally:
         panel.observation_center.shutdown()
-        root_tk.destroy()
 
 
 def _make_ui_candles(tf_sec: int, count: int, start_dt: datetime) -> list[Candle]:
@@ -112,7 +113,9 @@ def _make_ui_candles(tf_sec: int, count: int, start_dt: datetime) -> list[Candle
     return out
 
 
-def test_authorized_dashboard_genuine_dispatch_end_to_end(tmp_path: Path) -> None:
+def test_authorized_dashboard_genuine_dispatch_end_to_end(
+    tmp_path: Path, obs_tk_root: tk.Tk
+) -> None:
     models_dir = tmp_path / "data" / "phase48" / "models"
     m1 = create_synthetic_frozen_bundle(models_dir, 0)
     proposed = build_default_proposed_campaign_contract({m1.frozen_candidate_id: m1.bundle_sha256})
@@ -142,7 +145,7 @@ def test_authorized_dashboard_genuine_dispatch_end_to_end(tmp_path: Path) -> Non
         def account_store(self) -> _MockStore:
             return _MockStore()
 
-    root_tk = tk.Tk()
+    root_tk = obs_tk_root
     root_tk.geometry("1280x720")
     try:
         nb = ttk.Notebook(root_tk)
@@ -200,7 +203,6 @@ def test_authorized_dashboard_genuine_dispatch_end_to_end(tmp_path: Path) -> Non
             assert exported is not None and exported.is_dir()
     finally:
         panel.observation_center.shutdown()
-        root_tk.destroy()
 
 
 def test_phase48_cli_authorize_status_and_revoke(tmp_path: Path) -> None:

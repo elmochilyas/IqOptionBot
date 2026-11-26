@@ -198,19 +198,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -e .[dev]
-      - name: Run Desktop UI Suite (Collection & Observation Centers)
+      - name: Run Desktop UI Suite (Collection Center)
         continue-on-error: true
         env:
           PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code_1.txt
-        run: python scripts/ci_pytest.py tests/desktop/collection_center tests/desktop/observation_center -m "desktop and not performance"
-      - name: Run Desktop UI Suite (Workstation)
+        run: python scripts/ci_pytest.py tests/desktop/collection_center -m "desktop and not performance"
+      - name: Run Desktop UI Suite (Observation Center)
         continue-on-error: true
         env:
           PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code_2.txt
+        run: python scripts/ci_pytest.py tests/desktop/observation_center -m "desktop and not performance"
+      - name: Run Desktop UI Suite (Workstation)
+        continue-on-error: true
+        env:
+          PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code_3.txt
         run: python scripts/ci_pytest.py tests/desktop/workstation -m "desktop and not performance"
       - name: Verify Pytest Exit Codes
         run: |
-          foreach ($f in @('pytest_exit_code_1.txt', 'pytest_exit_code_2.txt')) {
+          foreach ($f in @('pytest_exit_code_1.txt', 'pytest_exit_code_2.txt', 'pytest_exit_code_3.txt')) {
             $path = Join-Path $env:RUNNER_TEMP $f
             if (-not (Test-Path $path)) { throw "Pytest exit code file is missing: $path" }
             $code = (Get-Content $path -Raw).Trim()

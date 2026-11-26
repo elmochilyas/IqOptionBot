@@ -11,7 +11,18 @@ on:
       - "src/iqoption_research/market_data/collection_engine.py"
       - "src/iqoption_research/market_data/parquet_storage.py"
       - "src/iqoption_research/desktop/collection_center_panel.py"
+      - "src/iqoption_research/desktop/observation_center.py"
+      - "src/iqoption_research/desktop/shadow_panel.py"
+      - "src/iqoption_research/phase48/**"
+      - "src/iqoption_research/timing/**"
+      - "src/iqoption_research/shadow/**"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - "tests/conftest.py"
+      - "tests/research_isolation.py"
+      - "tests/support/**"
       - "tests/performance/**"
+      - ".github/workflows/full_regression.yml"
 
 permissions:
   contents: read
@@ -60,3 +71,51 @@ jobs:
           if (-not (Test-Path $path)) { throw "Pytest exit code file is missing: $path" }
           $code = (Get-Content $path -Raw).Trim()
           if ($code -ne '0') { throw "Performance suite failed with exit code $code" }
+
+  full-offline-regression:
+    name: Complete Offline Suite (Nightly / Manual)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+      - name: Install pinned dependencies and dev requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .[dev]
+      - name: Run Complete Non-Desktop Offline Suite (Includes Performance)
+        continue-on-error: true
+        env:
+          PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code_main.txt
+        run: python scripts/ci_pytest.py --ignore=tests/desktop
+      - name: Run Desktop Suite (Collection Center)
+        continue-on-error: true
+        env:
+          PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code_cc.txt
+        run: python scripts/ci_pytest.py tests/desktop/collection_center
+      - name: Run Desktop Suite (Observation Center)
+        continue-on-error: true
+        env:
+          PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code_oc.txt
+        run: python scripts/ci_pytest.py tests/desktop/observation_center
+      - name: Run Desktop Suite (Workstation)
+        continue-on-error: true
+        env:
+          PYTEST_EXIT_FILE: ${{ runner.temp }}\pytest_exit_code_ws.txt
+        run: python scripts/ci_pytest.py tests/desktop/workstation
+      - name: Verify All Full Regression Exit Codes
+        run: |
+          foreach ($f in @('pytest_exit_code_main.txt', 'pytest_exit_code_cc.txt', 'pytest_exit_code_oc.txt', 'pytest_exit_code_ws.txt')) {
+            $path = Join-Path $env:RUNNER_TEMP $f
+            if (-not (Test-Path $path)) { throw "Pytest exit code file is missing: $path" }
+            $code = (Get-Content $path -Raw).Trim()
+            if ($code -ne '0') { throw "$f failed with exit code $code" }
+          }

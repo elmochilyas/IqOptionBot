@@ -216,5 +216,163 @@
     "tests/unit/test_workstation_accounts.py": "tests/desktop/workstation/test_workstation_accounts.py",
     "tests/unit/test_ws_auth.py": "tests/unit/connectors/test_ws_auth.py"
   },
-  "total_files_migrated": 215
+  "total_files_migrated": 215,
+  "split_files": {
+    "tests/performance/test_calendar_scale_perf.py": {
+      "split_from": "tests/integration/collection/test_calendar_scale.py",
+      "original_baseline_path": "tests/integration/test_phase44_calendar_scale.py",
+      "behavioral_contract": "Multi-month (90/180/365-day) calendar collection throughput and tracemalloc memory bounds."
+    },
+    "tests/performance/test_verification_responsiveness_perf.py": {
+      "split_from": "tests/desktop/collection_center/test_verification_responsiveness.py",
+      "original_baseline_path": "tests/integration/test_phase44_verification_responsiveness.py",
+      "behavioral_contract": "100k/375k-candle dataset verification responsiveness and non-blocking Tkinter UI progress."
+    },
+    "tests/performance/test_exploratory_long_run_perf.py": {
+      "split_from": "tests/integration/prospective_observation/test_exploratory_runtime_acceptance.py",
+      "original_baseline_path": "tests/unit/test_phase48_offline_acceptance.py",
+      "behavioral_contract": "300-bar parallel exploratory observation memory-bound stress and read-only transport guard."
+    }
+  },
+  "new_files": {
+    "tests/unit/security/test_research_isolation.py": {
+      "purpose": "Regression tests for unconditional network isolation, sealed dataset discovery, and credential env scrubbing."
+    },
+    "tests/desktop/observation_center/conftest.py": {
+      "purpose": "Package-scoped Tk root fixture preventing Windows Tcl/Tk init.tcl re-initialization errors."
+    }
+  },
+  "remaining_phase_named_files": {
+    "tests/desktop/workstation/test_phase40a_shadow_evaluation.py": {
+      "original_baseline_path": "tests/unit/test_phase40a_shadow_evaluation.py",
+      "behavioral_contract": "Unit tests for Phase 40A Offline Shadow Evaluation Foundation.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/desktop/workstation/test_phase40b_prospective_shadow.py": {
+      "original_baseline_path": "tests/unit/test_phase40b_prospective_shadow.py",
+      "behavioral_contract": "Unit tests for Phase 40B Prospective AI Shadow Observation.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/desktop/workstation/test_phase41_failure_intelligence.py": {
+      "original_baseline_path": "tests/unit/test_phase41_failure_intelligence.py",
+      "behavioral_contract": "Unit tests for Phase 41: Model Failure Intelligence & Controlled Research.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/desktop/workstation/test_phase45_desktop.py": {
+      "original_baseline_path": "tests/unit/test_phase45_desktop.py",
+      "behavioral_contract": "Unit tests for the Phase 45 Research desktop subtab.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/integration/collection/test_research_phase24_offline_research.py": {
+      "original_baseline_path": "tests/integration/test_phase24_offline_research.py",
+      "behavioral_contract": "Offline CLI/provenance/holdout integration. Fixture data is not market evidence.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/integration/collection/test_research_phase25_expansion_and_research.py": {
+      "original_baseline_path": "tests/integration/test_phase25_expansion_and_research.py",
+      "behavioral_contract": "Mocked expansion and sealed-holdout research; fixtures are not empirical evidence.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/integration/model_training/test_diagnostics_phase31_diagnostics.py": {
+      "original_baseline_path": "tests/integration/test_phase31_diagnostics.py",
+      "behavioral_contract": "Integration tests for Phase 31 timing diagnostics and CLI commands.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/integration/model_training/test_observation_phase22_blitz_observation.py": {
+      "original_baseline_path": "tests/integration/test_phase22_blitz_observation.py",
+      "behavioral_contract": "Exercise Phase 22 on the real read-only transport with scripted sockets.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/integration/model_training/test_observation_phase29_observation.py": {
+      "original_baseline_path": "tests/integration/test_phase29_observation.py",
+      "behavioral_contract": "Synthetic contract checks only; never evidence of empirical skill.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/scientific/test_phase47_scientific_corrections.py": {
+      "original_baseline_path": "tests/unit/test_phase47_scientific_corrections.py",
+      "behavioral_contract": "Phase 47.1 \u2014 Regression tests for scientific review corrections.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/cli/test_cli_phase44_cli.py": {
+      "original_baseline_path": "tests/unit/test_phase44_cli.py",
+      "behavioral_contract": "Unit tests for Phase 44 CLI data collection commands.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/cli/test_cli_phase4_cli.py": {
+      "original_baseline_path": "tests/unit/test_phase4_cli.py",
+      "behavioral_contract": "Phase 4 CLI tests: offline prepare/train/evaluate/walk-forward/compare/backtest/demo.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/evaluation/test_analysis_phase46_analysis.py": {
+      "original_baseline_path": "tests/unit/test_phase46_analysis.py",
+      "behavioral_contract": "Phase 46 WS6 \u2014 Post-session diagnostics tests.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/features/test_forward_phase4_walk_forward.py": {
+      "original_baseline_path": "tests/unit/test_phase4_walk_forward.py",
+      "behavioral_contract": "Unit tests for Phase 4 Chronological Walk-Forward Engine and Purging/Embargo.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/features/test_targets_phase4_targets.py": {
+      "original_baseline_path": "tests/unit/test_phase4_targets.py",
+      "behavioral_contract": "Phase 4.2 Unit Tests: Causal Prediction Target Generation and Multi-Horizon Labeling.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/governance/test_contract_phase44_population_contract.py": {
+      "original_baseline_path": "tests/unit/test_phase44_population_contract.py",
+      "behavioral_contract": "Genuine population-contract fail-closed tests for Phase 44.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/market_data/test_evaluation_phase37_prospective_cohort_evaluation.py": {
+      "original_baseline_path": "tests/unit/test_phase37_prospective_cohort_evaluation.py",
+      "behavioral_contract": "Unit and adversarial tests for Phase 37 prospective research dataset protocol.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/market_data/test_recovery_phase44_crash_recovery.py": {
+      "original_baseline_path": "tests/unit/test_phase44_crash_recovery.py",
+      "behavioral_contract": "Crash-recovery regressions for the two-phase collection commit protocol.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/market_data/test_recovery_phase44_retained_job_recovery.py": {
+      "original_baseline_path": "tests/unit/test_phase44_retained_job_recovery.py",
+      "behavioral_contract": "Read-only audit and isolated recovery of the owner's retained failed job.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/market_data/test_regressions_phase44_snapshot_integrity_regressions.py": {
+      "original_baseline_path": "tests/unit/test_phase44_snapshot_integrity_regressions.py",
+      "behavioral_contract": "Fail-closed snapshot integrity and genuine-coverage regressions (Phase 44).",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/models/test_decision_phase4_decision.py": {
+      "original_baseline_path": "tests/unit/test_phase4_decision.py",
+      "behavioral_contract": "Unit tests for Phase 4 AI Decision Engine and Trade Abstention Gates.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/models/test_models_phase4_models.py": {
+      "original_baseline_path": "tests/unit/test_phase4_models.py",
+      "behavioral_contract": "Phase 4.3 Unit Tests: Model Zoo, Common Interface, Baselines, Tabular Models, and Persistence.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/observation/test_audit_phase44_discontinuity_audit.py": {
+      "original_baseline_path": "tests/unit/test_phase44_discontinuity_audit.py",
+      "behavioral_contract": "Unit tests for Phase 44 discontinuity audit reconciliation.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/observation/test_diagnostics_phase7_account_diagnostics.py": {
+      "original_baseline_path": "tests/unit/test_phase7_account_diagnostics.py",
+      "behavioral_contract": "Unit tests for Phase 7 account diagnostics, discrepancy audit, and ledger safety.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/observation/test_machine_phase5_state_machine.py": {
+      "original_baseline_path": "tests/unit/test_phase5_state_machine.py",
+      "behavioral_contract": "Unit tests for ExecutionStateMachine, ExecutionJournal, and order lifecycle transitions.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    },
+    "tests/unit/observation/test_reporting_phase47_reporting.py": {
+      "original_baseline_path": "tests/unit/test_phase47_reporting.py",
+      "behavioral_contract": "Phase 47 WS11 \u2014 Reporting & signal discovery smoke tests.",
+      "retention_reason": "Preserves disambiguating domain/contract suffix without unnecessary file churn."
+    }
+  },
+  "total_test_files_on_disk": 219
 }

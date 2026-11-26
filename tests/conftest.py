@@ -12,10 +12,6 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-os.environ.setdefault("IQOPTION_EMAIL", "")
-os.environ.setdefault("IQOPTION_PASSWORD", "")
-os.environ.setdefault("IQOPTION_SSID", "")
-os.environ.setdefault("OPENAI_API_KEY", "")
 
 if sys.platform == "win32":
     _tcl_root = Path(sys.base_prefix) / "tcl"
@@ -27,8 +23,13 @@ if sys.platform == "win32":
 import pytest
 
 from iqoption_research.security.credentials import Credentials
-from tests.research_isolation import build_legacy_workspace, install_sealed_read_guard
+from tests.research_isolation import (
+    build_legacy_workspace,
+    install_sealed_read_guard,
+    scrub_credential_environment,
+)
 
+scrub_credential_environment()
 SEALED_PATHS = install_sealed_read_guard(Path(__file__).resolve().parents[1])
 
 

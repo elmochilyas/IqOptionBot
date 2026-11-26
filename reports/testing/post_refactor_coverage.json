@@ -1,0 +1,81 @@
+{
+  "pytest_exit_code": 0,
+  "scope": "mandatory PR CI (-m 'not performance', 3056 tests)",
+  "total_executable_lines": 53253,
+  "covered_lines": 42375,
+  "overall_line_coverage_pct": 79.57,
+  "by_domain": {
+    "auth_and_connectors": {
+      "total": 2492,
+      "covered": 2064,
+      "files": 19,
+      "line_coverage_pct": 82.83
+    },
+    "campaign_authorization": {
+      "total": 1023,
+      "covered": 855,
+      "files": 8,
+      "line_coverage_pct": 83.58
+    },
+    "cli": {
+      "total": 5024,
+      "covered": 2865,
+      "files": 29,
+      "line_coverage_pct": 57.03
+    },
+    "dataset_governance": {
+      "total": 1197,
+      "covered": 920,
+      "files": 8,
+      "line_coverage_pct": 76.86
+    },
+    "desktop_app": {
+      "total": 4327,
+      "covered": 3171,
+      "files": 13,
+      "line_coverage_pct": 73.28
+    },
+    "evidence_integrity": {
+      "total": 1048,
+      "covered": 882,
+      "files": 3,
+      "line_coverage_pct": 84.16
+    },
+    "market_data_and_collection": {
+      "total": 4419,
+      "covered": 3796,
+      "files": 21,
+      "line_coverage_pct": 85.9
+    },
+    "ml_training_calibration_eval": {
+      "total": 16374,
+      "covered": 14437,
+      "files": 106,
+      "line_coverage_pct": 88.17
+    },
+    "other": {
+      "total": 5663,
+      "covered": 3993,
+      "files": 45,
+      "line_coverage_pct": 70.51
+    },
+    "prospective_observation": {
+      "total": 9972,
+      "covered": 8141,
+      "files": 60,
+      "line_coverage_pct": 81.64
+    },
+    "read_only_transport": {
+      "total": 1440,
+      "covered": 1021,
+      "files": 3,
+      "line_coverage_pct": 70.9
+    },
+    "security": {
+      "total": 274,
+      "covered": 230,
+      "files": 6,
+      "line_coverage_pct": 83.94
+    }
+  }
+}

@@ -14,6 +14,7 @@ from iqoption_research.phase48.constants import CANDIDATE_SPECS, PHASE48_SESSION
 from iqoption_research.phase48.evidence import verify_phase48_session_integrity
 from iqoption_research.phase48.governance import (
     CampaignUsageStore,
+    ObservationAuthorizationMode,
     authorize_campaign_contract,
     authorize_stage_a_replacement,
     build_default_proposed_campaign_contract,
@@ -63,6 +64,9 @@ def status_cmd(
         repl = contract.replacement_authorization
         contract_info: dict[str, object] = {
             "contract_id": contract.contract_id,
+            "protocol_version": contract.protocol_version,
+            "authorization_mode": contract.authorization_mode,
+            "require_practice_account": contract.require_practice_account,
             "authorization_status": contract.authorization_status,
             "authorized_stage": contract.authorized_stage,
             "authorized_by": contract.authorized_by,
@@ -81,6 +85,7 @@ def status_cmd(
                 {
                     "replacement_grant_id": repl.replacement_grant_id,
                     "previous_failed_session_id": repl.previous_failed_session_id,
+                    "authorization_mode": repl.authorization_mode,
                     "session_duration_minutes": repl.session_duration_minutes,
                     "allow_outcome_drain": repl.allow_outcome_drain,
                     "expires_at_utc": repl.expires_at_utc,
@@ -108,6 +113,11 @@ def authorize_replacement_cmd(
     owner: str = typer.Option(..., "--owner", help="Explicit owner identifier signing off."),
     review_note: str = typer.Option(
         ..., "--review-note", help="Mandatory owner review note explaining the failed startup."
+    ),
+    mode: str | None = typer.Option(
+        None,
+        "--mode",
+        help="Optional authorization mode override (PRACTICE_VERIFIED_REQUIRED or WALLET_INDEPENDENT_SPOT_READ_ONLY).",
     ),
     hours_valid: int = typer.Option(24, "--hours-valid", help="Hours until authorization expires."),
     allow_unverified_vault: bool = typer.Option(
@@ -152,6 +162,7 @@ def authorize_replacement_cmd(
             usage_store=usage,
             sessions_dir=sessions_dir,
             hours_valid=hours_valid,
+            authorization_mode=mode,
             hmac_key=hmac_key,
         )
     except ValueError as exc:
@@ -165,6 +176,9 @@ def authorize_replacement_cmd(
             {
                 "status": updated.authorization_status,
                 "contract_path": str(cpath),
+                "protocol_version": updated.protocol_version,
+                "authorization_mode": updated.authorization_mode,
+                "require_practice_account": updated.require_practice_account,
                 "authorized_stage": updated.authorized_stage,
                 "replacement_grant_id": repl.replacement_grant_id if repl else None,
                 "previous_failed_session_id": repl.previous_failed_session_id if repl else None,
@@ -188,6 +202,11 @@ def authorize_cmd(
         help="Authorized stage (STAGE_A_15M, STAGE_B_120M, STAGE_C_240M, STAGE_D_480M).",
     ),
     owner: str = typer.Option(..., "--owner", help="Explicit owner identifier signing off."),
+    mode: str = typer.Option(
+        ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED.value,
+        "--mode",
+        help="Authorization mode (PRACTICE_VERIFIED_REQUIRED or WALLET_INDEPENDENT_SPOT_READ_ONLY).",
+    ),
     hours_valid: int = typer.Option(24, "--hours-valid", help="Hours until authorization expires."),
     note: str = typer.Option("", "--note", help="Owner review note."),
     allow_unverified_vault: bool = typer.Option(
@@ -215,11 +234,17 @@ def authorize_cmd(
             typer.echo(f"Error: account_id {account_id!r} not found in Windows Vault.", err=True)
             raise typer.Exit(code=2)
 
+    try:
+        parsed_mode = ObservationAuthorizationMode(mode)
+    except ValueError:
+        typer.echo(f"Error: unsupported authorization mode {mode!r}.", err=True)
+        raise typer.Exit(code=1) from None
+
     cpath = default_campaign_contract_path(root)
     base_contract = (
         load_campaign_contract(cpath)
         if cpath.is_file()
-        else build_default_proposed_campaign_contract(digests)
+        else build_default_proposed_campaign_contract(digests, authorization_mode=parsed_mode)
     )
     key_env = os.environ.get("IQOPTION_PHASE48_OWNER_KEY")
     hmac_key = key_env.encode("utf-8") if key_env else None
@@ -230,6 +255,7 @@ def authorize_cmd(
         authorized_stage=stage,
         authorization_note=note,
         hours_valid=hours_valid,
+        authorization_mode=parsed_mode,
         hmac_key=hmac_key,
     )
     save_campaign_contract(signed, cpath)
@@ -238,6 +264,9 @@ def authorize_cmd(
             {
                 "status": signed.authorization_status,
                 "contract_path": str(cpath),
+                "protocol_version": signed.protocol_version,
+                "authorization_mode": signed.authorization_mode,
+                "require_practice_account": signed.require_practice_account,
                 "authorized_stage": signed.authorized_stage,
                 "expires_at_utc": signed.expires_at_utc,
                 "authorization_mechanism": signed.authorization_mechanism,

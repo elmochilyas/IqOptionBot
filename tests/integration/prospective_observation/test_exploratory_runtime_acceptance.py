@@ -548,3 +548,235 @@ async def test_genuine_startup_failure_and_authorized_replacement_lifecycle(
     )
     with pytest.raises(GovernanceBlockedError):
         ParallelObservationRuntime(cfg3_blocked, repo_root=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_phase49_wallet_independent_end_to_end_multi_tf_mocked_socket(tmp_path: Path) -> None:
+    """Full end-to-end offline acceptance: failed legacy pilot -> WALLET_INDEPENDENT replacement across M1/M5/M15."""
+    import json
+    import time
+    from unittest.mock import AsyncMock, patch
+
+    from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+    from iqoption_research.phase48.evidence import verify_phase48_session_integrity
+    from iqoption_research.phase48.governance import (
+        CampaignUsageStore,
+        ObservationAuthorizationMode,
+        SessionLifecycleState,
+        authorize_campaign_contract,
+        authorize_stage_a_replacement,
+        build_default_proposed_campaign_contract,
+    )
+    from iqoption_research.phase48.transport import IQOptionReadOnlyMultiTransport
+    from iqoption_research.security.credentials import Credentials
+    from tests.unit.observation.test_transport import (
+        _assert_no_prohibited_frames,
+        _MockedNetworkSocket,
+    )
+
+    models_dir = tmp_path / "data" / "phase48" / "models"
+    digests: dict[str, str] = {}
+    cids_list: list[str] = []
+    for idx in range(3):
+        m = create_synthetic_frozen_bundle(models_dir, idx)
+        cids_list.append(m.frozen_candidate_id)
+        digests[m.frozen_candidate_id] = m.bundle_sha256
+    all_cids = tuple(cids_list)
+
+    proposed = build_default_proposed_campaign_contract(digests)
+    legacy_contract = authorize_campaign_contract(
+        proposed,
+        authorized_by="owner@local",
+        allowed_account_ref="vault_acct_1",
+        authorized_stage="STAGE_A_15M",
+    )
+    usage_path = (
+        tmp_path / "data" / "phase48" / "campaigns" / f"{legacy_contract.contract_id}.usage.json"
+    )
+    usage = CampaignUsageStore(usage_path)
+    sessions_dir = tmp_path / "data" / "phase48" / "sessions"
+    creds = Credentials(email="operator@example.invalid", password="mock_password_123")
+    connector = "iqoption_research.connectors.iqoption.client"
+
+    # 1. Original Stage A fails startup under PRACTICE_VERIFIED_REQUIRED
+    wire_fail = _MockedNetworkSocket(
+        profile_payload={"user_id": 10, "balance_id": "prac_4"},
+        balances_payload=[{"id": "prac_4", "type": 4, "amount": 10000.0}],
+        emit_timesync=True,
+    )
+    with (
+        patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-legacy")),
+        patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)),
+        patch.object(
+            IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire_fail)
+        ),
+    ):
+        t_fail = IQOptionReadOnlyMultiTransport(
+            creds, timeframes=(60, 300, 900), require_practice_account=True
+        )
+        cfg_fail = ParallelObservationConfig(
+            session_id="p48_gen_orig_failed",
+            candidate_ids=all_cids,
+            duration_minutes=15,
+            is_genuine_mode=True,
+            account_ref="vault_acct_1",
+            campaign_contract=legacy_contract,
+            models_dir=models_dir,
+            sessions_dir=sessions_dir,
+            usage_store_path=usage_path,
+        )
+        res_fail = await ParallelObservationRuntime(cfg_fail, repo_root=tmp_path).run(t_fail)
+
+    assert res_fail.status == SessionLifecycleState.FAILED_STARTUP.value
+    assert not any(f.get("name") == "subscribeMessage" for f in wire_fail.sent)
+
+    # 2. Owner explicitly authorizes replacement under WALLET_INDEPENDENT_SPOT_READ_ONLY
+    wi_contract = authorize_stage_a_replacement(
+        legacy_contract,
+        failed_session_id="p48_gen_orig_failed",
+        authorized_by="owner@local",
+        allowed_account_ref="vault_acct_1",
+        review_note="Approved WALLET_INDEPENDENT_SPOT_READ_ONLY market-data observation",
+        usage_store=usage,
+        sessions_dir=sessions_dir,
+        authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+    )
+
+    now_aligned = (int(time.time()) // 900) * 900
+    warmup_wire: dict[int, list[dict[str, object]]] = {}
+    stream_wire: list[dict[str, object]] = []
+    for tf in (60, 300, 900):
+        tf_start = now_aligned - 81 * tf
+        w_list: list[dict[str, object]] = []
+        for i in range(80):
+            ts = tf_start + i * tf
+            px = 1.0800 + (i % 7) * 0.0002
+            w_list.append({
+                "id": i + 1,
+                "from": ts,
+                "to": ts + tf,
+                "open": px,
+                "close": px + 0.0001,
+                "min": px - 0.0001,
+                "max": px + 0.0002,
+                "volume": 50,
+            })
+        warmup_wire[tf] = w_list
+        stream_ts = tf_start + 80 * tf
+        stream_wire.append({
+            "active_id": 1,
+            "size": tf,
+            "from": stream_ts,
+            "to": stream_ts + tf,
+            "at": (stream_ts + tf) * 1_000_000_000,
+            "open": 1.0820,
+            "close": 1.0826,
+            "min": 1.0819,
+            "max": 1.0827,
+            "volume": 65,
+            "bid": 1.0825,
+            "ask": 1.0827,
+        })
+
+    wire_ok = _MockedNetworkSocket(
+        profile_payload={"user_id": 10, "balance_id": "prac_4"},
+        balances_payload=[{"id": "prac_4", "type": 4, "amount": 10000.0}],
+        emit_timesync=True,
+        timesync_ms=(now_aligned + 1) * 1000,
+        warmup_candles_by_tf=warmup_wire,
+        stream_candles_list=stream_wire,
+    )
+    with (
+        patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-wi")),
+        patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)),
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire_ok)),
+    ):
+        t_wi = IQOptionReadOnlyMultiTransport(
+            creds,
+            timeframes=(60, 300, 900),
+            require_practice_account=False,
+            authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+        )
+        cfg_wi = ParallelObservationConfig(
+            session_id="p48_gen_wi_repl_1",
+            candidate_ids=all_cids,
+            duration_minutes=15,
+            is_genuine_mode=True,
+            account_ref="vault_acct_1",
+            campaign_contract=wi_contract,
+            models_dir=models_dir,
+            sessions_dir=sessions_dir,
+            usage_store_path=usage_path,
+            simulated_duration_seconds=0.35,
+        )
+        res_wi = await ParallelObservationRuntime(cfg_wi, repo_root=tmp_path).run(t_wi)
+
+    assert res_wi.status == "COMPLETED"
+    assert res_wi.lifecycle_state == "COMPLETED"
+    assert res_wi.integrity_verified is True
+    assert res_wi.authorization_mode == "WALLET_INDEPENDENT_SPOT_READ_ONLY"
+    assert res_wi.observed_wallet_classification == "account_selection_unverified"
+    assert res_wi.execution_authority == "NONE"
+
+    # All 3 models evaluated across genuine EURUSD M1/M5/M15 without trading frames
+    for cid in all_cids:
+        diag = res_wi.per_candidate_diagnostics[cid]
+        assert diag.model_failures == 0
+        assert diag.total_opportunities >= 1
+
+    ok_integrity, errs = verify_phase48_session_integrity(res_wi.session_dir)
+    assert ok_integrity is True, errs
+
+    sess_meta = json.loads((res_wi.session_dir / "session.json").read_text(encoding="utf-8"))
+    assert sess_meta["authorization_mode"] == "WALLET_INDEPENDENT_SPOT_READ_ONLY"
+    assert sess_meta["observed_wallet_classification"] == "account_selection_unverified"
+    assert sess_meta["trading_authority"] == "NONE"
+
+    _assert_no_prohibited_frames(wire_ok.sent)
+    assert any(f.get("name") == "unsubscribeMessage" for f in wire_ok.sent)
+
+    # UI / caller cannot mix legacy transport with WALLET_INDEPENDENT contract
+    with (
+        patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-bad")),
+        patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)),
+        patch.object(
+            IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire_fail)
+        ),
+    ):
+        mismatch_t = IQOptionReadOnlyMultiTransport(
+            creds, timeframes=(60,), require_practice_account=True
+        )
+        cfg_mismatch = ParallelObservationConfig(
+            session_id="p48_gen_mismatch",
+            candidate_ids=all_cids,
+            duration_minutes=15,
+            is_genuine_mode=True,
+            account_ref="vault_acct_1",
+            campaign_contract=wi_contract,
+            models_dir=models_dir,
+            sessions_dir=sessions_dir,
+            usage_store_path=tmp_path / "usage_fresh.json",
+        )
+        wi_fresh_auth = authorize_campaign_contract(
+            build_default_proposed_campaign_contract(
+                digests,
+                authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+            ),
+            authorized_by="owner@local",
+            allowed_account_ref="vault_acct_1",
+            authorized_stage="STAGE_A_15M",
+            authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+        )
+        cfg_mismatch = ParallelObservationConfig(
+            session_id="p48_gen_mismatch",
+            candidate_ids=all_cids,
+            duration_minutes=15,
+            is_genuine_mode=True,
+            account_ref="vault_acct_1",
+            campaign_contract=wi_fresh_auth,
+            models_dir=models_dir,
+            sessions_dir=sessions_dir,
+            usage_store_path=tmp_path / "usage_fresh.json",
+        )
+        with pytest.raises(GovernanceBlockedError, match="does not match contract"):
+            await ParallelObservationRuntime(cfg_mismatch, repo_root=tmp_path).run(mismatch_t)

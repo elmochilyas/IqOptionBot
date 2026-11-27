@@ -362,3 +362,121 @@ def test_observation_center_layout_visibility_wrapping_and_failed_startup_displa
         assert "MODEL FAILURE" in str(ctrl.lbl_p48_auth_status.cget("text"))
     finally:
         panel.observation_center.shutdown()
+
+
+def test_observation_center_displays_wallet_independent_mode_and_unverified_wallet(
+    tmp_path: Path, obs_tk_root: tk.Tk
+) -> None:
+    """UI displays WALLET_INDEPENDENT_SPOT_READ_ONLY, Trading Authority: NONE, and honest wallet status."""
+    from unittest.mock import AsyncMock, patch
+
+    from iqoption_research.connectors.iqoption.client import AsyncIQOption
+    from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+    from iqoption_research.models.connection import ConnectionConfig
+    from iqoption_research.phase48.artifacts import default_models_dir
+    from iqoption_research.phase48.governance import ObservationAuthorizationMode
+    from iqoption_research.phase48.transport import IQOptionReadOnlyMultiTransport
+    from tests.unit.observation.test_transport import _MockedNetworkSocket
+
+    models_dir = default_models_dir(tmp_path)
+    digests = {}
+    for idx in range(3):
+        m = create_synthetic_frozen_bundle(models_dir, idx)
+        digests[m.frozen_candidate_id] = m.bundle_sha256
+
+    proposed = build_default_proposed_campaign_contract(
+        digests,
+        authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+    )
+    authorized = authorize_campaign_contract(
+        proposed,
+        authorized_by="owner@local",
+        allowed_account_ref="acct_wi_123",
+        authorized_stage="STAGE_A_15M",
+        authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+    )
+    save_campaign_contract(authorized, default_campaign_contract_path(tmp_path))
+
+    class _MockStore:
+        def load(self, _account_id: str) -> Credentials:
+            return Credentials(email="owner@example.com", password="secret")
+
+    class _MockVault:
+        def account_store(self) -> _MockStore:
+            return _MockStore()
+
+    wire = _MockedNetworkSocket(
+        profile_payload={"user_id": 10, "balance_id": "prac_4"},
+        balances_payload=[{"id": "prac_4", "type": 4, "amount": 10000.0}],
+        emit_timesync=False,  # Fails clock check so worker terminates cleanly at startup
+    )
+    connector = "iqoption_research.connectors.iqoption.client"
+
+    root_tk = obs_tk_root
+    root_tk.geometry("1280x720")
+    nb = ttk.Notebook(root_tk)
+    nb.pack(fill="both", expand=True)
+    dash = _DummyDashboard(root_tk, tmp_path)
+    panel = ShadowEvaluationPanel(dash, nb)  # type: ignore[arg-type]
+    nb.add(panel.frame, text="Observation Center")
+    try:
+        ctrl = panel.observation_center
+        panel._obs_accounts_map["Vault [acct...123]"] = "acct_wi_123"
+        panel.combo_obs_account["values"] = ["Vault [acct...123]"]
+        panel.combo_obs_account.set("Vault [acct...123]")
+        panel.combo_obs_duration.set("15")
+        panel.var_obs_mode.set("exploratory_genuine")
+        ctrl.on_mode_changed()
+        _PumpTk(root_tk)
+
+        meta_txt = str(ctrl.lbl_p48_governance_meta.cget("text"))
+        assert "Genuine Market-Data Observation" in meta_txt
+        assert "WALLET_INDEPENDENT_SPOT_READ_ONLY" in meta_txt
+        assert "Trading Authority: NONE" in meta_txt
+        assert "Authorized (Disconnected)" in str(panel.lbl_obs_status.cget("text"))
+
+        with (
+            patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-ui")),
+            patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)),
+            patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire)),
+        ):
+
+            def _fast_transport(
+                creds: Credentials, tfs: tuple[int, ...]
+            ) -> IQOptionReadOnlyMultiTransport:
+                fast_client = AsyncIQOption(
+                    credentials=creds,
+                    offline=False,
+                    config=ConnectionConfig(
+                        request_timeout=0.1,
+                        max_reconnect_attempts=0,
+                        timing_market_data_only=False,
+                        spot_market_data_only=True,
+                    ),
+                )
+                return IQOptionReadOnlyMultiTransport(
+                    creds,
+                    timeframes=tfs,
+                    require_practice_account=False,
+                    authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+                    client_override=fast_client,
+                )
+
+            started = ctrl.start_genuine_exploratory_observation(
+                transport_factory=_fast_transport,
+                vault_factory=_MockVault,
+                confirm_override=True,
+            )
+            assert started is True
+            deadline = time.monotonic() + 5.0
+            while ctrl.is_running and time.monotonic() < deadline:
+                _PumpTk(root_tk, steps=3)
+                time.sleep(0.03)
+            _PumpTk(root_tk, steps=5)
+
+        status_txt = str(panel.lbl_obs_status.cget("text"))
+        assert "FAILED_STARTUP" in status_txt
+        assert "WALLET_INDEPENDENT_SPOT_READ_ONLY" in status_txt
+        assert "account_selection_unverified" in status_txt
+    finally:
+        panel.observation_center.shutdown()

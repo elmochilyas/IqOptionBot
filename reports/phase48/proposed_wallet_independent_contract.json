@@ -1,0 +1,133 @@
+{
+  "allow_otc": false,
+  "allow_outcome_drain": true,
+  "allowed_account_ref": "OWNER_VAULT_PRACTICE_ACCOUNT_UNASSIGNED",
+  "analysis_plan": {
+    "auto_promotion_allowed": false,
+    "cross_horizon_aggregation": "PROHIBITED",
+    "dependence_aware_inference": "UTC_DAY_BLOCK_BOOTSTRAP_10000",
+    "evidence_classification": "EXPLORATORY_PROSPECTIVE_ONLY",
+    "multiple_comparison_control": "HOLM_BONFERRONI",
+    "non_overlapping_reporting": "MANDATORY_SEPARATE_FROM_OVERLAPPING"
+  },
+  "asset": "EURUSD",
+  "authorization_mechanism": "LOCAL_UNKEYED_INTEGRITY_DIGEST_V1",
+  "authorization_mode": "WALLET_INDEPENDENT_SPOT_READ_ONLY",
+  "authorization_note": "",
+  "authorization_signature_sha256": "",
+  "authorization_status": "PROPOSED_NOT_AUTHORIZED",
+  "authorized_at_utc": null,
+  "authorized_by": null,
+  "authorized_stage": null,
+  "candidate_artifact_digests": {
+    "p48_exp_cand_a_m1_h15_hgb_v1": "a9d538c80f1a77f258892bb074f6b6a7a026196061938d935acffa1542d97e61",
+    "p48_exp_cand_b_m5_h6_hgb_v1": "fa908c9f8d07ff9cb647f124c5a94c8de25634bcf2b92e414f8d62d0bee02762",
+    "p48_exp_cand_c_m15_h4_hgb_v1": "1efedf7b67e4bb74bbfb5b2da9841e83e278254b3f2d2d7e9a5c1ede0af19f24"
+  },
+  "candidate_ids": [
+    "p48_exp_cand_a_m1_h15_hgb_v1",
+    "p48_exp_cand_b_m5_h6_hgb_v1",
+    "p48_exp_cand_c_m15_h4_hgb_v1"
+  ],
+  "contract_id": "phase48_exploratory_eurusd_parallel_v1",
+  "contract_sha256": "393c86b3cc2c5fda5beeaf92fd006515d6dccc2aabf8bca7a41dd8bc5d52bdd3",
+  "created_at_utc": "2026-11-27T06:54:00.284639+00:00",
+  "evidence_classification": "EXPLORATORY_PROSPECTIVE_ONLY",
+  "execution_authority": "NONE",
+  "expires_at_utc": null,
+  "fixed_exploratory_sample_goals": {
+    "p48_exp_cand_a_m1_h15_hgb_v1": 200,
+    "p48_exp_cand_b_m5_h6_hgb_v1": 200,
+    "p48_exp_cand_c_m15_h4_hgb_v1": 200
+  },
+  "max_outcome_drain_minutes": 60,
+  "max_session_duration_minutes": 480,
+  "native_timeframes": [
+    60,
+    300,
+    900
+  ],
+  "operational_and_scientific_limitations": [
+    "NO_DEMONSTRATED_EDGE; execution_authority=NONE.",
+    "Exploratory evidence is EXPLORATORY_PROSPECTIVE_ONLY and cannot auto-qualify.",
+    "Historical effective yield estimates (M1=1.415/hr, M5=0.581/hr, M15=0.487/hr) are planning estimates only; actual prospective rates are unknown.",
+    "Small operational pilots carry zero statistical significance.",
+    "Candle direction does not equal verified broker trade settlement or payout.",
+    "Live IQ Option WebSocket protocol cannot prove active practice wallet selection; observed wallet status is recorded honestly without practice verification bypass."
+  ],
+  "prediction_horizons": {
+    "p48_exp_cand_a_m1_h15_hgb_v1": 15,
+    "p48_exp_cand_b_m5_h6_hgb_v1": 6,
+    "p48_exp_cand_c_m15_h4_hgb_v1": 4
+  },
+  "protected_boundary_ts": 1794477600,
+  "protocol_version": "49.2.0",
+  "provenance_requirements": [
+    "Closed native EURUSD regular-market candles only (no OTC, no resampling).",
+    "Server-time freshness and timestamp alignment validated on every fetch/stream.",
+    "Pre-maturity prediction commitment and SHA-256 digest persisted before maturity.",
+    "Append-only session ledger with independent verify_session_integrity() check.",
+    "WALLET_INDEPENDENT_SPOT_READ_ONLY outbound wire allowlist enforced (EURUSD M1/M5/M15 market data only; zero order or wallet-mutation frames)."
+  ],
+  "require_practice_account": false,
+  "research_disposition": "NO_DEMONSTRATED_EDGE",
+  "research_pathway_tier": "EXPLORATORY_FROZEN_RESEARCH_CANDIDATE",
+  "source_phase47_commit": "d492a040fed8fee2629a549ccf4eda16991f63c0",
+  "stage_plan": [
+    {
+      "allow_outcome_drain": false,
+      "max_outcome_drain_minutes": 0,
+      "planned_non_overlapping_yield_note": "Planning yield only: ~0.35 M1, ~0.15 M5, ~0.12 M15 non-overlapping signals; most predictions remain pending without outcome drain.",
+      "purpose": "Verify end-to-end authenticated read-only multi-timeframe candle ingestion, warmup, commitment hashing, and clean shutdown.",
+      "session_duration_minutes": 15,
+      "stage_id": "STAGE_A_15M",
+      "target_sessions": 1,
+      "title": "Stage A \u2014 Supervised Connectivity & Lifecycle Pilot"
+    },
+    {
+      "allow_outcome_drain": true,
+      "max_outcome_drain_minutes": 60,
+      "planned_non_overlapping_yield_note": "Planning yield only (Phase 47 0.75x): ~2.83 M1, ~1.16 M5, ~0.97 M15 non-overlapping signals.",
+      "purpose": "Observe genuine M1/M5/M15 predictions and full 15m/30m/60m outcome maturity within a single bounded 2-hour supervised window.",
+      "session_duration_minutes": 120,
+      "stage_id": "STAGE_B_120M",
+      "target_sessions": 1,
+      "title": "Stage B \u2014 Supervised Multi-Model Maturity Pilot"
+    },
+    {
+      "allow_outcome_drain": true,
+      "max_outcome_drain_minutes": 60,
+      "planned_non_overlapping_yield_note": "Planning yield only (Phase 47 0.75x): ~5.66 M1, ~2.32 M5, ~1.95 M15 non-overlapping signals.",
+      "purpose": "Validate 4-hour continuous multi-model observation stability, memory bounds, heartbeat/stale-stream monitoring, and sealed evidence export.",
+      "session_duration_minutes": 240,
+      "stage_id": "STAGE_C_240M",
+      "target_sessions": 1,
+      "title": "Stage C \u2014 Supervised Operational Reliability Session"
+    },
+    {
+      "allow_outcome_drain": true,
+      "max_outcome_drain_minutes": 60,
+      "planned_non_overlapping_yield_note": "Planning yield only (Phase 47 0.75x): ~11.32 M1, ~4.65 M5, ~3.90 M15 non-overlapping signals per 8h session; actual live rates are unknown.",
+      "purpose": "Accumulate preregistered exploratory prospective evidence across supervised 8h sessions without optional stopping.",
+      "session_duration_minutes": 480,
+      "stage_id": "STAGE_D_480M",
+      "target_sessions": 18,
+      "title": "Stage D \u2014 Supervised Exploratory Evidence Accumulation"
+    }
+  ],
+  "stop_conditions": [
+    "Bounded session timer expiration (plus optional authorized outcome-drain tail).",
+    "Operator manual Stop/Cancel or application shutdown.",
+    "Shared transport disconnect or stale-stream timeout (no automatic reconnect).",
+    "Shared provenance or artifact integrity failure (fail-closed).",
+    "Optional stopping based on favorable interim accuracy is strictly prohibited."
+  ],
+  "supported_durations_minutes": [
+    15,
+    30,
+    60,
+    120,
+    240,
+    480
+  ]
+}

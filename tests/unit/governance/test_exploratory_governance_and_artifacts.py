@@ -553,3 +553,182 @@ def test_stage_a_replacement_authorization_and_cli_workflow(tmp_path: Path) -> N
             usage_store=usage,
             sessions_dir=sessions_dir,
         )
+
+
+def test_wallet_independent_spot_read_only_governance_and_cli_replacement(
+    tmp_path: Path,
+) -> None:
+    """WALLET_INDEPENDENT_SPOT_READ_ONLY is separately versioned, fail-closed, and inactive by default."""
+    from dataclasses import replace
+
+    from typer.testing import CliRunner
+
+    from iqoption_research.cli.main import app
+    from iqoption_research.phase48.governance import (
+        ObservationAuthorizationMode,
+        default_campaign_contract_path,
+        default_campaign_usage_path,
+    )
+
+    models_dir = tmp_path / "data" / "phase48" / "models"
+    digests: dict[str, str] = {}
+    for idx in range(3):
+        m = create_synthetic_frozen_bundle(models_dir, idx)
+        digests[m.frozen_candidate_id] = m.bundle_sha256
+
+    # Default proposal must remain PRACTICE_VERIFIED_REQUIRED and inactive
+    legacy_prop = build_default_proposed_campaign_contract(digests)
+    assert (
+        legacy_prop.authorization_mode
+        == ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED.value
+    )
+    assert legacy_prop.require_practice_account is True
+    assert (
+        legacy_prop.authorization_status
+        == CampaignAuthorizationStatus.PROPOSED_NOT_AUTHORIZED.value
+    )
+
+    # Cannot silently flip require_practice_account=False under PRACTICE_VERIFIED_REQUIRED
+    with pytest.raises(ValueError, match="PRACTICE_VERIFIED_REQUIRED"):
+        authorize_campaign_contract(
+            legacy_prop,
+            authorized_by="owner@local",
+            allowed_account_ref="vault_acct",
+            authorized_stage="STAGE_A_15M",
+            require_practice_account=False,
+        )
+
+    # WALLET_INDEPENDENT_SPOT_READ_ONLY proposal is inactive by default & fails closed until signed
+    wi_prop = build_default_proposed_campaign_contract(
+        digests,
+        authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+    )
+    assert wi_prop.protocol_version == "49.2.0"
+    assert wi_prop.require_practice_account is False
+    assert wi_prop.authorization_status == CampaignAuthorizationStatus.PROPOSED_NOT_AUTHORIZED.value
+    blocked = validate_campaign_authorization(
+        wi_prop,
+        requested_candidate_ids=tuple(digests),
+        requested_duration_minutes=15,
+        loaded_artifact_digests=digests,
+        account_ref="vault_acct",
+        is_genuine_mode=True,
+    )
+    assert blocked.authorized is False
+
+    # Authorize legacy Stage A contract -> record initial FAILED_STARTUP session -> upgrade via replacement CLI
+    cpath = default_campaign_contract_path(tmp_path)
+    legacy_auth = authorize_campaign_contract(
+        legacy_prop,
+        authorized_by="owner@local",
+        allowed_account_ref="vault_acct",
+        authorized_stage="STAGE_A_15M",
+    )
+    save_campaign_contract(legacy_auth, cpath)
+    usage = CampaignUsageStore(default_campaign_usage_path(tmp_path, legacy_auth.contract_id))
+    failed_id = "p48_gen_20261126_200643"
+    usage.reserve_session(legacy_auth, session_id=failed_id, stage_id="STAGE_A_15M", max_sessions=1)
+    sessions_dir = tmp_path / "data" / "phase48" / "sessions"
+    fdir = sessions_dir / failed_id
+    fdir.mkdir(parents=True, exist_ok=True)
+    (fdir / "session.json").write_text(
+        json.dumps({
+            "session_id": failed_id,
+            "is_genuine_mode": True,
+            "campaign_contract_id": legacy_auth.contract_id,
+            "status": "INTERRUPTED_DISCONNECT",
+            "stop_reason": "AttributeError: 'PracticeVerification' object has no attribute 'is_practice_verified'",
+            "per_candidate_diagnostics": {},
+        }),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    repl_res = runner.invoke(
+        app,
+        [
+            "phase48",
+            "authorize-replacement",
+            "--failed-session-id",
+            failed_id,
+            "--account-id",
+            "vault_acct",
+            "--owner",
+            "owner@local",
+            "--review-note",
+            "Approved WALLET_INDEPENDENT_SPOT_READ_ONLY Stage A replacement",
+            "--mode",
+            "WALLET_INDEPENDENT_SPOT_READ_ONLY",
+            "--allow-unverified-vault",
+            "--repo-root",
+            str(tmp_path),
+        ],
+    )
+    assert repl_res.exit_code == 0, repl_res.output
+    reloaded = load_campaign_contract(cpath)
+    assert reloaded.protocol_version == "49.2.0"
+    assert (
+        reloaded.authorization_mode
+        == ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY.value
+    )
+    assert reloaded.require_practice_account is False
+    assert reloaded.replacement_authorization is not None
+    assert (
+        reloaded.replacement_authorization.authorization_mode
+        == ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY.value
+    )
+
+    # Replacement validates cleanly for all 3 frozen candidates
+    ok = validate_campaign_authorization(
+        reloaded,
+        requested_candidate_ids=tuple(digests),
+        requested_duration_minutes=15,
+        loaded_artifact_digests=digests,
+        account_ref="vault_acct",
+        is_genuine_mode=True,
+        usage_store=usage,
+        session_id="p48_gen_repl_wi_1",
+    )
+    assert ok.authorized is True
+    assert (
+        ok.authorization_mode
+        == ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY.value
+    )
+
+    # Tampering authorization_mode or protocol_version fails closed
+    tampered_mode = replace(reloaded, authorization_mode="UNKNOWN_BYPASS_MODE")
+    assert (
+        validate_campaign_authorization(
+            tampered_mode,
+            requested_candidate_ids=tuple(digests),
+            requested_duration_minutes=15,
+            loaded_artifact_digests=digests,
+            account_ref="vault_acct",
+            is_genuine_mode=True,
+            usage_store=usage,
+            session_id="p48_gen_repl_wi_1",
+        ).authorized
+        is False
+    )
+    tampered_ver = replace(reloaded, protocol_version="48.1.0")
+    assert (
+        validate_campaign_authorization(
+            tampered_ver,
+            requested_candidate_ids=tuple(digests),
+            requested_duration_minutes=15,
+            loaded_artifact_digests=digests,
+            account_ref="vault_acct",
+            is_genuine_mode=True,
+            usage_store=usage,
+            session_id="p48_gen_repl_wi_1",
+        ).authorized
+        is False
+    )
+
+    # phase48 status exposes protocol_version & authorization_mode
+    st_res = runner.invoke(app, ["phase48", "status", "--repo-root", str(tmp_path)])
+    assert st_res.exit_code == 0, st_res.output
+    st_json = json.loads(st_res.output)
+    assert st_json["contract"]["protocol_version"] == "49.2.0"
+    assert st_json["contract"]["authorization_mode"] == "WALLET_INDEPENDENT_SPOT_READ_ONLY"
+    assert st_json["contract"]["require_practice_account"] is False

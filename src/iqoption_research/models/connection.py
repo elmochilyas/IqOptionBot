@@ -114,6 +114,9 @@ class ConnectionConfig:
     # Diagnostics
     diagnostics: bool = False
     timing_market_data_only: bool = False
+    spot_market_data_only: bool = False
+    spot_allowed_active_ids: tuple[int, ...] = (1,)
+    spot_allowed_timeframes: tuple[int, ...] = (60, 300, 900)
 
     def __post_init__(self) -> None:
         # Validate timeouts are positive
@@ -135,6 +138,17 @@ class ConnectionConfig:
 
         if not 0 <= self.reconnect_jitter <= 1:
             raise ValueError("reconnect_jitter must be between 0 and 1")
+
+        if self.timing_market_data_only and self.spot_market_data_only:
+            raise ValueError(
+                "timing_market_data_only and spot_market_data_only are mutually exclusive"
+            )
+
+        if not self.spot_allowed_active_ids or any(a <= 0 for a in self.spot_allowed_active_ids):
+            raise ValueError("spot_allowed_active_ids must contain positive integers")
+
+        if not self.spot_allowed_timeframes or any(tf <= 0 for tf in self.spot_allowed_timeframes):
+            raise ValueError("spot_allowed_timeframes must contain positive integers")
 
 
 # Default configuration instance

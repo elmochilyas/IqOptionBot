@@ -69,6 +69,13 @@ class ExploratoryCampaignStage(StrEnum):
     STAGE_D_480M = "STAGE_D_480M"
 
 
+class ObservationAuthorizationMode(StrEnum):
+    """Distinct market-data vs practice-account governance modes."""
+
+    PRACTICE_VERIFIED_REQUIRED = "PRACTICE_VERIFIED_REQUIRED"
+    WALLET_INDEPENDENT_SPOT_READ_ONLY = "WALLET_INDEPENDENT_SPOT_READ_ONLY"
+
+
 class SessionLifecycleState(StrEnum):
     """Durable lifecycle states for supervised Phase 48 observation sessions."""
 
@@ -122,6 +129,7 @@ class StageReplacementAuthorization:
     allow_outcome_drain: bool = False
     max_outcome_drain_minutes: int = 0
     review_note: str = ""
+    authorization_mode: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +182,7 @@ class ExploratoryCampaignContract:
     authorized_at_utc: str | None = None
     expires_at_utc: str | None = None
     require_practice_account: bool = True
+    authorization_mode: str = ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED.value
     authorization_mechanism: str = "LOCAL_UNKEYED_INTEGRITY_DIGEST_V1"
     authorization_note: str = ""
     authorization_signature_sha256: str = ""
@@ -182,7 +191,7 @@ class ExploratoryCampaignContract:
 
     def canonical_payload(self) -> dict[str, Any]:
         """Return canonical dictionary of immutable contract terms (excluding auth sig)."""
-        return {
+        payload: dict[str, Any] = {
             "contract_id": self.contract_id,
             "protocol_version": self.protocol_version,
             "research_pathway_tier": self.research_pathway_tier,
@@ -213,6 +222,12 @@ class ExploratoryCampaignContract:
             "protected_boundary_ts": self.protected_boundary_ts,
             "created_at_utc": self.created_at_utc,
         }
+        if (
+            self.authorization_mode != ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED.value
+            or self.protocol_version != "48.1.0"
+        ):
+            payload["authorization_mode"] = self.authorization_mode
+        return payload
 
     def compute_contract_sha256(self) -> str:
         """Compute canonical SHA-256 of the contract specification."""
@@ -238,6 +253,11 @@ class ExploratoryCampaignContract:
             "authorization_mechanism": self.authorization_mechanism,
             "allowed_account_ref": self.allowed_account_ref,
         }
+        if (
+            self.authorization_mode != ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED.value
+            or self.protocol_version != "48.1.0"
+        ):
+            payload["authorization_mode"] = self.authorization_mode
         if self.replacement_authorization is not None:
             payload["replacement_authorization"] = asdict(self.replacement_authorization)
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -250,6 +270,7 @@ class ExploratoryCampaignContract:
         d = self.canonical_payload()
         d.update({
             "allowed_account_ref": self.allowed_account_ref,
+            "authorization_mode": self.authorization_mode,
             "authorization_status": self.authorization_status,
             "authorized_stage": self.authorized_stage,
             "authorized_by": self.authorized_by,
@@ -287,6 +308,7 @@ class ExploratoryCampaignContract:
                 allow_outcome_drain=bool(repl_raw.get("allow_outcome_drain", False)),
                 max_outcome_drain_minutes=int(repl_raw.get("max_outcome_drain_minutes", 0)),
                 review_note=str(repl_raw.get("review_note", "")),
+                authorization_mode=str(repl_raw.get("authorization_mode", "")),
             )
             if isinstance(repl_raw, dict)
             else None
@@ -335,6 +357,12 @@ class ExploratoryCampaignContract:
             authorized_at_utc=data.get("authorized_at_utc"),
             expires_at_utc=data.get("expires_at_utc"),
             require_practice_account=bool(data.get("require_practice_account", True)),
+            authorization_mode=str(
+                data.get(
+                    "authorization_mode",
+                    ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED.value,
+                )
+            ),
             authorization_mechanism=str(
                 data.get("authorization_mechanism", "LOCAL_UNKEYED_INTEGRITY_DIGEST_V1")
             ),
@@ -355,6 +383,7 @@ class AuthorizationCheckResult:
     contract_id: str | None = None
     contract_sha256: str | None = None
     exhausted_stage_budget: bool = False
+    authorization_mode: str = ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED.value
 
 
 def build_default_proposed_campaign_contract(
@@ -362,6 +391,8 @@ def build_default_proposed_campaign_contract(
     *,
     allowed_account_ref: str = "OWNER_VAULT_PRACTICE_ACCOUNT_UNASSIGNED",
     created_at_utc: str | None = None,
+    authorization_mode: ObservationAuthorizationMode
+    | str = ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED,
 ) -> ExploratoryCampaignContract:
     """Construct the fixed, owner-reviewable Phase 48 exploratory campaign proposal.
 
@@ -438,9 +469,35 @@ def build_default_proposed_campaign_contract(
         ),
     )
 
+    mode = ObservationAuthorizationMode(str(authorization_mode))
+    is_wallet_indep = mode == ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY
+    provenance_reqs = [
+        "Closed native EURUSD regular-market candles only (no OTC, no resampling).",
+        "Server-time freshness and timestamp alignment validated on every fetch/stream.",
+        "Pre-maturity prediction commitment and SHA-256 digest persisted before maturity.",
+        "Append-only session ledger with independent verify_session_integrity() check.",
+    ]
+    limitations = [
+        "NO_DEMONSTRATED_EDGE; execution_authority=NONE.",
+        "Exploratory evidence is EXPLORATORY_PROSPECTIVE_ONLY and cannot auto-qualify.",
+        "Historical effective yield estimates (M1=1.415/hr, M5=0.581/hr, M15=0.487/hr) "
+        "are planning estimates only; actual prospective rates are unknown.",
+        "Small operational pilots carry zero statistical significance.",
+        "Candle direction does not equal verified broker trade settlement or payout.",
+    ]
+    if is_wallet_indep:
+        provenance_reqs.append(
+            "WALLET_INDEPENDENT_SPOT_READ_ONLY outbound wire allowlist enforced "
+            "(EURUSD M1/M5/M15 market data only; zero order or wallet-mutation frames)."
+        )
+        limitations.append(
+            "Live IQ Option WebSocket protocol cannot prove active practice wallet selection; "
+            "observed wallet status is recorded honestly without practice verification bypass."
+        )
+
     contract = ExploratoryCampaignContract(
         contract_id="phase48_exploratory_eurusd_parallel_v1",
-        protocol_version="48.1.0",
+        protocol_version="49.2.0" if is_wallet_indep else "48.1.0",
         research_pathway_tier=ResearchPathwayTier.EXPLORATORY_FROZEN_RESEARCH_CANDIDATE.value,
         evidence_classification=EXPLORATORY_EVIDENCE_CLASSIFICATION,
         research_disposition=DISPOSITION,
@@ -469,12 +526,7 @@ def build_default_proposed_campaign_contract(
             "Shared provenance or artifact integrity failure (fail-closed).",
             "Optional stopping based on favorable interim accuracy is strictly prohibited.",
         ),
-        provenance_requirements=(
-            "Closed native EURUSD regular-market candles only (no OTC, no resampling).",
-            "Server-time freshness and timestamp alignment validated on every fetch/stream.",
-            "Pre-maturity prediction commitment and SHA-256 digest persisted before maturity.",
-            "Append-only session ledger with independent verify_session_integrity() check.",
-        ),
+        provenance_requirements=tuple(provenance_reqs),
         analysis_plan={
             "evidence_classification": EXPLORATORY_EVIDENCE_CLASSIFICATION,
             "dependence_aware_inference": "UTC_DAY_BLOCK_BOOTSTRAP_10000",
@@ -483,18 +535,13 @@ def build_default_proposed_campaign_contract(
             "cross_horizon_aggregation": "PROHIBITED",
             "auto_promotion_allowed": False,
         },
-        operational_and_scientific_limitations=(
-            "NO_DEMONSTRATED_EDGE; execution_authority=NONE.",
-            "Exploratory evidence is EXPLORATORY_PROSPECTIVE_ONLY and cannot auto-qualify.",
-            "Historical effective yield estimates (M1=1.415/hr, M5=0.581/hr, M15=0.487/hr) "
-            "are planning estimates only; actual prospective rates are unknown.",
-            "Small operational pilots carry zero statistical significance.",
-            "Candle direction does not equal verified broker trade settlement or payout.",
-        ),
+        operational_and_scientific_limitations=tuple(limitations),
         source_phase47_commit=PHASE47_RECONCILED_COMMIT,
         protected_boundary_ts=PROTECTED_BOUNDARY_TS,
         created_at_utc=created_at_utc or datetime.now(UTC).isoformat(),
         authorization_status=CampaignAuthorizationStatus.PROPOSED_NOT_AUTHORIZED.value,
+        require_practice_account=not is_wallet_indep,
+        authorization_mode=mode.value,
     )
     return replace(contract, contract_sha256=contract.compute_contract_sha256())
 
@@ -832,6 +879,7 @@ def authorize_stage_a_replacement(
     authorized_at_utc: str | None = None,
     hours_valid: int = 24,
     expires_at_utc: str | None = None,
+    authorization_mode: ObservationAuthorizationMode | str | None = None,
     hmac_key: bytes | None = None,
 ) -> ExploratoryCampaignContract:
     """Explicitly authorize ONE bounded 15m Stage A replacement attempt after a failed startup.
@@ -863,6 +911,21 @@ def authorize_stage_a_replacement(
     if contract.contract_sha256 != contract.compute_contract_sha256():
         raise ValueError("Campaign contract SHA-256 mismatch; cannot authorize replacement.")
 
+    target_mode = (
+        ObservationAuthorizationMode(str(authorization_mode))
+        if authorization_mode is not None
+        else ObservationAuthorizationMode(contract.authorization_mode)
+    )
+    if (
+        contract.authorization_mode
+        == ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY.value
+        and target_mode != ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY
+    ):
+        raise ValueError(
+            "Cannot switch a WALLET_INDEPENDENT_SPOT_READ_ONLY contract back to "
+            "PRACTICE_VERIFIED_REQUIRED during replacement authorization."
+        )
+
     stage_consumed = usage_store.list_consumed(
         contract.contract_id, ExploratoryCampaignStage.STAGE_A_15M.value
     )
@@ -878,6 +941,14 @@ def authorize_stage_a_replacement(
         stage_id=ExploratoryCampaignStage.STAGE_A_15M.value,
         failed_session_id=failed_session_id,
     )
+
+    is_wallet_indep = target_mode == ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY
+    eff_protocol = (
+        "49.2.0"
+        if (is_wallet_indep and contract.protocol_version == "48.1.0")
+        else contract.protocol_version
+    )
+    eff_require_practice = not is_wallet_indep
 
     now_dt = datetime.fromisoformat(authorized_at_utc) if authorized_at_utc else datetime.now(UTC)
     exp_str = expires_at_utc or (now_dt + timedelta(hours=hours_valid)).isoformat()
@@ -896,9 +967,13 @@ def authorize_stage_a_replacement(
         allow_outcome_drain=False,
         max_outcome_drain_minutes=0,
         review_note=note,
+        authorization_mode=target_mode.value,
     )
     updated = replace(
         contract,
+        protocol_version=eff_protocol,
+        authorization_mode=target_mode.value,
+        require_practice_account=eff_require_practice,
         authorized_by=owner,
         authorized_at_utc=now_dt.isoformat(),
         expires_at_utc=exp_str,
@@ -906,6 +981,7 @@ def authorize_stage_a_replacement(
         authorization_note=f"Stage A replacement for {failed_session_id}: {note}",
         replacement_authorization=repl,
     )
+    updated = replace(updated, contract_sha256=updated.compute_contract_sha256())
     sig = updated.compute_authorization_digest(hmac_key=hmac_key)
     return replace(updated, authorization_signature_sha256=sig)
 
@@ -921,6 +997,8 @@ def authorize_campaign_contract(
     hours_valid: int = 24,
     expires_at_utc: str | None = None,
     require_practice_account: bool = True,
+    authorization_mode: ObservationAuthorizationMode
+    | str = ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED,
     hmac_key: bytes | None = None,
 ) -> ExploratoryCampaignContract:
     """Explicitly authorize an exploratory campaign contract on behalf of the owner.
@@ -939,24 +1017,38 @@ def authorize_campaign_contract(
     if authorized_stage not in valid_stages:
         raise ValueError(f"authorized_stage must be one of {sorted(valid_stages)}")
 
-    contract_hash = contract.compute_contract_sha256()
+    mode = ObservationAuthorizationMode(str(authorization_mode))
+    is_wallet_indep = mode == ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY
+    if not is_wallet_indep and not require_practice_account:
+        raise ValueError(
+            "require_practice_account cannot be False under PRACTICE_VERIFIED_REQUIRED mode"
+        )
+    eff_protocol = (
+        "49.2.0"
+        if (is_wallet_indep and contract.protocol_version == "48.1.0")
+        else contract.protocol_version
+    )
+    eff_require_practice = not is_wallet_indep
+
     now_dt = datetime.fromisoformat(authorized_at_utc) if authorized_at_utc else datetime.now(UTC)
     exp_str = expires_at_utc or (now_dt + timedelta(hours=hours_valid)).isoformat()
     mech = "LOCAL_HMAC_SHA256_V1" if hmac_key is not None else "LOCAL_UNKEYED_INTEGRITY_DIGEST_V1"
     updated = replace(
         contract,
+        protocol_version=eff_protocol,
         allowed_account_ref=acct,
         authorization_status=CampaignAuthorizationStatus.AUTHORIZED_ACTIVE.value,
         authorized_stage=authorized_stage,
         authorized_by=owner,
         authorized_at_utc=now_dt.isoformat(),
         expires_at_utc=exp_str,
-        require_practice_account=require_practice_account,
+        require_practice_account=eff_require_practice,
+        authorization_mode=mode.value,
         authorization_mechanism=mech,
         authorization_note=authorization_note.strip(),
-        contract_sha256=contract_hash,
         replacement_authorization=None,
     )
+    updated = replace(updated, contract_sha256=updated.compute_contract_sha256())
     sig = updated.compute_authorization_digest(hmac_key=hmac_key)
     return replace(updated, authorization_signature_sha256=sig)
 
@@ -1025,6 +1117,37 @@ def validate_campaign_authorization(
         reasons.append("evidence_classification must remain EXPLORATORY_PROSPECTIVE_ONLY.")
     if contract.asset != ALLOWED_ASSET or contract.allow_otc:
         reasons.append("Only EURUSD regular market (allow_otc=False) is permitted.")
+
+    valid_modes = {m.value for m in ObservationAuthorizationMode}
+    if contract.authorization_mode not in valid_modes:
+        reasons.append(
+            f"Unknown or unsupported authorization_mode: {contract.authorization_mode!r}."
+        )
+    elif (
+        contract.authorization_mode == ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED.value
+    ):
+        if not contract.require_practice_account:
+            reasons.append(
+                "PRACTICE_VERIFIED_REQUIRED mode requires require_practice_account=True."
+            )
+    elif (
+        contract.authorization_mode
+        == ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY.value
+    ):
+        if contract.protocol_version == "48.1.0":
+            reasons.append(
+                "WALLET_INDEPENDENT_SPOT_READ_ONLY requires reviewed contract protocol_version >= 49.2.0."
+            )
+        if contract.require_practice_account:
+            reasons.append(
+                "WALLET_INDEPENDENT_SPOT_READ_ONLY contract cannot set require_practice_account=True."
+            )
+        if tuple(contract.native_timeframes) != (60, 300, 900):
+            reasons.append(
+                "WALLET_INDEPENDENT_SPOT_READ_ONLY only permits native timeframes (60, 300, 900)."
+            )
+        if contract.allowed_account_ref == "OWNER_VAULT_PRACTICE_ACCOUNT_UNASSIGNED":
+            reasons.append("WALLET_INDEPENDENT_SPOT_READ_ONLY requires a bound vault account_ref.")
 
     expected_contract_hash = contract.compute_contract_sha256()
     if contract.contract_sha256 != expected_contract_hash:
@@ -1116,6 +1239,14 @@ def validate_campaign_authorization(
                             )
                     except ValueError:
                         repl_errors.append("Invalid replacement expires_at_utc timestamp.")
+                    if (
+                        repl.authorization_mode
+                        and repl.authorization_mode != contract.authorization_mode
+                    ):
+                        repl_errors.append(
+                            f"Replacement authorization_mode {repl.authorization_mode!r} "
+                            f"conflicts with contract mode {contract.authorization_mode!r}."
+                        )
                     prev_rec = usage_store.get_session(repl.previous_failed_session_id)
                     if (
                         prev_rec is None
@@ -1178,6 +1309,7 @@ def validate_campaign_authorization(
             contract_id=contract.contract_id,
             contract_sha256=contract.contract_sha256,
             exhausted_stage_budget=exhausted_stage_budget,
+            authorization_mode=contract.authorization_mode,
         )
 
     return AuthorizationCheckResult(
@@ -1186,6 +1318,7 @@ def validate_campaign_authorization(
         reasons=(),
         contract_id=contract.contract_id,
         contract_sha256=contract.contract_sha256,
+        authorization_mode=contract.authorization_mode,
     )
 
 

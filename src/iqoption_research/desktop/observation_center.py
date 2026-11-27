@@ -45,6 +45,7 @@ from iqoption_research.phase48.constants import (
 from iqoption_research.phase48.evidence import verify_phase48_session_integrity
 from iqoption_research.phase48.governance import (
     CampaignUsageStore,
+    ObservationAuthorizationMode,
     default_campaign_contract_path,
     default_campaign_usage_path,
     get_stage_spec,
@@ -155,7 +156,9 @@ class ObservationCenterController:
         self.p48_filter_cand: ttk.Combobox | None = None
         self.p48_filter_status: ttk.Combobox | None = None
         self.lbl_p48_auth_status: ttk.Label | None = None
+        self.lbl_p48_governance_meta: ttk.Label | None = None
         self.btn_p48_refresh: ttk.Button | None = None
+        self._last_observed_wallet_cls: str = "UNOBSERVED"
         self.rb_obs_p48_genuine: ttk.Radiobutton | None = None
         self.btn_p48_synth_demo: ttk.Button | None = None
         self._legacy_model_row: ttk.Frame | None = None
@@ -251,6 +254,7 @@ class ObservationCenterController:
             with contextlib.suppress(tk.TclError):
                 btn_w = max(160, self.btn_p48_refresh.winfo_reqwidth() + 24)
         _set_wrap(self.lbl_p48_auth_status, avail_width - btn_w - 24)
+        _set_wrap(self.lbl_p48_governance_meta, avail_width - 20)
 
     def _on_mousewheel(self, event: Any) -> None:
         if self.obs_scroll_canvas is not None and event.delta:
@@ -511,6 +515,21 @@ class ObservationCenterController:
             command=self._refresh_p48_governance_status,
         )
         self.btn_p48_refresh.grid(row=0, column=1, sticky="ne", padx=4)
+
+        meta_row = ttk.Frame(p48_cfg)
+        meta_row.pack(fill="x", pady=(2, 1))
+        self.lbl_p48_governance_meta = ttk.Label(
+            meta_row,
+            text=(
+                "Genuine Market-Data Observation — Read Only | Mode: N/A | "
+                "Observed Wallet: UNOBSERVED | Budget: N/A | Trading Authority: NONE"
+            ),
+            font=("Consolas", 8),
+            foreground="#20364a",
+            wraplength=920,
+            justify="left",
+        )
+        self.lbl_p48_governance_meta.pack(side="left", fill="x", expand=True)
 
         # Row 4: Action Buttons (always visible even if config body collapsed)
         r4 = ttk.Frame(controls_frame)
@@ -894,7 +913,7 @@ class ObservationCenterController:
                         )
                     else:
                         self._legacy_model_row.pack(fill="x", pady=2)
-            elif self._legacy_model_row.winfo_ismapped():
+            else:
                 self._legacy_model_row.pack_forget()
         if self._sim_pace_lbl is not None and hasattr(p, "combo_obs_pace"):
             if visible:
@@ -903,10 +922,8 @@ class ObservationCenterController:
                 if not p.combo_obs_pace.winfo_ismapped():
                     p.combo_obs_pace.pack(side="left", padx=4)
             else:
-                if self._sim_pace_lbl.winfo_ismapped():
-                    self._sim_pace_lbl.pack_forget()
-                if p.combo_obs_pace.winfo_ismapped():
-                    p.combo_obs_pace.pack_forget()
+                self._sim_pace_lbl.pack_forget()
+                p.combo_obs_pace.pack_forget()
         self._on_inner_configure()
 
     def on_mode_changed(self) -> None:
@@ -1022,6 +1039,33 @@ class ObservationCenterController:
             usage_store=usage_store,
         )
         can_run = res.authorized and not selected_model_failures
+        auth_mode_str = (
+            contract.authorization_mode
+            if contract is not None
+            else ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED.value
+        )
+        consumed_count = (
+            len(usage_store.list_consumed(contract.contract_id, stage_spec.stage_id))
+            if (usage_store is not None and contract is not None and stage_spec is not None)
+            else 0
+        )
+        target_sess = stage_spec.target_sessions if stage_spec is not None else 0
+        repl_obj = contract.replacement_authorization if contract is not None else None
+        repl_used = (
+            usage_store.has_used_replacement_grant(repl_obj.replacement_grant_id)
+            if (usage_store is not None and repl_obj is not None)
+            else False
+        )
+        if contract is None or stage_spec is None:
+            budget_lbl = "N/A"
+        elif repl_obj is not None:
+            budget_lbl = (
+                f"{stage_spec.stage_id} {consumed_count}/{target_sess} "
+                f"(Repl: {'USED' if repl_used else '1/1 READY'})"
+            )
+        else:
+            budget_lbl = f"{stage_spec.stage_id} {consumed_count}/{target_sess}"
+
         if selected_model_failures:
             msg = (
                 f"BLOCKED — MODEL FAILURE ({len(selected_model_failures)}/{max(1, len(selected_cids))} "
@@ -1030,7 +1074,8 @@ class ObservationCenterController:
         elif res.authorized:
             msg = (
                 f"AUTHORIZED ({len(selected_cids)}/{len(selected_cids)} models verified, "
-                "0 model failures): Phase 48 Supervised Exploratory Campaign"
+                f"0 model failures): {auth_mode_str} | {contract.authorized_stage if contract else ''} | "
+                "Trading Authority: NONE"
             )
         elif res.exhausted_stage_budget:
             stage_lbl = contract.authorized_stage if contract else "STAGE_A_15M"
@@ -1060,13 +1105,56 @@ class ObservationCenterController:
                 text=msg,
                 foreground="#1b4d3e" if can_run else "#9c3414",
             )
+        if self.lbl_p48_governance_meta is not None:
+            self.lbl_p48_governance_meta.config(
+                text=(
+                    f"Genuine Market-Data Observation — Read Only | Mode: {auth_mode_str} | "
+                    f"Observed Wallet: {self._last_observed_wallet_cls} | "
+                    f"Budget: {budget_lbl} | Trading Authority: NONE"
+                ),
+                foreground="#1b4d3e" if can_run else "#20364a",
+            )
         if self.panel.var_obs_mode.get() == "exploratory_genuine":
             self.panel.lbl_obs_eligibility.config(
                 text=msg,
                 foreground="#1b4d3e" if can_run else "#9c3414",
             )
+            if hasattr(self.panel, "obs_safety_label"):
+                self.panel.obs_safety_label.config(
+                    text=(
+                        f"Genuine Market-Data Observation — Read Only | Mode: {auth_mode_str} | "
+                        "NO_DEMONSTRATED_EDGE | Trading Authority: NONE"
+                        if can_run
+                        else "Phase 48 Genuine Exploratory: NO_DEMONSTRATED_EDGE | Trading Authority: NONE | "
+                        "Fail-closed until explicit owner CLI authorization."
+                    ),
+                    foreground="#1b4d3e" if can_run else "#9c3414",
+                )
             if not self._is_running:
                 self.panel.btn_start_obs.config(state="normal" if can_run else "disabled")
+                if can_run:
+                    idle_state = "Authorized (Disconnected)"
+                elif res.exhausted_stage_budget:
+                    idle_state = "Authorization Exhausted"
+                else:
+                    idle_state = "BLOCKED"
+                cur_status = str(self.panel.lbl_obs_status.cget("text") or "")
+                if not any(
+                    cur_status.startswith(prefix)
+                    for prefix in (
+                        "State: FAILED_STARTUP",
+                        "State: INTERRUPTED",
+                        "State: COMPLETED",
+                    )
+                ):
+                    self.panel.lbl_obs_status.config(
+                        text=(
+                            f"State: {idle_state} | Mode: {auth_mode_str} | "
+                            f"Observed Wallet: {self._last_observed_wallet_cls} | "
+                            "Trading Authority: NONE"
+                        ),
+                        foreground="#20364a" if can_run else "#9c3414",
+                    )
         return can_run, msg
 
     def on_model_selected(self, _event: Any = None) -> None:
@@ -1422,10 +1510,11 @@ class ObservationCenterController:
             else messagebox.askyesno(
                 "Start Genuine Exploratory Observation?",
                 f"Campaign: {contract.contract_id} ({contract.authorized_stage})\n"
+                f"Authorization Mode: {contract.authorization_mode}\n"
                 f"Account: {display_acc}\n"
                 f"Candidates: {', '.join(cids)}\n"
                 f"Duration: {dur} min (Drain: {drain_min} min)\n\n"
-                "Read-only market data only. execution_authority=NONE.\n"
+                "Genuine Market-Data Observation — Read Only. Trading Authority: NONE.\n"
                 "Proceed with supervised observation?",
                 parent=p.dashboard.window,
             )
@@ -1456,10 +1545,14 @@ class ObservationCenterController:
         self._p48_recent_rows = []
         self._p48_recent_outcomes = {}
         self._p48_multi_series = {}
+        self._last_observed_wallet_cls = "UNOBSERVED"
         p.btn_start_obs.config(state="disabled")
         p.btn_cancel_obs.config(state="normal")
         p.lbl_obs_status.config(
-            text=f"State: CONNECTING | Session: {session_id} | Connecting read-only broker session...",
+            text=(
+                f"State: Connecting | Mode: {contract.authorization_mode} | "
+                f"Session: {session_id} | Trading Authority: NONE"
+            ),
             foreground="#20364a",
         )
         if self.btn_p48_synth_demo is not None:
@@ -1467,7 +1560,7 @@ class ObservationCenterController:
 
         self._append_log(
             f"[Phase 48 Genuine] Starting supervised session {session_id} "
-            f"({contract.authorized_stage}, {dur}m, {len(cids)} models)..."
+            f"({contract.authorized_stage}, mode={contract.authorization_mode}, {dur}m, {len(cids)} models)..."
         )
 
         tfs_tuple = tuple(sorted(set(selected_tfs)))
@@ -1481,6 +1574,7 @@ class ObservationCenterController:
                         creds,
                         timeframes=tfs_tuple,
                         require_practice_account=contract.require_practice_account,
+                        authorization_mode=contract.authorization_mode,
                     )
                 )
                 cfg = ParallelObservationConfig(
@@ -1518,12 +1612,24 @@ class ObservationCenterController:
         p = self.panel
         total = max(1.0, prog.elapsed_seconds + prog.remaining_seconds)
         p.obs_progress_bar["value"] = min(100, int((prog.elapsed_seconds / total) * 100))
+        obs_wallet = getattr(prog, "observed_wallet_classification", "UNOBSERVED") or "UNOBSERVED"
+        self._last_observed_wallet_cls = obs_wallet
+        op_stage = getattr(prog, "operational_stage", prog.status) or prog.status
+        auth_mode = getattr(prog, "authorization_mode", "N/A")
         p.lbl_obs_status.config(
             text=(
-                f"State: {prog.status} | Classification: {prog.evidence_classification} | "
+                f"State: {op_stage} ({prog.status}) | Mode: {auth_mode} | "
+                f"Wallet: {obs_wallet} | {prog.evidence_classification} | "
                 f"Elapsed: {prog.elapsed_seconds:.1f}s | Remaining: {prog.remaining_seconds:.1f}s"
             )
         )
+        if self.lbl_p48_governance_meta is not None:
+            self.lbl_p48_governance_meta.config(
+                text=(
+                    f"Genuine Market-Data Observation — Read Only | Mode: {auth_mode} | "
+                    f"Observed Wallet: {obs_wallet} | Trading Authority: NONE"
+                )
+            )
         series_map: dict[str, list[float]] = {}
         for cid, st in prog.per_candidate.items():
             lbl = self._p48_kpi_labels.get(cid)
@@ -1554,6 +1660,10 @@ class ObservationCenterController:
         p.btn_cancel_obs.config(state="disabled")
         if self.btn_p48_synth_demo is not None:
             self.btn_p48_synth_demo.config(state="normal")
+        self._last_observed_wallet_cls = (
+            getattr(res, "observed_wallet_classification", "UNOBSERVED") or "UNOBSERVED"
+        )
+        res_mode = getattr(res, "authorization_mode", "N/A")
         self.on_mode_changed()
         p.obs_progress_bar["value"] = 100
         sanitized_reason = _sanitize_error_message(getattr(res, "stop_reason", ""))
@@ -1564,8 +1674,8 @@ class ObservationCenterController:
             "INTERRUPTED_STALE",
         )
         status_text = (
-            f"State: {res.status} | {res.evidence_classification} | "
-            f"Integrity: {'VERIFIED' if res.integrity_verified else 'FAILED'} | "
+            f"State: {res.status} | Mode: {res_mode} | Wallet: {self._last_observed_wallet_cls} | "
+            f"{res.evidence_classification} | Integrity: {'VERIFIED' if res.integrity_verified else 'FAILED'} | "
             f"Elapsed: {res.elapsed_seconds:.1f}s"
         )
         if is_err and sanitized_reason:

@@ -95,10 +95,13 @@ class ForexCFDAdapter(BaseExecutionAdapter):
         self.default_lots = default_lots
 
     def validate_proposal(self, proposal: OrderProposal) -> None:
+        from iqoption_research.execution.instruments import resolve_execution_instrument
+
         if proposal.product_type != ProductType.FOREX:
             raise ValueError(
                 f"ForexCFDAdapter received invalid product {proposal.product_type.value}"
             )
+        resolve_execution_instrument(proposal.symbol, product_type=ProductType.FOREX)
         if proposal.side not in {OrderSide.CALL, OrderSide.PUT}:
             raise ValueError(f"Invalid forex direction {proposal.side}")
         if proposal.proposed_stake <= 0.0:
@@ -109,10 +112,14 @@ class ForexCFDAdapter(BaseExecutionAdapter):
         proposal: OrderProposal,
         portfolio: PaperPortfolio,
     ) -> SizingResult:
-        del portfolio
         self.validate_proposal(proposal)
         # Sizing: stake represents allocated margin
         stake = proposal.proposed_stake
+        if stake > portfolio.available_cash and portfolio.current_balance > 0.0:
+            raise ValueError(
+                f"Insufficient available margin cash (${portfolio.available_cash:.2f}) "
+                f"for required Forex margin (${stake:.2f})."
+            )
         # Nominal position value with leverage
         notional_value = stake * self.default_leverage
         units = notional_value
@@ -127,7 +134,7 @@ class ForexCFDAdapter(BaseExecutionAdapter):
         )
 
     def is_broker_transmission_supported(self) -> bool:
-        """Forex/CFD broker order submission is unverified and unsupported in Phase 16."""
+        """Forex/CFD broker order submission is not implemented."""
         return False
 
     def execute_order(
@@ -137,12 +144,25 @@ class ForexCFDAdapter(BaseExecutionAdapter):
         current_candle: Candle,
         broker_transport: Any = None,
     ) -> ExecutionEvent:
+        from iqoption_research.execution.instruments import resolve_execution_instrument
+
         del broker_transport
         if self.execution_mode != ExecutionMode.PAPER:
             raise UnsupportedProductOperationError(
-                "Forex/CFD broker execution is UNSUPPORTED in Phase 16. "
-                "Only simulated PAPER execution is supported."
+                "LIVE_BROKER_PROTOCOL_NOT_IMPLEMENTED: Forex/CFD broker execution is "
+                "not implemented (missing captured broker margin frames). "
+                "Only offline PAPER simulation is supported."
             )
+
+        spec = resolve_execution_instrument(order.symbol, product_type=ProductType.FOREX)
+        order.metadata["instrument_active_id"] = spec.active_id
+        order.metadata["market_kind"] = spec.market_kind
+        order.metadata["execution_label"] = "PAPER/SIMULATED"
+        order.metadata["broker_evidence"] = "NONE_SIMULATED_MARGIN_MODEL"
+        order.metadata.setdefault(
+            "contract_terms_assumption",
+            f"SIMULATED_FOREX_SPREAD_{self.payoff_model.spread_pips:.1f}PIP_COMM_{self.payoff_model.commission_per_lot:.1f}",
+        )
 
         # Apply spread friction on entry: Buy at Ask, Sell at Bid
         half_spread = (self.payoff_model.spread_pips * self.payoff_model.pip_size) / 2.0

@@ -39,7 +39,7 @@ from iqoption_research.execution.account_diagnostics import (
     BrokerAccountDiagnostic,
     RoutingAuditResult,
 )
-from iqoption_research.execution.models import OrderSide, PaperOrder
+from iqoption_research.execution.models import OrderSide, PaperOrder, ProductType
 from iqoption_research.execution.modes import (
     ContractAvailabilityUnverifiedError,
     ExecutionMode,
@@ -102,6 +102,10 @@ class IQOptionLivePracticeTransport:
     Maintains strict isolation from read-only observation clients.
     All live Real account requests fail closed immediately.
     """
+
+    """Live WebSocket Practice transport with strict fail-closed wallet safety."""
+
+    is_live_socket_transport: bool = True
 
     def __init__(
         self,
@@ -256,6 +260,23 @@ class IQOptionLivePracticeTransport:
     def get_routing_audit(self) -> RoutingAuditResult:
         """Evaluate evidence-based account state and practice routing status."""
         diag = BrokerAccountDiagnostic()
+        has_raw_active_practice = any(
+            b.type == AccountType.PRACTICE and b.raw_is_active is True for b in self._balances
+        )
+        has_raw_active_real = any(
+            b.type == AccountType.REAL and b.raw_is_active is True for b in self._balances
+        )
+        has_session_confirm = bool(
+            self._session_practice_selected and self._balance_changed_event_received
+        )
+        has_authoritative = bool(
+            (has_raw_active_practice or has_session_confirm) and not has_raw_active_real
+        )
+        active_source: str | None = None
+        if has_session_confirm:
+            active_source = "change_balance_confirmed_by_balance_changed"
+        elif has_raw_active_practice:
+            active_source = "explicit_balance_is_active_flag"
         res = diag.evaluate_routing(
             profile=self._profile,
             balances=self._balances,
@@ -264,7 +285,8 @@ class IQOptionLivePracticeTransport:
             selection_frame_acknowledged=self._selection_frame_acknowledged,
             broker_rejected_selection=self._broker_rejected_selection,
             balance_changed_event_received=self._balance_changed_event_received,
-            has_authoritative_active_indicator=False,
+            has_authoritative_active_indicator=has_authoritative,
+            active_indicator_source=active_source,
         )
         self._routing_audit = res
         return res
@@ -650,13 +672,11 @@ class IQOptionLivePracticeTransport:
             raise PracticeAuthorizationError("Incomplete account data received from broker.")
 
         now = time.time()
-        prof_bal_id = str(self._profile.raw.get("balance_id", "")).strip()
         has_raw_active = any(b.raw_is_active is True for b in self._balances)
-        has_authoritative = bool(
-            self._session_practice_selected
-            or has_raw_active
-            or (prof_bal_id and any(str(b.id) == prof_bal_id for b in self._balances))
+        has_session_confirm = bool(
+            self._session_practice_selected and self._balance_changed_event_received
         )
+        has_authoritative = bool(has_session_confirm or has_raw_active)
 
         check = self._safety_validator.evaluate_pre_flight(
             self._profile,
@@ -669,10 +689,13 @@ class IQOptionLivePracticeTransport:
             has_authoritative_active_indicator=has_authoritative,
         )
 
-        # Handle unverified account selection: STRICT FAIL-CLOSED
-        if check.verdict == PracticeSafetyVerdict.BLOCKED_ACCOUNT_SELECTION_UNVERIFIED:
+        # Handle unverified or conflicting account selection: STRICT FAIL-CLOSED
+        if check.verdict in {
+            PracticeSafetyVerdict.BLOCKED_ACCOUNT_SELECTION_UNVERIFIED,
+            PracticeSafetyVerdict.BLOCKED_CONFLICTING_ACCOUNT_INDICATORS,
+        }:
             raise AccountSelectionUnverifiedError(
-                f"ACCOUNT SELECTION UNVERIFIED: Active session balance "
+                f"ACCOUNT SELECTION UNVERIFIED ({check.status.value}): Active session balance "
                 f"{check.active_balance_id} is not authoritatively established as PRACTICE. "
                 "Automatic switching is prohibited. Live execution blocked fail-closed."
             )
@@ -694,7 +717,7 @@ class IQOptionLivePracticeTransport:
             )
 
         self._active_balance_id = check.active_balance_id
-        self._session_practice_selected = True
+        self._session_practice_selected = bool(self._session_practice_selected or has_raw_active)
         logger.info(
             "Authoritative Practice account verified: active_balance_id=%s", self._active_balance_id
         )
@@ -803,6 +826,11 @@ class IQOptionLivePracticeTransport:
         option_id: str | int,
         *,
         timeout_seconds: float | None = None,
+        order: PaperOrder | None = None,
+        stake: float = MIN_PRACTICE_STAKE,
+        payout_rate: float = 0.85,
+        symbol: str = "EURUSD",
+        side: OrderSide = OrderSide.CALL,
     ) -> PracticeSettlementResult:
         """Wait for authoritative broker settlement notification for specified option."""
         opt_key = str(option_id).strip()
@@ -825,18 +853,18 @@ class IQOptionLivePracticeTransport:
             if self._active_ticket_id == opt_key:
                 self._active_ticket_id = None
 
-        # Build dummy PaperOrder to satisfy parse_settlement signature
-        dummy_order = PaperOrder(
+        # Use caller-supplied PaperOrder when available rather than synthesizing defaults
+        eval_order = order or PaperOrder(
             order_id=opt_key,
             signal_id=f"sig_{opt_key}",
             execution_mode=ExecutionMode.PRACTICE,
-            symbol="EURUSD",
-            side=OrderSide.CALL,
-            stake=MIN_PRACTICE_STAKE,
-            payout_rate=0.85,
+            symbol=symbol,
+            side=side,
+            stake=float(stake),
+            payout_rate=float(payout_rate),
             broker_order_id=opt_key,
         )
-        parsed = self._practice_adapter.parse_settlement(dummy_order, settlement_payload)
+        parsed = self._practice_adapter.parse_settlement(eval_order, settlement_payload)
 
         # Asynchronously attempt balance refresh to verify mutation
         with contextlib.suppress(Exception):
@@ -859,10 +887,12 @@ class IQOptionLivePracticeTransport:
 
     async def async_get_live_candle(self, symbol: str = "EURUSD", size: int = 60) -> Candle:
         """Fetch latest candle from broker to verify asset tradability and live pricing."""
+        from iqoption_research.execution.instruments import resolve_execution_instrument
+
         if self._closed or self._ws is None:
             raise ConnectionError("Cannot get live candle: Practice transport is disconnected.")
 
-        active_id = 1
+        active_id = resolve_execution_instrument(symbol, product_type=ProductType.BINARY).active_id
         req_id = f"candle_{next(self._request_counter)}"
         now_ts = int(self.server_time)
         frame = {

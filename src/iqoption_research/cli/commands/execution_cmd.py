@@ -110,6 +110,8 @@ def capability_matrix_command(
         ),
         BrokerCapabilityStatus.OFFLINE_TESTED.value: "[cyan]OFFLINE TESTED[/cyan]",
         BrokerCapabilityStatus.IMPLEMENTED.value: "[yellow]IMPLEMENTED[/yellow]",
+        BrokerCapabilityStatus.BLOCKED.value: "[bold yellow]BLOCKED[/bold yellow]",
+        BrokerCapabilityStatus.NOT_IMPLEMENTED.value: "[magenta]NOT IMPLEMENTED[/magenta]",
         BrokerCapabilityStatus.UNSUPPORTED.value: "[bold red]UNSUPPORTED[/bold red]",
     }
 
@@ -2593,3 +2595,42 @@ def practice_history_command(
             raise typer.Exit(code=1) from None
     if result["account"]["real_wallet_status"] == "MUTATED":
         raise typer.Exit(code=1)
+
+
+@execution_app.command(
+    "offline-demo",
+    help="Run full Phase 50 weekend offline acceptance demo (PAPER + mocked Practice rehearsal).",
+)
+def offline_demo_command(
+    output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Optional directory for generated SQLite journal and SHA-256 evidence JSON.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit structured JSON summary.",
+    ),
+) -> None:
+    """Execute end-to-end offline execution demo across all products, Phase 48 models, and recovery."""
+    from iqoption_research.execution.offline_demo import run_weekend_offline_acceptance_demo
+
+    repo_root = Path.cwd()
+    summary = run_weekend_offline_acceptance_demo(repo_root, output_dir=output_dir)
+    if json_output:
+        console.print_json(json.dumps(summary))
+        return
+    console.print(
+        Panel(
+            f"[bold green]{summary['status']}[/bold green]\n"
+            f"Workspace: {summary['workspace_dir']}\n"
+            f"Evidence JSON: {summary['evidence_report_path']}\n"
+            f"SHA-256: {summary['evidence_sha256']}\n"
+            f"Persisted Orders: {summary['orders_total']} | "
+            f"Virtual Balance: ${summary['portfolio_balance']:,.2f}\n"
+            f"Supervised Compatibility Boundary: {summary['supervised_boundary']}\n"
+            f"Mock Rehearsal Reconciled: {summary['supervised_rehearsal_balance_reconciled']}",
+            title="Phase 50 Weekend Offline Acceptance Demo",
+        )
+    )

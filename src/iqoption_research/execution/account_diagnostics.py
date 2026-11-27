@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Final
 
+from iqoption_research.execution.safety import evaluate_wallet_conflicts
 from iqoption_research.models.account import (
     AccountType,
     Balance,
@@ -51,6 +52,7 @@ class AccountReadinessResult(StrEnum):
 
     VERIFIED_PRACTICE = "VERIFIED PRACTICE"
     ACTIVE_REAL = "ACTIVE REAL"
+    CONFLICTING_ACCOUNT_INDICATORS = "CONFLICTING_ACCOUNT_INDICATORS"
     UNKNOWN = "UNKNOWN"
     STALE_VERIFICATION = "STALE VERIFICATION"
     SESSION_MISMATCH = "SESSION MISMATCH"
@@ -75,6 +77,29 @@ class AccountStateClassification(StrEnum):
     SESSION_SELECTION_UNVERIFIED = "SESSION_SELECTION_UNVERIFIED"
     BALANCE_ROUTING_UNVERIFIED = "BALANCE_ROUTING_UNVERIFIED"
     BROKER_REJECTED_SELECTION = "BROKER_REJECTED_SELECTION"
+    CONFLICTING_ACCOUNT_INDICATORS = "CONFLICTING_ACCOUNT_INDICATORS"
+
+
+@dataclass(frozen=True, slots=True)
+class SixLayerWalletAuthority:
+    """Explicit 6-layer distinction for IQ Option Practice wallet authority audits."""
+
+    wallet_inventory: tuple[dict[str, Any], ...]
+    profile_reported_identity: dict[str, Any]
+    locally_selected_wallet: dict[str, Any]
+    official_ui_selection: dict[str, Any]
+    connection_scoped_authority: dict[str, Any]
+    order_specific_routing_authority: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "1_wallet_inventory": list(self.wallet_inventory),
+            "2_profile_reported_identity": dict(self.profile_reported_identity),
+            "3_locally_selected_wallet": dict(self.locally_selected_wallet),
+            "4_official_ui_selection": dict(self.official_ui_selection),
+            "5_connection_scoped_authority": dict(self.connection_scoped_authority),
+            "6_order_specific_routing_authority": dict(self.order_specific_routing_authority),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +197,7 @@ class RoutingAuditResult:
     routing_status_summary: str
     recommended_action: str
     decision_path: tuple[str, ...] = ()
+    authority_layers: SixLayerWalletAuthority | None = None
 
     @property
     def profile_balance_semantics(self) -> str:
@@ -193,7 +219,7 @@ class RoutingAuditResult:
 
     @property
     def routing_layers(self) -> AccountRoutingLayers:
-        """Structured 5-layer separation of account routing identities."""
+        """Structured multi-layer separation of account routing identities."""
         return AccountRoutingLayers(
             wallet_identities=self.available_balances,
             default_account_id=self.profile_balance_id,
@@ -230,6 +256,7 @@ class RoutingAuditResult:
             "routing_status_summary": self.routing_status_summary,
             "recommended_action": self.recommended_action,
             "decision_path": list(self.decision_path),
+            "authority_layers": self.authority_layers.to_dict() if self.authority_layers else None,
         }
 
 
@@ -279,6 +306,7 @@ class AccountDiagnosticReport:
     decision_path: tuple[str, ...] = ()
     classifications: tuple[AccountStateClassification, ...] = ()
     routing_audit: RoutingAuditResult | None = None
+    authority_layers: SixLayerWalletAuthority | None = None
     evaluated_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def to_dict(self) -> dict[str, Any]:
@@ -298,6 +326,7 @@ class AccountDiagnosticReport:
             "decision_path": list(self.decision_path),
             "classifications": [c.value for c in self.classifications],
             "routing_audit": self.routing_audit.to_dict() if self.routing_audit else None,
+            "authority_layers": self.authority_layers.to_dict() if self.authority_layers else None,
             "evaluated_at_utc": self.evaluated_at_utc,
         }
 
@@ -552,7 +581,61 @@ class BrokerAccountDiagnostic:
         has_practice = any(b.is_practice for b in effective_balances)
         practice_ids = [b.id for b in effective_balances if b.is_practice]
 
+        has_conflicting_indicators, _wallet_dec, conflict_sources = evaluate_wallet_conflicts(
+            profile, balances
+        )
+        if has_conflicting_indicators:
+            discrepancy = True
+
+        layers = self._build_six_layers(
+            balances=tuple(effective_balances),
+            profile_bal_id=prof_default_id,
+            locally_selected_bal_id=locally_selected_balance_id,
+            browser_ui_bal_id=browser_ui_balance_id,
+            session_active_bal_id=resolved_bal_id,
+            has_authoritative_active_indicator=is_authoritative and not has_conflicting_indicators,
+            active_indicator_source=(
+                "conflicting_account_indicators"
+                if has_conflicting_indicators
+                else "diagnostic_input"
+            ),
+            current_session_id=current_session_id,
+            verification_age_seconds=age,
+            conflicting_indicators=conflict_sources,
+        )
+
         decision_steps: tuple[str, ...]
+        if has_conflicting_indicators:
+            reasons = ", ".join(conflict_sources) or "conflicting_account_indicators"
+            decision_steps = (
+                f"Profile reported default wallet ID '{prof_default_id}' (non-authoritative).",
+                f"Balances inventory returned {len(effective_balances)} wallet(s).",
+                f"Conflict detector raised conflicting_account_indicators ({reasons}).",
+                "Live broker Practice authority cannot be established fail-closed.",
+            )
+            return AccountDiagnosticReport(
+                readiness=AccountReadinessResult.CONFLICTING_ACCOUNT_INDICATORS,
+                ledger_status=BrokerLedgerStatus.BLOCKED,
+                is_practice_verified=False,
+                is_safe_for_practice_execution=False,
+                balance_identity=identity,
+                active_account_type=matched_bal.type,
+                verification_age_seconds=age,
+                discrepancy_detected=True,
+                explanation=(
+                    f"CONFLICTING ACCOUNT INDICATORS ({reasons}): Profile and balances payloads "
+                    "disagree on active wallet authority. Automatic switching is forbidden and "
+                    "Practice broker execution remains BLOCKED fail-closed."
+                ),
+                recommended_action=(
+                    "DO NOT PLACE ORDERS. Verify the active wallet in the official IQ Option UI, "
+                    "run read-only practice-diagnostics, and require an explicit change_balance + "
+                    "balance-changed confirmation matching the Practice wallet before supervised testing."
+                ),
+                decision_path=decision_steps,
+                classifications=(AccountStateClassification.CONFLICTING_ACCOUNT_INDICATORS,),
+                authority_layers=layers,
+            )
 
         # 5. Authoritative session indicator check:
         # If the broker does not provide an authoritative active-session indicator,
@@ -603,6 +686,7 @@ class BrokerAccountDiagnostic:
                 explanation=explanation_msg,
                 recommended_action=rec_action,
                 decision_path=decision_steps,
+                authority_layers=layers,
             )
 
         # 6. Check if active balance is REAL
@@ -659,6 +743,7 @@ class BrokerAccountDiagnostic:
                 explanation=explanation_msg,
                 recommended_action=rec_action,
                 decision_path=decision_steps,
+                authority_layers=layers,
             )
 
         # 7. Active balance is confirmed PRACTICE (type 4)
@@ -708,6 +793,74 @@ class BrokerAccountDiagnostic:
                 "PRACTICE-only execution harness is formally approved."
             ),
             decision_path=decision_steps,
+            authority_layers=layers,
+        )
+
+    @staticmethod
+    def _build_six_layers(
+        *,
+        balances: tuple[Balance, ...],
+        profile_bal_id: str | None,
+        locally_selected_bal_id: str | None = None,
+        browser_ui_bal_id: str | None = None,
+        session_active_bal_id: str | None = None,
+        has_authoritative_active_indicator: bool = False,
+        active_indicator_source: str = "NOT_OBSERVED",
+        current_session_id: str | None = None,
+        verification_age_seconds: float | None = None,
+        conflicting_indicators: tuple[str, ...] = (),
+        order_ledger_balance_id: str | None = None,
+    ) -> SixLayerWalletAuthority:
+        """Build structured 6-layer wallet authority summary."""
+        inventory = tuple(
+            {
+                "id": str(b.id),
+                "type": b.type.name,
+                "type_code": int(b.type.value),
+                "currency": b.currency,
+                "raw_is_active": b.raw_is_active,
+                "is_default": b.is_default,
+            }
+            for b in balances
+        )
+        matched_prof = (
+            next((b for b in balances if str(b.id) == str(profile_bal_id)), None)
+            if profile_bal_id
+            else None
+        )
+        return SixLayerWalletAuthority(
+            wallet_inventory=inventory,
+            profile_reported_identity={
+                "balance_id": profile_bal_id,
+                "type": matched_prof.type.name if matched_prof else None,
+                "authoritative_for_routing": False,
+                "semantics": "PROFILE_REPORTED_IDENTITY_ONLY",
+            },
+            locally_selected_wallet={
+                "balance_id": locally_selected_bal_id,
+                "authoritative_for_routing": False,
+            },
+            official_ui_selection={
+                "balance_id": browser_ui_bal_id,
+                "status": "OPERATOR_REPORTED" if browser_ui_bal_id else "NOT_OBSERVED",
+                "authoritative_for_api_session": False,
+            },
+            connection_scoped_authority={
+                "session_id": current_session_id,
+                "active_balance_id": session_active_bal_id,
+                "verified": bool(has_authoritative_active_indicator and not conflicting_indicators),
+                "source": active_indicator_source,
+                "conflicting_indicators": list(conflicting_indicators),
+                "verification_age_seconds": verification_age_seconds,
+            },
+            order_specific_routing_authority={
+                "verified": bool(order_ledger_balance_id),
+                "confirmed_ledger_balance_id": order_ledger_balance_id,
+                "proof_requirement": (
+                    "Requires user_balance_id echoed on broker option-opened / position-changed "
+                    "and verified PRACTICE balance delta with unchanged REAL balance."
+                ),
+            },
         )
 
     def evaluate_routing(
@@ -808,8 +961,16 @@ class BrokerAccountDiagnostic:
         has_active_real = any(
             b.type == AccountType.REAL and (b.is_active or b.raw_is_active) for b in avail_bals
         )
+        has_conflict, _wallet_dec, conflict_sources = evaluate_wallet_conflicts(profile, avail_bals)
+        if has_conflict:
+            classifications.append(AccountStateClassification.CONFLICTING_ACCOUNT_INDICATORS)
+            decision_steps.append(
+                f"Conflicting account indicators detected ({', '.join(conflict_sources)})."
+            )
+
         if (
             has_authoritative_active_indicator
+            and not has_conflict
             and prof_bal_type == AccountType.PRACTICE
             and not has_active_real
         ):
@@ -832,12 +993,17 @@ class BrokerAccountDiagnostic:
         is_verified = (
             AccountStateClassification.PRACTICE_CONFIRMED in classifications
             and AccountStateClassification.BALANCE_ROUTING_UNVERIFIED not in classifications
+            and AccountStateClassification.CONFLICTING_ACCOUNT_INDICATORS not in classifications
         )
 
         status_summary = (
             "PRACTICE_CONFIRMED: Broker verified Practice routing"
             if is_verified
-            else "UNVERIFIED: Practice order routing unverified — live dispatch blocked fail-closed"
+            else (
+                "CONFLICTING_ACCOUNT_INDICATORS: Wallet authority ambiguous — live dispatch blocked fail-closed"
+                if has_conflict
+                else "UNVERIFIED: Practice order routing unverified — live dispatch blocked fail-closed"
+            )
         )
 
         rec_action = (
@@ -855,6 +1021,14 @@ class BrokerAccountDiagnostic:
             "authoritative_server_push"
             if has_authoritative_active_indicator
             else "ABSENT (Broker does not provide active-session indicator in get-balances/profile)"
+        )
+        six_layers = self._build_six_layers(
+            balances=avail_bals,
+            profile_bal_id=prof_bal_id,
+            has_authoritative_active_indicator=has_authoritative_active_indicator
+            and not has_conflict,
+            active_indicator_source=ind_source,
+            conflicting_indicators=conflict_sources,
         )
 
         return RoutingAuditResult(
@@ -874,4 +1048,5 @@ class BrokerAccountDiagnostic:
             routing_status_summary=status_summary,
             recommended_action=rec_action,
             decision_path=tuple(decision_steps),
+            authority_layers=six_layers,
         )

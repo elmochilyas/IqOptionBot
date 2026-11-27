@@ -25,6 +25,7 @@ from iqoption_research.execution.account_diagnostics import (
 from iqoption_research.execution.models import (
     OrderSide,
     PaperOrder,
+    ProductType,
 )
 from iqoption_research.execution.modes import (
     ContractAvailabilityUnverifiedError,
@@ -203,13 +204,21 @@ class PracticeBinaryTransportAdapter:
         self.default_payout_rate = default_payout_rate
         self._schedules: dict[str, BinaryInstrumentSchedule] = {
             "EURUSD": BinaryInstrumentSchedule(symbol="EURUSD", active_id=1, payout_rate=0.85),
+            "EURUSD_OTC": BinaryInstrumentSchedule(
+                symbol="EURUSD_OTC", active_id=76, payout_rate=0.85
+            ),
+            "EURUSD_OP": BinaryInstrumentSchedule(
+                symbol="EURUSD_OP", active_id=1861, payout_rate=0.80
+            ),
             "GBPUSD": BinaryInstrumentSchedule(symbol="GBPUSD", active_id=2, payout_rate=0.82),
             "USDJPY": BinaryInstrumentSchedule(symbol="USDJPY", active_id=3, payout_rate=0.80),
         }
 
     def get_schedule(self, symbol: str) -> BinaryInstrumentSchedule | None:
         """Lookup instrument availability and contract specifications."""
-        return self._schedules.get(symbol.upper())
+        from iqoption_research.execution.instruments import canonical_execution_symbol
+
+        return self._schedules.get(canonical_execution_symbol(symbol))
 
     def validate_pre_flight(
         self,
@@ -287,8 +296,15 @@ class PracticeBinaryTransportAdapter:
         expiry_ts: int,
     ) -> dict[str, Any]:
         """Construct and strictly validate the outgoing JSON wire-protocol frame."""
-        sched = self.get_schedule(order.symbol)
-        active_id = sched.active_id if sched is not None else 1
+        from iqoption_research.execution.instruments import resolve_execution_instrument
+
+        spec = resolve_execution_instrument(order.symbol, product_type=order.product_type)
+        sched = self.get_schedule(spec.symbol)
+        active_id = sched.active_id if sched is not None else spec.active_id
+        if active_id != spec.active_id:
+            raise ValueError(
+                f"Instrument active_id conflict for {order.symbol}: {active_id} != {spec.active_id}"
+            )
 
         try:
             req_frame = OutgoingBinaryOrderRequestFrame(
@@ -621,7 +637,10 @@ class MockBrokerPracticeTransport:
                 f"Broker contract availability, payout, and limits for {symbol} "
                 "could not be verified."
             )
-        sym = symbol.upper()
+        from iqoption_research.execution.instruments import resolve_execution_instrument
+
+        spec = resolve_execution_instrument(symbol, product_type=ProductType.BINARY)
+        sym = spec.symbol
         if sym in self._instrument_schedules:
             schedule = self._instrument_schedules[sym]
             if not schedule.is_available:
@@ -633,7 +652,7 @@ class MockBrokerPracticeTransport:
 
         return BinaryInstrumentSchedule(
             symbol=sym,
-            active_id=1,
+            active_id=spec.active_id,
             is_available=True,
             min_stake=1.00,
             max_stake=100.00,

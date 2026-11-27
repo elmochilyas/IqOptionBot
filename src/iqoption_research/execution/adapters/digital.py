@@ -111,10 +111,13 @@ class DigitalOptionsAdapter(BaseExecutionAdapter):
         self.bar_duration_seconds = bar_duration_seconds
 
     def validate_proposal(self, proposal: OrderProposal) -> None:
+        from iqoption_research.execution.instruments import resolve_execution_instrument
+
         if proposal.product_type != ProductType.DIGITAL:
             raise ValueError(
                 f"DigitalOptionsAdapter received invalid product {proposal.product_type.value}"
             )
+        resolve_execution_instrument(proposal.symbol, product_type=ProductType.DIGITAL)
         if proposal.side not in {OrderSide.CALL, OrderSide.PUT}:
             raise ValueError(f"Invalid digital option direction {proposal.side}")
         if proposal.proposed_stake <= 0.0:
@@ -144,12 +147,25 @@ class DigitalOptionsAdapter(BaseExecutionAdapter):
         current_candle: Candle,
         broker_transport: Any = None,
     ) -> ExecutionEvent:
+        from iqoption_research.execution.instruments import resolve_execution_instrument
+
         del broker_transport
         if self.execution_mode != ExecutionMode.PAPER:
             raise UnsupportedProductOperationError(
-                "Digital Options broker execution is UNSUPPORTED in Phase 16. "
-                "Only simulated PAPER execution is supported."
+                "LIVE_BROKER_PROTOCOL_NOT_IMPLEMENTED: Digital Options broker execution is "
+                "not implemented (missing captured broker protocol frames). "
+                "Only offline PAPER simulation is supported."
             )
+
+        spec = resolve_execution_instrument(order.symbol, product_type=ProductType.DIGITAL)
+        order.metadata["instrument_active_id"] = spec.active_id
+        order.metadata["market_kind"] = spec.market_kind
+        order.metadata["execution_label"] = "PAPER/SIMULATED"
+        order.metadata["broker_evidence"] = "NONE_SIMULATED_STRIKE_MODEL"
+        order.metadata.setdefault(
+            "contract_terms_assumption",
+            "SIMULATED_DIGITAL_NONLINEAR_STRIKE_PAYOUT",
+        )
 
         entry_price = current_candle.close
         entry_ts = float(current_candle.to_ts)

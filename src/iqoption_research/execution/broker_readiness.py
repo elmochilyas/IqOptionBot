@@ -18,6 +18,7 @@ from typing import Final
 from iqoption_research.execution.models import OrderSide, PaperOrder
 from iqoption_research.execution.risk import OperationalRiskManager, OrderProposal, RiskDecision
 from iqoption_research.execution.safety import (
+    AccountSelectionUnverifiedError,
     PracticeAccountSafetyValidator,
     PracticeSafetyVerdict,
     RealAccountExecutionBlockedError,
@@ -178,6 +179,14 @@ class PracticeExecutionReadinessGate:
             )
             raise RealAccountExecutionBlockedError(
                 "CRITICAL SAFETY VIOLATION: Active balance is REAL. Order transmission blocked."
+            )
+
+        if safety_check.verdict in {
+            PracticeSafetyVerdict.BLOCKED_ACCOUNT_SELECTION_UNVERIFIED,
+            PracticeSafetyVerdict.BLOCKED_CONFLICTING_ACCOUNT_INDICATORS,
+        }:
+            raise AccountSelectionUnverifiedError(
+                f"Practice readiness gate blocked fail-closed: {safety_check.message}"
             )
 
         if not safety_check.is_safe_to_execute:

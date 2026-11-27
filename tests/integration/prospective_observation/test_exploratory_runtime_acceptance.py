@@ -780,3 +780,348 @@ async def test_phase49_wallet_independent_end_to_end_multi_tf_mocked_socket(tmp_
         )
         with pytest.raises(GovernanceBlockedError, match="does not match contract"):
             await ParallelObservationRuntime(cfg_mismatch, repo_root=tmp_path).run(mismatch_t)
+
+
+async def test_phase49_4_unrecovered_gap_blocks_across_gap_and_recovered_history_repairs_safely(
+    tmp_path: Path,
+) -> None:
+    """Verify Phase47 contiguous warmup is never weakened across gaps and safe recovery repairs it."""
+    import json
+
+    models_dir, cids = _setup_three_bundles(tmp_path)
+    base_dt = datetime(2026, 11, 27, 8, 50, 0, tzinfo=UTC)
+    warmup_by_tf = {60: _make_candles(60, 79, base_dt - timedelta(minutes=79))}
+    m1 = _make_candles(60, 10, base_dt)
+
+    # 1. Unrecovered gap at m1[4] (e.g. 08:54 missing): m1[5] arrives -> contiguous_candles resets to 1
+    events_unrec = [
+        (60, m1[0]),
+        (60, m1[1]),
+        (60, m1[2]),
+        (60, m1[3]),
+        # m1[4] omitted (08:54)
+        (60, m1[5]),
+        (60, m1[6]),
+    ]
+    t_gap = SyntheticMultiTimeframeTransport(warmup_by_tf=warmup_by_tf, events=events_unrec)
+    cfg_gap = ParallelObservationConfig(
+        session_id="p49_unrecovered_gap",
+        candidate_ids=(cids[0],),
+        duration_minutes=15,
+        is_genuine_mode=False,
+        models_dir=models_dir,
+        sessions_dir=tmp_path / "sessions",
+    )
+    res_gap = await ParallelObservationRuntime(cfg_gap, repo_root=tmp_path).run(t_gap)
+    assert res_gap.status == "COMPLETED"
+    assert res_gap.integrity_verified is True
+    diag_gap = res_gap.per_candidate_diagnostics[cids[0]]
+    assert diag_gap.total_buffered_candles == 85
+    assert diag_gap.contiguous_candles == 2  # m1[5], m1[6] after the gap
+    assert diag_gap.feature_ready is False
+    assert diag_gap.missing_candles == 1
+    assert diag_gap.missing_candle_boundaries == [int(m1[4].to_ts)]
+    assert diag_gap.total_opportunities == 4  # Only m1[0]..m1[3] evaluated before gap
+    assert diag_gap.skipped_opportunity_reasons.get("WARMUP_CONTIGUITY_GAP") == 2
+
+    # 2. Same 08:54 candle recovered cleanly at acquisition time -> buffer contiguous & evaluated
+    events_rec = [(60, c) for c in m1[:7]]
+    t_rec = SyntheticMultiTimeframeTransport(
+        warmup_by_tf=warmup_by_tf,
+        events=events_rec,
+        event_recovered_indices={4},
+    )
+    cfg_rec = ParallelObservationConfig(
+        session_id="p49_recovered_gap",
+        candidate_ids=(cids[0],),
+        duration_minutes=15,
+        is_genuine_mode=False,
+        models_dir=models_dir,
+        sessions_dir=tmp_path / "sessions",
+    )
+    res_rec = await ParallelObservationRuntime(cfg_rec, repo_root=tmp_path).run(t_rec)
+    assert res_rec.status == "COMPLETED"
+    assert res_rec.integrity_verified is True
+    diag_rec = res_rec.per_candidate_diagnostics[cids[0]]
+    assert diag_rec.recovered_candles == 1
+    assert diag_rec.received_native_candles == 6
+    assert diag_rec.missing_candles == 0
+    assert diag_rec.feature_ready is True
+    assert diag_rec.contiguous_candles == 86
+    assert diag_rec.total_opportunities == 7
+
+    inputs_rows = [
+        json.loads(line)
+        for line in (res_rec.session_dir / "inputs.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert inputs_rows[4]["is_recovered"] is True
+    assert inputs_rows[4]["recovered_at_utc"] is not None
+
+
+async def test_phase49_4_delayed_data_after_permitted_decision_window_marked_missed(
+    tmp_path: Path,
+) -> None:
+    """Delayed data arriving after permitted decision window repairs buffer without inventing predictions."""
+    import json
+
+    models_dir, cids = _setup_three_bundles(tmp_path)
+    base_dt = datetime(2026, 11, 27, 8, 50, 0, tzinfo=UTC)
+    warmup_by_tf = {60: _make_candles(60, 79, base_dt - timedelta(minutes=79))}
+    m1 = _make_candles(60, 8, base_dt)
+
+    # Case A: m1[4] arrives 45s after close_ts (exceeds max_decision_delay_seconds=30, < maturity 15m)
+    # Case B: m1[1] omitted initially, arrives late out-of-order after m1[2] to repair buffer
+    events = [
+        (60, m1[0]),
+        (60, m1[2]),  # gap at m1[1]
+        (60, m1[1]),  # recovered late out-of-order after m1[2]
+        (60, m1[3]),
+        (60, m1[4]),  # delayed by 45s on server clock
+        (60, m1[5]),
+    ]
+    delayed_ns = {4: (int(m1[4].to_ts) + 45) * 1_000_000_000}
+    transport = SyntheticMultiTimeframeTransport(
+        warmup_by_tf=warmup_by_tf,
+        events=events,
+        event_server_time_ns=delayed_ns,
+        event_recovered_indices={2, 4},
+    )
+    cfg = ParallelObservationConfig(
+        session_id="p49_missed_window",
+        candidate_ids=(cids[0],),
+        duration_minutes=15,
+        is_genuine_mode=False,
+        models_dir=models_dir,
+        sessions_dir=tmp_path / "sessions",
+        max_decision_delay_seconds=30,
+    )
+    res = await ParallelObservationRuntime(cfg, repo_root=tmp_path).run(transport)
+    assert res.status == "COMPLETED"
+    assert res.integrity_verified is True
+
+    diag = res.per_candidate_diagnostics[cids[0]]
+    # Evaluated timely: m1[0], m1[3], m1[5] (3 total); skipped: m1[2] (gap), m1[1] (late repair), m1[4] (delayed 45s)
+    assert diag.recovered_candles == 2
+    assert diag.missing_candles == 0
+    assert diag.feature_ready is True
+    assert diag.total_opportunities == 3
+    assert diag.skipped_opportunity_reasons.get("WARMUP_CONTIGUITY_GAP") == 1
+    assert diag.skipped_opportunity_reasons.get("MISSED_DECISION_WINDOW") == 2
+
+    pred_close_ts = [
+        json.loads(line)["candle_close_ts"]
+        for line in (res.session_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert int(m1[1].to_ts) not in pred_close_ts
+    assert int(m1[4].to_ts) not in pred_close_ts
+    assert int(m1[5].to_ts) in pred_close_ts
+
+
+async def test_phase49_4_conflicting_duplicate_candle_at_buffered_boundary_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """Conflicting candle at an earlier buffered boundary (not just latest) triggers FAILED_PROVENANCE."""
+    from dataclasses import replace
+
+    models_dir, cids = _setup_three_bundles(tmp_path)
+    base_dt = datetime(2026, 11, 27, 8, 50, 0, tzinfo=UTC)
+    warmup_by_tf = {60: _make_candles(60, 75, base_dt - timedelta(minutes=75))}
+    m1 = _make_candles(60, 5, base_dt)
+    conflicting_m1_0 = replace(m1[0], close=round(m1[0].close + 0.0025, 5))
+
+    events = [
+        (60, m1[0]),
+        (60, m1[1]),
+        (60, conflicting_m1_0),  # conflicts with m1[0], not just last m1[1]
+    ]
+    transport = SyntheticMultiTimeframeTransport(warmup_by_tf=warmup_by_tf, events=events)
+    cfg = ParallelObservationConfig(
+        session_id="p49_conflict_earlier",
+        candidate_ids=(cids[0],),
+        duration_minutes=15,
+        is_genuine_mode=False,
+        models_dir=models_dir,
+        sessions_dir=tmp_path / "sessions",
+    )
+    res = await ParallelObservationRuntime(cfg, repo_root=tmp_path).run(transport)
+    assert res.status == "FAILED_PROVENANCE"
+    assert res.integrity_verified is True
+
+
+async def test_phase49_4_confidence_precision_at_and_below_frozen_threshold_and_diagnostics(
+    tmp_path: Path,
+) -> None:
+    """Verify full-precision confidence vs frozen threshold (below vs exact boundary) and diagnostics."""
+    import json
+    from unittest.mock import patch
+
+    import numpy as np
+
+    models_dir, cids = _setup_three_bundles(tmp_path)
+    base_dt = datetime(2026, 11, 27, 8, 45, 0, tzinfo=UTC)
+    warmup_by_tf = {60: _make_candles(60, 75, base_dt - timedelta(minutes=75))}
+    m1 = _make_candles(60, 20, base_dt)  # Enough to mature first 5 predictions (H15)
+    events = [(60, c) for c in m1]
+
+    # Load frozen threshold of synthetic candidate 0
+    manifest_path = models_dir / cids[0] / "manifest.json"
+    tau = float(
+        json.loads(manifest_path.read_text(encoding="utf-8"))["frozen_confidence_threshold"]
+    )
+
+    # Alternate between:
+    # 1) conf = tau - 1.1218568651827354e-7 (strictly below tau -> ABSTAIN, same 6-dec as tau!)
+    # 2) conf = tau (exact boundary -> selected DOWN)
+    # 3) conf = tau + 0.02 (above tau -> selected UP)
+    seq_p_up = [
+        1.0 - (tau - 1.1218568651827354e-7),
+        1.0 - tau,
+        tau + 0.02,
+    ]
+    call_idx = {"i": 0}
+
+    def _fake_calibrate(_self: object, raw_probs: np.ndarray) -> np.ndarray:
+        idx = call_idx["i"] % len(seq_p_up)
+        call_idx["i"] += 1
+        p_up = seq_p_up[idx]
+        return np.array([[1.0 - p_up, p_up]], dtype=np.float64)
+
+    transport = SyntheticMultiTimeframeTransport(warmup_by_tf=warmup_by_tf, events=events)
+    cfg = ParallelObservationConfig(
+        session_id="p49_precision_diag",
+        candidate_ids=(cids[0],),
+        duration_minutes=30,
+        is_genuine_mode=False,
+        models_dir=models_dir,
+        sessions_dir=tmp_path / "sessions",
+        simulated_duration_seconds=30.0,
+    )
+    from iqoption_research.ml.calibration.calibrator import ProbabilityCalibrator
+
+    with patch.object(
+        ProbabilityCalibrator, "calibrate", autospec=True, side_effect=_fake_calibrate
+    ):
+        res = await ParallelObservationRuntime(cfg, repo_root=tmp_path).run(transport)
+
+    assert res.status == "COMPLETED"
+    assert res.integrity_verified is True
+    ok, errs = verify_phase48_session_integrity(res.session_dir)
+    assert ok is True, errs
+
+    preds = [
+        json.loads(line)
+        for line in (res.session_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(preds) == 20
+
+    # Row 0: strictly below tau by 1.12e-7 -> ABSTAIN, full precision preserved, no "0.5155 < 0.5155"
+    p0 = preds[0]
+    assert p0["decision"] == "ABSTAIN"
+    assert p0["confidence"] < p0["confidence_threshold"]
+    assert p0["confidence_margin"] == pytest.approx(-1.1218568651827354e-7, abs=1e-15)
+    assert p0["raw_prob_up"] is not None
+    assert p0["decision_reason"]
+    assert p0["feature_digest"]
+    assert "0.5155 <" not in p0["abstention_reason"]
+
+    # Row 1: exact tau -> selected DOWN with margin == 0.0
+    p1 = preds[1]
+    assert p1["decision"] == "DOWN"
+    assert p1["confidence"] == p1["confidence_threshold"]
+    assert p1["confidence_margin"] == pytest.approx(0.0, abs=1e-15)
+
+    # Row 2: tau + 0.02 -> selected UP
+    p2 = preds[2]
+    assert p2["decision"] == "UP"
+    assert p2["confidence_margin"] > 0.0
+
+    # Separated diagnostics: selected accuracy vs all-resolved calibration population
+    diag = res.per_candidate_diagnostics[cids[0]]
+    assert diag.resolved_selected_predictions > 0
+    assert diag.resolved_abstention_outcomes > 0
+    assert diag.unresolved_outcomes == (
+        diag.unresolved_selected_outcomes + diag.unresolved_abstention_outcomes
+    )
+    assert diag.calibration_population == "ALL_RESOLVED_DECISIVE"
+    assert diag.calibration_sample_count >= diag.resolved_selected_predictions
+    assert diag.brier_score is not None and diag.log_loss is not None
+    assert diag.selected_brier_score is not None and diag.selected_log_loss is not None
+
+    # Tampering decision relative to full-precision probabilities must fail verification
+    p_lines = (res.session_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(p_lines[0])
+    tampered["decision"] = "DOWN"
+    p_lines[0] = json.dumps(tampered, sort_keys=True)
+    (res.session_dir / "predictions.jsonl").write_text("\n".join(p_lines) + "\n", encoding="utf-8")
+    ok_bad, errs_bad = verify_phase48_session_integrity(res.session_dir)
+    assert ok_bad is False
+    assert any("Decision/probability mismatch" in e or "commitment_digest" in e for e in errs_bad)
+
+
+def test_phase49_4_preserves_legacy_stage_a_evidence_schema_compatibility(tmp_path: Path) -> None:
+    """Verify legacy Phase 49.2 sealed records (like p48_gen_20261127_084604) verify cleanly."""
+    from iqoption_research.phase48.evidence import (
+        OutcomeResolutionRecord,
+        Phase48SessionLedger,
+        PredictionCommitmentRecord,
+    )
+
+    sdir = tmp_path / "p48_gen_legacy_check"
+    ledger = Phase48SessionLedger(sdir)
+    ledger.write_session_metadata({
+        "session_id": "p48_gen_legacy_check",
+        "schema_version": "phase49.2",
+        "is_genuine_mode": True,
+        "evidence_classification": "EXPLORATORY_PROSPECTIVE_ONLY",
+    })
+    rec = PredictionCommitmentRecord(
+        record_id="p48_exp_cand_a_m1_h15_hgb_v1_1795769220_24b77512",
+        session_id="p48_gen_legacy_check",
+        candidate_id="p48_exp_cand_a_m1_h15_hgb_v1",
+        candidate_artifact_digest="a" * 64,
+        campaign_contract_sha256="b" * 64,
+        timeframe_seconds=60,
+        horizon_bars=15,
+        candle_open_ts=1795769160,
+        candle_close_ts=1795769220,
+        decision_timestamp=1795769220,
+        feature_cutoff_ts=1795769220,
+        feature_digest="c" * 64,
+        reference_candle_price=1.096475,
+        reference_candle_digest="d" * 64,
+        prob_up=0.484526,
+        prob_down=0.515474,
+        confidence_threshold=0.515474,
+        decision="ABSTAIN",
+        abstention_reason="Confidence 0.5155 < frozen threshold 0.5155",
+        maturity_timestamp=1795770120,
+        evidence_classification="EXPLORATORY_PROSPECTIVE_ONLY",
+        predicted_at_utc="2026-11-27T08:47:01.811253+00:00",
+        committed_at_ts=1795769220,
+        committed_at_utc="2026-11-27T08:47:01.811253+00:00",
+    ).sealed()
+    ledger.append_prediction(rec)
+    ledger.append_outcome(
+        OutcomeResolutionRecord(
+            record_id=rec.record_id,
+            session_id="p48_gen_legacy_check",
+            candidate_id=rec.candidate_id,
+            decision_timestamp=rec.decision_timestamp,
+            maturity_timestamp=rec.maturity_timestamp,
+            outcome_candle_open_ts=None,
+            outcome_candle_close_ts=None,
+            outcome_candle_close=None,
+            outcome_candle_digest="",
+            outcome_provenance="",
+            resolution_status="UNRESOLVED_SESSION_ENDED",
+            actual_direction="UNRESOLVED",
+            classification="UNRESOLVED",
+            resolved_at_utc="2026-11-27T09:01:07.227339+00:00",
+        )
+    )
+    ledger.seal_manifest()
+    ok, errs = verify_phase48_session_integrity(sdir)
+    assert ok is True, errs

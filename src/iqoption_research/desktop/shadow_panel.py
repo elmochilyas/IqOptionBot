@@ -88,12 +88,13 @@ class ShadowEvaluationPanel:
         # Top Header & Safety Invariants
         header = ttk.Frame(self.frame)
         header.pack(fill="x", pady=(0, 8))
-        ttk.Label(
+        self.header_title_label = ttk.Label(
             header,
             text="AI Shadow Evaluation · Offline Prospective Foundation",
             font=("Segoe UI", 13, "bold"),
             foreground="#17324d",
-        ).pack(anchor="w")
+        )
+        self.header_title_label.pack(anchor="w")
         self.warning_label = ttk.Label(
             header,
             text=(

@@ -156,6 +156,8 @@ class AsyncIQOption:
         self._started_at = time.monotonic()
         self._closed = False
         self._last_message_at: float | None = None
+        self._malformed_stream_counts: dict[int, int] = {}
+        self._last_malformed_stream_reason: dict[int, str] = {}
 
     # ----- read-only guard -----
 
@@ -664,6 +666,11 @@ class AsyncIQOption:
                         server_time_ns=ws.server_time_ns,
                     )
                 except Exception as exc:  # noqa: BLE001 - skip bad frames only
+                    sz_val = resolved_size.value
+                    self._malformed_stream_counts[sz_val] = (
+                        self._malformed_stream_counts.get(sz_val, 0) + 1
+                    )
+                    self._last_malformed_stream_reason[sz_val] = f"{type(exc).__name__}: {exc}"
                     logger.warning("Skipping malformed streaming candle: %s", type(exc).__name__)
                     self.monitor.record_error(str(exc))
                     continue
@@ -675,6 +682,23 @@ class AsyncIQOption:
                     build_candle_subscription_frame(active_id, resolved_size.value),
                 )
             ws.unsubscribe_candles(active_id, resolved_size.value)
+
+    def stream_candle_telemetry(self) -> dict[str, Any]:
+        """Return sanitized stream malformed-frame and queue-drop telemetry."""
+        q_stats = (
+            self._ws.candle_queue_stats()
+            if self._ws is not None and hasattr(self._ws, "candle_queue_stats")
+            else {
+                "dropped_by_stream": {},
+                "total_dropped_frames": 0,
+                "invalid_routing_frames": 0,
+            }
+        )
+        return {
+            "malformed_counts_by_tf": dict(self._malformed_stream_counts),
+            "last_malformed_reason_by_tf": dict(self._last_malformed_stream_reason),
+            "queue_stats": q_stats,
+        }
 
     # ----- diagnostics (sanitized) -----
 

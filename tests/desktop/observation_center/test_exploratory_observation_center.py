@@ -240,3 +240,125 @@ def test_phase48_cli_authorize_status_and_revoke(tmp_path: Path) -> None:
     )
     assert res_rev.exit_code == 0
     assert "REVOKED" in res_rev.output
+
+
+def test_observation_center_layout_visibility_wrapping_and_failed_startup_display(
+    tmp_path: Path, obs_tk_root: tk.Tk
+) -> None:
+    """Verify Refresh button stays visible, long text wraps, legacy controls hide, and errors show clearly."""
+    models_dir = tmp_path / "data" / "phase48" / "models"
+    digests = {}
+    for idx in range(3):
+        m = create_synthetic_frozen_bundle(models_dir, idx)
+        digests[m.frozen_candidate_id] = m.bundle_sha256
+
+    proposed = build_default_proposed_campaign_contract(digests)
+    authorized = authorize_campaign_contract(
+        proposed,
+        authorized_by="owner@local",
+        allowed_account_ref="acct_practice_123",
+        authorized_stage="STAGE_A_15M",
+    )
+    save_campaign_contract(authorized, default_campaign_contract_path(tmp_path))
+
+    class _FailingStartupTransport:
+        is_connected = False
+        is_synthetic = False
+        last_heartbeat_mono = 0.0
+
+        def last_heartbeat_for_tf(self, _tf: int) -> float:
+            return 0.0
+
+        async def connect(self) -> None:
+            from iqoption_research.phase48.transport import ProvenanceError
+
+            raise ProvenanceError(
+                "Genuine exploratory pilot requires a verified PRACTICE account "
+                "(status=account_selection_unverified)."
+            )
+
+        async def disconnect(self) -> None:
+            self.is_connected = False
+
+        async def get_warmup_candles(self, _tf: int, _count: int) -> tuple[list[Candle], dict]:
+            return [], {}
+
+        async def next_event(self, _timeout: float) -> None:
+            return None
+
+    class _MockStore:
+        def load(self, _account_id: str) -> Credentials:
+            return Credentials(email="owner@example.com", password="secret")
+
+    class _MockVault:
+        def account_store(self) -> _MockStore:
+            return _MockStore()
+
+    root_tk = obs_tk_root
+    root_tk.geometry("1280x720")
+    try:
+        nb = ttk.Notebook(root_tk)
+        nb.pack(fill="both", expand=True)
+        dash = _DummyDashboard(root_tk, tmp_path)
+        panel = ShadowEvaluationPanel(dash, nb)  # type: ignore[arg-type]
+        ctrl = panel.observation_center
+
+        panel._obs_accounts_map["Practice [acct...123]"] = "acct_practice_123"
+        panel.combo_obs_account["values"] = ["Practice [acct...123]"]
+        panel.combo_obs_account.set("Practice [acct...123]")
+        panel.combo_obs_duration.set("15")
+        _PumpTk(root_tk)
+
+        # In synthetic mode, legacy Model / Fixture row and Sim Pace are visible
+        assert ctrl._legacy_model_row is not None and ctrl._legacy_model_row.winfo_ismapped()
+        assert ctrl._sim_pace_lbl is not None and ctrl._sim_pace_lbl.winfo_ismapped()
+        assert panel.combo_obs_pace.winfo_ismapped()
+
+        # Switch to genuine exploratory mode -> legacy Model / Fixture and Sim Pace are hidden
+        panel.var_obs_mode.set("exploratory_genuine")
+        ctrl.on_mode_changed()
+        _PumpTk(root_tk)
+        assert not ctrl._legacy_model_row.winfo_ismapped()
+        assert not ctrl._sim_pace_lbl.winfo_ismapped()
+        assert not panel.combo_obs_pace.winfo_ismapped()
+
+        # Refresh Models & Contract button remains visible within auth_row bounds
+        assert ctrl.btn_p48_refresh is not None and ctrl._auth_row is not None
+        assert ctrl.btn_p48_refresh.winfo_ismapped()
+        assert (
+            ctrl.btn_p48_refresh.winfo_x() + ctrl.btn_p48_refresh.winfo_width()
+            <= ctrl._auth_row.winfo_width() + 2
+        )
+        assert ctrl.lbl_p48_auth_status is not None
+        assert int(ctrl.lbl_p48_auth_status.cget("wraplength")) > 0
+        assert int(panel.lbl_obs_eligibility.cget("wraplength")) > 0
+
+        # Execute startup failure -> status displays FAILED_STARTUP + error, auth shows EXHAUSTED (not model failure)
+        started = ctrl.start_genuine_exploratory_observation(
+            transport_factory=lambda _creds, _tfs: _FailingStartupTransport(),
+            vault_factory=_MockVault,
+            confirm_override=True,
+        )
+        assert started is True
+        deadline = time.monotonic() + 5.0
+        while ctrl.is_running and time.monotonic() < deadline:
+            _PumpTk(root_tk, steps=3)
+            time.sleep(0.02)
+        _PumpTk(root_tk, steps=5)
+
+        status_txt = str(panel.lbl_obs_status.cget("text"))
+        assert "FAILED_STARTUP" in status_txt
+        assert "PRACTICE account" in status_txt
+        auth_txt = str(ctrl.lbl_p48_auth_status.cget("text"))
+        assert "AUTHORIZATION EXHAUSTED" in auth_txt
+        assert "0 Model Failures" in auth_txt
+        assert ctrl.btn_p48_refresh.winfo_ismapped()
+
+        # Tamper a model bundle -> UI clearly reports MODEL FAILURE rather than exhausted authorization
+        first_cid = next(iter(digests))
+        (models_dir / first_cid / "model.joblib").write_bytes(b"corrupted")
+        ctrl._refresh_p48_governance_status()
+        _PumpTk(root_tk)
+        assert "MODEL FAILURE" in str(ctrl.lbl_p48_auth_status.cget("text"))
+    finally:
+        panel.observation_center.shutdown()

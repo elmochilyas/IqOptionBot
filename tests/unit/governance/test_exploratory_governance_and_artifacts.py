@@ -316,3 +316,240 @@ def test_stage_a_enforces_duration_drain_expiration_revocation_and_usage(tmp_pat
         hmac_key=b"test-owner-secret",
     )
     assert rev_res.authorized is False
+
+
+def test_usage_store_lifecycle_transitions_and_concurrent_reservation(tmp_path: Path) -> None:
+    """Verify durable lifecycle states and thread-safe atomic budget enforcement."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from iqoption_research.phase48.governance import SessionLifecycleState
+
+    m1 = create_synthetic_frozen_bundle(tmp_path, 0)
+    proposed = build_default_proposed_campaign_contract({m1.frozen_candidate_id: m1.bundle_sha256})
+    authorized = authorize_campaign_contract(
+        proposed,
+        authorized_by="owner@local",
+        allowed_account_ref="vault_practice_eur",
+        authorized_stage="STAGE_A_15M",
+    )
+    usage = CampaignUsageStore(tmp_path / "usage.json")
+
+    def _try_reserve(idx: int) -> bool:
+        try:
+            usage.reserve_session(
+                authorized,
+                session_id=f"ses_race_{idx}",
+                stage_id="STAGE_A_15M",
+                max_sessions=1,
+            )
+            return True
+        except ValueError:
+            return False
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = list(pool.map(_try_reserve, range(8)))
+
+    assert sum(outcomes) == 1
+    consumed = usage.list_consumed(authorized.contract_id, "STAGE_A_15M")
+    assert len(consumed) == 1
+    winner_id = consumed[0]["session_id"]
+    assert consumed[0]["lifecycle_state"] == SessionLifecycleState.RESERVED.value
+
+    usage.transition_session(winner_id, SessionLifecycleState.CONNECTING)
+    usage.transition_session(
+        winner_id,
+        SessionLifecycleState.FAILED_STARTUP,
+        reason="Startup failed (ProvenanceError)",
+        error_type="ProvenanceError",
+        runtime_status="FAILED_STARTUP",
+    )
+    final_rec = usage.get_session(winner_id)
+    assert final_rec is not None
+    assert final_rec["lifecycle_state"] == "FAILED_STARTUP"
+    assert [h["state"] for h in final_rec["state_history"]] == [
+        "RESERVED",
+        "CONNECTING",
+        "FAILED_STARTUP",
+    ]
+    # Terminal state cannot restart or transition back to RUNNING
+    with pytest.raises(ValueError, match="Invalid lifecycle transition"):
+        usage.transition_session(winner_id, SessionLifecycleState.RUNNING)
+
+
+def test_stage_a_replacement_authorization_and_cli_workflow(tmp_path: Path) -> None:
+    """Verify explicit owner replacement authorization bounds, preservation, and no retries."""
+    from typer.testing import CliRunner
+
+    from iqoption_research.cli.main import app as cli_app
+    from iqoption_research.phase48.governance import (
+        SessionLifecycleState,
+        authorize_stage_a_replacement,
+        default_campaign_contract_path,
+        default_campaign_usage_path,
+    )
+
+    models_dir = tmp_path / "data" / "phase48" / "models"
+    digests = {}
+    for idx in range(3):
+        man = create_synthetic_frozen_bundle(models_dir, idx)
+        digests[man.frozen_candidate_id] = man.bundle_sha256
+
+    cpath = default_campaign_contract_path(tmp_path)
+    proposed = build_default_proposed_campaign_contract(digests)
+    authorized = authorize_campaign_contract(
+        proposed,
+        authorized_by="owner@local",
+        allowed_account_ref="vault_practice_eur",
+        authorized_stage="STAGE_A_15M",
+    )
+    save_campaign_contract(authorized, cpath)
+
+    usage = CampaignUsageStore(default_campaign_usage_path(tmp_path, authorized.contract_id))
+    failed_id = "p48_gen_20261126_200643"
+    usage.reserve_session(authorized, session_id=failed_id, stage_id="STAGE_A_15M", max_sessions=1)
+
+    # Create a legacy pre-hotfix failed session record (RESERVED in usage, INTERRUPTED_DISCONNECT in session.json with 0 predictions)
+    sessions_dir = tmp_path / "data" / "phase48" / "sessions"
+    failed_dir = sessions_dir / failed_id
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    for jname in ("inputs.jsonl", "predictions.jsonl", "outcomes.jsonl", "diagnostics.jsonl"):
+        (failed_dir / jname).write_text("", encoding="utf-8")
+    (failed_dir / "session.json").write_text(
+        json.dumps({
+            "session_id": failed_id,
+            "is_genuine_mode": True,
+            "campaign_contract_id": authorized.contract_id,
+            "status": "INTERRUPTED_DISCONNECT",
+            "stop_reason": "Shared transport interrupted: AttributeError",
+            "per_candidate_diagnostics": {
+                "p48_exp_cand_a_m1_h15_hgb_v1": {
+                    "total_opportunities": 0,
+                    "selected_predictions": 0,
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    # Before replacement auth, budget is exhausted
+    pre_res = validate_campaign_authorization(
+        authorized,
+        requested_candidate_ids=(next(iter(digests)),),
+        requested_duration_minutes=15,
+        loaded_artifact_digests=digests,
+        account_ref="vault_practice_eur",
+        is_genuine_mode=True,
+        usage_store=usage,
+        session_id="p48_gen_new_1",
+    )
+    assert pre_res.authorized is False
+    assert pre_res.exhausted_stage_budget is True
+
+    # CLI authorize-replacement signs the replacement without modifying usage history
+    runner = CliRunner()
+    cli_res = runner.invoke(
+        cli_app,
+        [
+            "phase48",
+            "authorize-replacement",
+            "--failed-session-id",
+            failed_id,
+            "--account-id",
+            "vault_practice_eur",
+            "--owner",
+            "owner@local",
+            "--review-note",
+            "Reviewed startup AttributeError; authorizing one replacement Stage A attempt",
+            "--allow-unverified-vault",
+            "--repo-root",
+            str(tmp_path),
+        ],
+    )
+    assert cli_res.exit_code == 0, cli_res.output
+    reloaded = load_campaign_contract(cpath)
+    assert reloaded.replacement_authorization is not None
+    assert reloaded.replacement_authorization.previous_failed_session_id == failed_id
+    assert reloaded.replacement_authorization.allow_outcome_drain is False
+    assert reloaded.replacement_authorization.session_duration_minutes == 15
+
+    # Original failed session usage record and evidence remain completely intact
+    orig_rec = usage.get_session(failed_id)
+    assert orig_rec is not None and orig_rec["status"] == "RESERVED"
+    assert (failed_dir / "session.json").is_file()
+
+    # Original consumed session cannot restart
+    same_id_res = validate_campaign_authorization(
+        reloaded,
+        requested_candidate_ids=(next(iter(digests)),),
+        requested_duration_minutes=15,
+        loaded_artifact_digests=digests,
+        account_ref="vault_practice_eur",
+        is_genuine_mode=True,
+        usage_store=usage,
+        session_id=failed_id,
+    )
+    assert same_id_res.authorized is False
+
+    # Outcome drain is prohibited on replacement
+    drain_res = validate_campaign_authorization(
+        reloaded,
+        requested_candidate_ids=(next(iter(digests)),),
+        requested_duration_minutes=15,
+        loaded_artifact_digests=digests,
+        account_ref="vault_practice_eur",
+        is_genuine_mode=True,
+        requested_allow_outcome_drain=True,
+        requested_drain_minutes=10,
+        usage_store=usage,
+        session_id="p48_gen_repl_1",
+    )
+    assert drain_res.authorized is False
+
+    # New session_id with 15m and no drain is authorized
+    ok_res = validate_campaign_authorization(
+        reloaded,
+        requested_candidate_ids=(next(iter(digests)),),
+        requested_duration_minutes=15,
+        loaded_artifact_digests=digests,
+        account_ref="vault_practice_eur",
+        is_genuine_mode=True,
+        usage_store=usage,
+        session_id="p48_gen_repl_1",
+    )
+    assert ok_res.authorized is True
+
+    # Reserve the replacement attempt, transition to FAILED_STARTUP -> duplicate/second replacement blocked
+    usage.reserve_session(
+        reloaded,
+        session_id="p48_gen_repl_1",
+        stage_id="STAGE_A_15M",
+        max_sessions=1,
+        replacement_grant_id=reloaded.replacement_authorization.replacement_grant_id,
+        replacement_for_session_id=failed_id,
+    )
+    usage.transition_session("p48_gen_repl_1", SessionLifecycleState.CONNECTING)
+    usage.transition_session("p48_gen_repl_1", SessionLifecycleState.FAILED_STARTUP)
+
+    retry_res = validate_campaign_authorization(
+        reloaded,
+        requested_candidate_ids=(next(iter(digests)),),
+        requested_duration_minutes=15,
+        loaded_artifact_digests=digests,
+        account_ref="vault_practice_eur",
+        is_genuine_mode=True,
+        usage_store=usage,
+        session_id="p48_gen_repl_2",
+    )
+    assert retry_res.authorized is False
+    assert retry_res.exhausted_stage_budget is True
+
+    with pytest.raises(ValueError, match=r"already consumed|already has"):
+        authorize_stage_a_replacement(
+            reloaded,
+            failed_session_id=failed_id,
+            authorized_by="owner@local",
+            allowed_account_ref="vault_practice_eur",
+            review_note="Duplicate retry must fail",
+            usage_store=usage,
+            sessions_dir=sessions_dir,
+        )

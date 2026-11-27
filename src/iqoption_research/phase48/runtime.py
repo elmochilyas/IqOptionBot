@@ -8,6 +8,7 @@ pre-maturity prediction commitment, and cooperative cancellation.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import threading
@@ -50,6 +51,7 @@ from iqoption_research.phase48.evidence import (
 from iqoption_research.phase48.governance import (
     CampaignUsageStore,
     ExploratoryCampaignContract,
+    SessionLifecycleState,
     default_campaign_usage_path,
     validate_campaign_authorization,
 )
@@ -146,13 +148,14 @@ class ParallelObservationResult:
 
     session_id: str
     session_dir: Path
-    status: str  # COMPLETED | CANCELLED | INTERRUPTED_DISCONNECT | INTERRUPTED_STALE | FAILED_PROVENANCE
+    status: str  # COMPLETED | CANCELLED | FAILED_STARTUP | INTERRUPTED_DISCONNECT | INTERRUPTED_STALE | FAILED_PROVENANCE
     is_genuine_mode: bool
     evidence_classification: str
     elapsed_seconds: float
     per_candidate_diagnostics: dict[str, CandidateSessionDiagnostics]
     integrity_verified: bool
     stop_reason: str
+    lifecycle_state: str = SessionLifecycleState.COMPLETED.value
     research_disposition: str = DISPOSITION
     execution_authority: str = EXECUTION_AUTHORITY
 
@@ -245,6 +248,7 @@ class ParallelObservationRuntime:
             )
 
         # Atomically reserve session budget before connecting to broker
+        replacement_for_session_id: str | None = None
         if (
             self.config.is_genuine_mode
             and self._usage_store is not None
@@ -257,32 +261,62 @@ class ParallelObservationRuntime:
                 if s.stage_id == stage_id:
                     max_sess = s.target_sessions
                     break
+            repl = self.config.campaign_contract.replacement_authorization
+            consumed_count = len(
+                self._usage_store.list_consumed(self.config.campaign_contract.contract_id, stage_id)
+            )
+            use_repl = repl is not None and stage_id == "STAGE_A_15M" and consumed_count >= max_sess
+            if use_repl and repl is not None:
+                replacement_for_session_id = repl.previous_failed_session_id
             self._usage_store.reserve_session(
                 self.config.campaign_contract,
                 session_id=self.config.session_id,
                 stage_id=stage_id,
                 max_sessions=max_sess,
+                replacement_grant_id=repl.replacement_grant_id if use_repl and repl else None,
+                replacement_for_session_id=replacement_for_session_id,
             )
 
-        ledger = Phase48SessionLedger(self.session_dir)
-        started_utc = datetime.now(UTC).isoformat()
-        session_meta: dict[str, Any] = {
-            "session_id": self.config.session_id,
-            "schema_version": "phase48.1",
-            "is_genuine_mode": self.config.is_genuine_mode,
-            "evidence_classification": self._evidence_classification,
-            "research_disposition": DISPOSITION,
-            "execution_authority": EXECUTION_AUTHORITY,
-            "candidate_ids": list(self.config.candidate_ids),
-            "duration_minutes": self.config.duration_minutes,
-            "started_at_utc": started_utc,
-            "campaign_contract_id": (
-                self.config.campaign_contract.contract_id if self.config.campaign_contract else None
-            ),
-            "campaign_contract_sha256": self._campaign_sha256,
-            "status": "RUNNING",
-        }
-        ledger.write_session_metadata(session_meta)
+        try:
+            ledger = Phase48SessionLedger(self.session_dir)
+            started_utc = datetime.now(UTC).isoformat()
+            session_meta: dict[str, Any] = {
+                "session_id": self.config.session_id,
+                "schema_version": "phase48.1",
+                "is_genuine_mode": self.config.is_genuine_mode,
+                "evidence_classification": self._evidence_classification,
+                "research_disposition": DISPOSITION,
+                "execution_authority": EXECUTION_AUTHORITY,
+                "candidate_ids": list(self.config.candidate_ids),
+                "duration_minutes": self.config.duration_minutes,
+                "started_at_utc": started_utc,
+                "campaign_contract_id": (
+                    self.config.campaign_contract.contract_id
+                    if self.config.campaign_contract
+                    else None
+                ),
+                "campaign_contract_sha256": self._campaign_sha256,
+                "replacement_for_session_id": replacement_for_session_id,
+                "lifecycle_state": SessionLifecycleState.CONNECTING.value,
+                "status": SessionLifecycleState.CONNECTING.value,
+            }
+            ledger.write_session_metadata(session_meta)
+            if self._usage_store is not None:
+                self._usage_store.transition_session(
+                    self.config.session_id,
+                    SessionLifecycleState.CONNECTING,
+                )
+        except Exception as exc:
+            if self._usage_store is not None:
+                with contextlib.suppress(Exception):
+                    self._usage_store.transition_session(
+                        self.config.session_id,
+                        SessionLifecycleState.FAILED_STARTUP,
+                        reason=f"Startup initialization failed: {type(exc).__name__}: {exc}",
+                        error_type=type(exc).__name__,
+                        runtime_status=SessionLifecycleState.FAILED_STARTUP.value,
+                    )
+            raise
 
         states: dict[str, _CandidateState] = {}
         for cid, bundle in self._bundles.items():
@@ -314,9 +348,11 @@ class ParallelObservationRuntime:
             else 0.0
         )
 
-        final_status = "COMPLETED"
+        final_status = SessionLifecycleState.COMPLETED.value
         stop_reason = "Bounded session window completed."
         interruptions = 0
+        startup_completed = False
+        error_type = ""
 
         try:
             await transport.connect()
@@ -358,6 +394,22 @@ class ParallelObservationRuntime:
             active_tfs = sorted({
                 st.timeframe_seconds for st in states.values() if st.disabled_reason is None
             })
+            if not active_tfs:
+                raise ProvenanceError(
+                    "Startup warmup failed for all selected candidates; no active streams."
+                )
+
+            startup_completed = True
+            session_meta.update({
+                "status": SessionLifecycleState.RUNNING.value,
+                "lifecycle_state": SessionLifecycleState.RUNNING.value,
+            })
+            ledger.write_session_metadata(session_meta)
+            if self._usage_store is not None:
+                self._usage_store.transition_session(
+                    self.config.session_id,
+                    SessionLifecycleState.RUNNING,
+                )
 
             while True:
                 if self._cancel_event.is_set():
@@ -486,15 +538,26 @@ class ParallelObservationRuntime:
                 )
 
         except ProvenanceError as exc:
-            final_status = "FAILED_PROVENANCE"
-            stop_reason = f"Shared provenance error: {exc}"
+            error_type = type(exc).__name__
+            if not startup_completed:
+                final_status = SessionLifecycleState.FAILED_STARTUP.value
+                stop_reason = f"Startup failed ({error_type}): {exc}"
+            else:
+                final_status = "FAILED_PROVENANCE"
+                stop_reason = f"Shared provenance error: {exc}"
             interruptions += 1
         except Exception as exc:  # noqa: BLE001
-            final_status = "INTERRUPTED_DISCONNECT"
-            stop_reason = f"Shared transport interrupted: {type(exc).__name__}: {exc}"
+            error_type = type(exc).__name__
+            if not startup_completed:
+                final_status = SessionLifecycleState.FAILED_STARTUP.value
+                stop_reason = f"Startup failed ({error_type}): {exc}"
+            else:
+                final_status = "INTERRUPTED_DISCONNECT"
+                stop_reason = f"Shared transport interrupted: {error_type}: {exc}"
             interruptions += 1
         finally:
-            await transport.disconnect()
+            with contextlib.suppress(Exception):
+                await transport.disconnect()
 
         now_utc = datetime.now(UTC).isoformat()
         for st in states.values():
@@ -541,9 +604,20 @@ class ParallelObservationRuntime:
                 failure_case_details=st.failure_cases,
             )
 
+        if final_status == SessionLifecycleState.COMPLETED.value:
+            lifecycle_state = SessionLifecycleState.COMPLETED
+        elif final_status == SessionLifecycleState.CANCELLED.value:
+            lifecycle_state = SessionLifecycleState.CANCELLED
+        elif final_status == SessionLifecycleState.FAILED_STARTUP.value:
+            lifecycle_state = SessionLifecycleState.FAILED_STARTUP
+        else:
+            lifecycle_state = SessionLifecycleState.INTERRUPTED
+
         session_meta.update({
             "status": final_status,
+            "lifecycle_state": lifecycle_state.value,
             "stop_reason": stop_reason,
+            "error_type": error_type or None,
             "ended_at_utc": now_utc,
             "elapsed_seconds": round(elapsed_total, 3),
             "per_candidate_diagnostics": {
@@ -552,6 +626,15 @@ class ParallelObservationRuntime:
         })
         ledger.write_session_metadata(session_meta)
         ledger.seal_manifest()
+
+        if self._usage_store is not None:
+            self._usage_store.transition_session(
+                self.config.session_id,
+                lifecycle_state,
+                reason=stop_reason,
+                error_type=error_type,
+                runtime_status=final_status,
+            )
 
         ok_integrity, _ = verify_phase48_session_integrity(self.session_dir)
 
@@ -575,6 +658,7 @@ class ParallelObservationRuntime:
             per_candidate_diagnostics=per_cand_diag,
             integrity_verified=ok_integrity,
             stop_reason=stop_reason,
+            lifecycle_state=lifecycle_state.value,
         )
 
     def _process_candidate_candle(

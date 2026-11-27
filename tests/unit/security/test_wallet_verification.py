@@ -265,3 +265,50 @@ def test_wire_balance_status_controls_selection(status: object, valid: bool) -> 
     else:
         with pytest.raises(ValueError):
             ws.select_wallet_context(AccountType.PRACTICE)
+
+
+def test_practice_verification_interface_contract_and_statuses() -> None:
+    """Verify PracticeVerification exposes is_verified (never is_practice_verified) across states."""
+    from iqoption_research.models.account import AccountStatus, PracticeVerification
+
+    balances = (
+        Balance(REAL, AccountType.REAL, 100.0, "USD"),
+        Balance(PRACTICE, AccountType.PRACTICE, 10000.0, "USD"),
+    )
+
+    verified = wallet_decision(
+        balances, (WalletIndicator(WalletSource.SIMULATED_SESSION, PRACTICE),), complete=True
+    )
+    assert isinstance(verified, PracticeVerification)
+    assert verified.is_verified is True
+    assert not hasattr(verified, "is_practice_verified")
+
+    for status_res in (
+        wallet_decision(
+            balances, (WalletIndicator(WalletSource.SIMULATED_SESSION, REAL),), complete=True
+        ),
+        wallet_decision(
+            balances, (WalletIndicator(WalletSource.PROFILE, PRACTICE),), complete=True
+        ),
+        wallet_decision(
+            balances,
+            (
+                WalletIndicator(WalletSource.PROFILE, PRACTICE),
+                WalletIndicator(WalletSource.CHANGE, REAL),
+            ),
+            complete=True,
+        ),
+        wallet_decision((), (), complete=False),
+    ):
+        assert status_res.is_verified is False
+        assert status_res.status is not PracticeStatus.VERIFIED_ACTIVE_PRACTICE
+
+    acct = AccountStatus.from_raw(
+        {"user_id": 1, "email": "u@example.invalid", "balance_id": PRACTICE},
+        [{"id": PRACTICE, "type": 4, "amount": 10000.0, "currency": "USD"}],
+        active_balance_id=PRACTICE,
+    )
+    pv = acct.practice_verification()
+    assert isinstance(pv, PracticeVerification)
+    assert pv.is_verified is False
+    assert pv.status is PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED

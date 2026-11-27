@@ -51,6 +51,7 @@ from iqoption_research.phase48.evidence import (
 from iqoption_research.phase48.governance import (
     CampaignUsageStore,
     ExploratoryCampaignContract,
+    ObservationAuthorizationMode,
     SessionLifecycleState,
     default_campaign_usage_path,
     validate_campaign_authorization,
@@ -140,6 +141,9 @@ class ParallelObservationProgress:
     per_candidate: dict[str, dict[str, Any]]
     recent_predictions: list[dict[str, Any]]
     recent_outcomes: dict[str, dict[str, Any]]
+    authorization_mode: str = ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED.value
+    observed_wallet_classification: str = "UNOBSERVED"
+    operational_stage: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +162,8 @@ class ParallelObservationResult:
     lifecycle_state: str = SessionLifecycleState.COMPLETED.value
     research_disposition: str = DISPOSITION
     execution_authority: str = EXECUTION_AUTHORITY
+    authorization_mode: str = ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED.value
+    observed_wallet_classification: str = "UNOBSERVED"
 
 
 class ParallelObservationRuntime:
@@ -247,6 +253,27 @@ class ParallelObservationRuntime:
                 "Genuine exploratory mode cannot run on a synthetic transport."
             )
 
+        expected_auth_mode = (
+            self.config.campaign_contract.authorization_mode
+            if (self.config.is_genuine_mode and self.config.campaign_contract is not None)
+            else "SYNTHETIC"
+        )
+        transport_auth_mode = getattr(transport, "authorization_mode", None)
+        if (
+            self.config.is_genuine_mode
+            and transport_auth_mode is not None
+            and transport_auth_mode != "SYNTHETIC"
+            and transport_auth_mode != expected_auth_mode
+        ):
+            raise GovernanceBlockedError(
+                f"Transport authorization_mode {transport_auth_mode!r} does not match "
+                f"contract authorization_mode {expected_auth_mode!r}."
+            )
+        market_permissions = dict(getattr(transport, "market_data_permissions", {}) or {})
+        observed_wallet_cls = str(
+            getattr(transport, "observed_wallet_classification", "UNOBSERVED")
+        )
+
         # Atomically reserve session budget before connecting to broker
         replacement_for_session_id: str | None = None
         if (
@@ -282,11 +309,15 @@ class ParallelObservationRuntime:
             started_utc = datetime.now(UTC).isoformat()
             session_meta: dict[str, Any] = {
                 "session_id": self.config.session_id,
-                "schema_version": "phase48.1",
+                "schema_version": "phase49.2",
                 "is_genuine_mode": self.config.is_genuine_mode,
                 "evidence_classification": self._evidence_classification,
                 "research_disposition": DISPOSITION,
                 "execution_authority": EXECUTION_AUTHORITY,
+                "trading_authority": EXECUTION_AUTHORITY,
+                "authorization_mode": expected_auth_mode,
+                "observed_wallet_classification": observed_wallet_cls,
+                "market_data_permissions": market_permissions,
                 "candidate_ids": list(self.config.candidate_ids),
                 "duration_minutes": self.config.duration_minutes,
                 "started_at_utc": started_utc,
@@ -355,7 +386,47 @@ class ParallelObservationRuntime:
         error_type = ""
 
         try:
+            self._emit_progress(
+                progress_callback,
+                states,
+                recent_predictions,
+                0.0,
+                decision_window_sec,
+                False,
+                "CONNECTING",
+                authorization_mode=expected_auth_mode,
+                observed_wallet_classification=observed_wallet_cls,
+                operational_stage="Connecting",
+            )
             await transport.connect()
+            observed_wallet_cls = str(
+                getattr(transport, "observed_wallet_classification", observed_wallet_cls)
+            )
+            acct_summary = dict(getattr(transport, "account_status_summary", {}) or {})
+            market_permissions = dict(
+                getattr(transport, "market_data_permissions", market_permissions) or {}
+            )
+            ledger.append_diagnostic({
+                "type": "TRANSPORT_CONNECTED",
+                "authorization_mode": expected_auth_mode,
+                "observed_wallet_classification": observed_wallet_cls,
+                "account_status_summary": acct_summary,
+                "market_data_permissions": market_permissions,
+                "trading_authority": EXECUTION_AUTHORITY,
+                "at_utc": datetime.now(UTC).isoformat(),
+            })
+            self._emit_progress(
+                progress_callback,
+                states,
+                recent_predictions,
+                time.monotonic() - start_mono,
+                decision_window_sec,
+                False,
+                "LOADING_WARMUP",
+                authorization_mode=expected_auth_mode,
+                observed_wallet_classification=observed_wallet_cls,
+                operational_stage="Loading warmup candles",
+            )
             warmup_by_tf: dict[int, list[Candle]] = {}
             for st in states.values():
                 tf = st.timeframe_seconds
@@ -470,6 +541,9 @@ class ParallelObservationRuntime:
                         max(0.0, decision_window_sec - (now_m - start_mono)),
                         in_drain,
                         "RUNNING",
+                        authorization_mode=expected_auth_mode,
+                        observed_wallet_classification=observed_wallet_cls,
+                        operational_stage="Observing",
                     )
                     continue
 
@@ -535,6 +609,9 @@ class ParallelObservationRuntime:
                     max(0.0, decision_window_sec - elapsed_after),
                     in_drain_after,
                     "RUNNING",
+                    authorization_mode=expected_auth_mode,
+                    observed_wallet_classification=observed_wallet_cls,
+                    operational_stage="Observing",
                 )
 
         except ProvenanceError as exc:
@@ -613,9 +690,15 @@ class ParallelObservationRuntime:
         else:
             lifecycle_state = SessionLifecycleState.INTERRUPTED
 
+        observed_wallet_cls = str(
+            getattr(transport, "observed_wallet_classification", observed_wallet_cls)
+        )
         session_meta.update({
             "status": final_status,
             "lifecycle_state": lifecycle_state.value,
+            "authorization_mode": expected_auth_mode,
+            "observed_wallet_classification": observed_wallet_cls,
+            "market_data_permissions": market_permissions,
             "stop_reason": stop_reason,
             "error_type": error_type or None,
             "ended_at_utc": now_utc,
@@ -646,6 +729,9 @@ class ParallelObservationRuntime:
             0.0,
             False,
             final_status,
+            authorization_mode=expected_auth_mode,
+            observed_wallet_classification=observed_wallet_cls,
+            operational_stage=final_status,
         )
 
         return ParallelObservationResult(
@@ -659,6 +745,8 @@ class ParallelObservationRuntime:
             integrity_verified=ok_integrity,
             stop_reason=stop_reason,
             lifecycle_state=lifecycle_state.value,
+            authorization_mode=expected_auth_mode,
+            observed_wallet_classification=observed_wallet_cls,
         )
 
     def _process_candidate_candle(
@@ -872,6 +960,10 @@ class ParallelObservationRuntime:
         remaining_seconds: float,
         in_drain: bool,
         status: str,
+        *,
+        authorization_mode: str = "",
+        observed_wallet_classification: str = "",
+        operational_stage: str = "",
     ) -> None:
         if cb is None:
             return
@@ -903,6 +995,11 @@ class ParallelObservationRuntime:
                 "accuracy_series": list(st.accuracy_series),
                 "disabled_reason": st.disabled_reason,
             }
+        eff_mode = authorization_mode or (
+            self.config.campaign_contract.authorization_mode
+            if (self.config.is_genuine_mode and self.config.campaign_contract is not None)
+            else "SYNTHETIC"
+        )
         cb(
             ParallelObservationProgress(
                 session_id=self.config.session_id,
@@ -915,5 +1012,8 @@ class ParallelObservationRuntime:
                 per_candidate=per_cand,
                 recent_predictions=list(recent_predictions)[:50],
                 recent_outcomes=merged_outcomes,
+                authorization_mode=eff_mode,
+                observed_wallet_classification=observed_wallet_classification,
+                operational_stage=operational_stage or status,
             )
         )

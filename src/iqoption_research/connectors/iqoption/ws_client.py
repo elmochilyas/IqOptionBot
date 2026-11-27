@@ -49,6 +49,7 @@ from iqoption_research.connectors.iqoption.protocol import (
     encode_frame,
     parse_authenticated,
     validate_outgoing_frame,
+    validate_spot_market_data_frame,
     validate_timing_frame,
 )
 from iqoption_research.models.account import (
@@ -868,7 +869,14 @@ class IQOptionWebSocketClient:
         if self._ws is None:
             raise ConnectionError("Not connected")
         async with self._send_lock:
-            if self._config.timing_market_data_only:
+            if self._config.spot_market_data_only:
+                validate_spot_market_data_frame(
+                    payload,
+                    authenticated=self.is_authenticated,
+                    allowed_active_ids=self._config.spot_allowed_active_ids,
+                    allowed_timeframes=self._config.spot_allowed_timeframes,
+                )
+            elif self._config.timing_market_data_only:
                 validate_timing_frame(payload, authenticated=self.is_authenticated)
             else:
                 validate_outgoing_frame(payload)

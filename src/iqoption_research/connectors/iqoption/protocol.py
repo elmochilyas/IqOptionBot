@@ -5,7 +5,7 @@ with deterministic fixtures. No I/O happens in this module.
 """
 
 import json
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -462,6 +462,72 @@ def validate_outgoing_frame(frame: dict[str, Any]) -> None:
         raise TradingNotAllowedError(
             f"Outgoing frame schema validation failed for {name!r}: {safe_errors}"
         ) from None
+
+
+SPOT_ALLOWED_ACTIVE_IDS: Final[tuple[int, ...]] = (1,)
+SPOT_ALLOWED_TIMEFRAMES: Final[tuple[int, ...]] = (60, 300, 900)
+
+
+def validate_spot_market_data_frame(
+    frame: dict[str, Any],
+    *,
+    authenticated: bool,
+    allowed_active_ids: tuple[int, ...] = SPOT_ALLOWED_ACTIVE_IDS,
+    allowed_timeframes: tuple[int, ...] = SPOT_ALLOWED_TIMEFRAMES,
+) -> None:
+    """Enforce WALLET_INDEPENDENT_SPOT_READ_ONLY outbound wire allowlist.
+
+    Permits only authentication, heartbeats, read-only profile/balance queries,
+    EURUSD historical candle fetches, and EURUSD native M1/M5/M15 candle
+    subscriptions/unsubscriptions. Rejects all other operations, assets (e.g. OTC),
+    and timeframes fail-closed.
+    """
+    validate_outgoing_frame(frame)
+    frame_name = frame["name"]
+    if frame_name in (MSG_AUTHENTICATE, MSG_HEARTBEAT):
+        return
+    if not authenticated:
+        raise TradingNotAllowedError("Frame outside unauthenticated spot market-data scope")
+
+    if frame_name == "sendMessage":
+        msg = frame["msg"]
+        inner_name = msg["name"]
+        if (
+            inner_name in (MSG_GET_PROFILE, MSG_GET_BALANCES)
+            and msg.get("version") == "1.0"
+            and msg.get("body") == {}
+        ):
+            return
+        if inner_name == MSG_GET_CANDLES and msg.get("version") == "2.0":
+            body = msg["body"]
+            if (
+                set(body) == {"active_id", "size", "count", "to"}
+                and all(type(value) is int for value in body.values())
+                and body["active_id"] in allowed_active_ids
+                and body["size"] in allowed_timeframes
+                and 1 <= body["count"] <= 1000
+                and body["to"] > 0
+            ):
+                return
+    elif frame_name in (MSG_SUBSCRIBE, MSG_UNSUBSCRIBE):
+        msg = frame["msg"]
+        params = msg.get("params") if isinstance(msg, dict) else None
+        rf = params.get("routingFilters") if isinstance(params, dict) else None
+        if (
+            isinstance(msg, dict)
+            and msg.get("name") == MSG_CANDLE_GENERATED
+            and isinstance(rf, dict)
+            and set(rf) == {"active_id", "size"}
+            and type(rf["active_id"]) is int
+            and type(rf["size"]) is int
+            and rf["active_id"] in allowed_active_ids
+            and rf["size"] in allowed_timeframes
+        ):
+            return
+
+    raise TradingNotAllowedError(
+        "Frame outside the WALLET_INDEPENDENT_SPOT_READ_ONLY EURUSD M1/M5/M15 market-data scope"
+    )
 
 
 def validate_timing_frame(frame: dict[str, Any], *, authenticated: bool) -> None:

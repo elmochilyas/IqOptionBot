@@ -13,18 +13,62 @@ import contextlib
 import hashlib
 import json
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from iqoption_research.connectors.iqoption.client import AsyncIQOption
-from iqoption_research.models.account import PracticeVerification
-from iqoption_research.models.connection import ConnectionConfig
+from iqoption_research.market_data.fetch import CandleFetchResult
+from iqoption_research.models.account import AccountStatus, PracticeVerification
+from iqoption_research.models.clock import BrokerClockDiagnostics
+from iqoption_research.models.connection import ConnectionConfig, ConnectionState
 from iqoption_research.models.market import Candle
 from iqoption_research.phase47.features import MIN_WARMUP_BARS_P47
-from iqoption_research.phase48.constants import ALLOW_OTC_ASSETS, ALLOWED_ASSET
+from iqoption_research.phase48.constants import (
+    ALLOW_OTC_ASSETS,
+    ALLOWED_ASSET,
+    EXECUTION_AUTHORITY,
+)
+from iqoption_research.phase48.governance import ObservationAuthorizationMode
 from iqoption_research.security.credentials import Credentials
+
+
+class ReadOnlyBrokerClientProtocol(Protocol):
+    """Typed interface subset of AsyncIQOption required by IQOptionReadOnlyMultiTransport."""
+
+    def assert_read_only(self) -> None: ...
+
+    @property
+    def is_closed(self) -> bool: ...
+
+    @property
+    def request_timeout(self) -> float: ...
+
+    @property
+    def is_server_time_fresh(self) -> bool: ...
+
+    @property
+    def clock_diagnostics(self) -> BrokerClockDiagnostics: ...
+
+    @property
+    def state(self) -> ConnectionState: ...
+
+    async def connect(self) -> None: ...
+
+    async def close(self) -> None: ...
+
+    async def get_account_status(self) -> AccountStatus: ...
+
+    async def wait_for_server_time_sync(self, timeout: float = 10.0) -> bool: ...
+
+    async def get_candles(
+        self, symbol: str, size: int, count: int, *, endtime: int | None = None
+    ) -> CandleFetchResult: ...
+
+    def stream_candles(
+        self, symbol: str, size: int, *, idle_timeout: float | None = None
+    ) -> AsyncIterator[Candle]: ...
 
 
 class ProvenanceError(RuntimeError):
@@ -137,23 +181,52 @@ class IQOptionReadOnlyMultiTransport:
         symbol: str = ALLOWED_ASSET,
         timeframes: Sequence[int] = (60, 300, 900),
         max_data_age_seconds: int = 300,
-        require_practice_account: bool = True,
-        client_override: Any | None = None,
+        require_practice_account: bool | None = None,
+        authorization_mode: ObservationAuthorizationMode
+        | str = ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED,
+        client_override: ReadOnlyBrokerClientProtocol | None = None,
     ) -> None:
         if symbol != ALLOWED_ASSET or ALLOW_OTC_ASSETS:
             raise ValueError("Phase 48 genuine transport only permits EURUSD regular market.")
+        mode = ObservationAuthorizationMode(str(authorization_mode))
+        if mode == ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED:
+            eff_req = True if require_practice_account is None else bool(require_practice_account)
+            if not eff_req:
+                raise ValueError(
+                    "require_practice_account=False is prohibited under PRACTICE_VERIFIED_REQUIRED."
+                )
+        else:
+            eff_req = False if require_practice_account is None else bool(require_practice_account)
+            if eff_req:
+                raise ValueError(
+                    "WALLET_INDEPENDENT_SPOT_READ_ONLY cannot require verified active practice."
+                )
+
+        tf_tuple = tuple(sorted({int(tf) for tf in timeframes}))
+        if not tf_tuple or any(tf not in (60, 300, 900) for tf in tf_tuple):
+            raise ValueError(
+                f"Only native EURUSD timeframes (60, 300, 900) are supported (got {tf_tuple})."
+            )
+
         self._symbol = symbol
-        self._timeframes = tuple(sorted({int(tf) for tf in timeframes}))
+        self._timeframes = tf_tuple
         self._max_data_age_seconds = max(30, int(max_data_age_seconds))
-        self._require_practice_account = require_practice_account
+        self._authorization_mode = mode
+        self._require_practice_account = eff_req
+        self._client: ReadOnlyBrokerClientProtocol
         if client_override is not None:
             self._client = client_override
         else:
+            is_spot_only = mode == ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY
             cfg = ConnectionConfig(
                 max_reconnect_attempts=0,  # No automatic reconnect on genuine sessions
-                # Must be False so validate_outgoing_frame permits candle-generated
-                # subscribeMessage/unsubscribeMessage while still blocking all trading/wallet frames.
+                # Legacy mode keeps timing_market_data_only=False so validate_outgoing_frame
+                # permits candle-generated subscriptions; WALLET_INDEPENDENT_SPOT_READ_ONLY adds
+                # the narrower EURUSD M1/M5/M15 market-data allowlist via spot_market_data_only.
                 timing_market_data_only=False,
+                spot_market_data_only=is_spot_only,
+                spot_allowed_active_ids=(1,),
+                spot_allowed_timeframes=(60, 300, 900),
             )
             self._client = AsyncIQOption(credentials=credentials, offline=False, config=cfg)
         self._client.assert_read_only()
@@ -161,6 +234,9 @@ class IQOptionReadOnlyMultiTransport:
         self._stream_tasks: list[asyncio.Task[None]] = []
         self._connected = False
         self._last_practice_verification: PracticeVerification | None = None
+        self._observed_wallet_classification: str = "UNOBSERVED"
+        self._account_status_summary: dict[str, Any] = {}
+        self._startup_stage: str = "DISCONNECTED"
         now_m = time.monotonic()
         self._last_heartbeat_mono = now_m
         self._last_heartbeat_by_tf: dict[int, float] = dict.fromkeys(self._timeframes, now_m)
@@ -169,14 +245,42 @@ class IQOptionReadOnlyMultiTransport:
     def is_connected(self) -> bool:
         if not self._connected:
             return False
-        state = getattr(self._client, "state", None)
-        if state is not None and hasattr(state, "is_connected"):
-            return bool(state.is_connected())
-        return bool(self._client.monitor.state.is_connected())
+        return bool(self._client.state.is_connected())
 
     @property
     def is_synthetic(self) -> bool:
         return False
+
+    @property
+    def authorization_mode(self) -> str:
+        return self._authorization_mode.value
+
+    @property
+    def observed_wallet_classification(self) -> str:
+        return self._observed_wallet_classification
+
+    @property
+    def account_status_summary(self) -> dict[str, Any]:
+        return dict(self._account_status_summary)
+
+    @property
+    def startup_stage(self) -> str:
+        return self._startup_stage
+
+    @property
+    def market_data_permissions(self) -> dict[str, Any]:
+        return {
+            "authorization_mode": self._authorization_mode.value,
+            "asset": self._symbol,
+            "allow_otc": False,
+            "timeframes": list(self._timeframes),
+            "trading_authority": EXECUTION_AUTHORITY,
+            "wallet_verification_required": self._require_practice_account,
+            "spot_market_data_only": (
+                self._authorization_mode
+                == ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY
+            ),
+        }
 
     @property
     def last_heartbeat_mono(self) -> float:
@@ -191,54 +295,42 @@ class IQOptionReadOnlyMultiTransport:
 
     def _read_clock_state(self) -> tuple[bool, int | None, str, bool]:
         """Read clock freshness, server_time_ns, sync status, and step flag via public interface."""
-        diag = getattr(self._client, "clock_diagnostics", None)
-        is_fresh = bool(getattr(self._client, "is_server_time_fresh", False))
-        if diag is not None:
-            status_obj = getattr(diag, "status", None)
-            sync_status = str(getattr(status_obj, "value", status_obj or "UNKNOWN"))
-            step_detected = bool(getattr(diag, "step_detected", False))
-            diag_fresh = bool(getattr(diag, "is_fresh", is_fresh))
-            server_ns = getattr(diag, "server_time_ns", None)
-            return (
-                is_fresh and diag_fresh and not step_detected,
-                int(server_ns) if server_ns is not None else None,
-                sync_status,
-                step_detected,
-            )
-        ws = getattr(self._client, "ws", None) or getattr(self._client, "_ws", None)
-        if ws is None:
-            return False, None, "NEVER_SYNCHRONIZED", False
-        ws_diag = getattr(ws, "clock_diagnostics", None)
-        status_obj = getattr(ws_diag, "status", None)
-        sync_status = str(getattr(status_obj, "value", "SYNCHRONIZED_AND_FRESH"))
-        step_detected = bool(getattr(ws_diag, "step_detected", False))
-        server_ns = getattr(ws_diag, "server_time_ns", None) if ws_diag is not None else None
-        if server_ns is None:
-            server_ns = getattr(ws, "server_time_ns", None)
+        diag = self._client.clock_diagnostics
+        is_fresh = bool(self._client.is_server_time_fresh)
+        sync_status = diag.status.value
+        step_detected = bool(diag.step_detected)
+        diag_fresh = bool(diag.is_fresh)
+        server_ns = diag.server_time_ns
         return (
-            bool(ws.is_server_time_fresh) and not step_detected,
+            is_fresh and diag_fresh and not step_detected,
             int(server_ns) if server_ns is not None else None,
             sync_status,
             step_detected,
         )
 
     async def connect(self) -> None:
-        """Connect read-only session, verify practice status & clock, start streams."""
+        """Connect read-only session, evaluate account status & clock, and start streams."""
+        self._startup_stage = "CONNECTING"
         try:
             await self._client.connect()
-            if self._require_practice_account:
-                acct_status = await self._client.get_account_status()
-                practice = acct_status.practice_verification()
-                self._last_practice_verification = practice
-                if not practice.is_verified:
-                    raise ProvenanceError(
-                        "Genuine exploratory pilot requires a verified PRACTICE account "
-                        f"(status={practice.status.value}: {practice.message})."
-                    )
-            wait_sync = getattr(self._client, "wait_for_server_time_sync", None)
-            if callable(wait_sync):
-                req_timeout = float(getattr(self._client, "request_timeout", 10.0))
-                await wait_sync(timeout=min(req_timeout, 10.0))
+            self._startup_stage = "AUTHENTICATED"
+            acct_status = await self._client.get_account_status()
+            practice = acct_status.practice_verification()
+            self._last_practice_verification = practice
+            self._observed_wallet_classification = practice.status.value
+            self._account_status_summary = {
+                "observed_wallet_classification": practice.status.value,
+                "is_practice_verified": bool(practice.is_verified),
+                "observed_balance_types": [b.type.name for b in acct_status.balances],
+            }
+            if self._require_practice_account and not practice.is_verified:
+                raise ProvenanceError(
+                    "Genuine exploratory pilot requires a verified PRACTICE account "
+                    f"(status={practice.status.value}: {practice.message})."
+                )
+            self._startup_stage = "WAITING_BROKER_CLOCK"
+            req_timeout = float(self._client.request_timeout)
+            await self._client.wait_for_server_time_sync(timeout=min(req_timeout, 10.0))
             clock_fresh, server_ns, sync_status, step_detected = self._read_clock_state()
             if not clock_fresh or server_ns is None or step_detected:
                 raise ProvenanceError(
@@ -246,11 +338,13 @@ class IQOptionReadOnlyMultiTransport:
                 )
         except Exception:
             self._connected = False
+            self._startup_stage = "FAILED_STARTUP"
             with contextlib.suppress(Exception):
                 await self._client.close()
             raise
 
         self._connected = True
+        self._startup_stage = "OBSERVING"
         now_m = time.monotonic()
         self._last_heartbeat_mono = now_m
         for tf in self._timeframes:
@@ -409,6 +503,26 @@ class SyntheticMultiTimeframeTransport:
     @property
     def is_synthetic(self) -> bool:
         return not self._simulate_genuine_flag_for_test
+
+    @property
+    def authorization_mode(self) -> str:
+        return "SYNTHETIC"
+
+    @property
+    def observed_wallet_classification(self) -> str:
+        return "SYNTHETIC_DEMO"
+
+    @property
+    def market_data_permissions(self) -> dict[str, Any]:
+        return {
+            "authorization_mode": "SYNTHETIC",
+            "asset": ALLOWED_ASSET,
+            "allow_otc": False,
+            "timeframes": sorted(self._warmup_by_tf),
+            "trading_authority": EXECUTION_AUTHORITY,
+            "wallet_verification_required": False,
+            "spot_market_data_only": False,
+        }
 
     @property
     def last_heartbeat_mono(self) -> float:

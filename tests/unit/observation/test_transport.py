@@ -275,16 +275,22 @@ class _MockedNetworkSocket:
         profile_payload: dict[str, object],
         balances_payload: list[dict[str, object]],
         emit_timesync: bool = True,
+        timesync_ms: int | None = None,
         emit_balance_changed: dict[str, object] | None = None,
         emit_stream_candle: dict[str, object] | None = None,
+        warmup_candles_by_tf: dict[int, list[dict[str, object]]] | None = None,
+        stream_candles_list: list[dict[str, object]] | None = None,
     ) -> None:
         import asyncio
 
         self.profile_payload = profile_payload
         self.balances_payload = balances_payload
         self.emit_timesync = emit_timesync
+        self.timesync_ms = timesync_ms
         self.emit_balance_changed = emit_balance_changed
         self.emit_stream_candle = emit_stream_candle
+        self.warmup_candles_by_tf = warmup_candles_by_tf
+        self.stream_candles_list = list(stream_candles_list or [])
         self.sent: list[dict[str, object]] = []
         self.incoming: asyncio.Queue[str] = asyncio.Queue()
         self.closed = False
@@ -314,9 +320,10 @@ class _MockedNetworkSocket:
         if name == "authenticate":
             await self.incoming.put(json.dumps({"name": "authenticated", "msg": True}))
             if self.emit_timesync:
-                await self.incoming.put(
-                    json.dumps({"name": "timeSync", "msg": int(time.time() * 1000)})
+                ts_val = (
+                    self.timesync_ms if self.timesync_ms is not None else int(time.time() * 1000)
                 )
+                await self.incoming.put(json.dumps({"name": "timeSync", "msg": ts_val}))
             return
         if name == "sendMessage":
             inner = frame["msg"]
@@ -344,10 +351,32 @@ class _MockedNetworkSocket:
                     })
                 )
                 return
-        if name == "subscribeMessage" and self.emit_stream_candle is not None:
-            await self.incoming.put(
-                json.dumps({"name": "candle-generated", "msg": self.emit_stream_candle})
-            )
+            if inner_name == "get-candles" and self.warmup_candles_by_tf is not None:
+                body = inner.get("body", {})
+                tf_sz = int(body.get("size", 60))
+                act_id = int(body.get("active_id", 1))
+                await self.incoming.put(
+                    json.dumps({
+                        "name": "candles",
+                        "status": 0,
+                        "request_id": frame["request_id"],
+                        "msg": {
+                            "active_id": act_id,
+                            "candles": self.warmup_candles_by_tf.get(tf_sz, []),
+                        },
+                    })
+                )
+                return
+        if name == "subscribeMessage":
+            rf = frame.get("msg", {}).get("params", {}).get("routingFilters", {})
+            sub_tf = int(rf.get("size", 0))
+            if self.emit_stream_candle is not None:
+                await self.incoming.put(
+                    json.dumps({"name": "candle-generated", "msg": self.emit_stream_candle})
+                )
+            for sc in self.stream_candles_list:
+                if int(sc.get("size", 0)) == sub_tf:
+                    await self.incoming.put(json.dumps({"name": "candle-generated", "msg": sc}))
 
 
 def _assert_no_prohibited_frames(sent_frames: list[dict[str, object]]) -> None:
@@ -554,3 +583,124 @@ async def test_phase48_transport_connect_handles_verified_practice_status_and_st
             await transport.disconnect()
             assert transport.is_connected is False
             assert client.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_phase49_wallet_independent_transport_connects_records_unverified_and_streams() -> (
+    None
+):
+    """WALLET_INDEPENDENT_SPOT_READ_ONLY connects without practice-bypass, enforces spot protocol, and streams."""
+    import time
+    from unittest.mock import AsyncMock, patch
+
+    from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+    from iqoption_research.models.account import PracticeStatus
+    from iqoption_research.phase48.governance import ObservationAuthorizationMode
+    from iqoption_research.phase48.transport import (
+        IQOptionReadOnlyMultiTransport,
+        ProvenanceError,
+    )
+    from iqoption_research.security.credentials import Credentials
+
+    creds = Credentials(email="operator@example.invalid", password="mock_password_123")
+
+    # Guard against silent bypass: require_practice_account=False cannot be used with legacy mode
+    with pytest.raises(ValueError, match="PRACTICE_VERIFIED_REQUIRED"):
+        IQOptionReadOnlyMultiTransport(
+            creds,
+            authorization_mode=ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED,
+            require_practice_account=False,
+        )
+    with pytest.raises(ValueError, match="WALLET_INDEPENDENT_SPOT_READ_ONLY"):
+        IQOptionReadOnlyMultiTransport(
+            creds,
+            authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+            require_practice_account=True,
+        )
+
+    now_sec = (int(time.time()) // 60) * 60
+    candle_m1 = {
+        "active_id": 1,
+        "size": 60,
+        "from": now_sec - 60,
+        "to": now_sec,
+        "at": now_sec * 1_000_000_000,
+        "open": 1.0850,
+        "close": 1.0855,
+        "min": 1.0849,
+        "max": 1.0856,
+        "volume": 42,
+        "bid": 1.0854,
+        "ask": 1.0856,
+    }
+    wire = _MockedNetworkSocket(
+        profile_payload={"user_id": 10, "balance_id": "prac_4"},
+        balances_payload=[
+            {"id": "real_1", "type": 1, "amount": 500.0},
+            {"id": "prac_4", "type": 4, "amount": 10000.0},
+        ],
+        emit_timesync=True,
+        emit_stream_candle=candle_m1,
+    )
+    connector = "iqoption_research.connectors.iqoption.client"
+    with (
+        patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-wi")),
+        patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)),
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire)),
+    ):
+        transport = IQOptionReadOnlyMultiTransport(
+            creds,
+            timeframes=(60,),
+            require_practice_account=False,
+            authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+        )
+        assert transport._client._config.spot_market_data_only is True
+        assert transport._client._config.timing_market_data_only is False
+        await transport.connect()
+        try:
+            assert transport.is_connected is True
+            assert transport.last_practice_verification is not None
+            # Honest reporting: never claim verified practice when broker cannot prove it
+            assert transport.last_practice_verification.is_verified is False
+            assert (
+                transport.last_practice_verification.status
+                is PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED
+            )
+            assert (
+                transport.observed_wallet_classification
+                == PracticeStatus.ACCOUNT_SELECTION_UNVERIFIED.value
+            )
+            ev = await transport.next_event(timeout_seconds=2.0)
+            assert ev is not None
+            assert ev.candle.symbol == "EURUSD"
+            assert ev.is_synthetic is False
+            assert any(f.get("name") == "subscribeMessage" for f in wire.sent)
+            _assert_no_prohibited_frames(wire.sent)
+        finally:
+            await transport.disconnect()
+            assert transport.is_connected is False
+            assert transport._client.is_closed is True
+
+    # Missing broker clock synchronization must still fail closed even in WALLET_INDEPENDENT mode
+    wire_no_clock = _MockedNetworkSocket(
+        profile_payload={"user_id": 10, "balance_id": "prac_4"},
+        balances_payload=[{"id": "prac_4", "type": 4, "amount": 10000.0}],
+        emit_timesync=False,
+    )
+    with (
+        patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-wi-noclock")),
+        patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)),
+        patch.object(
+            IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire_no_clock)
+        ),
+    ):
+        transport_bad_clock = IQOptionReadOnlyMultiTransport(
+            creds,
+            timeframes=(60,),
+            require_practice_account=False,
+            authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+        )
+        with pytest.raises(ProvenanceError, match="clock synchronization"):
+            await transport_bad_clock.connect()
+        assert transport_bad_clock.is_connected is False
+        assert not any(f.get("name") == "subscribeMessage" for f in wire_no_clock.sent)

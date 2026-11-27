@@ -186,3 +186,130 @@ async def test_ws_client_send_raw_rejects_unauthorized_operations():
     # Forbidden frame is blocked before network transmission
     with pytest.raises(TradingNotAllowedError):
         await client._send_raw({"name": "buy", "msg": {"amount": 10}})
+
+
+@pytest.mark.asyncio
+async def test_spot_market_data_only_strict_outbound_allowlist():
+    """WALLET_INDEPENDENT_SPOT_READ_ONLY enforces strict EURUSD M1/M5/M15 allowlist."""
+    from unittest.mock import AsyncMock
+
+    from iqoption_research.connectors.iqoption.protocol import validate_spot_market_data_frame
+    from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+    from iqoption_research.models.connection import ConnectionConfig
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        ConnectionConfig(timing_market_data_only=True, spot_market_data_only=True)
+
+    # Permitted frames (post-auth)
+    permitted = [
+        {"name": "authenticate", "msg": {"ssid": "dummy_ssid", "protocol": 3}},
+        {"name": "heartbeat", "msg": ""},
+        {
+            "name": "sendMessage",
+            "msg": {"name": "get-profile", "version": "1.0", "body": {}},
+            "request_id": "p-1",
+        },
+        {
+            "name": "sendMessage",
+            "msg": {"name": "get-balances", "version": "1.0", "body": {}},
+            "request_id": "b-1",
+        },
+    ]
+    for tf in (60, 300, 900):
+        permitted.append({
+            "name": "sendMessage",
+            "msg": {
+                "name": "get-candles",
+                "version": "2.0",
+                "body": {"active_id": 1, "size": tf, "to": 1700000000, "count": 60},
+            },
+            "request_id": f"c-{tf}",
+        })
+        permitted.append({
+            "name": "subscribeMessage",
+            "msg": {
+                "name": "candle-generated",
+                "params": {"routingFilters": {"active_id": 1, "size": tf}},
+            },
+        })
+        permitted.append({
+            "name": "unsubscribeMessage",
+            "msg": {
+                "name": "candle-generated",
+                "params": {"routingFilters": {"active_id": 1, "size": tf}},
+            },
+        })
+
+    for frame in permitted:
+        validate_spot_market_data_frame(frame, authenticated=True)
+
+    # Unauthenticated sendMessage / subscribeMessage must fail closed
+    for frame in permitted[2:]:
+        with pytest.raises(TradingNotAllowedError):
+            validate_spot_market_data_frame(frame, authenticated=False)
+
+    # Prohibited frames (OTC active_id=76, other active_id, unsupported TF, orders, wallet switch)
+    rejected = [
+        {
+            "name": "sendMessage",
+            "msg": {
+                "name": "get-candles",
+                "version": "2.0",
+                "body": {"active_id": 76, "size": 60, "to": 1700000000, "count": 60},
+            },
+        },
+        {
+            "name": "sendMessage",
+            "msg": {
+                "name": "get-candles",
+                "version": "2.0",
+                "body": {"active_id": 1, "size": 120, "to": 1700000000, "count": 60},
+            },
+        },
+        {
+            "name": "subscribeMessage",
+            "msg": {
+                "name": "candle-generated",
+                "params": {"routingFilters": {"active_id": 76, "size": 60}},
+            },
+        },
+        {
+            "name": "subscribeMessage",
+            "msg": {
+                "name": "candle-generated",
+                "params": {"routingFilters": {"active_id": 1, "size": 1800}},
+            },
+        },
+        {
+            "name": "sendMessage",
+            "msg": {"name": "changebalance", "version": "1.0", "body": {"balance_id": 4}},
+        },
+        {
+            "name": "sendMessage",
+            "msg": {"name": "binary-options.open-option", "version": "1.0", "body": {}},
+        },
+        {"name": "buy", "msg": {"active_id": 1, "price": 1.0}},
+    ]
+    for bad in rejected:
+        with pytest.raises(TradingNotAllowedError):
+            validate_spot_market_data_frame(bad, authenticated=True)
+
+    # Exercise IQOptionWebSocketClient._send_raw() directly with spot_market_data_only=True
+    mock_ws = AsyncMock()
+    mock_ws.send = AsyncMock()
+    mock_ws.close = AsyncMock()
+    client = IQOptionWebSocketClient(
+        "dummy_ssid",
+        config=ConnectionConfig(spot_market_data_only=True),
+        connect_factory=lambda: mock_ws,
+    )
+    client._ws = mock_ws
+    client._authenticated_ok = True
+
+    await client._send_raw(permitted[5])  # M5 get-candles EURUSD
+    mock_ws.send.assert_called_once()
+
+    for bad in rejected:
+        with pytest.raises(TradingNotAllowedError):
+            await client._send_raw(bad)
+    assert mock_ws.send.call_count == 1

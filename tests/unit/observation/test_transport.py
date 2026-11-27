@@ -704,3 +704,302 @@ async def test_phase49_wallet_independent_transport_connects_records_unverified_
             await transport_bad_clock.connect()
         assert transport_bad_clock.is_connected is False
         assert not any(f.get("name") == "subscribeMessage" for f in wire_no_clock.sent)
+
+
+@pytest.mark.asyncio
+async def test_phase49_4_transport_reconciles_missing_m1_0854_and_simultaneous_0900_boundaries() -> (
+    None
+):
+    """Reproduce missing M1 at 08:54 (pre-boundary update) and missing M1/M5/M15 at 09:00."""
+    import asyncio
+    import json
+    from unittest.mock import AsyncMock, patch
+
+    from iqoption_research.connectors.iqoption.client import AsyncIQOption
+    from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+    from iqoption_research.models.connection import ConnectionConfig
+    from iqoption_research.phase48.governance import ObservationAuthorizationMode
+    from iqoption_research.phase48.transport import IQOptionReadOnlyMultiTransport
+    from iqoption_research.security.credentials import Credentials
+
+    # Exact Stage A UTC timeline: 2026-11-27 08:53..09:01
+    # 1795769580 = 08:53:00, 1795769640 = 08:54:00, 1795769700 = 08:55:00, 1795770000 = 09:00:00
+    t_0853 = 1795769580
+    t_0854 = 1795769640
+    t_0855 = 1795769700
+    t_0900 = 1795770000
+
+    def _raw_bar(tf: int, to_ts: int, px: float = 1.0965) -> dict[str, object]:
+        return {
+            "active_id": 1,
+            "size": tf,
+            "from": to_ts - tf,
+            "to": to_ts,
+            "at": to_ts * 1_000_000_000,
+            "open": px,
+            "close": round(px + 0.0001, 5),
+            "min": round(px - 0.0001, 5),
+            "max": round(px + 0.0002, 5),
+            "volume": 40,
+            "bid": round(px + 0.0001, 5),
+            "ask": round(px + 0.0002, 5),
+        }
+
+    # Build 70 warmup candles ending at 08:53 (M1), 08:50 (M5), 08:45 (M15)
+    # Wait: let M1 end at 08:53, M5 end at 08:55, M15 end at 08:45 so 09:00 is the next M5/M15 close!
+    history_by_tf: dict[int, list[dict[str, object]]] = {
+        60: [_raw_bar(60, t_0853 - i * 60) for i in range(70, -1, -1)],
+        300: [_raw_bar(300, t_0855 - i * 300) for i in range(70, -1, -1)],
+        900: [_raw_bar(900, (t_0900 - 900) - i * 900) for i in range(70, -1, -1)],
+    }
+    # Add 08:54..09:00 bars to broker history (available via get-candles, omitted from stream!)
+    for ts in range(t_0854, t_0900 + 60, 60):
+        history_by_tf[60].append(_raw_bar(60, ts, px=1.0966))
+    history_by_tf[300].append(_raw_bar(300, t_0900, px=1.0967))
+    history_by_tf[900].append(_raw_bar(900, t_0900, px=1.0968))
+
+    class _ReconcileMockSocket(_MockedNetworkSocket):
+        def __init__(self) -> None:
+            super().__init__(
+                profile_payload={"user_id": 10, "balance_id": "prac_4"},
+                balances_payload=[{"id": "prac_4", "type": 4, "amount": 10000.0}],
+                emit_timesync=True,
+                timesync_ms=(t_0853 + 2) * 1000,
+                warmup_candles_by_tf={},
+            )
+            self.get_candles_calls: list[tuple[int, int, int]] = []
+
+        async def send(self, wire: str) -> None:
+            frame = json.loads(wire)
+            self.sent.append(frame)
+            name = frame.get("name")
+            if name == "authenticate":
+                await self.incoming.put(json.dumps({"name": "authenticated", "msg": True}))
+                await self.incoming.put(
+                    json.dumps({"name": "timeSync", "msg": (t_0854 * 1000) - 50})
+                )
+                return
+            if name == "sendMessage":
+                inner = frame["msg"]
+                inner_name = inner["name"]
+                if inner_name == "get-profile":
+                    await self.incoming.put(
+                        json.dumps({
+                            "name": "profile",
+                            "request_id": frame["request_id"],
+                            "msg": self.profile_payload,
+                        })
+                    )
+                    return
+                if inner_name == "get-balances":
+                    await self.incoming.put(
+                        json.dumps({
+                            "name": "balances",
+                            "status": 0,
+                            "request_id": frame["request_id"],
+                            "msg": self.balances_payload,
+                        })
+                    )
+                    return
+                if inner_name == "get-candles":
+                    body = inner["body"]
+                    tf_sz = int(body["size"])
+                    to_ts = int(body["to"])
+                    cnt = int(body["count"])
+                    self.get_candles_calls.append((tf_sz, to_ts, cnt))
+                    eligible = [
+                        c
+                        for c in history_by_tf[tf_sz]
+                        if int(c["to"]) <= to_ts  # type: ignore[arg-type]
+                    ][-cnt:]
+                    await self.incoming.put(
+                        json.dumps({
+                            "name": "candles",
+                            "status": 0,
+                            "request_id": frame["request_id"],
+                            "msg": {"active_id": 1, "candles": eligible},
+                        })
+                    )
+                    return
+
+    wire = _ReconcileMockSocket()
+    creds = Credentials(email="operator@example.invalid", password="mock_password_123")
+    connector = "iqoption_research.connectors.iqoption.client"
+
+    client = AsyncIQOption(
+        credentials=creds,
+        offline=False,
+        config=ConnectionConfig(
+            max_reconnect_attempts=0,
+            timing_market_data_only=False,
+            spot_market_data_only=True,
+            spot_allowed_active_ids=(1,),
+            spot_allowed_timeframes=(60, 300, 900),
+        ),
+    )
+
+    with (
+        patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-rec")),
+        patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)),
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire)),
+    ):
+        transport = IQOptionReadOnlyMultiTransport(
+            creds,
+            timeframes=(60, 300, 900),
+            require_practice_account=False,
+            authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+            client_override=client,
+            reconcile_grace_seconds=0.5,
+            reconcile_cooldown_seconds=0.2,
+            reconcile_min_global_interval_seconds=0.05,
+            watchdog_poll_seconds=0.05,
+            max_data_age_seconds=3600,
+        )
+        await transport.connect()
+        try:
+            # 1. Warmup: M1 ends at 08:53, M5 at 08:55, M15 at 08:45
+            await transport.get_warmup_candles(60, 70)
+            await transport.get_warmup_candles(300, 70)
+            await transport.get_warmup_candles(900, 70)
+
+            # 2. Emit pre-boundary forming update at 08:53:59.950 (is_complete=False)
+            pre_boundary_0854 = _raw_bar(60, t_0854, px=1.09655)
+            pre_boundary_0854["at"] = (t_0854 * 1_000_000_000) - 50_000_000
+            await wire.incoming.put(
+                json.dumps({"name": "candle-generated", "msg": pre_boundary_0854})
+            )
+            await asyncio.sleep(0.03)
+
+            # Broker clock crosses 08:54:02 (+2.05s, within 5s step limit) and next forming bar (08:54..08:55) arrives
+            await wire.incoming.put(json.dumps({"name": "timeSync", "msg": (t_0854 + 2) * 1000}))
+            await asyncio.sleep(0.03)
+            forming_0855 = _raw_bar(60, t_0855, px=1.09665)
+            await wire.incoming.put(json.dumps({"name": "candle-generated", "msg": forming_0855}))
+
+            ev_0854 = await transport.next_event(timeout_seconds=2.0)
+            assert ev_0854 is not None
+            assert ev_0854.timeframe_seconds == 60
+            assert ev_0854.candle.to_ts == t_0854
+            assert ev_0854.is_recovered is True
+            assert ev_0854.recovered_at_utc is not None
+            assert ev_0854.request_id.startswith("candles-")
+            assert ev_0854.source_provenance.startswith("historical_reconciliation:")
+
+            # 3. Advance simulated broker clock to 09:00:03 without triggering >5s clock-step alarm
+            assert client.ws is not None
+            client.ws._server_time_ns = (t_0900 + 3) * 1_000_000_000
+            client.ws._server_time_synced_at = __import__("time").monotonic()
+            recovered_by_tf: dict[int, list[int]] = {60: [], 300: [], 900: []}
+            deadline = asyncio.get_running_loop().time() + 4.0
+            while asyncio.get_running_loop().time() < deadline:
+                if (
+                    t_0900 in recovered_by_tf[60]
+                    and t_0900 in recovered_by_tf[300]
+                    and t_0900 in recovered_by_tf[900]
+                ):
+                    break
+                ev = await transport.next_event(timeout_seconds=0.3)
+                if ev is not None:
+                    recovered_by_tf[ev.timeframe_seconds].append(int(ev.candle.to_ts))
+
+            assert t_0900 in recovered_by_tf[60]
+            assert t_0900 in recovered_by_tf[300]
+            assert t_0900 in recovered_by_tf[900]
+
+            diags = transport.drain_diagnostics()
+            assert any(d["type"] == "RECONCILIATION_ATTEMPT" for d in diags)
+            assert any(
+                d["type"] == "CANDLE_RECOVERED" and d["candle_close_ts"] == t_0900 for d in diags
+            )
+            _assert_no_prohibited_frames(wire.sent)
+        finally:
+            await transport.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_phase49_4_transport_rejects_conflicting_duplicate_candle_and_tracks_drops() -> None:
+    """Conflicting payload at previously seen boundary raises ProvenanceError; malformed/drops surface."""
+    import asyncio
+    import json
+    import time
+    from unittest.mock import AsyncMock, patch
+
+    from iqoption_research.connectors.iqoption.client import AsyncIQOption
+    from iqoption_research.connectors.iqoption.ws_client import IQOptionWebSocketClient
+    from iqoption_research.models.connection import ConnectionConfig
+    from iqoption_research.phase48.governance import ObservationAuthorizationMode
+    from iqoption_research.phase48.transport import IQOptionReadOnlyMultiTransport, ProvenanceError
+    from iqoption_research.security.credentials import Credentials
+
+    now_sec = (int(time.time()) // 60) * 60
+    c1 = {
+        "active_id": 1,
+        "size": 60,
+        "from": now_sec - 60,
+        "to": now_sec,
+        "at": now_sec * 1_000_000_000,
+        "open": 1.0850,
+        "close": 1.0855,
+        "min": 1.0849,
+        "max": 1.0856,
+        "volume": 42,
+        "bid": 1.0854,
+        "ask": 1.0856,
+    }
+    c1_conflict = {**c1, "close": 1.0899, "max": 1.0899}
+
+    wire = _MockedNetworkSocket(
+        profile_payload={"user_id": 10, "balance_id": "prac_4"},
+        balances_payload=[{"id": "prac_4", "type": 4, "amount": 10000.0}],
+        emit_timesync=True,
+        timesync_ms=(now_sec + 2) * 1000,
+        emit_stream_candle=c1,
+    )
+    creds = Credentials(email="operator@example.invalid", password="mock_password_123")
+    connector = "iqoption_research.connectors.iqoption.client"
+    client = AsyncIQOption(
+        credentials=creds,
+        offline=False,
+        config=ConnectionConfig(
+            max_reconnect_attempts=0,
+            timing_market_data_only=False,
+            spot_market_data_only=True,
+        ),
+    )
+
+    with (
+        patch(f"{connector}.async_login", new=AsyncMock(return_value="mock-ssid-conf")),
+        patch(f"{connector}.async_logout", new=AsyncMock(return_value=True)),
+        patch.object(IQOptionWebSocketClient, "_open_socket", new=AsyncMock(return_value=wire)),
+    ):
+        transport = IQOptionReadOnlyMultiTransport(
+            creds,
+            timeframes=(60,),
+            require_practice_account=False,
+            authorization_mode=ObservationAuthorizationMode.WALLET_INDEPENDENT_SPOT_READ_ONLY,
+            client_override=client,
+            reconcile_missing_candles=False,
+        )
+        await transport.connect()
+        try:
+            ev1 = await transport.next_event(timeout_seconds=2.0)
+            assert ev1 is not None and ev1.candle.to_ts == now_sec
+
+            # Exact duplicate is silently deduplicated
+            await wire.incoming.put(json.dumps({"name": "candle-generated", "msg": c1}))
+            # Malformed frame (ask < bid) is counted and surfaced via drain_diagnostics
+            bad_frame = {**c1, "bid": 1.0900, "ask": 1.0800}
+            await wire.incoming.put(json.dumps({"name": "candle-generated", "msg": bad_frame}))
+            await asyncio.sleep(0.05)
+
+            # Conflicting duplicate at same to_ts raises ProvenanceError
+            await wire.incoming.put(json.dumps({"name": "candle-generated", "msg": c1_conflict}))
+            with pytest.raises(ProvenanceError, match="Conflicting candle payload"):
+                for _ in range(5):
+                    await transport.next_event(timeout_seconds=0.5)
+
+            diags = transport.drain_diagnostics()
+            assert any(d["type"] == "STREAM_MALFORMED_CANDLE" for d in diags)
+            assert any(d["type"] == "CANDLE_CONFLICT_DETECTED" for d in diags)
+        finally:
+            await transport.disconnect()

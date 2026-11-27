@@ -167,6 +167,12 @@ class ObservationCenterController:
         self._auth_row: ttk.Frame | None = None
         self._controls_frame: ttk.LabelFrame | None = None
         self._live_frame: ttk.LabelFrame | None = None
+        self._legacy_kpi_grid: ttk.Frame | None = None
+        self._legacy_tree_box: ttk.Frame | None = None
+        self._chart_box: ttk.Frame | None = None
+        self._p48_live_frame: ttk.LabelFrame | None = None
+        self.lbl_p48_decision_detail: ttk.Label | None = None
+        self._p48_active_session: bool = False
 
     @property
     def is_running(self) -> bool:
@@ -255,6 +261,7 @@ class ObservationCenterController:
                 btn_w = max(160, self.btn_p48_refresh.winfo_reqwidth() + 24)
         _set_wrap(self.lbl_p48_auth_status, avail_width - btn_w - 24)
         _set_wrap(self.lbl_p48_governance_meta, avail_width - 20)
+        _set_wrap(self.lbl_p48_decision_detail, avail_width - 20)
 
     def _on_mousewheel(self, event: Any) -> None:
         if self.obs_scroll_canvas is not None and event.delta:
@@ -583,9 +590,10 @@ class ObservationCenterController:
         )
         p.lbl_obs_status.pack(fill="x", anchor="w", pady=(0, 4))
 
-        # Compact 4-card KPI grid
+        # Compact 4-card KPI grid (legacy single-model monitoring; hidden in genuine multi-model mode)
         kpi_grid = ttk.Frame(live_frame)
         kpi_grid.pack(fill="x", pady=(0, 4))
+        self._legacy_kpi_grid = kpi_grid
         for ci in range(4):
             kpi_grid.columnconfigure(ci, weight=1, uniform="kpi")
 
@@ -635,6 +643,7 @@ class ObservationCenterController:
         tree_box.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         tree_box.rowconfigure(0, weight=1)
         tree_box.columnconfigure(0, weight=1)
+        self._legacy_tree_box = tree_box
 
         cols = (
             "model_id",
@@ -682,6 +691,7 @@ class ObservationCenterController:
         chart_box.grid(row=0, column=1, sticky="nsew")
         chart_box.rowconfigure(0, weight=1, minsize=175)
         chart_box.columnconfigure(0, weight=1)
+        self._chart_box = chart_box
         p.obs_chart_canvas = tk.Canvas(
             chart_box,
             width=360,
@@ -691,10 +701,8 @@ class ObservationCenterController:
             highlightbackground="#cfd8e3",
         )
         p.obs_chart_canvas.grid(row=0, column=0, sticky="nsew")
-        p.obs_chart_canvas.bind(
-            "<Configure>", lambda _e: self._draw_accuracy_chart(self._accuracy_history)
-        )
-        self._draw_accuracy_chart([])
+        p.obs_chart_canvas.bind("<Configure>", lambda _e: self._redraw_active_chart())
+        self._redraw_active_chart()
 
         # ==================================================================
         # 2b) Phase 48 Parallel Multi-Model Exploratory Evaluation
@@ -705,6 +713,7 @@ class ObservationCenterController:
             padding=6,
         )
         p48_live.pack(fill="x", pady=(0, 8))
+        self._p48_live_frame = p48_live
 
         p48_cards = ttk.Frame(p48_live)
         p48_cards.pack(fill="x", pady=(0, 4))
@@ -718,7 +727,12 @@ class ObservationCenterController:
             cframe.grid(row=0, column=idx_c, sticky="nsew", padx=(0 if idx_c == 0 else 4, 0))
             klbl = ttk.Label(
                 cframe,
-                text="Warmup: 0/60 | Opps: 0 | Sel: 0\nPending: 0 | Res: 0 (W:0/L:0) | Acc: N/A",
+                text=(
+                    "Contig: 0/61 (Buf:0) | Ready: NO\n"
+                    "Miss: 0 | Recov: 0 | Skip: 0\n"
+                    "Opps: 0 | Sel: 0 | Abst: 0\n"
+                    "Pend: 0 | Res(S/A): 0/0 (W:0/L:0) | Acc: N/A"
+                ),
                 font=("Consolas", 8),
                 foreground="#17324d",
             )
@@ -769,16 +783,16 @@ class ObservationCenterController:
         )
         self.p48_pred_tree = ttk.Treeview(p48_tree_box, columns=p48_cols, show="headings", height=5)
         p48_headers = {
-            "decision_time": ("Decision Time", 145, "w"),
-            "candidate": ("Candidate", 200, "w"),
-            "timeframe": ("TF", 50, "center"),
-            "horizon": ("Horizon", 70, "center"),
+            "decision_time": ("Decision Time", 130, "w"),
+            "candidate": ("Candidate", 185, "w"),
+            "timeframe": ("TF", 45, "center"),
+            "horizon": ("Horizon", 60, "center"),
             "direction": ("Direction", 75, "center"),
-            "cal_prob": ("Cal Prob", 75, "e"),
-            "status": ("Status", 90, "center"),
-            "actual_dir": ("Actual Dir", 80, "center"),
-            "outcome": ("Outcome", 85, "center"),
-            "maturity_time": ("Maturity Time", 145, "w"),
+            "cal_prob": ("Conf / Margin", 150, "e"),
+            "status": ("Status", 85, "center"),
+            "actual_dir": ("Actual Dir", 75, "center"),
+            "outcome": ("Outcome", 80, "center"),
+            "maturity_time": ("Maturity Time", 130, "w"),
         }
         for col, (title, w, anc) in p48_headers.items():
             self.p48_pred_tree.heading(col, text=title)
@@ -795,6 +809,17 @@ class ObservationCenterController:
         self.p48_pred_tree.grid(row=0, column=0, sticky="nsew")
         p48_vsb.grid(row=0, column=1, sticky="ns")
         p48_hsb.grid(row=1, column=0, sticky="ew")
+        self.p48_pred_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_p48_pred_selected())
+
+        self.lbl_p48_decision_detail = ttk.Label(
+            p48_live,
+            text="Decision Diagnostics: No opportunities evaluated yet.",
+            font=("Consolas", 8),
+            foreground="#20364a",
+            wraplength=920,
+            justify="left",
+        )
+        self.lbl_p48_decision_detail.pack(fill="x", anchor="w", pady=(3, 0))
 
         # ==================================================================
         # 3) Session History & Sealed Evidence
@@ -926,12 +951,62 @@ class ObservationCenterController:
                 p.combo_obs_pace.pack_forget()
         self._on_inner_configure()
 
+    def _set_legacy_monitoring_visible(self, visible: bool) -> None:
+        p = self.panel
+        if self._legacy_kpi_grid is not None:
+            if visible:
+                if not self._legacy_kpi_grid.winfo_ismapped():
+                    self._legacy_kpi_grid.pack(fill="x", pady=(0, 4), after=p.lbl_obs_status)
+            else:
+                self._legacy_kpi_grid.pack_forget()
+        if hasattr(p, "lbl_obs_kpis"):
+            if visible:
+                if not p.lbl_obs_kpis.winfo_ismapped():
+                    p.lbl_obs_kpis.pack(anchor="w", pady=(2, 1))
+            else:
+                p.lbl_obs_kpis.pack_forget()
+        if hasattr(p, "lbl_obs_payout"):
+            if visible:
+                if not p.lbl_obs_payout.winfo_ismapped():
+                    p.lbl_obs_payout.pack(anchor="w", pady=(0, 6))
+            else:
+                p.lbl_obs_payout.pack_forget()
+        if self._legacy_tree_box is not None and self._chart_box is not None:
+            if visible:
+                self._legacy_tree_box.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+                self._chart_box.grid(row=0, column=1, columnspan=1, sticky="nsew")
+            else:
+                self._legacy_tree_box.grid_remove()
+                self._chart_box.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        self._on_inner_configure()
+
+    def _is_p48_chart_mode(self) -> bool:
+        return self.panel.var_obs_mode.get() == "exploratory_genuine" or self._p48_active_session
+
+    def _redraw_active_chart(self) -> None:
+        if self._is_p48_chart_mode():
+            self._draw_multi_accuracy_chart(self._p48_multi_series)
+        else:
+            self._draw_accuracy_chart(self._accuracy_history)
+
     def on_mode_changed(self) -> None:
         p = self.panel
         mode = p.var_obs_mode.get()
         self.refresh_models()
         if mode == "exploratory_genuine":
             self._set_legacy_controls_visible(False)
+            self._set_legacy_monitoring_visible(False)
+            if hasattr(p, "header_title_label"):
+                p.header_title_label.config(
+                    text="AI Shadow Evaluation · Genuine Read-Only Market Observation"
+                )
+            if hasattr(p, "warning_label"):
+                p.warning_label.config(
+                    text=(
+                        "GENUINE READ-ONLY MARKET OBSERVATION    |    NO ORDERS / NO WALLET MUTATIONS    |    "
+                        "NO DEMONSTRATED EDGE    |    EXECUTION_AUTHORITY=NONE"
+                    )
+                )
             p.combo_obs_account.config(state="readonly")
             auth_ok, msg = self._refresh_p48_governance_status()
             p.lbl_obs_eligibility.config(
@@ -940,8 +1015,21 @@ class ObservationCenterController:
             )
             if not self._is_running:
                 p.btn_start_obs.config(state="normal" if auth_ok else "disabled")
+            self._redraw_active_chart()
         elif mode == "live":
             self._set_legacy_controls_visible(True)
+            self._set_legacy_monitoring_visible(True)
+            if hasattr(p, "header_title_label"):
+                p.header_title_label.config(
+                    text="AI Shadow Evaluation · Offline Prospective Foundation"
+                )
+            if hasattr(p, "warning_label"):
+                p.warning_label.config(
+                    text=(
+                        "OFFLINE RESEARCH ONLY    |    ZERO BROKER NETWORK    |    "
+                        "NO DEMONSTRATED EDGE    |    NO LIVE EXECUTION AUTHORITY"
+                    )
+                )
             p.combo_obs_account.config(state="readonly")
             p.lbl_obs_eligibility.config(
                 text="BLOCKED: Phase 46 confirmatory contract UNAUTHORIZED (0 qualified candidates)",
@@ -949,8 +1037,21 @@ class ObservationCenterController:
             )
             if not self._is_running:
                 p.btn_start_obs.config(state="disabled")
+            self._redraw_active_chart()
         else:
             self._set_legacy_controls_visible(True)
+            self._set_legacy_monitoring_visible(not self._p48_active_session)
+            if hasattr(p, "header_title_label"):
+                p.header_title_label.config(
+                    text="AI Shadow Evaluation · Offline Prospective Foundation"
+                )
+            if hasattr(p, "warning_label"):
+                p.warning_label.config(
+                    text=(
+                        "OFFLINE RESEARCH ONLY    |    ZERO BROKER NETWORK    |    "
+                        "NO DEMONSTRATED EDGE    |    NO LIVE EXECUTION AUTHORITY"
+                    )
+                )
             p.combo_obs_account.config(state="disabled")
             p.lbl_obs_eligibility.config(
                 text="SYNTHETIC_FIXTURE (Offline Lifecycle Demo Only)",
@@ -958,6 +1059,7 @@ class ObservationCenterController:
             )
             if not self._is_running:
                 p.btn_start_obs.config(state="normal")
+            self._redraw_active_chart()
 
     def _selected_p48_candidate_ids(self) -> tuple[str, ...]:
         return tuple(cid for cid, var in self._p48_candidate_vars.items() if var.get())
@@ -1312,8 +1414,12 @@ class ObservationCenterController:
         self._generation_id += 1
         gen_id = self._generation_id
         self._is_running = True
+        self._p48_active_session = True
+        self._set_legacy_monitoring_visible(False)
+        self._accuracy_history = []
         self._p48_recent_rows = []
         self._p48_multi_series = {}
+        self._draw_multi_accuracy_chart({})
         p.btn_start_obs.config(state="disabled")
         p.btn_cancel_obs.config(state="normal")
         if self.btn_p48_synth_demo is not None:
@@ -1541,10 +1647,13 @@ class ObservationCenterController:
         self._generation_id += 1
         gen_id = self._generation_id
         self._is_running = True
+        self._p48_active_session = True
+        self._set_legacy_monitoring_visible(False)
         self._active_session_id = session_id
         self._p48_recent_rows = []
         self._p48_recent_outcomes = {}
         self._p48_multi_series = {}
+        self._draw_multi_accuracy_chart({})
         self._last_observed_wallet_cls = "UNOBSERVED"
         p.btn_start_obs.config(state="disabled")
         p.btn_cancel_obs.config(state="normal")
@@ -1635,12 +1744,25 @@ class ObservationCenterController:
             lbl = self._p48_kpi_labels.get(cid)
             acc = st.get("accuracy")
             acc_str = f"{acc * 100:.1f}%" if acc is not None else "N/A"
+            contig = int(st.get("contiguous_candles", st.get("warmup_bars_loaded", 0)))
+            req = int(st.get("contiguous_required", st.get("warmup_required", 61)))
+            buf = int(st.get("total_buffered_candles", contig))
+            ready = bool(st.get("feature_ready", st.get("warmup_complete", False)))
+            missing = int(st.get("missing_candles", 0))
+            recov = int(st.get("recovered_candles", 0))
+            skipped = int(st.get("skipped_opportunities", 0))
+            abst = int(
+                st.get("abstentions", max(0, int(st["opportunities"]) - int(st["selected"])))
+            )
+            res_sel = int(st.get("resolved_selected", st.get("resolved", 0)))
+            res_abst = int(st.get("resolved_abstentions", 0))
             if lbl is not None:
                 lbl.config(
                     text=(
-                        f"Warmup: {st['warmup_bars_loaded']}/{st['warmup_required']} | "
-                        f"Opps: {st['opportunities']} | Sel: {st['selected']}\n"
-                        f"Pending: {st['pending']} | Res: {st['resolved']} "
+                        f"Contig: {contig}/{req} (Buf:{buf}) | Ready: {'YES' if ready else 'NO'}\n"
+                        f"Miss: {missing} | Recov: {recov} | Skip: {skipped}\n"
+                        f"Opps: {st['opportunities']} | Sel: {st['selected']} | Abst: {abst}\n"
+                        f"Pend: {st['pending']} | Res(S/A): {res_sel}/{res_abst} "
                         f"(W:{st['correct']}/L:{st['incorrect']}) | Acc: {acc_str}"
                     )
                 )
@@ -1692,14 +1814,54 @@ class ObservationCenterController:
                     mf = getattr(diag, "model_failures", 0)
                     lbl.config(
                         text=(
-                            f"Warmup: 0/60 | Startup failed ({mf} model failures)\n"
+                            f"Contig: 0/61 (Buf:0) | Ready: NO\n"
+                            f"Startup failed ({mf} model failures)\n"
                             "Session ended before stream subscription"
                         )
                     )
+        self._p48_active_session = self.panel.var_obs_mode.get() == "exploratory_genuine"
+        self._redraw_active_chart()
         self._append_log(
             f"[Phase 48] Session {res.session_id} finished ({res.status}): {sanitized_reason}"
         )
         self.refresh_session_history()
+
+    def _format_decision_detail(self, row: dict[str, Any]) -> str:
+        p_up = float(row.get("prob_up", 0.5))
+        p_down = float(row.get("prob_down", 1.0 - p_up))
+        conf = float(row["confidence"]) if row.get("confidence") is not None else max(p_up, p_down)
+        tau = float(row.get("confidence_threshold", 0.5))
+        margin = (
+            float(row["confidence_margin"])
+            if row.get("confidence_margin") is not None
+            else (conf - tau)
+        )
+        raw_str = (
+            f"{float(row['raw_prob_up']):.8f}" if row.get("raw_prob_up") is not None else "N/A"
+        )
+        reason = str(
+            row.get("decision_reason")
+            or row.get("abstention_reason")
+            or f"Decision={row.get('decision')}"
+        )
+        f_dig = str(row.get("feature_digest", ""))[:12]
+        return (
+            f"[{row.get('candidate_id')}] raw_p_up={raw_str} | cal_p_up={p_up:.8f} | "
+            f"conf={conf:.8f} | tau={tau:.8f} | margin={margin:+.3e} | "
+            f"feat={f_dig} | {reason}"
+        )
+
+    def _on_p48_pred_selected(self) -> None:
+        tree = self.p48_pred_tree
+        if tree is None or self.lbl_p48_decision_detail is None:
+            return
+        sel = tree.selection()
+        if not sel:
+            return
+        idx_map = getattr(self, "_p48_rendered_row_by_iid", {})
+        row = idx_map.get(str(sel[0]))
+        if row is not None:
+            self.lbl_p48_decision_detail.config(text=self._format_decision_detail(row))
 
     def _render_p48_predictions(self) -> None:
         tree = self.p48_pred_tree
@@ -1707,8 +1869,10 @@ class ObservationCenterController:
             return
         for item in tree.get_children():
             tree.delete(item)
+        self._p48_rendered_row_by_iid: dict[str, dict[str, Any]] = {}
         f_cand = self.p48_filter_cand.get() if self.p48_filter_cand else "ALL"
         f_stat = self.p48_filter_status.get() if self.p48_filter_status else "ALL"
+        latest_rendered: dict[str, Any] | None = None
         for row in self._p48_recent_rows:
             cid = str(row.get("candidate_id", ""))
             dec = str(row.get("decision", ""))
@@ -1729,8 +1893,12 @@ class ObservationCenterController:
                 actual_dir = "PENDING"
                 outcome_lbl = "PENDING"
 
-            if f_stat != "ALL" and status != f_stat:
-                continue
+            if f_stat != "ALL":
+                if f_stat == "ABSTAIN":
+                    if dec != "ABSTAIN":
+                        continue
+                elif status != f_stat:
+                    continue
             dt_str = datetime.fromtimestamp(int(row["decision_timestamp"]), UTC).strftime(
                 "%Y-%m-%d %H:%M"
             )
@@ -1738,8 +1906,19 @@ class ObservationCenterController:
                 "%Y-%m-%d %H:%M"
             )
             tf_lbl = {60: "M1", 300: "M5", 900: "M15"}.get(int(row["timeframe_seconds"]), "?")
-            prob = max(float(row["prob_up"]), float(row["prob_down"]))
-            tree.insert(
+            p_up = float(row["prob_up"])
+            p_down = float(row["prob_down"])
+            conf = (
+                float(row["confidence"]) if row.get("confidence") is not None else max(p_up, p_down)
+            )
+            tau = float(row.get("confidence_threshold", 0.5))
+            margin = (
+                float(row["confidence_margin"])
+                if row.get("confidence_margin") is not None
+                else (conf - tau)
+            )
+            conf_cell = f"{conf:.6f} ({margin:+.2e})"
+            iid = tree.insert(
                 "",
                 "end",
                 values=(
@@ -1748,13 +1927,19 @@ class ObservationCenterController:
                     tf_lbl,
                     f"H{row['horizon_bars']}",
                     dec,
-                    f"{prob * 100:.2f}%",
+                    conf_cell,
                     status,
                     actual_dir,
                     outcome_lbl,
                     mat_str,
                 ),
             )
+            self._p48_rendered_row_by_iid[str(iid)] = row
+            if latest_rendered is None:
+                latest_rendered = row
+
+        if self.lbl_p48_decision_detail is not None and latest_rendered is not None:
+            self.lbl_p48_decision_detail.config(text=self._format_decision_detail(latest_rendered))
 
     def _draw_multi_accuracy_chart(self, series_map: dict[str, list[float]]) -> None:
         canvas = getattr(self.panel, "obs_chart_canvas", None)
@@ -1770,10 +1955,16 @@ class ObservationCenterController:
         pad_l, pad_r, pad_t, pad_b = 34, 10, 18, 20
         pw = w - pad_l - pad_r
         ph = h - pad_t - pad_b
+        is_genuine = self.panel.var_obs_mode.get() == "exploratory_genuine"
+        title = (
+            "Phase 48 Genuine Exploratory Accuracy (Separate Series — Never Pooled)"
+            if is_genuine
+            else "Phase 48 Multi-Model Cumulative Accuracy (Separate Series)"
+        )
         canvas.create_text(
             w // 2,
             8,
-            text="Phase 48 Multi-Model Cumulative Accuracy (Separate Series)",
+            text=title,
             font=("Segoe UI", 8, "bold"),
             fill="#17324d",
         )
@@ -2151,6 +2342,16 @@ class ObservationCenterController:
     # ------------------------------------------------------------------
     # Session History & Sealed Evidence Export
     # ------------------------------------------------------------------
+    def _session_sort_timestamp(self, sdir: Path, meta: dict[str, Any]) -> float:
+        for key in ("started_at_utc", "ended_at_utc", "created_at_utc"):
+            val = meta.get(key)
+            if isinstance(val, str) and val.strip():
+                with contextlib.suppress(ValueError):
+                    return datetime.fromisoformat(val.replace("Z", "+00:00")).timestamp()
+        with contextlib.suppress(OSError):
+            return float(sdir.stat().st_mtime)
+        return 0.0
+
     def refresh_session_history(self) -> None:
         tree = getattr(self.panel, "obs_history_tree", None)
         if tree is None:
@@ -2159,7 +2360,7 @@ class ObservationCenterController:
             tree.delete(item)
         self._sessions_index.clear()
 
-        candidates_dirs: list[Path] = []
+        discovered: list[tuple[float, Path, dict[str, Any]]] = []
         for rel in (
             PHASE48_SESSIONS_DIR,
             f"data/phase46/{DEFAULT_SHADOW_SESSIONS_DIR}",
@@ -2167,42 +2368,69 @@ class ObservationCenterController:
         ):
             base = self.root / rel
             if base.exists():
-                for child in sorted(base.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
-                    if child.is_dir() and (child / "session.json").exists():
-                        candidates_dirs.append(child)
+                for child in base.iterdir():
+                    sfile = child / "session.json"
+                    if child.is_dir() and sfile.exists():
+                        meta: dict[str, Any] | None = None
+                        with contextlib.suppress(Exception):
+                            meta = json.loads(sfile.read_text(encoding="utf-8"))
+                        if isinstance(meta, dict):
+                            discovered.append((
+                                self._session_sort_timestamp(child, meta),
+                                child,
+                                meta,
+                            ))
 
-        for sdir in candidates_dirs[:40]:
-            meta: dict[str, Any] | None = None
-            with contextlib.suppress(Exception):
-                meta = json.loads((sdir / "session.json").read_text(encoding="utf-8"))
-            if not isinstance(meta, dict):
-                continue
+        discovered.sort(key=lambda item: item[0], reverse=True)
+
+        for _sort_ts, sdir, meta in discovered[:60]:
             sid = str(meta.get("session_id", sdir.name))
             if sid in self._sessions_index:
                 continue
             self._sessions_index[sid] = sdir
-            if str(meta.get("schema_version", "")).startswith("phase48") or sid.startswith("p48_"):
+            schema_ver = str(meta.get("schema_version", ""))
+            if (
+                schema_ver.startswith("phase48")
+                or schema_ver.startswith("phase49")
+                or sid.startswith("p48_")
+            ):
                 is_gen = bool(meta.get("is_genuine_mode", False))
                 prov = "GENUINE_EXPLORATORY" if is_gen else "SYNTHETIC_P48"
                 cids = meta.get("candidate_ids", [])
                 mid_str = (
                     f"{len(cids)} models" if len(cids) > 1 else (cids[0] if cids else "unknown")
                 )
-                tf_lbl = "MULTI" if len(cids) > 1 else "NATIVE"
-                state = str(meta.get("status", "UNKNOWN"))
                 per_diag = meta.get("per_candidate_diagnostics", {})
-                resolved = sum(
-                    int(d.get("correct_outcomes", 0))
-                    + int(d.get("incorrect_outcomes", 0))
-                    + int(d.get("ties", 0))
+                tf_labels = [
+                    str(d.get("timeframe_label", ""))
+                    for d in per_diag.values()
+                    if d.get("timeframe_label")
+                ]
+                tf_lbl = (
+                    "/".join(tf_labels) if tf_labels else ("MULTI" if len(cids) > 1 else "NATIVE")
+                )
+                state = str(meta.get("status", "UNKNOWN"))
+                res_sel = sum(
+                    int(
+                        d.get(
+                            "resolved_selected_predictions",
+                            int(d.get("correct_outcomes", 0))
+                            + int(d.get("incorrect_outcomes", 0))
+                            + int(d.get("ties", 0)),
+                        )
+                    )
                     for d in per_diag.values()
                 )
+                res_abst = sum(
+                    int(d.get("resolved_abstention_outcomes", 0)) for d in per_diag.values()
+                )
+                resolved_lbl = f"S:{res_sel}/A:{res_abst}" if res_abst > 0 else str(res_sel)
                 acc_str = "Per-Model"
                 tree.insert(
                     "",
                     "end",
                     iid=sid,
-                    values=(sid, prov, tf_lbl, mid_str, state, resolved, acc_str),
+                    values=(sid, prov, tf_lbl, mid_str, state, resolved_lbl, acc_str),
                 )
                 continue
 

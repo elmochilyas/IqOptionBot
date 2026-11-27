@@ -86,6 +86,21 @@ class ParallelObservationConfig:
     simulated_duration_seconds: float | None = None
     max_candle_buffer: int = 256
     max_pending_per_candidate: int = 512
+    max_decision_delay_seconds: int = 30
+
+
+def _contiguous_tail_count(candles: deque[Candle] | list[Candle], tf_sec: int) -> int:
+    """Count contiguous trailing candles with exact timeframe spacing (matches Phase47)."""
+    n = len(candles)
+    if n == 0:
+        return 0
+    streak = 1
+    for idx in range(n - 1, 0, -1):
+        if (int(candles[idx].from_ts) - int(candles[idx - 1].from_ts)) == tf_sec:
+            streak += 1
+        else:
+            break
+    return streak
 
 
 @dataclass(slots=True)
@@ -104,10 +119,20 @@ class _CandidateState:
     outcomes_by_id: dict[str, dict[str, Any]]
     accuracy_series: list[float]
     failure_cases: list[dict[str, Any]]
+    seen_candle_digests: dict[int, str]
+    missing_candle_boundaries: set[int]
+    skipped_opportunity_reasons: dict[str, int]
     last_candle_close_ts: int | None = None
     last_candle_digest: str = ""
     warmup_bars_loaded: int = 0
     warmup_complete: bool = False
+    total_buffered_candles: int = 0
+    contiguous_candles: int = 0
+    contiguous_required: int = MIN_WARMUP_BARS_P47 + 1
+    feature_ready: bool = False
+    expected_candle_closures: int = 0
+    received_native_candles: int = 0
+    recovered_candles: int = 0
     candle_gaps: int = 0
     duplicate_candles_rejected: int = 0
     provenance_failures: int = 0
@@ -364,6 +389,10 @@ class ParallelObservationRuntime:
                 outcomes_by_id={},
                 accuracy_series=[],
                 failure_cases=[],
+                seen_candle_digests={},
+                missing_candle_boundaries=set(),
+                skipped_opportunity_reasons={},
+                contiguous_required=MIN_WARMUP_BARS_P47 + 1,
             )
 
         recent_predictions: deque[dict[str, Any]] = deque(maxlen=200)
@@ -459,8 +488,10 @@ class ParallelObservationRuntime:
                         if wc.is_complete:
                             st.candles.append(wc)
                             st.last_candle_close_ts = int(wc.to_ts)
-                    st.warmup_bars_loaded = len(st.candles)
-                    st.warmup_complete = st.warmup_bars_loaded >= MIN_WARMUP_BARS_P47
+                            w_dig = self._candle_digest(wc)
+                            st.last_candle_digest = w_dig
+                            st.seen_candle_digests[int(wc.to_ts)] = w_dig
+                    self._refresh_buffer_readiness(st)
 
             active_tfs = sorted({
                 st.timeframe_seconds for st in states.values() if st.disabled_reason is None
@@ -503,6 +534,7 @@ class ParallelObservationRuntime:
                         break
 
                 ev = await transport.next_event(timeout_seconds=0.5)
+                self._flush_transport_diagnostics(transport, ledger)
                 if self._cancel_event.is_set():
                     final_status = "CANCELLED"
                     stop_reason = "Operator cancelled observation session."
@@ -581,6 +613,8 @@ class ParallelObservationRuntime:
                     "clock_sync_status": ev.clock_sync_status,
                     "is_synthetic": ev.is_synthetic,
                     "received_at_utc": ev.received_at_utc,
+                    "is_recovered": ev.is_recovered,
+                    "recovered_at_utc": ev.recovered_at_utc,
                 })
 
                 # Re-check deadline AFTER awaiting event before permitting new predictions
@@ -633,8 +667,10 @@ class ParallelObservationRuntime:
                 stop_reason = f"Shared transport interrupted: {error_type}: {exc}"
             interruptions += 1
         finally:
+            self._flush_transport_diagnostics(transport, ledger)
             with contextlib.suppress(Exception):
                 await transport.disconnect()
+            self._flush_transport_diagnostics(transport, ledger)
 
         now_utc = datetime.now(UTC).isoformat()
         for st in states.values():
@@ -679,6 +715,15 @@ class ParallelObservationRuntime:
                 provenance_failures=st.provenance_failures,
                 model_failures=st.model_failures,
                 failure_case_details=st.failure_cases,
+                expected_candle_closures=st.expected_candle_closures,
+                received_native_candles=st.received_native_candles,
+                recovered_candles=st.recovered_candles,
+                missing_candle_boundaries=sorted(st.missing_candle_boundaries),
+                total_buffered_candles=st.total_buffered_candles,
+                contiguous_candles=st.contiguous_candles,
+                contiguous_required=st.contiguous_required,
+                feature_ready=st.feature_ready,
+                skipped_opportunity_reasons=st.skipped_opportunity_reasons,
             )
 
         if final_status == SessionLifecycleState.COMPLETED.value:
@@ -749,6 +794,74 @@ class ParallelObservationRuntime:
             observed_wallet_classification=observed_wallet_cls,
         )
 
+    @staticmethod
+    def _candle_digest(candle: Candle) -> str:
+        import json
+
+        payload = {
+            "symbol": candle.symbol,
+            "size": int(candle.size),
+            "from_ts": int(candle.from_ts),
+            "to_ts": int(candle.to_ts),
+            "at_ts": int(candle.at_ts),
+            "open": candle.open,
+            "high": candle.high,
+            "low": candle.low,
+            "close": candle.close,
+            "volume": candle.volume,
+            "is_complete": candle.is_complete,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _refresh_buffer_readiness(st: _CandidateState) -> None:
+        st.total_buffered_candles = len(st.candles)
+        st.contiguous_candles = _contiguous_tail_count(st.candles, st.timeframe_seconds)
+        st.feature_ready = st.contiguous_candles >= st.contiguous_required
+        st.warmup_bars_loaded = st.contiguous_candles
+        st.warmup_complete = st.feature_ready
+
+    @staticmethod
+    def _flush_transport_diagnostics(
+        transport: MultiTimeframeTransportProtocol,
+        ledger: Phase48SessionLedger,
+    ) -> None:
+        drain = getattr(transport, "drain_diagnostics", None)
+        if not callable(drain):
+            return
+        for item in drain():
+            if isinstance(item, dict):
+                ledger.append_diagnostic(item)
+
+    @staticmethod
+    def _record_skipped_opportunity(
+        st: _CandidateState,
+        ledger: Phase48SessionLedger,
+        *,
+        close_ts: int,
+        reason: str,
+        now_utc: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        st.skipped_opportunity_reasons[reason] = st.skipped_opportunity_reasons.get(reason, 0) + 1
+        diag_row: dict[str, Any] = {
+            "type": "OPPORTUNITY_SKIPPED",
+            "candidate_id": st.candidate_id,
+            "timeframe_seconds": st.timeframe_seconds,
+            "candle_close_ts": close_ts,
+            "reason": reason,
+            "total_buffered_candles": st.total_buffered_candles,
+            "contiguous_candles": st.contiguous_candles,
+            "contiguous_required": st.contiguous_required,
+            "feature_ready": st.feature_ready,
+            "at_utc": now_utc,
+        }
+        if extra:
+            diag_row.update(extra)
+        ledger.append_diagnostic(diag_row)
+
     def _process_candidate_candle(
         self,
         *,
@@ -762,31 +875,104 @@ class ParallelObservationRuntime:
         open_ts = int(candle.from_ts)
         close_ts = int(candle.to_ts)
         c_digest = ev.candle_digest()
+        now_dt = datetime.now(UTC)
+        now_utc = now_dt.isoformat()
 
-        # Duplicate / conflicting candle check
-        if st.last_candle_close_ts is not None:
-            if (
-                close_ts == st.last_candle_close_ts
-                and st.last_candle_digest
-                and c_digest != st.last_candle_digest
-            ):
+        # Duplicate / conflicting candle check across all buffered/seen boundaries
+        existing_digest = st.seen_candle_digests.get(close_ts)
+        if existing_digest is not None:
+            if c_digest != existing_digest:
                 raise ProvenanceError(
                     f"Conflicting candle payload for {st.candidate_id} at close_ts={close_ts}"
                 )
-            if close_ts <= st.last_candle_close_ts:
-                st.duplicate_candles_rejected += 1
+            st.duplicate_candles_rejected += 1
+            return
+
+        if st.last_candle_close_ts is not None and close_ts < st.last_candle_close_ts:
+            # Late/out-of-order recovered candle repairing an earlier missing boundary
+            if ev.is_recovered and close_ts in st.missing_candle_boundaries:
+                merged = sorted(
+                    [*list(st.candles), candle],
+                    key=lambda c: int(c.from_ts),
+                )
+                if len(merged) > self.config.max_candle_buffer:
+                    merged = merged[-self.config.max_candle_buffer :]
+                st.candles.clear()
+                st.candles.extend(merged)
+                st.missing_candle_boundaries.discard(close_ts)
+                st.seen_candle_digests[close_ts] = c_digest
+                while len(st.seen_candle_digests) > max(self.config.max_candle_buffer, 512):
+                    oldest_ts = next(iter(st.seen_candle_digests))
+                    del st.seen_candle_digests[oldest_ts]
+                st.recovered_candles += 1
+                self._refresh_buffer_readiness(st)
+                ledger.append_diagnostic({
+                    "type": "CANDLE_BUFFER_REPAIRED",
+                    "candidate_id": st.candidate_id,
+                    "timeframe_seconds": st.timeframe_seconds,
+                    "candle_open_ts": open_ts,
+                    "candle_close_ts": close_ts,
+                    "recovered_at_utc": ev.recovered_at_utc or now_utc,
+                    "contiguous_candles": st.contiguous_candles,
+                    "feature_ready": st.feature_ready,
+                    "at_utc": now_utc,
+                })
+                if allow_new_predictions:
+                    self._record_skipped_opportunity(
+                        st,
+                        ledger,
+                        close_ts=close_ts,
+                        reason="MISSED_DECISION_WINDOW",
+                        now_utc=now_utc,
+                        extra={
+                            "is_recovered": True,
+                            "recovered_at_utc": ev.recovered_at_utc or now_utc,
+                            "last_candle_close_ts": st.last_candle_close_ts,
+                        },
+                    )
                 return
+            st.duplicate_candles_rejected += 1
+            return
+
+        if st.last_candle_close_ts is not None:
+            step_bars = (close_ts - st.last_candle_close_ts) // st.timeframe_seconds
+            if allow_new_predictions and step_bars > 0:
+                st.expected_candle_closures += step_bars
             if (close_ts - st.last_candle_close_ts) > st.timeframe_seconds:
                 st.candle_gaps += 1
+                gap_boundaries = list(
+                    range(
+                        st.last_candle_close_ts + st.timeframe_seconds,
+                        close_ts,
+                        st.timeframe_seconds,
+                    )
+                )
+                for b_ts in gap_boundaries:
+                    st.missing_candle_boundaries.add(b_ts)
+                ledger.append_diagnostic({
+                    "type": "CANDLE_GAP_DETECTED",
+                    "candidate_id": st.candidate_id,
+                    "timeframe_seconds": st.timeframe_seconds,
+                    "previous_close_ts": st.last_candle_close_ts,
+                    "current_close_ts": close_ts,
+                    "missing_boundaries": gap_boundaries,
+                    "at_utc": now_utc,
+                })
+        elif allow_new_predictions:
+            st.expected_candle_closures += 1
 
         st.candles.append(candle)
         st.last_candle_close_ts = close_ts
         st.last_candle_digest = c_digest
-        st.warmup_bars_loaded = len(st.candles)
-        st.warmup_complete = st.warmup_bars_loaded >= MIN_WARMUP_BARS_P47
-
-        now_dt = datetime.now(UTC)
-        now_utc = now_dt.isoformat()
+        st.seen_candle_digests[close_ts] = c_digest
+        while len(st.seen_candle_digests) > max(self.config.max_candle_buffer, 512):
+            oldest_ts = next(iter(st.seen_candle_digests))
+            del st.seen_candle_digests[oldest_ts]
+        if ev.is_recovered:
+            st.recovered_candles += 1
+        else:
+            st.received_native_candles += 1
+        self._refresh_buffer_readiness(st)
 
         # 1. Resolve matured pending predictions at close_ts == maturity_timestamp
         for rid, pend in list(st.pending.items()):
@@ -858,10 +1044,31 @@ class ParallelObservationRuntime:
                 if wins + losses > 0:
                     st.accuracy_series.append(wins / (wins + losses))
 
-        # 2. Generate new prediction only if within decision window & warmed up
-        if not allow_new_predictions or not st.warmup_complete:
+        # 2. Generate new prediction only if within decision window & causally feature-ready
+        if not allow_new_predictions:
+            return
+        if not st.feature_ready:
+            skip_reason = (
+                "WARMUP_CONTIGUITY_GAP"
+                if st.total_buffered_candles >= st.contiguous_required
+                else "INSUFFICIENT_WARMUP_BARS"
+            )
+            self._record_skipped_opportunity(
+                st,
+                ledger,
+                close_ts=close_ts,
+                reason=skip_reason,
+                now_utc=now_utc,
+            )
             return
         if len(st.pending) >= self.config.max_pending_per_candidate:
+            self._record_skipped_opportunity(
+                st,
+                ledger,
+                close_ts=close_ts,
+                reason="MAX_PENDING_REACHED",
+                now_utc=now_utc,
+            )
             return
 
         mat_ts = close_ts + (st.horizon_bars * st.timeframe_seconds)
@@ -881,30 +1088,74 @@ class ParallelObservationRuntime:
                 "maturity_timestamp": mat_ts,
                 "at_utc": now_utc,
             })
+            self._record_skipped_opportunity(
+                st,
+                ledger,
+                close_ts=close_ts,
+                reason="EXCEEDED_MATURITY_WINDOW",
+                now_utc=now_utc,
+                extra={
+                    "verified_commit_ts": verified_commit_ts,
+                    "maturity_timestamp": mat_ts,
+                },
+            )
+            return
+
+        permitted_delay = min(self.config.max_decision_delay_seconds, st.timeframe_seconds)
+        if (verified_commit_ts - close_ts) > permitted_delay:
+            self._record_skipped_opportunity(
+                st,
+                ledger,
+                close_ts=close_ts,
+                reason="MISSED_DECISION_WINDOW",
+                now_utc=now_utc,
+                extra={
+                    "verified_commit_ts": verified_commit_ts,
+                    "permitted_deadline_ts": close_ts + permitted_delay,
+                    "is_recovered": ev.is_recovered,
+                    "recovered_at_utc": ev.recovered_at_utc,
+                },
+            )
             return
 
         try:
             candle_list = list(st.candles)
             feat_mat = st.pipeline.compute_features(candle_list)
             if feat_mat.warmup_mask[-1]:
+                self._record_skipped_opportunity(
+                    st,
+                    ledger,
+                    close_ts=close_ts,
+                    reason="PIPELINE_WARMUP_MASK",
+                    now_utc=now_utc,
+                )
                 return
             x_row = np.asarray(feat_mat.features[-1:], dtype=np.float64)
             feat_digest = hashlib.sha256(x_row.tobytes()).hexdigest()
 
             x_scaled = np.asarray(st.bundle.scaler.transform(x_row), dtype=np.float64)
             p_raw = np.asarray(st.bundle.model.predict_proba(x_scaled), dtype=np.float64)
+            raw_p_up = float(p_raw[0, 1])
             p_cal = np.asarray(st.bundle.calibrator.calibrate(p_raw), dtype=np.float64)
             p_up = float(p_cal[0, 1])
             p_down = float(1.0 - p_up)
             conf = max(p_up, p_down)
-            tau = st.bundle.manifest.frozen_confidence_threshold
+            tau = float(st.bundle.manifest.frozen_confidence_threshold)
+            margin = conf - tau
 
             if conf >= tau:
                 decision = "UP" if p_up >= 0.5 else "DOWN"
+                decision_reason = (
+                    f"Selected {decision}: confidence {conf:.8f} >= frozen threshold "
+                    f"{tau:.8f} (margin {margin:+.3e})"
+                )
                 abstain_reason = ""
             else:
                 decision = "ABSTAIN"
-                abstain_reason = f"Confidence {conf:.4f} < frozen threshold {tau:.4f}"
+                decision_reason = (
+                    f"Confidence {conf:.8f} < frozen threshold {tau:.8f} (margin {margin:+.3e})"
+                )
+                abstain_reason = decision_reason
 
             pred_utc = datetime.now(UTC).isoformat()
             rid = f"{st.candidate_id}_{close_ts}_{uuid.uuid4().hex[:8]}"
@@ -923,8 +1174,8 @@ class ParallelObservationRuntime:
                 feature_digest=feat_digest,
                 reference_candle_price=candle.close,
                 reference_candle_digest=c_digest,
-                prob_up=round(p_up, 6),
-                prob_down=round(p_down, 6),
+                prob_up=p_up,
+                prob_down=p_down,
                 confidence_threshold=tau,
                 decision=decision,
                 abstention_reason=abstain_reason,
@@ -933,6 +1184,10 @@ class ParallelObservationRuntime:
                 predicted_at_utc=pred_utc,
                 committed_at_ts=verified_commit_ts,
                 committed_at_utc=pred_utc,
+                raw_prob_up=raw_p_up,
+                confidence=conf,
+                confidence_margin=margin,
+                decision_reason=decision_reason,
             ).sealed()
 
             ledger.append_prediction(comm)
@@ -979,16 +1234,43 @@ class ParallelObservationRuntime:
             )
             decisive = wins + losses
             sel = sum(1 for p in st.predictions if p["decision"] in ("UP", "DOWN"))
+            abst = len(st.predictions) - sel
+            res_abst = sum(
+                1
+                for o in st.outcomes_by_id.values()
+                if str(o.get("resolution_status", "")) == "RESOLVED"
+                and str(o.get("classification", "")) == "ABSTAIN"
+            )
+            res_sel = sum(
+                1
+                for o in st.outcomes_by_id.values()
+                if str(o.get("resolution_status", "")) == "RESOLVED"
+                and str(o.get("classification", "")) in ("CORRECT", "INCORRECT", "TIE")
+            )
             per_cand[cid] = {
                 "timeframe_label": st.bundle.manifest.timeframe_label,
                 "horizon_bars": st.horizon_bars,
-                "warmup_bars_loaded": st.warmup_bars_loaded,
-                "warmup_required": MIN_WARMUP_BARS_P47,
-                "warmup_complete": st.warmup_complete,
+                "warmup_bars_loaded": st.contiguous_candles,
+                "warmup_required": st.contiguous_required,
+                "warmup_complete": st.feature_ready,
+                "total_buffered_candles": st.total_buffered_candles,
+                "contiguous_candles": st.contiguous_candles,
+                "contiguous_required": st.contiguous_required,
+                "feature_ready": st.feature_ready,
+                "expected_candle_closures": st.expected_candle_closures,
+                "received_native_candles": st.received_native_candles,
+                "recovered_candles": st.recovered_candles,
+                "missing_candles": len(st.missing_candle_boundaries),
+                "missing_candle_boundaries": sorted(st.missing_candle_boundaries),
+                "skipped_opportunities": sum(st.skipped_opportunity_reasons.values()),
+                "skipped_opportunity_reasons": dict(st.skipped_opportunity_reasons),
                 "opportunities": len(st.predictions),
                 "selected": sel,
+                "abstentions": abst,
                 "pending": len(st.pending),
                 "resolved": decisive,
+                "resolved_selected": res_sel,
+                "resolved_abstentions": res_abst,
                 "correct": wins,
                 "incorrect": losses,
                 "accuracy": (wins / decisive) if decisive > 0 else None,

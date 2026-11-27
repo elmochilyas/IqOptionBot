@@ -159,6 +159,8 @@ class IQOptionWebSocketClient:
 
         self._pending: dict[str, _PendingRequest] = {}
         self._subscriptions: dict[SubscriptionKey, asyncio.Queue[Any]] = {}
+        self._dropped_candle_frames: dict[tuple[int, int], int] = {}
+        self._invalid_candle_routing_frames: int = 0
 
         self._profile: Profile | None = None
         self._balances: list[Balance] = []
@@ -853,6 +855,16 @@ class IQOptionWebSocketClient:
     def unsubscribe_candles(self, active_id: int, size: int) -> None:
         self._subscriptions.pop((MSG_CANDLE_GENERATED, active_id, size), None)
 
+    def candle_queue_stats(self) -> dict[str, Any]:
+        """Return sanitized stream queue drop and routing telemetry."""
+        return {
+            "dropped_by_stream": {
+                f"{aid}:{sz}": cnt for (aid, sz), cnt in sorted(self._dropped_candle_frames.items())
+            },
+            "total_dropped_frames": sum(self._dropped_candle_frames.values()),
+            "invalid_routing_frames": self._invalid_candle_routing_frames,
+        }
+
     async def wait_for_profile(self, timeout: float = 10.0) -> Profile:
         await asyncio.wait_for(self._profile_event.wait(), timeout=timeout)
         if self._profile is None:  # pragma: no cover - guarded by event
@@ -1170,9 +1182,26 @@ class IQOptionWebSocketClient:
                         try:
                             queue.put_nowait(payload)
                         except asyncio.QueueFull:
-                            logger.warning(
-                                "Candle queue full (active_id=%s size=%s)", active_id, size
+                            key = (active_id, size)
+                            self._dropped_candle_frames[key] = (
+                                self._dropped_candle_frames.get(key, 0) + 1
                             )
+                            logger.warning(
+                                "Candle queue full (active_id=%s size=%s dropped=%s)",
+                                active_id,
+                                size,
+                                self._dropped_candle_frames[key],
+                            )
+                else:
+                    self._invalid_candle_routing_frames += 1
+                    self._diagnostics.record_parsing_failure(
+                        MSG_CANDLE_GENERATED, "InvalidRoutingActiveOrSize"
+                    )
+            else:
+                self._invalid_candle_routing_frames += 1
+                self._diagnostics.record_parsing_failure(
+                    MSG_CANDLE_GENERATED, "MalformedCandleGeneratedEnvelope"
+                )
             return
 
         if not handled:

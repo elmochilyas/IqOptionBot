@@ -61,9 +61,13 @@ class PredictionCommitmentRecord:
     committed_at_ts: int
     committed_at_utc: str
     commitment_digest: str = ""
+    raw_prob_up: float | None = None
+    confidence: float | None = None
+    confidence_margin: float | None = None
+    decision_reason: str | None = None
 
     def commitment_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "record_id": self.record_id,
             "session_id": self.session_id,
             "candidate_id": self.candidate_id,
@@ -89,6 +93,15 @@ class PredictionCommitmentRecord:
             "committed_at_ts": self.committed_at_ts,
             "committed_at_utc": self.committed_at_utc,
         }
+        if self.raw_prob_up is not None:
+            payload["raw_prob_up"] = self.raw_prob_up
+        if self.confidence is not None:
+            payload["confidence"] = self.confidence
+        if self.confidence_margin is not None:
+            payload["confidence_margin"] = self.confidence_margin
+        if self.decision_reason is not None:
+            payload["decision_reason"] = self.decision_reason
+        return payload
 
     def sealed(self) -> PredictionCommitmentRecord:
         digest = _canonical_sha256(self.commitment_payload())
@@ -276,6 +289,33 @@ def verify_phase48_session_integrity(session_dir: Path) -> tuple[bool, list[str]
             errors.append(f"Evidence classification mismatch at row {idx} ({rec.record_id})")
         if not rec.feature_digest or not rec.reference_candle_digest:
             errors.append(f"Missing feature/reference digest at row {idx} ({rec.record_id})")
+        if rec.decision not in ("UP", "DOWN", "ABSTAIN"):
+            errors.append(f"Invalid decision {rec.decision!r} at row {idx} ({rec.record_id})")
+        if rec.confidence is not None:
+            if abs((rec.prob_up + rec.prob_down) - 1.0) > 1e-12:
+                errors.append(
+                    f"Probability sum mismatch at row {idx} ({rec.record_id}): "
+                    f"{rec.prob_up + rec.prob_down}"
+                )
+            exp_conf = max(rec.prob_up, rec.prob_down)
+            if abs(rec.confidence - exp_conf) > 1e-12:
+                errors.append(f"Confidence value mismatch at row {idx} ({rec.record_id})")
+            if (
+                rec.confidence_margin is not None
+                and abs(rec.confidence_margin - (rec.confidence - rec.confidence_threshold)) > 1e-12
+            ):
+                errors.append(f"Confidence margin mismatch at row {idx} ({rec.record_id})")
+            if rec.confidence >= rec.confidence_threshold:
+                exp_dec = "UP" if rec.prob_up >= 0.5 else "DOWN"
+            else:
+                exp_dec = "ABSTAIN"
+            if rec.decision != exp_dec:
+                errors.append(
+                    f"Decision/probability mismatch at row {idx} ({rec.record_id}): "
+                    f"decision={rec.decision}, expected={exp_dec}"
+                )
+        elif abs((rec.prob_up + rec.prob_down) - 1.0) > 1e-5:
+            errors.append(f"Legacy probability sum mismatch at row {idx} ({rec.record_id})")
         pred_by_id[rec.record_id] = rec
 
     outcomes = _read_jsonl(session_dir / "outcomes.jsonl")

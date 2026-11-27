@@ -480,3 +480,196 @@ def test_observation_center_displays_wallet_independent_mode_and_unverified_wall
         assert "account_selection_unverified" in status_txt
     finally:
         panel.observation_center.shutdown()
+
+
+def test_phase49_4_genuine_mode_dashboard_fixes_history_sorting_and_diagnostics(
+    tmp_path: Path, obs_tk_root: tk.Tk
+) -> None:
+    """Verify genuine UI hides legacy zero widgets, sorts newest first, shows full diagnostics & readiness."""
+    import json
+
+    sessions_dir = tmp_path / "data" / "phase48" / "sessions"
+    older_dir = sessions_dir / "p48_synth_20261126_120000"
+    newer_gen_dir = sessions_dir / "p48_gen_20261127_084604"
+    older_dir.mkdir(parents=True)
+    newer_gen_dir.mkdir(parents=True)
+
+    (older_dir / "session.json").write_text(
+        json.dumps({
+            "session_id": "p48_synth_20261126_120000",
+            "schema_version": "phase48.1",
+            "is_genuine_mode": False,
+            "started_at_utc": "2026-11-26T12:00:00+00:00",
+            "candidate_ids": ["p48_exp_cand_a_m1_h15_hgb_v1"],
+            "status": "COMPLETED",
+            "per_candidate_diagnostics": {
+                "p48_exp_cand_a_m1_h15_hgb_v1": {
+                    "timeframe_label": "M1",
+                    "correct_outcomes": 1,
+                    "incorrect_outcomes": 0,
+                    "ties": 0,
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+    (newer_gen_dir / "session.json").write_text(
+        json.dumps({
+            "session_id": "p48_gen_20261127_084604",
+            "schema_version": "phase49.2",
+            "is_genuine_mode": True,
+            "started_at_utc": "2026-11-27T08:46:05+00:00",
+            "candidate_ids": [
+                "p48_exp_cand_a_m1_h15_hgb_v1",
+                "p48_exp_cand_b_m5_h6_hgb_v1",
+                "p48_exp_cand_c_m15_h4_hgb_v1",
+            ],
+            "status": "COMPLETED",
+            "per_candidate_diagnostics": {
+                "p48_exp_cand_a_m1_h15_hgb_v1": {
+                    "timeframe_label": "M1",
+                    "resolved_selected_predictions": 0,
+                    "resolved_abstention_outcomes": 2,
+                },
+                "p48_exp_cand_b_m5_h6_hgb_v1": {
+                    "timeframe_label": "M5",
+                    "resolved_selected_predictions": 0,
+                    "resolved_abstention_outcomes": 1,
+                },
+                "p48_exp_cand_c_m15_h4_hgb_v1": {
+                    "timeframe_label": "M15",
+                    "resolved_selected_predictions": 0,
+                    "resolved_abstention_outcomes": 0,
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    root_tk = obs_tk_root
+    root_tk.geometry("1280x720")
+    nb = ttk.Notebook(root_tk)
+    nb.pack(fill="both", expand=True)
+    dash = _DummyDashboard(root_tk, tmp_path)
+    panel = ShadowEvaluationPanel(dash, nb)  # type: ignore[arg-type]
+    try:
+        ctrl = panel.observation_center
+
+        # 1. History includes genuine session sorted newest-first
+        hist_iids = list(panel.obs_history_tree.get_children())
+        assert hist_iids[0] == "p48_gen_20261127_084604"
+        assert hist_iids[1] == "p48_synth_20261126_120000"
+        gen_vals = panel.obs_history_tree.item("p48_gen_20261127_084604")["values"]
+        assert gen_vals[1] == "GENUINE_EXPLORATORY"
+        assert gen_vals[2] == "M1/M5/M15"
+        assert gen_vals[6] == "Per-Model"
+
+        # 2. Switch to genuine exploratory mode -> legacy zero section hidden, offline headers replaced
+        panel.var_obs_mode.set("exploratory_genuine")
+        ctrl.on_mode_changed()
+        _PumpTk(root_tk)
+
+        assert ctrl._legacy_kpi_grid is not None and not ctrl._legacy_kpi_grid.winfo_ismapped()
+        assert ctrl._legacy_tree_box is not None and not ctrl._legacy_tree_box.winfo_ismapped()
+        assert not panel.lbl_obs_kpis.winfo_ismapped()
+        assert not panel.lbl_obs_payout.winfo_ismapped()
+        assert "OFFLINE RESEARCH ONLY" not in str(panel.warning_label.cget("text"))
+        assert "Genuine Read-Only" in str(panel.header_title_label.cget("text"))
+
+        # Chart title in genuine mode must NOT be "Cumulative Accuracy (Synthetic)"
+        chart_texts = [
+            panel.obs_chart_canvas.itemcget(cid_item, "text")
+            for cid_item in panel.obs_chart_canvas.find_all()
+            if panel.obs_chart_canvas.type(cid_item) == "text"
+        ]
+        assert any("Genuine Exploratory" in t for t in chart_texts)
+        assert not any("Cumulative Accuracy (Synthetic)" in t for t in chart_texts)
+
+        # 3. Prediction filter defaults to ALL and displays abstentions with full-precision margin
+        assert ctrl.p48_filter_status is not None and ctrl.p48_filter_status.get() == "ALL"
+        from iqoption_research.phase48.runtime import ParallelObservationProgress
+
+        prog = ParallelObservationProgress(
+            session_id="p49_ui_test",
+            status="RUNNING",
+            is_genuine_mode=True,
+            evidence_classification="EXPLORATORY_PROSPECTIVE_ONLY",
+            elapsed_seconds=120.0,
+            remaining_seconds=780.0,
+            in_outcome_drain=False,
+            per_candidate={
+                "p48_exp_cand_a_m1_h15_hgb_v1": {
+                    "timeframe_label": "M1",
+                    "horizon_bars": 15,
+                    "warmup_bars_loaded": 2,
+                    "warmup_required": 61,
+                    "warmup_complete": False,
+                    "total_buffered_candles": 80,
+                    "contiguous_candles": 2,
+                    "contiguous_required": 61,
+                    "feature_ready": False,
+                    "missing_candles": 1,
+                    "recovered_candles": 1,
+                    "skipped_opportunities": 2,
+                    "opportunities": 1,
+                    "selected": 0,
+                    "abstentions": 1,
+                    "pending": 0,
+                    "resolved": 0,
+                    "resolved_selected": 0,
+                    "resolved_abstentions": 1,
+                    "correct": 0,
+                    "incorrect": 0,
+                    "accuracy": None,
+                    "accuracy_series": [],
+                }
+            },
+            recent_predictions=[
+                {
+                    "record_id": "rec_1",
+                    "candidate_id": "p48_exp_cand_a_m1_h15_hgb_v1",
+                    "timeframe_seconds": 60,
+                    "horizon_bars": 15,
+                    "decision_timestamp": 1795769220,
+                    "maturity_timestamp": 1795770120,
+                    "decision": "ABSTAIN",
+                    "raw_prob_up": 0.45123456,
+                    "prob_up": 0.4845261121856865,
+                    "prob_down": 0.5154738878143135,
+                    "confidence": 0.5154738878143135,
+                    "confidence_threshold": 0.515474,
+                    "confidence_margin": -1.1218568651827354e-7,
+                    "decision_reason": "Confidence 0.51547389 < frozen threshold 0.51547400 (margin -1.122e-07)",
+                    "feature_digest": "040e8697ed9670df926330617fa308ea",
+                }
+            ],
+            recent_outcomes={
+                "rec_1": {
+                    "resolution_status": "RESOLVED",
+                    "actual_direction": "DOWN",
+                    "classification": "ABSTAIN",
+                }
+            },
+        )
+        ctrl._apply_p48_progress(ctrl._generation_id, prog)
+        _PumpTk(root_tk)
+
+        card_txt = str(ctrl._p48_kpi_labels["p48_exp_cand_a_m1_h15_hgb_v1"].cget("text"))
+        assert "Contig: 2/61 (Buf:80) | Ready: NO" in card_txt
+        assert "Miss: 1 | Recov: 1 | Skip: 2" in card_txt
+        assert "Res(S/A): 0/1" in card_txt
+
+        pred_rows = [
+            ctrl.p48_pred_tree.item(i)["values"] for i in ctrl.p48_pred_tree.get_children()
+        ]
+        assert len(pred_rows) == 1
+        assert pred_rows[0][4] == "ABSTAIN"
+        assert "0.515474" in str(pred_rows[0][5])
+        assert "-1.12e-07" in str(pred_rows[0][5])
+        assert ctrl.lbl_p48_decision_detail is not None
+        detail_txt = str(ctrl.lbl_p48_decision_detail.cget("text"))
+        assert "0.51547389" in detail_txt
+        assert "-1.122e-07" in detail_txt
+        assert "040e8697ed96" in detail_txt
+    finally:
+        panel.observation_center.shutdown()

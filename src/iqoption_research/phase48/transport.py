@@ -13,6 +13,7 @@ import contextlib
 import hashlib
 import json
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -89,6 +90,8 @@ class MarketFeedEvent:
     is_synthetic: bool
     verified_server_time_ns: int | None = None
     clock_sync_status: str = "UNKNOWN"
+    is_recovered: bool = False
+    recovered_at_utc: str | None = None
 
     def candle_digest(self) -> str:
         """Compute deterministic SHA-256 of the closed candle OHLCV + boundaries."""
@@ -185,6 +188,13 @@ class IQOptionReadOnlyMultiTransport:
         authorization_mode: ObservationAuthorizationMode
         | str = ObservationAuthorizationMode.PRACTICE_VERIFIED_REQUIRED,
         client_override: ReadOnlyBrokerClientProtocol | None = None,
+        reconcile_missing_candles: bool = True,
+        reconcile_grace_seconds: float = 3.0,
+        reconcile_cooldown_seconds: float = 5.0,
+        reconcile_min_global_interval_seconds: float = 0.5,
+        max_reconcile_bars: int = 120,
+        max_reconcile_attempts_per_boundary: int = 3,
+        watchdog_poll_seconds: float = 0.5,
     ) -> None:
         if symbol != ALLOWED_ASSET or ALLOW_OTC_ASSETS:
             raise ValueError("Phase 48 genuine transport only permits EURUSD regular market.")
@@ -213,6 +223,16 @@ class IQOptionReadOnlyMultiTransport:
         self._max_data_age_seconds = max(30, int(max_data_age_seconds))
         self._authorization_mode = mode
         self._require_practice_account = eff_req
+        self._reconcile_missing_candles = bool(reconcile_missing_candles)
+        self._reconcile_grace_seconds = max(0.5, float(reconcile_grace_seconds))
+        self._reconcile_cooldown_seconds = max(0.2, float(reconcile_cooldown_seconds))
+        self._reconcile_min_global_interval_seconds = max(
+            0.0, float(reconcile_min_global_interval_seconds)
+        )
+        self._max_reconcile_bars = max(2, min(1000, int(max_reconcile_bars)))
+        self._max_reconcile_attempts_per_boundary = max(1, int(max_reconcile_attempts_per_boundary))
+        self._watchdog_poll_seconds = max(0.05, float(watchdog_poll_seconds))
+
         self._client: ReadOnlyBrokerClientProtocol
         if client_override is not None:
             self._client = client_override
@@ -240,6 +260,16 @@ class IQOptionReadOnlyMultiTransport:
         now_m = time.monotonic()
         self._last_heartbeat_mono = now_m
         self._last_heartbeat_by_tf: dict[int, float] = dict.fromkeys(self._timeframes, now_m)
+        self._last_closed_to_ts: dict[int, int] = {}
+        self._seen_candle_digests: dict[int, dict[int, str]] = {tf: {} for tf in self._timeframes}
+        self._reconcile_last_attempt_mono: dict[int, float] = {}
+        self._reconcile_boundary_attempts: dict[tuple[int, int], int] = {}
+        self._last_global_reconcile_mono: float = 0.0
+        self._reconcile_lock = asyncio.Lock()
+        self._diagnostic_events: deque[dict[str, Any]] = deque(maxlen=1000)
+        self._last_reported_dropped_frames: int = 0
+        self._last_reported_invalid_routing: int = 0
+        self._last_reported_malformed_counts: dict[int, int] = {}
 
     @property
     def is_connected(self) -> bool:
@@ -351,6 +381,321 @@ class IQOptionReadOnlyMultiTransport:
             self._last_heartbeat_by_tf[tf] = now_m
             task = asyncio.create_task(self._pump_timeframe(tf), name=f"p48_stream_{tf}")
             self._stream_tasks.append(task)
+        if self._reconcile_missing_candles:
+            wd_task = asyncio.create_task(self._reconcile_watchdog(), name="p48_reconcile_watchdog")
+            self._stream_tasks.append(wd_task)
+
+    def drain_diagnostics(self) -> list[dict[str, Any]]:
+        """Drain pending transport diagnostic events for session ledger logging."""
+        self._poll_client_telemetry()
+        out: list[dict[str, Any]] = []
+        while self._diagnostic_events:
+            out.append(self._diagnostic_events.popleft())
+        return out
+
+    def _poll_client_telemetry(self) -> None:
+        fn = getattr(self._client, "stream_candle_telemetry", None)
+        if not callable(fn):
+            return
+        try:
+            tele = fn()
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(tele, dict):
+            return
+        now_utc = datetime.now(UTC).isoformat()
+        malformed = tele.get("malformed_counts_by_tf", {}) or {}
+        reasons = tele.get("last_malformed_reason_by_tf", {}) or {}
+        for tf_k, count_v in malformed.items():
+            tf_int = int(tf_k)
+            prev = self._last_reported_malformed_counts.get(tf_int, 0)
+            if int(count_v) > prev:
+                self._last_reported_malformed_counts[tf_int] = int(count_v)
+                self._diagnostic_events.append({
+                    "type": "STREAM_MALFORMED_CANDLE",
+                    "timeframe_seconds": tf_int,
+                    "delta_count": int(count_v) - prev,
+                    "total_count": int(count_v),
+                    "last_reason": str(reasons.get(tf_k, "")),
+                    "at_utc": now_utc,
+                })
+        q_stats = tele.get("queue_stats", {}) or {}
+        tot_drop = int(q_stats.get("total_dropped_frames", 0))
+        if tot_drop > self._last_reported_dropped_frames:
+            delta = tot_drop - self._last_reported_dropped_frames
+            self._last_reported_dropped_frames = tot_drop
+            self._diagnostic_events.append({
+                "type": "STREAM_QUEUE_DROPPED",
+                "delta_count": delta,
+                "total_dropped_frames": tot_drop,
+                "dropped_by_stream": dict(q_stats.get("dropped_by_stream", {}) or {}),
+                "at_utc": now_utc,
+            })
+        inv_routing = int(q_stats.get("invalid_routing_frames", 0))
+        if inv_routing > self._last_reported_invalid_routing:
+            delta = inv_routing - self._last_reported_invalid_routing
+            self._last_reported_invalid_routing = inv_routing
+            self._diagnostic_events.append({
+                "type": "STREAM_INVALID_ROUTING",
+                "delta_count": delta,
+                "total_invalid_routing": inv_routing,
+                "at_utc": now_utc,
+            })
+
+    @staticmethod
+    def _candle_digest_for(candle: Candle) -> str:
+        payload = {
+            "symbol": candle.symbol,
+            "size": int(candle.size),
+            "from_ts": int(candle.from_ts),
+            "to_ts": int(candle.to_ts),
+            "at_ts": int(candle.at_ts),
+            "open": candle.open,
+            "high": candle.high,
+            "low": candle.low,
+            "close": candle.close,
+            "volume": candle.volume,
+            "is_complete": candle.is_complete,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    def _record_candle_seen_or_raise(self, tf: int, ev: MarketFeedEvent) -> bool:
+        """Register candle digest; return False on exact duplicate, raise on conflict."""
+        seen = self._seen_candle_digests.setdefault(tf, {})
+        close_ts = int(ev.candle.to_ts)
+        digest = ev.candle_digest()
+        existing = seen.get(close_ts)
+        if existing is not None:
+            if existing != digest:
+                self._diagnostic_events.append({
+                    "type": "CANDLE_CONFLICT_DETECTED",
+                    "timeframe_seconds": tf,
+                    "candle_close_ts": close_ts,
+                    "existing_digest": existing,
+                    "new_digest": digest,
+                    "source_provenance": ev.source_provenance,
+                    "at_utc": datetime.now(UTC).isoformat(),
+                })
+                raise ProvenanceError(
+                    f"Conflicting candle payload for {tf}s at close_ts={close_ts}"
+                )
+            return False
+        seen[close_ts] = digest
+        while len(seen) > 512:
+            oldest = next(iter(seen))
+            del seen[oldest]
+        last_ts = self._last_closed_to_ts.get(tf)
+        if last_ts is None or close_ts > last_ts:
+            self._last_closed_to_ts[tf] = close_ts
+        return True
+
+    async def _enqueue_event(self, item: MarketFeedEvent | Exception) -> None:
+        try:
+            self._queue.put_nowait(item)
+        except asyncio.QueueFull:
+            self._diagnostic_events.append({
+                "type": "TRANSPORT_QUEUE_OVERFLOW",
+                "at_utc": datetime.now(UTC).isoformat(),
+            })
+            await self._queue.put(item)
+
+    async def _reconcile_timeframe(
+        self, tf: int, target_close_ts: int, *, trigger: str
+    ) -> list[MarketFeedEvent]:
+        """Fetch bounded, rate-limited native broker history for missing closed candles."""
+        if not self._connected or not self._reconcile_missing_candles:
+            return []
+        async with self._reconcile_lock:
+            if not self._connected:
+                return []
+            clock_fresh, server_ns, sync_status, step_detected = self._read_clock_state()
+            if not clock_fresh or server_ns is None or step_detected:
+                return []
+            server_sec = int(server_ns // 1_000_000_000)
+            last_ts = self._last_closed_to_ts.get(tf)
+            if last_ts is None:
+                return []
+            next_expected = last_ts + tf
+            capped_target = min(int(target_close_ts), (server_sec // tf) * tf)
+            if capped_target < next_expected:
+                return []
+
+            seen = self._seen_candle_digests.setdefault(tf, {})
+            missing = [ts for ts in range(next_expected, capped_target + 1, tf) if ts not in seen]
+            eligible = [
+                ts
+                for ts in missing
+                if self._reconcile_boundary_attempts.get((tf, ts), 0)
+                < self._max_reconcile_attempts_per_boundary
+            ]
+            if not eligible:
+                return []
+
+            now_m = time.monotonic()
+            last_tf_m = self._reconcile_last_attempt_mono.get(tf, 0.0)
+            if last_tf_m > 0.0 and (now_m - last_tf_m) < self._reconcile_cooldown_seconds:
+                return []
+
+            if self._last_global_reconcile_mono > 0.0:
+                since_global = now_m - self._last_global_reconcile_mono
+                if since_global < self._reconcile_min_global_interval_seconds:
+                    await asyncio.sleep(self._reconcile_min_global_interval_seconds - since_global)
+
+            bars_needed = min(self._max_reconcile_bars, ((capped_target - last_ts) // tf) + 2)
+            req_id = ""
+            try:
+                res = await self._client.get_candles(
+                    self._symbol, tf, bars_needed, endtime=server_sec
+                )
+                req_id = res.request_id or ""
+            except Exception as exc:  # noqa: BLE001
+                now_after = time.monotonic()
+                self._reconcile_last_attempt_mono[tf] = now_after
+                self._last_global_reconcile_mono = now_after
+                for ts in eligible:
+                    self._reconcile_boundary_attempts[tf, ts] = (
+                        self._reconcile_boundary_attempts.get((tf, ts), 0) + 1
+                    )
+                self._diagnostic_events.append({
+                    "type": "RECONCILIATION_ERROR",
+                    "timeframe_seconds": tf,
+                    "trigger": trigger,
+                    "boundaries": eligible,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "at_utc": datetime.now(UTC).isoformat(),
+                })
+                return []
+
+            now_after = time.monotonic()
+            self._reconcile_last_attempt_mono[tf] = now_after
+            self._last_global_reconcile_mono = now_after
+            for ts in eligible:
+                self._reconcile_boundary_attempts[tf, ts] = (
+                    self._reconcile_boundary_attempts.get((tf, ts), 0) + 1
+                )
+
+            res_clock = getattr(res, "clock_diagnostics", None)
+            if (
+                not res.server_time_fresh
+                or res.completion_clock_ns is None
+                or (res_clock is not None and (not res_clock.is_fresh or res_clock.step_detected))
+            ):
+                raise ProvenanceError(
+                    f"Server time not fresh during {tf}s historical reconciliation"
+                )
+            if res.errors:
+                raise ProvenanceError(
+                    f"Reconciliation normalization errors for {tf}s: {res.errors[0]}"
+                )
+
+            res_server_ns = int(res.completion_clock_ns)
+            res_server_sec = int(res_server_ns // 1_000_000_000)
+            res_sync_status = res_clock.status.value if res_clock is not None else sync_status
+            rec_utc = datetime.now(UTC).isoformat()
+            eligible_set = set(eligible)
+
+            candidates: list[Candle] = []
+            for c in res.candles:
+                if not c.is_complete:
+                    continue
+                if c.symbol != self._symbol or int(c.size) != tf:
+                    raise ProvenanceError(
+                        f"Mismatched reconciled candle symbol/size: {c.symbol}/{c.size}"
+                    )
+                if c.from_ts % tf != 0 or c.to_ts != c.from_ts + tf:
+                    raise ProvenanceError(
+                        f"Unaligned reconciled candle boundaries: {c.from_ts}..{c.to_ts}"
+                    )
+                if int(c.to_ts) > res_server_sec:
+                    continue
+                if int(c.to_ts) in eligible_set:
+                    candidates.append(c)
+
+            candidates.sort(key=lambda x: int(x.from_ts))
+            self._diagnostic_events.append({
+                "type": "RECONCILIATION_ATTEMPT",
+                "timeframe_seconds": tf,
+                "trigger": trigger,
+                "request_id": req_id,
+                "requested_boundaries": eligible,
+                "returned_count": len(candidates),
+                "at_utc": rec_utc,
+            })
+
+            emitted: list[MarketFeedEvent] = []
+            recovered_ts_set: set[int] = set()
+            for c in candidates:
+                ev = MarketFeedEvent(
+                    candle=c,
+                    timeframe_seconds=tf,
+                    received_at_utc=rec_utc,
+                    received_mono=now_after,
+                    request_id=req_id,
+                    source_provenance=f"historical_reconciliation:{c.provenance}:{c.identity_provenance}",
+                    server_time_fresh=True,
+                    is_synthetic=False,
+                    verified_server_time_ns=res_server_ns,
+                    clock_sync_status=res_sync_status,
+                    is_recovered=True,
+                    recovered_at_utc=rec_utc,
+                )
+                if self._record_candle_seen_or_raise(tf, ev):
+                    recovered_ts_set.add(int(c.to_ts))
+                    emitted.append(ev)
+                    self._diagnostic_events.append({
+                        "type": "CANDLE_RECOVERED",
+                        "timeframe_seconds": tf,
+                        "candle_open_ts": int(c.from_ts),
+                        "candle_close_ts": int(c.to_ts),
+                        "candle_digest": ev.candle_digest(),
+                        "request_id": req_id,
+                        "recovered_at_utc": rec_utc,
+                        "verified_server_time_ns": res_server_ns,
+                        "at_utc": rec_utc,
+                    })
+                    await self._enqueue_event(ev)
+
+            for ts in eligible:
+                if ts not in recovered_ts_set:
+                    self._diagnostic_events.append({
+                        "type": "RECONCILIATION_BOUNDARY_UNFILLED",
+                        "timeframe_seconds": tf,
+                        "boundary_close_ts": ts,
+                        "attempt": self._reconcile_boundary_attempts.get((tf, ts), 0),
+                        "max_attempts": self._max_reconcile_attempts_per_boundary,
+                        "at_utc": rec_utc,
+                    })
+            return emitted
+
+    async def _reconcile_watchdog(self) -> None:
+        """Periodic check for overdue closed-candle boundaries across subscribed timeframes."""
+        try:
+            while self._connected:
+                await asyncio.sleep(self._watchdog_poll_seconds)
+                if not self._connected:
+                    return
+                self._poll_client_telemetry()
+                clock_fresh, server_ns, _sync_status, step_detected = self._read_clock_state()
+                if not clock_fresh or server_ns is None or step_detected:
+                    continue
+                server_sec = int(server_ns // 1_000_000_000)
+                for tf in self._timeframes:
+                    last_ts = self._last_closed_to_ts.get(tf)
+                    if last_ts is None:
+                        continue
+                    next_expected = last_ts + tf
+                    if float(server_sec - next_expected) >= self._reconcile_grace_seconds:
+                        target_close = (server_sec // tf) * tf
+                        await self._reconcile_timeframe(
+                            tf, target_close, trigger="boundary_watchdog"
+                        )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            with contextlib.suppress(asyncio.QueueFull):
+                self._queue.put_nowait(exc)
 
     async def _pump_timeframe(self, tf: int) -> None:
         try:
@@ -358,8 +703,7 @@ class IQOptionReadOnlyMultiTransport:
                 now_m = time.monotonic()
                 self._last_heartbeat_mono = now_m
                 self._last_heartbeat_by_tf[tf] = now_m
-                if not candle.is_complete:
-                    continue
+                self._poll_client_telemetry()
                 if candle.symbol != self._symbol or int(candle.size) != tf:
                     raise ProvenanceError(
                         f"Mismatched stream candle symbol/size: {candle.symbol}/{candle.size}"
@@ -375,6 +719,20 @@ class IQOptionReadOnlyMultiTransport:
                         f"(status={sync_status})."
                     )
                 server_sec = server_ns // 1_000_000_000
+
+                if not candle.is_complete:
+                    last_ts = self._last_closed_to_ts.get(tf)
+                    if (
+                        self._reconcile_missing_candles
+                        and last_ts is not None
+                        and int(candle.from_ts) >= last_ts + tf
+                        and server_sec >= last_ts + tf + 1
+                    ):
+                        await self._reconcile_timeframe(
+                            tf, int(candle.from_ts), trigger="forming_next_bar"
+                        )
+                    continue
+
                 if candle.to_ts > server_sec + 1:
                     raise ProvenanceError(
                         f"Candle to_ts={candle.to_ts} exceeds verified broker time {server_sec}."
@@ -384,6 +742,17 @@ class IQOptionReadOnlyMultiTransport:
                         f"Stale streaming candle age {server_sec - candle.to_ts}s > "
                         f"{self._max_data_age_seconds}s."
                     )
+
+                last_ts = self._last_closed_to_ts.get(tf)
+                if (
+                    self._reconcile_missing_candles
+                    and last_ts is not None
+                    and int(candle.to_ts) > last_ts + tf
+                ):
+                    await self._reconcile_timeframe(
+                        tf, int(candle.to_ts) - tf, trigger="stream_gap"
+                    )
+
                 ev = MarketFeedEvent(
                     candle=candle,
                     timeframe_seconds=tf,
@@ -395,8 +764,11 @@ class IQOptionReadOnlyMultiTransport:
                     is_synthetic=False,
                     verified_server_time_ns=server_ns,
                     clock_sync_status=sync_status,
+                    is_recovered=False,
+                    recovered_at_utc=None,
                 )
-                await self._queue.put(ev)
+                if self._record_candle_seen_or_raise(tf, ev):
+                    await self._enqueue_event(ev)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -427,6 +799,11 @@ class IQOptionReadOnlyMultiTransport:
             symbol=self._symbol,
             timeframe_seconds=int(timeframe_seconds),
         )
+        tf_int = int(timeframe_seconds)
+        seen = self._seen_candle_digests.setdefault(tf_int, {})
+        for wc in closed:
+            seen[int(wc.to_ts)] = self._candle_digest_for(wc)
+        self._last_closed_to_ts[tf_int] = int(closed[-1].to_ts)
         receipt = {
             "symbol": res.symbol,
             "timeframe_seconds": int(res.size),
@@ -480,6 +857,8 @@ class SyntheticMultiTimeframeTransport:
         inject_stale_pause_at: int | None = None,
         stale_pause_seconds: float = 0.0,
         simulate_genuine_flag_for_test: bool = False,
+        event_server_time_ns: Mapping[int, int] | None = None,
+        event_recovered_indices: set[int] | None = None,
     ) -> None:
         self._warmup_by_tf = {int(k): list(v) for k, v in warmup_by_tf.items()}
         self._events = list(events)
@@ -490,6 +869,8 @@ class SyntheticMultiTimeframeTransport:
         self._inject_stale_pause_at = inject_stale_pause_at
         self._stale_pause_seconds = stale_pause_seconds
         self._simulate_genuine_flag_for_test = simulate_genuine_flag_for_test
+        self._event_server_time_ns = dict(event_server_time_ns or {})
+        self._event_recovered_indices = set(event_recovered_indices or ())
         self._cursor = 0
         self._connected = False
         now_m = time.monotonic()
@@ -607,15 +988,20 @@ class SyntheticMultiTimeframeTransport:
         ):
             fresh = False
 
+        is_rec = idx in self._event_recovered_indices
+        srv_ns = self._event_server_time_ns.get(idx, int(candle.to_ts * 1_000_000_000))
+        now_iso = datetime.now(UTC).isoformat()
         return MarketFeedEvent(
             candle=candle,
             timeframe_seconds=int(tf),
-            received_at_utc=datetime.now(UTC).isoformat(),
+            received_at_utc=now_iso,
             received_mono=now_m,
-            request_id="",
+            request_id=f"synth_rec_{idx}" if is_rec else "",
             source_provenance=prov,
             server_time_fresh=fresh,
             is_synthetic=self.is_synthetic,
-            verified_server_time_ns=int(candle.to_ts * 1_000_000_000),
+            verified_server_time_ns=srv_ns,
             clock_sync_status="SYNCHRONIZED" if fresh else "STALE",
+            is_recovered=is_rec,
+            recovered_at_utc=now_iso if is_rec else None,
         )

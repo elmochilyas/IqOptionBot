@@ -9,6 +9,7 @@ from iqoption_research.execution.account_diagnostics import (
     BrokerAccountDiagnostic,
     BrokerLedgerStatus,
     RoutingAuditResult,
+    SixLayerWalletAuthority,
 )
 from iqoption_research.execution.adapters import (
     BaseExecutionAdapter,
@@ -37,6 +38,11 @@ from iqoption_research.execution.execution_engine import (
     ModularExecutionConfig,
     ModularExecutionEngine,
     ModularStepResult,
+)
+from iqoption_research.execution.instruments import (
+    ExecutionInstrumentSpec,
+    UnsupportedExecutionInstrumentError,
+    resolve_execution_instrument,
 )
 from iqoption_research.execution.live_practice_transport import (
     IQOptionLivePracticeTransport,
@@ -111,6 +117,14 @@ from iqoption_research.execution.state_machine import (
     ExecutionStateMachine,
     UncertainOrderRetryBlockedError,
 )
+from iqoption_research.execution.supervised_practice import (
+    SupervisedPracticeReadinessEvaluator,
+    SupervisedPracticeReadinessReport,
+    SupervisedPracticeSpec,
+    SupervisedPrerequisiteCheck,
+    SupervisedTestAuthorizationBoundary,
+    run_supervised_practice_mock_rehearsal,
+)
 
 __all__ = [
     "BROKER_CAPABILITIES",
@@ -140,6 +154,7 @@ __all__ = [
     "EmergencyStopReport",
     "EngineStepResult",
     "ExecutionEvent",
+    "ExecutionInstrumentSpec",
     "ExecutionJournal",
     "ExecutionMode",
     "ExecutionModeConfig",
@@ -192,10 +207,19 @@ __all__ = [
     "RiskRejectionReason",
     "RoutingAuditResult",
     "SettlementOutcome",
+    "SixLayerWalletAuthority",
     "SizingResult",
     "StaleVerificationBlockedError",
     "SubscriptionStatus",
+    "SupervisedPracticeReadinessEvaluator",
+    "SupervisedPracticeReadinessReport",
+    "SupervisedPracticeSpec",
+    "SupervisedPrerequisiteCheck",
+    "SupervisedTestAuthorizationBoundary",
     "UncertainOrderRetryBlockedError",
+    "UnsupportedExecutionInstrumentError",
     "UnsupportedProductOperationError",
     "build_binary_order_frame",
+    "resolve_execution_instrument",
+    "run_supervised_practice_mock_rehearsal",
 ]

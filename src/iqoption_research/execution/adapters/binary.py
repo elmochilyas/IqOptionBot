@@ -81,8 +81,13 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
         default_horizon_bars: int = 1,
         bar_duration_seconds: int = 60,
         simulated_slippage: float = 0.0,
+        exact_maturity_only: bool = False,
     ) -> None:
-        super().__init__(ProductType.BINARY, execution_mode)
+        super().__init__(
+            ProductType.BINARY,
+            execution_mode,
+            exact_maturity_only=exact_maturity_only,
+        )
         self.default_payout_rate = default_payout_rate
         self.default_horizon_bars = default_horizon_bars
         self.bar_duration_seconds = bar_duration_seconds
@@ -94,10 +99,13 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
 
     def validate_proposal(self, proposal: OrderProposal) -> None:
         """Validate binary proposal attributes."""
+        from iqoption_research.execution.instruments import resolve_execution_instrument
+
         if proposal.product_type != ProductType.BINARY:
             raise ValueError(
                 f"BinaryOptionsAdapter received invalid product {proposal.product_type.value}"
             )
+        resolve_execution_instrument(proposal.symbol, product_type=ProductType.BINARY)
         if proposal.side not in {OrderSide.CALL, OrderSide.PUT}:
             raise ValueError(f"Invalid binary option direction {proposal.side}")
         if proposal.proposed_stake <= 0.0:
@@ -133,6 +141,12 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
         broker_transport: Any = None,
     ) -> ExecutionEvent:
         """Execute binary order based on execution mode."""
+        from iqoption_research.execution.instruments import resolve_execution_instrument
+
+        spec = resolve_execution_instrument(order.symbol, product_type=ProductType.BINARY)
+        order.metadata["instrument_active_id"] = spec.active_id
+        order.metadata["market_kind"] = spec.market_kind
+
         if self.execution_mode == ExecutionMode.PAPER:
             # Strictly air-gapped simulated fill
             slippage_adj = (
@@ -149,6 +163,11 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
             order.entry_ts = entry_ts
             order.expiry_ts = expiry_ts
             order.slippage = self.simulated_slippage
+            order.metadata.setdefault(
+                "contract_terms_assumption",
+                f"SIMULATED_BINARY_FIXED_PAYOUT_{round((order.payout_rate or self.default_payout_rate) * 100)}PCT",
+            )
+            order.metadata["execution_label"] = "PAPER/SIMULATED"
 
             # Advance state: CREATED -> VALIDATED -> APPROVED -> OPEN
             if order.state == OrderState.CREATED:
@@ -161,6 +180,8 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
             )
 
         if self.execution_mode == ExecutionMode.PRACTICE:
+            from iqoption_research.execution.modes import PracticeAuthorizationError
+
             if broker_transport is None:
                 raise UnsupportedProductOperationError(
                     "PRACTICE binary order submission requires an authorized broker transport. "
@@ -182,11 +203,28 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
 
             transport_bal_id = getattr(broker_transport, "active_balance_id", None)
             metadata_bal_id = order.metadata.get("active_balance_id")
-            raw_bal_id = transport_bal_id or metadata_bal_id or 1
-            user_balance_id = (
-                int(raw_bal_id) if str(raw_bal_id).isdigit() and int(raw_bal_id) > 0 else 1
-            )
-            order.metadata["active_balance_id"] = str(user_balance_id)
+            raw_bal_id = transport_bal_id or metadata_bal_id
+            if raw_bal_id is None or not str(raw_bal_id).strip():
+                raise PracticeAuthorizationError(
+                    "PRACTICE binary order submission requires an active PRACTICE "
+                    "user_balance_id; silent fallback to default ID=1 is strictly prohibited."
+                )
+            bal_str = str(raw_bal_id).strip()
+            if bal_str.isdigit():
+                user_balance_id = int(bal_str)
+                if user_balance_id <= 0:
+                    raise PracticeAuthorizationError(
+                        f"Invalid non-positive active PRACTICE user_balance_id={bal_str!r}."
+                    )
+            else:
+                if getattr(broker_transport, "is_live_socket_transport", False):
+                    raise PracticeAuthorizationError(
+                        f"Live PRACTICE order requires numeric broker user_balance_id, got {bal_str!r}."
+                    )
+                # Offline mock tests may supply symbolic Practice IDs (e.g. 'bal_prac_10')
+                digits = "".join(ch for ch in bal_str if ch.isdigit())
+                user_balance_id = int(digits) if digits and int(digits) > 0 else 1
+            order.metadata["active_balance_id"] = bal_str
             order.expiry_ts = float(expiry_ts)
             frame = self.practice_transport.build_order_frame(
                 order,
@@ -208,6 +246,7 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
                 broker_id = result.broker_order_id
                 order.broker_order_id = broker_id
                 order.acknowledged_ts = current_candle.to_ts
+                order.broker_ack_ts = float(current_candle.to_ts)
                 order.transition_to(
                     OrderState.ACKNOWLEDGED,
                     reason=f"Broker ack received: id={broker_id}",
@@ -250,6 +289,12 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
             return False
         if order.expiry_ts is None:
             return False
+        order_tf = order.metadata.get("timeframe_seconds")
+        candle_tf = int(current_candle.to_ts - current_candle.from_ts)
+        if order_tf is not None and int(order_tf) != candle_tf:
+            return False
+        if self.exact_maturity_only:
+            return abs(float(current_candle.to_ts) - order.expiry_ts) < 1e-4
         return float(current_candle.to_ts) >= order.expiry_ts
 
     def settle_or_close(

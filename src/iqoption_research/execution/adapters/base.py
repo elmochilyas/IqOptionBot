@@ -56,9 +56,11 @@ class BaseExecutionAdapter(ABC):
         self,
         product_type: ProductType,
         execution_mode: ExecutionMode = ExecutionMode.PAPER,
+        exact_maturity_only: bool = False,
     ) -> None:
         self.product_type = product_type
         self.execution_mode = execution_mode
+        self.exact_maturity_only = exact_maturity_only
 
     @abstractmethod
     def validate_proposal(self, proposal: OrderProposal) -> None:

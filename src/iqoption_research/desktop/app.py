@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from iqoption_research.desktop.collection_center_panel import CollectionCenterPanel
 from iqoption_research.desktop.core import STUDY, require_slot, slot_used, slots
 from iqoption_research.desktop.diagnostics_panel import ModelDiagnosticsPanel
+from iqoption_research.desktop.execution_center_panel import ExecutionCenterPanel
 from iqoption_research.desktop.laboratory_panel import ModelLaboratoryPanel
 from iqoption_research.desktop.process import SessionProcess, refresh
 from iqoption_research.desktop.shadow_panel import ShadowEvaluationPanel
@@ -114,6 +115,7 @@ class Dashboard:
         self.laboratory = ModelLaboratoryPanel(self, notebook)
         self.shadow_evaluation = ShadowEvaluationPanel(self, notebook)
         self.model_diagnostics = ModelDiagnosticsPanel(self, notebook)
+        self.execution_center = ExecutionCenterPanel(self, notebook)
         evaluation = ttk.Notebook(phase_body)
         evaluation.pack(fill="both", expand=True)
         notebook.add(phase_body, text="Model Evaluation")
@@ -184,6 +186,9 @@ class Dashboard:
             shadow_eval = getattr(self, "shadow_evaluation", None)
             if shadow_eval is not None and hasattr(shadow_eval, "shutdown"):
                 shadow_eval.shutdown()
+            exec_center = getattr(self, "execution_center", None)
+            if exec_center is not None and hasattr(exec_center, "shutdown"):
+                exec_center.shutdown()
             self.window.destroy()
 
     def render(self) -> None:
@@ -373,6 +378,9 @@ class Dashboard:
         if hasattr(self, "shadow_evaluation"):
             self.shadow_evaluation.tick()
             busy = busy or self.shadow_evaluation.busy()
+        if hasattr(self, "execution_center"):
+            self.execution_center.tick()
+            busy = busy or self.execution_center.busy()
         if hasattr(self, "model_diagnostics"):
             self.model_diagnostics.tick()
             busy = busy or self.model_diagnostics.busy()

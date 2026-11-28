@@ -96,11 +96,30 @@ class ExecutionJournal:
                     slippage REAL DEFAULT 0.0,
                     close_reason TEXT,
                     retry_count INTEGER DEFAULT 0,
-                    reconciliation_required INTEGER DEFAULT 0
+                    reconciliation_required INTEGER DEFAULT 0,
+                    reconciliation_reason TEXT,
+                    validated_ts REAL,
+                    approved_ts REAL,
+                    submitted_ts REAL,
+                    acknowledged_ts REAL,
+                    expiry_horizon_bars INTEGER DEFAULT 1,
+                    strike_price REAL,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    lots REAL,
+                    pip_value REAL
                 )
                 """
             )
-            # Ensure schema migration if existing db lacks Phase 16 columns
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS engine_kv_state (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL
+                )
+                """
+            )
+            # Ensure schema migration if existing db lacks Phase 16 / Phase 50 columns
             cursor = self._conn.execute("PRAGMA table_info(orders)")
             existing_cols = {row[1] for row in cursor.fetchall()}
             phase16_columns = [
@@ -113,6 +132,17 @@ class ExecutionJournal:
                 ("close_reason", "TEXT"),
                 ("retry_count", "INTEGER DEFAULT 0"),
                 ("reconciliation_required", "INTEGER DEFAULT 0"),
+                ("reconciliation_reason", "TEXT"),
+                ("validated_ts", "REAL"),
+                ("approved_ts", "REAL"),
+                ("submitted_ts", "REAL"),
+                ("acknowledged_ts", "REAL"),
+                ("expiry_horizon_bars", "INTEGER DEFAULT 1"),
+                ("strike_price", "REAL"),
+                ("stop_loss", "REAL"),
+                ("take_profit", "REAL"),
+                ("lots", "REAL"),
+                ("pip_value", "REAL"),
             ]
             for col_name, col_def in phase16_columns:
                 if col_name not in existing_cols:
@@ -146,9 +176,13 @@ class ExecutionJournal:
                     created_ts, entry_ts, entry_price, expiry_ts, settled_ts,
                     exit_price, simulated_pnl, rejection_reason, payout_rate, metadata_json,
                     execution_mode, idempotency_key, broker_order_id, broker_ack_ts,
-                    fees, slippage, close_reason, retry_count, reconciliation_required
+                    fees, slippage, close_reason, retry_count, reconciliation_required,
+                    reconciliation_reason, validated_ts, approved_ts, submitted_ts,
+                    acknowledged_ts, expiry_horizon_bars, strike_price, stop_loss,
+                    take_profit, lots, pip_value
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 ON CONFLICT(order_id) DO UPDATE SET
                     state = excluded.state,
@@ -159,6 +193,7 @@ class ExecutionJournal:
                     exit_price = excluded.exit_price,
                     simulated_pnl = excluded.simulated_pnl,
                     rejection_reason = excluded.rejection_reason,
+                    payout_rate = excluded.payout_rate,
                     metadata_json = excluded.metadata_json,
                     execution_mode = excluded.execution_mode,
                     idempotency_key = excluded.idempotency_key,
@@ -168,7 +203,18 @@ class ExecutionJournal:
                     slippage = excluded.slippage,
                     close_reason = excluded.close_reason,
                     retry_count = excluded.retry_count,
-                    reconciliation_required = excluded.reconciliation_required
+                    reconciliation_required = excluded.reconciliation_required,
+                    reconciliation_reason = excluded.reconciliation_reason,
+                    validated_ts = excluded.validated_ts,
+                    approved_ts = excluded.approved_ts,
+                    submitted_ts = excluded.submitted_ts,
+                    acknowledged_ts = excluded.acknowledged_ts,
+                    expiry_horizon_bars = excluded.expiry_horizon_bars,
+                    strike_price = excluded.strike_price,
+                    stop_loss = excluded.stop_loss,
+                    take_profit = excluded.take_profit,
+                    lots = excluded.lots,
+                    pip_value = excluded.pip_value
                 """,
                 (
                     order.order_id,
@@ -197,13 +243,68 @@ class ExecutionJournal:
                     order.close_reason,
                     order.retry_count,
                     1 if order.reconciliation_required else 0,
+                    order.reconciliation_reason,
+                    order.validated_ts,
+                    order.approved_ts,
+                    order.submitted_ts,
+                    order.acknowledged_ts,
+                    order.expiry_horizon_bars,
+                    order.strike_price,
+                    order.stop_loss,
+                    order.take_profit,
+                    order.lots,
+                    order.pip_value,
                 ),
             )
+
+    def save_kv(self, key: str, value: dict[str, Any] | list[Any]) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO engine_kv_state (key, value_json)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json
+                """,
+                (key, json.dumps(value)),
+            )
+
+    def load_kv(self, key: str) -> Any:
+        cursor = self._conn.execute("SELECT value_json FROM engine_kv_state WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    def load_events(self, order_id: str | None = None) -> list[ExecutionEvent]:
+        self._conn.row_factory = sqlite3.Row
+        if order_id is not None:
+            rows = self._conn.execute(
+                "SELECT * FROM order_events WHERE order_id = ? ORDER BY timestamp ASC",
+                (order_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM order_events ORDER BY timestamp ASC"
+            ).fetchall()
+        events: list[ExecutionEvent] = []
+        for r in rows:
+            events.append(
+                ExecutionEvent(
+                    event_id=r["event_id"],
+                    order_id=r["order_id"],
+                    from_state=OrderState(r["from_state"]),
+                    to_state=OrderState(r["to_state"]),
+                    timestamp=r["timestamp"],
+                    reason=r["reason"],
+                    payload=json.loads(r["payload_json"] or "{}"),
+                )
+            )
+        return events
 
     def load_all_orders(self) -> dict[str, PaperOrder]:
         orders: dict[str, PaperOrder] = {}
         self._conn.row_factory = sqlite3.Row
-        cursor = self._conn.execute("SELECT * FROM orders")
+        cursor = self._conn.execute("SELECT * FROM orders ORDER BY created_ts ASC")
         for row in cursor.fetchall():
             row_keys = set(row.keys())
             exec_mode_str = row["execution_mode"] if "execution_mode" in row_keys else "PAPER"
@@ -221,8 +322,15 @@ class ExecutionJournal:
                 product_type=ProductType(row["product_type"]),
                 state=OrderState(row["state"]),
                 created_ts=row["created_ts"],
+                validated_ts=row["validated_ts"] if "validated_ts" in row_keys else None,
+                approved_ts=row["approved_ts"] if "approved_ts" in row_keys else None,
+                submitted_ts=row["submitted_ts"] if "submitted_ts" in row_keys else None,
+                acknowledged_ts=row["acknowledged_ts"] if "acknowledged_ts" in row_keys else None,
                 entry_ts=row["entry_ts"],
                 entry_price=row["entry_price"],
+                expiry_horizon_bars=row["expiry_horizon_bars"]
+                if "expiry_horizon_bars" in row_keys and row["expiry_horizon_bars"] is not None
+                else 1,
                 expiry_ts=row["expiry_ts"],
                 settled_ts=row["settled_ts"],
                 exit_price=row["exit_price"],
@@ -245,6 +353,14 @@ class ExecutionJournal:
                 reconciliation_required=bool(row["reconciliation_required"])
                 if "reconciliation_required" in row_keys
                 else False,
+                reconciliation_reason=(
+                    row["reconciliation_reason"] if "reconciliation_reason" in row_keys else None
+                ),
+                strike_price=row["strike_price"] if "strike_price" in row_keys else None,
+                stop_loss=row["stop_loss"] if "stop_loss" in row_keys else None,
+                take_profit=row["take_profit"] if "take_profit" in row_keys else None,
+                lots=row["lots"] if "lots" in row_keys else None,
+                pip_value=row["pip_value"] if "pip_value" in row_keys else None,
             )
         return orders
 
@@ -585,6 +701,65 @@ class ExecutionStateMachine:
                 f"Order {order.order_id} has uncertain broker status ({order.state.value}). "
                 f"Blind retry is strictly prohibited. Authoritative reconciliation required."
             )
+
+    @property
+    def all_events(self) -> list[ExecutionEvent]:
+        return list(self._events)
+
+    def record_adapter_event(self, order: PaperOrder, event: ExecutionEvent) -> ExecutionEvent:
+        """Persist an already-validated state transition event and order snapshot."""
+        self._events.append(event)
+        self.journal.record_event(event)
+        self.journal.upsert_order(order)
+        return event
+
+    def reconcile_order_state(
+        self,
+        order: PaperOrder,
+        new_state: OrderState,
+        *,
+        timestamp: float,
+        reason: str,
+        broker_order_id: str | None = None,
+        entry_price: float | None = None,
+        exit_price: float | None = None,
+        pnl: float | None = None,
+        fees: float = 0.0,
+    ) -> ExecutionEvent:
+        """Resolve an uncertain/timeout/reconciling order from authoritative evidence."""
+        if (
+            order.state in {OrderState.TIMEOUT, OrderState.UNKNOWN}
+            and new_state != OrderState.RECONCILING
+        ):
+            reconcile_evt = order.transition_to(
+                OrderState.RECONCILING,
+                reason=f"Reconciliation started: {reason}",
+            )
+            self._events.append(reconcile_evt)
+            self.journal.record_event(reconcile_evt)
+
+        if broker_order_id is not None:
+            order.broker_order_id = broker_order_id
+        if entry_price is not None:
+            order.entry_price = entry_price
+        if exit_price is not None:
+            order.exit_price = exit_price
+        if pnl is not None:
+            order.simulated_pnl = pnl
+        if fees:
+            order.fees += fees
+        if new_state in {OrderState.SETTLED, OrderState.CLOSED}:
+            order.settled_ts = timestamp
+            order.exit_ts = timestamp
+            order.close_reason = reason
+
+        order.reconciliation_required = False
+        order.reconciliation_reason = reason
+        event = order.transition_to(new_state, reason=reason)
+        self._events.append(event)
+        self.journal.record_event(event)
+        self.journal.upsert_order(order)
+        return event
 
     # ----- Phase 5 Backward Compatibility Methods -----
 

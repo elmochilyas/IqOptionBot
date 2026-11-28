@@ -108,9 +108,11 @@ VALID_ORDER_TRANSITIONS: dict[OrderState, set[OrderState]] = {
     },
     OrderState.UNKNOWN: {
         OrderState.RECONCILING,
+        OrderState.OPEN,
         OrderState.CLOSED,
         OrderState.SETTLED,
         OrderState.CANCELLED,
+        OrderState.REJECTED,
     },
     OrderState.RECONCILING: {
         OrderState.OPEN,
@@ -271,6 +273,13 @@ class PaperOrder:
     def is_reconciling(self) -> bool:
         return self.state == OrderState.RECONCILING
 
+    @property
+    def is_uncertain(self) -> bool:
+        return (
+            self.state in {OrderState.TIMEOUT, OrderState.UNKNOWN, OrderState.RECONCILING}
+            or self.reconciliation_required
+        )
+
     def can_transition_to(self, new_state: OrderState) -> bool:
         return new_state in VALID_ORDER_TRANSITIONS.get(self.state, set())
 
@@ -331,6 +340,12 @@ class PaperPortfolio:
     max_drawdown_pct: float = 0.0
     consecutive_losses: int = 0
     max_consecutive_losses: int = 0
+    reserved_open_stake: float = 0.0
+
+    @property
+    def available_cash(self) -> float:
+        """Virtual capital not currently reserved by open positions."""
+        return max(0.0, self.current_balance - self.reserved_open_stake)
 
     @property
     def win_rate(self) -> float:

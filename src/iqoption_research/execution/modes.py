@@ -120,6 +120,7 @@ class ExecutionModeGuard:
         current_session_id: str | None = None,
         verified_session_id: str | None = None,
         active_balance_id: str | None = None,
+        has_authoritative_active_indicator: bool = True,
     ) -> PracticeSafetyCheck:
         """Evaluate complete pre-flight barrier for PRACTICE mode.
 
@@ -164,6 +165,7 @@ class ExecutionModeGuard:
             current_ts=current_ts,
             current_session_id=current_session_id,
             verified_session_id=verified_session_id,
+            has_authoritative_active_indicator=has_authoritative_active_indicator,
         )
 
         if (

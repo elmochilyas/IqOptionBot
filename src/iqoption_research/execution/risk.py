@@ -33,6 +33,8 @@ class CircuitBreakerState(StrEnum):
     HALTED_DATA_STALENESS = "halted_data_staleness"
     HALTED_DATA_QUALITY = "halted_data_quality"
     HALTED_KILL_SWITCH = "halted_kill_switch"
+    HALTED_CONNECTION_LOSS = "halted_connection_loss"
+    HALTED_CLOCK_UNHEALTHY = "halted_clock_unhealthy"
 
 
 class RiskRejectionReason(StrEnum):
@@ -41,9 +43,11 @@ class RiskRejectionReason(StrEnum):
     KILL_SWITCH_ACTIVE = "kill_switch_active"
     CIRCUIT_BREAKER_TRIPPED = "circuit_breaker_tripped"
     COOLDOWN_ACTIVE = "cooldown_active"
+    MIN_ORDER_INTERVAL_ACTIVE = "min_order_interval_active"
     EXCEEDS_MAX_STAKE = "exceeds_max_stake"
     EXCEEDS_MAX_STAKE_PCT = "exceeds_max_stake_pct"
     EXCEEDS_MAX_EXPOSURE = "exceeds_max_exposure"
+    EXCEEDS_MAX_CONCURRENT_POSITIONS = "exceeds_max_concurrent_positions"
     EXCEEDS_MAX_TRADES = "exceeds_max_trades"
     DAILY_LOSS_LIMIT = "daily_loss_limit"
     DRAWDOWN_LIMIT = "drawdown_limit"
@@ -52,11 +56,14 @@ class RiskRejectionReason(StrEnum):
     LOW_PAYOUT_RATE = "low_payout_rate"
     MISSING_PAYOUT_DATA = "missing_payout_data"
     STALE_MARKET_DATA = "stale_market_data"
+    STALE_OR_UNVERIFIED_CLOCK = "stale_or_unverified_clock"
+    STALE_ACCOUNT_VERIFICATION = "stale_account_verification"
     DATA_QUALITY_FAILURE = "data_quality_failure"
     INSUFFICIENT_CAPITAL = "insufficient_capital"
     DUPLICATE_ORDER = "duplicate_order"
     DISCONNECTED_BROKER_SESSION = "disconnected_broker_session"
     UNVERIFIED_ACCOUNT_TYPE = "unverified_account_type"
+    UNCERTAIN_ORDER_STATE = "uncertain_order_state"
     EMERGENCY_STOP_ACTIVE = "emergency_stop_active"
 
 
@@ -114,6 +121,12 @@ class RiskConfig:
     min_payout_rate: float = 0.70
     daily_loss_basis: Literal["gross_realized", "net_realized"] = "gross_realized"
     stake_oversize_policy: Literal["clamp", "reject"] = "clamp"
+    max_concurrent_positions: int = 50
+    min_order_interval_seconds: float = 0.0
+    require_fresh_clock: bool = False
+    max_clock_age_seconds: float = 10.0
+    max_account_verification_age_seconds: float | None = None
+    block_on_uncertain_orders: bool = True
 
     def __post_init__(self) -> None:
         if self.max_stake_per_trade <= 0.0:
@@ -142,6 +155,17 @@ class RiskConfig:
             raise ValueError("daily_loss_basis must be 'gross_realized' or 'net_realized'")
         if self.stake_oversize_policy not in {"clamp", "reject"}:
             raise ValueError("stake_oversize_policy must be 'clamp' or 'reject'")
+        if self.max_concurrent_positions < 1:
+            raise ValueError("max_concurrent_positions must be >= 1")
+        if self.min_order_interval_seconds < 0.0:
+            raise ValueError("min_order_interval_seconds must be >= 0.0")
+        if self.max_clock_age_seconds <= 0.0:
+            raise ValueError("max_clock_age_seconds must be > 0.0")
+        if (
+            self.max_account_verification_age_seconds is not None
+            and self.max_account_verification_age_seconds <= 0.0
+        ):
+            raise ValueError("max_account_verification_age_seconds must be > 0.0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +208,55 @@ class OperationalRiskManager:
         self._session_initial_balance: float | None = None
         self._daily_realized_loss: float = 0.0
         self._daily_net_pnl: float = 0.0
+        self._last_order_ts: float | None = None
+
+    @property
+    def last_order_ts(self) -> float | None:
+        return self._last_order_ts
+
+    def to_state_dict(self) -> dict[str, Any]:
+        """Serialize mutable risk state for restart persistence."""
+        return {
+            "circuit_state": self._circuit_state.value,
+            "kill_switch_active": self._kill_switch_active,
+            "cooldown_until_ts": self._cooldown_until_ts,
+            "halt_reason": self._halt_reason,
+            "session_trades_count": self._session_trades_count,
+            "session_initial_balance": self._session_initial_balance,
+            "daily_realized_loss": self._daily_realized_loss,
+            "daily_net_pnl": self._daily_net_pnl,
+            "last_order_ts": self._last_order_ts,
+        }
+
+    def restore_session_state(
+        self,
+        *,
+        session_trades_count: int = 0,
+        daily_realized_loss: float = 0.0,
+        daily_net_pnl: float = 0.0,
+        last_order_ts: float | None = None,
+        circuit_state: CircuitBreakerState | str | None = None,
+        kill_switch_active: bool | None = None,
+        halt_reason: str | None = None,
+        cooldown_until_ts: float | None = None,
+    ) -> None:
+        """Restore persisted risk counters and fail-closed halts across restart."""
+        self._session_trades_count = max(0, int(session_trades_count))
+        self._daily_realized_loss = max(0.0, float(daily_realized_loss))
+        self._daily_net_pnl = float(daily_net_pnl)
+        self._last_order_ts = float(last_order_ts) if last_order_ts is not None else None
+        if circuit_state is not None:
+            self._circuit_state = (
+                circuit_state
+                if isinstance(circuit_state, CircuitBreakerState)
+                else CircuitBreakerState(str(circuit_state))
+            )
+        if kill_switch_active is not None:
+            self._kill_switch_active = bool(kill_switch_active)
+        if halt_reason is not None:
+            self._halt_reason = halt_reason
+        if cooldown_until_ts is not None:
+            self._cooldown_until_ts = float(cooldown_until_ts)
 
     @property
     def circuit_state(self) -> CircuitBreakerState:
@@ -250,10 +323,15 @@ class OperationalRiskManager:
         *,
         current_ts: float,
         current_open_exposure: float = 0.0,
+        current_open_positions: int = 0,
         is_replay: bool = False,
         is_duplicate: bool = False,
         is_broker_connected: bool | None = None,
         is_account_verified: bool | None = None,
+        is_clock_fresh: bool | None = None,
+        clock_age_seconds: float | None = None,
+        account_verification_age_seconds: float | None = None,
+        uncertain_orders_count: int = 0,
     ) -> RiskDecision:
         """Evaluate an order proposal against all risk boundaries in strict priority order."""
         if self._session_initial_balance is None:
@@ -269,7 +347,7 @@ class OperationalRiskManager:
                 circuit_state=self._circuit_state,
             )
 
-        # 0. Broker connection check (when evaluated for practice/live)
+        # 0b. Broker connection check (when evaluated for practice/live)
         if is_broker_connected is False:
             return RiskDecision(
                 permitted=False,
@@ -279,13 +357,61 @@ class OperationalRiskManager:
                 circuit_state=self._circuit_state,
             )
 
-        # 0. Account verification check (when evaluated for practice/live)
+        # 0c. Account verification & freshness check
         if is_account_verified is False:
             return RiskDecision(
                 permitted=False,
                 approved_stake=0.0,
                 reason=RiskRejectionReason.UNVERIFIED_ACCOUNT_TYPE,
                 message="Proposal rejected: active account type is unverified or not PRACTICE.",
+                circuit_state=self._circuit_state,
+            )
+        if (
+            self.config.max_account_verification_age_seconds is not None
+            and account_verification_age_seconds is not None
+            and account_verification_age_seconds > self.config.max_account_verification_age_seconds
+        ):
+            return RiskDecision(
+                permitted=False,
+                approved_stake=0.0,
+                reason=RiskRejectionReason.STALE_ACCOUNT_VERIFICATION,
+                message=(
+                    f"Account verification stale: age {account_verification_age_seconds:.1f}s > "
+                    f"{self.config.max_account_verification_age_seconds:.1f}s."
+                ),
+                circuit_state=self._circuit_state,
+            )
+
+        # 0d. Clock freshness check
+        if self.config.require_fresh_clock and is_clock_fresh is not True:
+            return RiskDecision(
+                permitted=False,
+                approved_stake=0.0,
+                reason=RiskRejectionReason.STALE_OR_UNVERIFIED_CLOCK,
+                message="Proposal rejected: broker clock freshness unverified.",
+                circuit_state=self._circuit_state,
+            )
+        if is_clock_fresh is False or (
+            clock_age_seconds is not None and clock_age_seconds > self.config.max_clock_age_seconds
+        ):
+            return RiskDecision(
+                permitted=False,
+                approved_stake=0.0,
+                reason=RiskRejectionReason.STALE_OR_UNVERIFIED_CLOCK,
+                message=(f"Proposal rejected: clock stale or invalid (age={clock_age_seconds})."),
+                circuit_state=self._circuit_state,
+            )
+
+        # 0e. Uncertain broker order state check
+        if self.config.block_on_uncertain_orders and uncertain_orders_count > 0:
+            return RiskDecision(
+                permitted=False,
+                approved_stake=0.0,
+                reason=RiskRejectionReason.UNCERTAIN_ORDER_STATE,
+                message=(
+                    f"Proposal rejected: {uncertain_orders_count} uncertain/reconciling order(s) "
+                    "must be authoritatively reconciled before new entries."
+                ),
                 circuit_state=self._circuit_state,
             )
 
@@ -316,7 +442,7 @@ class OperationalRiskManager:
                 circuit_state=self._circuit_state,
             )
 
-        # 3. Cooldown check
+        # 3. Cooldown check & minimum inter-order interval check
         if current_ts < self._cooldown_until_ts:
             remaining = self._cooldown_until_ts - current_ts
             return RiskDecision(
@@ -325,6 +451,35 @@ class OperationalRiskManager:
                 reason=RiskRejectionReason.COOLDOWN_ACTIVE,
                 message=f"Cooldown active: {remaining:.1f}s remaining.",
                 circuit_state=CircuitBreakerState.COOLDOWN_ACTIVE,
+            )
+        if (
+            self.config.min_order_interval_seconds > 0.0
+            and self._last_order_ts is not None
+            and (current_ts - self._last_order_ts) < self.config.min_order_interval_seconds
+        ):
+            remaining = self.config.min_order_interval_seconds - (current_ts - self._last_order_ts)
+            return RiskDecision(
+                permitted=False,
+                approved_stake=0.0,
+                reason=RiskRejectionReason.MIN_ORDER_INTERVAL_ACTIVE,
+                message=(
+                    f"Minimum interval between orders active: {remaining:.1f}s remaining "
+                    f"(limit={self.config.min_order_interval_seconds:.1f}s)."
+                ),
+                circuit_state=self._circuit_state,
+            )
+
+        # 3b. Concurrent positions limit
+        if current_open_positions >= self.config.max_concurrent_positions:
+            return RiskDecision(
+                permitted=False,
+                approved_stake=0.0,
+                reason=RiskRejectionReason.EXCEEDS_MAX_CONCURRENT_POSITIONS,
+                message=(
+                    f"Concurrent open positions ({current_open_positions}) reached maximum "
+                    f"({self.config.max_concurrent_positions})."
+                ),
+                circuit_state=self._circuit_state,
             )
 
         # 4. Market data staleness check (skip in historical replay mode)
@@ -489,9 +644,18 @@ class OperationalRiskManager:
             },
         )
 
-    def record_order_opened(self, _order: PaperOrder) -> None:
+    def record_order_opened(self, order: PaperOrder, *, opened_ts: float | None = None) -> None:
         """Record an order being opened in the current session."""
         self._session_trades_count += 1
+        eff_ts = opened_ts
+        if eff_ts is None:
+            eff_ts = order.entry_ts or order.submitted_ts or order.created_ts
+        if (
+            eff_ts is not None
+            and eff_ts > 0.0
+            and (self._last_order_ts is None or eff_ts > self._last_order_ts)
+        ):
+            self._last_order_ts = float(eff_ts)
 
     def record_order_settled(
         self,

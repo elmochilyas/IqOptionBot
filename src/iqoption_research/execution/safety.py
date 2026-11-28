@@ -15,11 +15,46 @@ Addresses the unresolved account-mode discrepancy between browser UI and Python 
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from iqoption_research.models.account import AccountType, Balance, PracticeStatus, Profile
+from iqoption_research.models.account import (
+    AccountType,
+    Balance,
+    PracticeStatus,
+    PracticeVerification,
+    Profile,
+    balance_wallet_indicators,
+    profile_wallet_indicators,
+    wallet_decision,
+    wallet_type_conflict,
+)
+
+
+def evaluate_wallet_conflicts(
+    profile: Profile | None,
+    balances: Sequence[Balance] | None,
+) -> tuple[bool, PracticeVerification | None, tuple[str, ...]]:
+    """Detect conflicting active/default wallet claims across profile and balances frames."""
+    if profile is None or not balances:
+        return False, None, ()
+    bal_tuple = tuple(balances)
+    indicators = profile_wallet_indicators(profile.raw) + balance_wallet_indicators(
+        bal_tuple, correlated=True
+    )
+    conflicting_types = wallet_type_conflict(bal_tuple, profile.raw, None)
+    decision = wallet_decision(
+        bal_tuple,
+        indicators,
+        complete=bool(profile.raw or profile.user_id),
+        conflicting_types=conflicting_types,
+    )
+    if decision.status == PracticeStatus.CONFLICTING_ACCOUNT_INDICATORS:
+        sources = tuple(dict.fromkeys(ind.source.value for ind in indicators))
+        return True, decision, sources or ("wallet_type_conflict",)
+    return False, decision, ()
 
 
 class PracticeSafetyVerdict(StrEnum):
@@ -31,6 +66,7 @@ class PracticeSafetyVerdict(StrEnum):
     BLOCKED_STALE_VERIFICATION = "blocked_stale_verification"
     BLOCKED_RECONNECTED_SESSION = "blocked_reconnected_session"
     BLOCKED_CONFLICTING_BALANCES = "blocked_conflicting_balances"
+    BLOCKED_CONFLICTING_ACCOUNT_INDICATORS = "blocked_conflicting_account_indicators"
     BLOCKED_MISSING_ACCOUNT_DATA = "blocked_missing_account_data"
     BLOCKED_BROKER_TRANSMISSION_DISABLED = "blocked_broker_transmission_disabled"
     BLOCKED_ACCOUNT_SELECTION_UNVERIFIED = "blocked_account_selection_unverified"
@@ -182,6 +218,23 @@ class PracticeAccountSafetyValidator:
                 active_balance_type=None,
                 verification_age_seconds=age,
                 message=f"Active balance_id {resolved_bal_id} not found in account balances list.",
+            )
+
+        # 4b. Detect conflicting broker account indicators (profile vs balances / multiple defaults)
+        has_conflict, _decision, conflict_sources = evaluate_wallet_conflicts(profile, balances)
+        if has_conflict:
+            src_list = ", ".join(conflict_sources)
+            return PracticeSafetyCheck(
+                verdict=PracticeSafetyVerdict.BLOCKED_CONFLICTING_ACCOUNT_INDICATORS,
+                is_safe_to_execute=False,
+                status=PracticeStatus.CONFLICTING_ACCOUNT_INDICATORS,
+                active_balance_id=resolved_bal_id,
+                active_balance_type=int(matched_bal.type.value),
+                verification_age_seconds=age,
+                message=(
+                    f"CONFLICTING ACCOUNT INDICATORS ({src_list}): Broker profile and balances "
+                    "frames disagree on active wallet identity. Live Practice execution is BLOCKED."
+                ),
             )
 
         # 5. Authoritative indicator check

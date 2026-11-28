@@ -146,6 +146,8 @@ def test_binary_options_practice_frame_and_transport() -> None:
     adapter = BinaryOptionsAdapter(execution_mode=ExecutionMode.PRACTICE)
 
     class MockTransportSuccess:
+        active_balance_id = "12345"
+
         def send_order_frame(self, _frame: dict) -> dict:
             return {"status": "success", "id": "opt_broker_123"}
 
@@ -165,6 +167,8 @@ def test_binary_options_practice_frame_and_transport() -> None:
 
     # Test practice mode timeout
     class MockTransportTimeout:
+        active_balance_id = "12345"
+
         def send_order_frame(self, _frame: dict) -> dict:
             raise TimeoutError("Ack timeout from IQ Option")
 

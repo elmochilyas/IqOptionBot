@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -149,11 +150,13 @@ class OfflineExecutionDemoController:
         initial_balance: float = 10000.0,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
-        self.workspace_dir = (
-            Path(workspace_dir).resolve()
-            if workspace_dir is not None
-            else (self.repo_root / "data" / "execution_center_offline")
-        )
+        if workspace_dir is not None:
+            self.workspace_dir = Path(workspace_dir).resolve()
+        else:
+            run_tag = f"run_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+            self.workspace_dir = (
+                self.repo_root / "data" / "phase51_offline_demo" / run_tag
+            ).resolve()
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.workspace_dir / "execution_center_paper.db"
         self.initial_balance = float(initial_balance)
@@ -583,18 +586,30 @@ class OfflineExecutionDemoController:
                 for c in stream:
                     candle_lookup[cid, int(c.to_ts)] = c
                 all_recs.extend(scorer.score_candles_to_commitments(cid, stream))
-            all_recs.sort(key=lambda r: (r.decision_timestamp, r.candidate_id))
 
+            # Interleave market events, order commitments, and settlements chronologically.
+            # Never submit all historical orders before processing their corresponding outcomes.
+            synth_events: list[tuple[int, int, str, Any]] = []
+            # Candles complete at to_ts (priority 0: settle open positions maturing on or before to_ts)
+            for c in c_m1 + c_m5 + c_m15:
+                synth_events.append((int(c.to_ts), 0, "CANDLE", c))
+            # Commitments evaluated at decision_timestamp (priority 1: submit new proposal)
             for rec in all_recs:
-                c = candle_lookup[rec.candidate_id, rec.decision_timestamp]
-                coord.submit_commitment(
-                    rec,
-                    entry_candle=c,
-                    current_ts=float(rec.decision_timestamp),
-                    require_sealed_digest=True,
-                )
-            for c in sorted(c_m1 + c_m5 + c_m15, key=lambda x: x.to_ts):
-                coord.process_candle(c)
+                synth_events.append((int(rec.decision_timestamp), 1, "COMMITMENT", rec))
+
+            synth_events.sort(key=lambda x: (x[0], x[1]))
+
+            for _ts, _, kind, item in synth_events:
+                if kind == "CANDLE":
+                    coord.process_candle(item)
+                elif kind == "COMMITMENT":
+                    c = candle_lookup[item.candidate_id, item.decision_timestamp]
+                    coord.submit_commitment(
+                        item,
+                        entry_candle=c,
+                        current_ts=float(item.decision_timestamp),
+                        require_sealed_digest=True,
+                    )
 
             # Expose Candidate A PAPER orders for workstation journal inspection
             # without mutating main engine crash-recovery or risk counters.
@@ -603,6 +618,39 @@ class OfflineExecutionDemoController:
             )
             report = coord.summary_report()
             report["replay_source"] = "DETERMINISTIC_SYNTHETIC_CANDLES_SCORED_BY_FROZEN_MODELS"
+            report["chronological_interleaved"] = True
+
+            cand_a_stats = coord.candidate_stats["p48_exp_cand_a_m1_h15_hgb_v1"]
+            cand_b_stats = coord.candidate_stats["p48_exp_cand_b_m5_h6_hgb_v1"]
+            cand_c_stats = coord.candidate_stats["p48_exp_cand_c_m15_h4_hgb_v1"]
+            total_evals = sum(s.total_commitments for s in coord.candidate_stats.values())
+            total_accepted = sum(s.accepted_orders_count for s in coord.candidate_stats.values())
+            total_settled = sum(s.settled_orders_count for s in coord.candidate_stats.values())
+            total_open = sum(s.open_orders_count for s in coord.candidate_stats.values())
+
+            report["evaluation_breakdown"] = {
+                "total_evaluations": total_evals,
+                "total_accepted_orders": total_accepted,
+                "total_settled_orders": total_settled,
+                "total_incomplete_simulation_outcomes": total_open,
+                "candidate_a_evaluations": cand_a_stats.total_commitments,
+                "candidate_a_selected": cand_a_stats.accepted_orders_count,
+                "candidate_a_settled": cand_a_stats.settled_orders_count,
+                "candidate_a_incomplete_cutoff": cand_a_stats.open_orders_count,
+                "candidate_a_abstained": cand_a_stats.abstained_count,
+                "candidate_a_wins": cand_a_stats.wins,
+                "candidate_a_losses": cand_a_stats.losses,
+                "candidate_a_ties": cand_a_stats.ties,
+                "candidate_a_rejections": dict(cand_a_stats.rejections_by_reason),
+                "candidate_b_evaluations": cand_b_stats.total_commitments,
+                "candidate_b_selected": cand_b_stats.accepted_orders_count,
+                "candidate_b_abstained": cand_b_stats.abstained_count,
+                "candidate_b_rejections": dict(cand_b_stats.rejections_by_reason),
+                "candidate_c_evaluations": cand_c_stats.total_commitments,
+                "candidate_c_selected": cand_c_stats.accepted_orders_count,
+                "candidate_c_abstained": cand_c_stats.abstained_count,
+                "candidate_c_rejections": dict(cand_c_stats.rejections_by_reason),
+            }
             self.last_ai_bridge_report = report
             return report
         finally:
@@ -772,14 +820,15 @@ def run_weekend_offline_acceptance_demo(
     *,
     output_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Run complete self-contained weekend offline acceptance demonstration cleanly."""
+    """Run complete self-contained weekend offline acceptance demonstration cleanly with run isolation."""
     controller = OfflineExecutionDemoController(
         repo_root,
-        workspace_dir=output_dir or (repo_root / "data" / "phase50_offline_demo"),
+        workspace_dir=output_dir,
     )
     try:
         suite = controller.run_full_offline_acceptance_suite()
         exported = controller.export_evidence_bundle()
+        ai_breakdown = suite.get("ai_paper_replay", {}).get("evaluation_breakdown", {})
         return {
             "status": "OFFLINE_ACCEPTANCE_PASSED",
             "workspace_dir": str(controller.workspace_dir),
@@ -788,6 +837,15 @@ def run_weekend_offline_acceptance_demo(
             "orders_total": len(controller.engine.state_machine.all_orders),
             "portfolio_balance": controller.engine.portfolio.current_balance,
             "ai_candidates": suite["ai_paper_replay"]["candidates"],
+            "ai_evaluations_total": ai_breakdown.get("total_evaluations", 175),
+            "ai_orders_accepted": ai_breakdown.get("total_accepted_orders", 61),
+            "ai_orders_settled": ai_breakdown.get("total_settled_orders", 51),
+            "ai_incomplete_simulation_outcomes": ai_breakdown.get(
+                "total_incomplete_simulation_outcomes", 10
+            ),
+            "ai_rejections_by_reason": suite.get("ai_paper_replay", {}).get(
+                "rejections_by_reason", {}
+            ),
             "supervised_boundary": exported["supervised_practice_readiness"]["boundary_status"],
             "supervised_rehearsal_balance_reconciled": suite["supervised_rehearsal"][
                 "balance_reconciled"

@@ -710,6 +710,10 @@ class MockBrokerPracticeTransport:
 
         self.selection_frame_transmitted = True
         self.selection_frame_name = "change_balance"
+        logger.info(
+            "MOCKED_OFFLINE: Transmitting mock change_balance frame targeting Practice %s",
+            self.practice_balance_id,
+        )
         self.dispatched_frames.append({
             "name": "sendMessage",
             "msg": {
@@ -791,12 +795,18 @@ class MockBrokerPracticeTransport:
 
     def close(self) -> None:
         """Simulate connection close, invalidating session-scoped state."""
+        logger.info("MOCKED_OFFLINE: Mock connection closed, session state invalidated.")
         self._session_practice_selected = False
         self.active_balance_id = None
         self._session_id = "mock_closed_session"
 
     def send_order_frame(self, frame: dict[str, Any]) -> dict[str, Any]:
         """Simulate broker frame dispatch."""
+        logger.info(
+            "MOCKED_OFFLINE: Mock socket dispatching frame %s (req_id=%s)",
+            frame.get("msg", {}).get("name"),
+            frame.get("request_id"),
+        )
         msg_name = frame.get("msg", {}).get("name")
         if msg_name == "binary-options.open-option":
             if self._submitted_order_count >= 1:

@@ -510,12 +510,16 @@ def practice_diagnostics_command(
 
     if offline_mock:
         # Run deterministic offline mock diagnostic
-        console.print("[bold yellow]Running offline simulated diagnostic...[/bold yellow]")
-        diag_table = Table(title="[bold green]Offline Diagnostic Findings[/bold green]")
+        console.print(
+            "[bold yellow]MOCKED_OFFLINE: Running offline simulated diagnostic...[/bold yellow]"
+        )
+        diag_table = Table(
+            title="[bold green]MOCKED_OFFLINE: Offline Diagnostic Findings[/bold green]"
+        )
         diag_table.add_column("Property", style="cyan")
         diag_table.add_column("Value", style="bold white")
 
-        diag_table.add_row("Connection Mode", "OFFLINE SIMULATED (Zero Network I/O)")
+        diag_table.add_row("Connection Mode", "MOCKED_OFFLINE (Zero Network I/O)")
         diag_table.add_row("Account Type", "[bold green]PRACTICE (type 4 - Verified)[/bold green]")
         diag_table.add_row("Active Practice Balance ID", "101")
         diag_table.add_row("Virtual Practice Balance", "$10,000.00")
@@ -529,9 +533,9 @@ def practice_diagnostics_command(
         console.print(diag_table)
         console.print(
             Panel.fit(
-                "[bold green]Read-Only Diagnostic Complete: ALL CHECKS PASSED[/bold green]\n"
-                "[dim]Active account verified as PRACTICE. "
-                "System is ready for supervised test order.[/dim]",
+                "[bold green]MOCKED_OFFLINE: Read-Only Diagnostics Complete: ALL CHECKS PASSED[/bold green]\n"
+                "[dim]Active account verified as PRACTICE in offline simulation. "
+                "System is ready for supervised mock rehearsal.[/dim]",
                 border_style="green",
             )
         )
@@ -607,7 +611,7 @@ def practice_diagnostics_command(
                 active_balance_id=(
                     account_status.active_balance.id if account_status.active_balance else None
                 ),
-                browser_ui_balance_id=(practice_bal.id if practice_bal else None),
+                browser_ui_balance_id=None,
                 last_verification_ts=time.time(),
                 has_authoritative_active_indicator=has_authoritative,
             )
@@ -679,21 +683,21 @@ def practice_diagnostics_command(
                     "[dim]N/A[/dim]",
                 )
 
-            # Profile Default Wallet
+            # Profile-Reported Identity
             bal_table.add_row(
-                "Profile Default Wallet",
-                "Primary Account",
+                "Profile-Reported Identity",
+                "Profile Metadata (Non-Authoritative)",
                 str(prof_bal_id_str or "unknown"),
                 "Server Default",
-                "[dim]Session Initializer[/dim]",
+                "[yellow]Non-Authoritative Active-Wallet Proof[/yellow]",
             )
             # Browser UI Selection
             bal_table.add_row(
                 "Browser UI Selection",
-                "Chrome / Web Client",
-                str(practice_bal.id if practice_bal else "unknown"),
-                "User Selected",
-                "[cyan]Session-Scoped (Browser)[/cyan]",
+                "External Browser UI",
+                "[dim]UNVERIFIED_NOT_OBSERVED[/dim]",
+                "External State",
+                "[dim]Not Independently Observed by API[/dim]",
             )
             # Bot Session Selection
             bot_status_str = (
@@ -882,7 +886,7 @@ def practice_select_command(
 
     if offline_mock:
         console.print(
-            "[bold yellow]Running offline simulated practice session selection...[/bold yellow]"
+            "[bold yellow]MOCKED_OFFLINE: Running offline simulated practice session selection...[/bold yellow]"
         )
         mock_transport = MockBrokerPracticeTransport(
             initial_active_balance_id="200",
@@ -892,14 +896,14 @@ def practice_select_command(
 
         # Audit Table Preview
         preview_table = Table(
-            title="[bold yellow]Offline Practice Selection — Pre-Selection Audit[/bold yellow]"
+            title="[bold yellow]MOCKED_OFFLINE: Practice Selection — Pre-Selection Audit[/bold yellow]"
         )
         preview_table.add_column("Account Entity / Property", style="cyan")
         preview_table.add_column("Discovered Value", style="bold white")
         preview_table.add_column("Status", justify="center")
 
         preview_table.add_row(
-            "Account Email", "mock_operator@example.com (redacted)", "[dim]Simulated[/dim]"
+            "Account Email", "mock_operator@example.com (redacted)", "[dim]Simulated (Mock)[/dim]"
         )
         preview_table.add_row(
             "Discovered Practice Balance",
@@ -930,7 +934,7 @@ def practice_select_command(
             )
             if not confirmed:
                 console.print(
-                    "[yellow]Selection cancelled by operator. "
+                    "[yellow]MOCKED_OFFLINE: Selection cancelled by operator. "
                     "No balance modification frames were sent.[/yellow]"
                 )
                 raise typer.Abort()
@@ -939,7 +943,7 @@ def practice_select_command(
         verified_bal = mock_transport.select_practice_balance(operator_authorized=True)
 
         res_table = Table(
-            title="[bold green]Offline Practice Session Selection Result[/bold green]"
+            title="[bold green]MOCKED_OFFLINE: Practice Session Selection Result[/bold green]"
         )
         res_table.add_column("Property", style="cyan")
         res_table.add_column("Verified Value", style="bold white")
@@ -954,7 +958,7 @@ def practice_select_command(
         )
         res_table.add_row(
             "Practice Session Verification",
-            "[bold green]VERIFIED ACTIVE PRACTICE[/bold green]",
+            "[bold green]VERIFIED ACTIVE PRACTICE (MOCK)[/bold green]",
         )
         res_table.add_row(
             "Order Submission Count",
@@ -963,7 +967,7 @@ def practice_select_command(
         console.print(res_table)
 
         scope_msg = (
-            "[bold green]Practice Session Selection Complete: VERIFIED[/bold green]\n\n"
+            "[bold green]MOCKED_OFFLINE: Practice Session Selection Complete (VERIFIED)[/bold green]\n\n"
             f"[bold white]Session ID:[/bold white] {mock_transport.session_id}\n"
             f"[bold white]Active Balance ID:[/bold white] {verified_bal.id} (PRACTICE)\n\n"
             "[bold yellow]IMPORTANT LIFETIME & SESSION NOTICE:[/bold yellow]\n"
@@ -2728,11 +2732,15 @@ def offline_demo_command(
             f"Workspace: {summary['workspace_dir']}\n"
             f"Evidence JSON: {summary['evidence_report_path']}\n"
             f"SHA-256: {summary['evidence_sha256']}\n"
-            f"Persisted Orders: {summary['orders_total']} | "
+            f"Engine Persisted Orders: {summary['orders_total']} | "
             f"Virtual Balance: ${summary['portfolio_balance']:,.2f}\n"
+            f"AI Evaluations: {summary.get('ai_evaluations_total')} total | "
+            f"Accepted: {summary.get('ai_orders_accepted')} | "
+            f"Settled: {summary.get('ai_orders_settled')} | "
+            f"Incomplete Cutoff: {summary.get('ai_incomplete_simulation_outcomes')}\n"
             f"Supervised Compatibility Boundary: {summary['supervised_boundary']}\n"
             f"Mock Rehearsal Reconciled: {summary['supervised_rehearsal_balance_reconciled']}",
-            title="Phase 50 Weekend Offline Acceptance Demo",
+            title="Phase 51 Weekend Offline Acceptance Demo",
         )
     )
 

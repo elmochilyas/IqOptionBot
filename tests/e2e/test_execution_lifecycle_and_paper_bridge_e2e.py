@@ -27,6 +27,7 @@ from iqoption_research.execution.modes import (
     RealAccountExecutionBlockedError,
 )
 from iqoption_research.execution.offline_demo import (
+    OfflineExecutionDemoController,
     generate_deterministic_candles,
     run_weekend_offline_acceptance_demo,
 )
@@ -59,16 +60,19 @@ def _candle(
     *,
     symbol: str = "EURUSD",
     active_id: int = 1,
+    timeframe_seconds: int = 60,
     high: float | None = None,
     low: float | None = None,
 ) -> Candle:
+    size_map = {60: CandleSize.MIN_1, 300: CandleSize.MIN_5, 900: CandleSize.MIN_15}
+    size = size_map.get(timeframe_seconds, CandleSize.MIN_1)
     hi = high if high is not None else round(close + 0.0002, 6)
     lo = low if low is not None else round(close - 0.0002, 6)
     return Candle(
         active_id=active_id,
         symbol=symbol,
-        size=CandleSize.MIN_1,
-        from_ts=ts - 60,
+        size=size,
+        from_ts=ts - timeframe_seconds,
         to_ts=ts,
         at_ts=ts * 1_000_000_000,
         open=close,
@@ -558,8 +562,9 @@ def test_frozen_phase48_ai_to_paper_bridge_and_stage_b_readonly_replay(tmp_path:
             prob_up=0.28,
             prob_down=0.72,
         )
+        c_m5 = _candle(base_ts, 1.0950, timeframe_seconds=b_b.native_timeframe_seconds)
         coord2.submit_commitment(rec_up, entry_candle=c_now, current_ts=float(base_ts))
-        coord2.submit_commitment(rec_down, entry_candle=c_now, current_ts=float(base_ts))
+        coord2.submit_commitment(rec_down, entry_candle=c_m5, current_ts=float(base_ts))
         assert len(coord2.conflict_rejections) == 1
         assert (
             coord2.conflict_rejections[0].rejection_reason
@@ -615,3 +620,49 @@ def test_weekend_offline_demo_and_cli_command(tmp_path: Path) -> None:
     payload = json.loads(result.output[json_start:])
     assert payload["status"] == "OFFLINE_ACCEPTANCE_PASSED"
     assert payload["supervised_boundary"] == "BLOCKED"
+
+
+def test_stage_b_chronological_interleaved_paper_replay(tmp_path: Path) -> None:
+    """Validate genuine Stage B historical replay using chronological interleaving."""
+    ctrl = OfflineExecutionDemoController(
+        _repo_root(),
+        workspace_dir=tmp_path / "stage_b_replay_ws",
+        initial_balance=10000.0,
+    )
+    rep = ctrl.run_frozen_three_model_replay(use_stage_b_readonly=True)
+
+    assert rep["replay_source"] == "GENUINE_STAGE_B_READ_ONLY"
+    assert rep["simulation_model"] == "CLOSE_PRICE_ONLY_SIMULATION"
+    assert rep["session_integrity_verified"] is True
+    assert rep["chronological_interleaved"] is True
+
+    breakdown = rep["evaluation_breakdown"]
+    assert breakdown["total_evaluations"] == 152
+    assert breakdown["candidate_a_evaluations"] == 120
+    assert breakdown["candidate_a_selected"] == 26
+    assert breakdown["candidate_a_abstained"] == 94
+    assert breakdown["candidate_a_wins"] == 20
+    assert breakdown["candidate_a_losses"] == 5
+    assert breakdown["candidate_a_ties"] == 1
+
+    assert breakdown["candidate_b_evaluations"] == 24
+    assert breakdown["candidate_b_abstained"] == 24
+
+    assert breakdown["candidate_c_evaluations"] == 8
+    assert breakdown["candidate_c_abstained"] == 8
+
+    # Candidate A directional accuracy: 20 correct / 25 non-tie = 80.0%
+    decisive_trades = breakdown["candidate_a_wins"] + breakdown["candidate_a_losses"]
+    assert decisive_trades == 25
+    accuracy = breakdown["candidate_a_wins"] / decisive_trades
+    assert abs(accuracy - 0.80) < 1e-4
+
+    # Verify conflict guarded book stats
+    cg_stats = rep["conflict_guarded_book"]
+    assert cg_stats["accepted_orders"] == 26
+    assert cg_stats["settled_orders"] == 26
+    assert cg_stats["open_orders"] == 0
+    assert cg_stats["wins"] == 20
+    assert cg_stats["losses"] == 5
+    assert cg_stats["ties"] == 1
+    assert cg_stats["total_pnl"] > 0.0

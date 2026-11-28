@@ -44,7 +44,7 @@ from iqoption_research.execution.models import (
 from iqoption_research.execution.modes import PaperAirGapViolationError
 from iqoption_research.execution.risk import RiskConfig
 from iqoption_research.execution.state_machine import ExecutionJournal
-from iqoption_research.models.market import Candle
+from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.phase48.artifacts import (
     LoadedExploratoryBundle,
     default_models_dir,
@@ -63,18 +63,70 @@ SIMULATED_PAYOUT_ASSUMPTION: Final[str] = (
 )
 
 
+def make_close_price_only_candle(
+    *,
+    symbol: str = "EURUSD",
+    timeframe_seconds: int = 60,
+    from_ts: int,
+    to_ts: int,
+    close: float,
+    candle_digest: str = "",
+    provenance: str = "CLOSE_PRICE_ONLY_SIMULATION",
+) -> Candle:
+    """Construct an explicitly labeled close-price-only Candle for historical replay.
+
+    Never silently fabricates synthetic high, low, volume, or bid/ask spread.
+    Sets open=close, high=close, low=close, volume=0.0, bid=close, ask=close,
+    and explicitly marks the simulation mode in candle provenance and metadata.
+    """
+    size_map = {
+        60: CandleSize.MIN_1,
+        300: CandleSize.MIN_5,
+        900: CandleSize.MIN_15,
+    }
+    size = size_map.get(timeframe_seconds, CandleSize.MIN_1)
+    return Candle(
+        active_id=1,
+        symbol=symbol,
+        size=size,
+        from_ts=from_ts,
+        to_ts=to_ts,
+        at_ts=to_ts * 1_000_000_000,
+        open=close,
+        high=close,
+        low=close,
+        close=close,
+        volume=0.0,
+        bid=close,
+        ask=close,
+        is_complete=True,
+        provenance=provenance,
+        identity_provenance=candle_digest or "CLOSE_PRICE_ONLY",
+        raw={
+            "simulation_model": "CLOSE_PRICE_ONLY_SIMULATION",
+            "evidence_note": "No synthetic OHLC, volume, or bid/ask spread added.",
+            "candle_digest": candle_digest,
+        },
+    )
+
+
 class AISignalRejectionReason(StrEnum):
     """Deterministic rejection codes for AI-to-PAPER commitment evaluation."""
 
     ABSTAIN_SIGNAL = "abstain_signal"
     UNRECOGNIZED_CANDIDATE = "unrecognized_candidate"
+    MISSING_FROZEN_MODEL_BUNDLE = "missing_frozen_model_bundle"
     MISMATCHED_ARTIFACT_DIGEST = "mismatched_artifact_digest"
     THRESHOLD_TAMPERED = "threshold_tampered"
     INVALID_COMMITMENT_DIGEST = "invalid_commitment_digest"
     INVALID_PROBABILITY = "invalid_probability"
+    INCONSISTENT_PROBABILITY_DECISION = "inconsistent_probability_decision"
     INVALID_EXPIRATION = "invalid_expiration"
     INVALID_TIMEFRAME_OR_HORIZON = "invalid_timeframe_or_horizon"
+    FUTURE_DATED_SIGNAL = "future_dated_signal"
+    EXPIRED_SIGNAL = "expired_signal"
     STALE_SIGNAL = "stale_signal"
+    REFERENCE_CANDLE_MISMATCH = "reference_candle_mismatch"
     DUPLICATE_SIGNAL = "duplicate_signal"
     CONFLICTING_CANDIDATE_SIGNAL = "conflicting_candidate_signal"
     RISK_REJECTED = "risk_rejected"
@@ -396,6 +448,9 @@ class PaperBridgePortfolioCoordinator:
                 risk_config=self._risk_config,
             )
             self.engines[cid] = ModularExecutionEngine(cfg, journal=journal)
+            binary_adapter = self.engines[cid].adapters.get(ProductType.BINARY)
+            if binary_adapter is not None:
+                binary_adapter.exact_maturity_only = True
             tau = (
                 float(self.bundles[cid].manifest.frozen_confidence_threshold)
                 if cid in self.bundles
@@ -425,16 +480,36 @@ class PaperBridgePortfolioCoordinator:
             ),
             journal=ExecutionJournal(shared_db),
         )
+        shared_adapter = self.conflict_guarded_engine.adapters.get(ProductType.BINARY)
+        if shared_adapter is not None:
+            shared_adapter.exact_maturity_only = True
         self._seen_intents: set[str] = set()
         self._seen_record_ids: set[str] = set()
         self._evaluations: list[AISignalEvaluationResult] = []
         self._conflict_rejections: list[AISignalEvaluationResult] = []
+
+        # Populate persistent duplicate sets from existing journals across restarts
+        for eng in (*self.engines.values(), self.conflict_guarded_engine):
+            for stored_order in eng.journal.load_all_orders().values():
+                if stored_order.signal_id:
+                    self._seen_intents.add(stored_order.signal_id)
+                if stored_order.metadata and "order_intent_id" in stored_order.metadata:
+                    self._seen_intents.add(str(stored_order.metadata["order_intent_id"]))
+                if (
+                    stored_order.metadata
+                    and "provenance" in stored_order.metadata
+                    and isinstance(stored_order.metadata["provenance"], dict)
+                ):
+                    rec_id = stored_order.metadata["provenance"].get("record_id")
+                    if rec_id:
+                        self._seen_record_ids.add(str(rec_id))
 
     def validate_commitment(
         self,
         record: PredictionCommitmentRecord,
         *,
         current_ts: float,
+        entry_candle: Candle | None = None,
         require_sealed_digest: bool = True,
     ) -> tuple[ValidatedAICommitmentSignal | None, AISignalRejectionReason | None, str]:
         """Validate commitment integrity, staleness, bounds, and candidate binding."""
@@ -445,6 +520,17 @@ class PaperBridgePortfolioCoordinator:
                 f"Unknown candidate_id '{record.candidate_id}'.",
             )
 
+        bundle = self.bundles.get(record.candidate_id)
+        if bundle is None:
+            return (
+                None,
+                AISignalRejectionReason.MISSING_FROZEN_MODEL_BUNDLE,
+                (
+                    f"Verified frozen model bundle for candidate '{record.candidate_id}' is unavailable. "
+                    "Commitments cannot be evaluated without verified immutable frozen artifacts."
+                ),
+            )
+
         if require_sealed_digest and not verify_commitment_integrity(record):
             return (
                 None,
@@ -452,42 +538,37 @@ class PaperBridgePortfolioCoordinator:
                 f"Commitment integrity digest mismatch for record '{record.record_id}'.",
             )
 
-        bundle = self.bundles.get(record.candidate_id)
-        if bundle is not None:
-            if record.candidate_artifact_digest != bundle.manifest.bundle_sha256:
-                return (
-                    None,
-                    AISignalRejectionReason.MISMATCHED_ARTIFACT_DIGEST,
-                    (
-                        f"Artifact digest mismatch: got {record.candidate_artifact_digest[:12]}, "
-                        f"expected {bundle.manifest.bundle_sha256[:12]}."
-                    ),
-                )
-            if (
-                abs(record.confidence_threshold - bundle.manifest.frozen_confidence_threshold)
-                > 1e-9
-            ):
-                return (
-                    None,
-                    AISignalRejectionReason.THRESHOLD_TAMPERED,
-                    "Confidence threshold diverges from immutable frozen manifest.",
-                )
-            if (
-                record.timeframe_seconds != bundle.manifest.native_timeframe_seconds
-                or record.horizon_bars != bundle.manifest.horizon_bars
-            ):
-                return (
-                    None,
-                    AISignalRejectionReason.INVALID_TIMEFRAME_OR_HORIZON,
-                    "Timeframe or prediction horizon diverges from frozen model spec.",
-                )
+        if record.candidate_artifact_digest != bundle.manifest.bundle_sha256:
+            return (
+                None,
+                AISignalRejectionReason.MISMATCHED_ARTIFACT_DIGEST,
+                (
+                    f"Artifact digest mismatch: got {record.candidate_artifact_digest[:12]}, "
+                    f"expected {bundle.manifest.bundle_sha256[:12]}."
+                ),
+            )
+        if abs(record.confidence_threshold - bundle.manifest.frozen_confidence_threshold) > 1e-9:
+            return (
+                None,
+                AISignalRejectionReason.THRESHOLD_TAMPERED,
+                "Confidence threshold diverges from immutable frozen manifest.",
+            )
+        if (
+            record.timeframe_seconds != bundle.manifest.native_timeframe_seconds
+            or record.horizon_bars != bundle.manifest.horizon_bars
+        ):
+            return (
+                None,
+                AISignalRejectionReason.INVALID_TIMEFRAME_OR_HORIZON,
+                "Timeframe or prediction horizon diverges from frozen model spec.",
+            )
 
         if (
             not math.isfinite(record.prob_up)
             or not math.isfinite(record.prob_down)
             or not (0.0 <= record.prob_up <= 1.0)
             or not (0.0 <= record.prob_down <= 1.0)
-            or abs((record.prob_up + record.prob_down) - 1.0) > 1e-5
+            or abs((record.prob_up + record.prob_down) - 1.0) > 1e-4
         ):
             return (
                 None,
@@ -495,13 +576,73 @@ class PaperBridgePortfolioCoordinator:
                 f"Invalid probabilities prob_up={record.prob_up}, prob_down={record.prob_down}.",
             )
 
-        if record.maturity_timestamp <= record.decision_timestamp:
+        if record.raw_prob_up is not None and (
+            not math.isfinite(record.raw_prob_up) or not (0.0 <= record.raw_prob_up <= 1.0)
+        ):
+            return (
+                None,
+                AISignalRejectionReason.INVALID_PROBABILITY,
+                f"Invalid raw_prob_up={record.raw_prob_up}.",
+            )
+
+        if record.confidence is not None and (
+            not math.isfinite(record.confidence) or not (0.0 <= record.confidence <= 1.0)
+        ):
+            return (
+                None,
+                AISignalRejectionReason.INVALID_PROBABILITY,
+                f"Invalid confidence={record.confidence}.",
+            )
+
+        if record.confidence_margin is not None and not math.isfinite(record.confidence_margin):
+            return (
+                None,
+                AISignalRejectionReason.INVALID_PROBABILITY,
+                f"Invalid confidence_margin={record.confidence_margin}.",
+            )
+
+        # Independently recompute expected decision using frozen threshold and full-precision probabilities
+        tau = float(bundle.manifest.frozen_confidence_threshold)
+        recomputed_conf = max(float(record.prob_up), float(record.prob_down))
+        if recomputed_conf >= tau:
+            expected_decision = "UP" if record.prob_up >= 0.5 else "DOWN"
+        else:
+            expected_decision = "ABSTAIN"
+
+        if record.decision != expected_decision:
+            return (
+                None,
+                AISignalRejectionReason.INCONSISTENT_PROBABILITY_DECISION,
+                (
+                    f"Decision '{record.decision}' is inconsistent with recomputed decision "
+                    f"'{expected_decision}' (prob_up={record.prob_up:.6f}, prob_down={record.prob_down:.6f}, "
+                    f"conf={recomputed_conf:.6f}, tau={tau:.6f})."
+                ),
+            )
+
+        # Validate exact maturity timestamp = decision_timestamp + (timeframe_seconds * horizon_bars)
+        expected_maturity = int(record.decision_timestamp) + (
+            int(record.timeframe_seconds) * int(record.horizon_bars)
+        )
+        if int(record.maturity_timestamp) != expected_maturity:
             return (
                 None,
                 AISignalRejectionReason.INVALID_EXPIRATION,
                 (
-                    f"Invalid maturity_timestamp ({record.maturity_timestamp}) <= "
-                    f"decision_timestamp ({record.decision_timestamp})."
+                    f"Invalid maturity_timestamp ({record.maturity_timestamp}) != expected "
+                    f"({expected_maturity}) for decision_ts={record.decision_timestamp}, "
+                    f"tf={record.timeframe_seconds}, horizon={record.horizon_bars}."
+                ),
+            )
+
+        # Reject future-dated, stale and expired signals
+        if float(record.decision_timestamp) > current_ts + 1.0:
+            return (
+                None,
+                AISignalRejectionReason.FUTURE_DATED_SIGNAL,
+                (
+                    f"Future-dated commitment signal: decision_timestamp ({record.decision_timestamp}) "
+                    f"> current_ts ({current_ts:.1f})."
                 ),
             )
 
@@ -516,12 +657,14 @@ class PaperBridgePortfolioCoordinator:
                 ),
             )
 
-        intent_id = compute_order_intent_id(record)
-        if intent_id in self._seen_intents or record.record_id in self._seen_record_ids:
+        if float(record.maturity_timestamp) <= current_ts:
             return (
                 None,
-                AISignalRejectionReason.DUPLICATE_SIGNAL,
-                f"Duplicate commitment intent '{intent_id}' / record '{record.record_id}'.",
+                AISignalRejectionReason.EXPIRED_SIGNAL,
+                (
+                    f"Already expired commitment signal: maturity_timestamp ({record.maturity_timestamp}) "
+                    f"<= current_ts ({current_ts:.1f})."
+                ),
             )
 
         if record.decision == "ABSTAIN":
@@ -537,6 +680,94 @@ class PaperBridgePortfolioCoordinator:
                 AISignalRejectionReason.INVALID_PROBABILITY,
                 f"Invalid decision value '{record.decision}'.",
             )
+
+        # Validate reference candle identity, symbol, timeframe, boundary and price against commitment
+        if entry_candle is not None:
+            cand_sym = getattr(entry_candle, "symbol", "EURUSD")
+            if cand_sym != "EURUSD":
+                return (
+                    None,
+                    AISignalRejectionReason.REFERENCE_CANDLE_MISMATCH,
+                    f"Reference candle symbol '{cand_sym}' does not match expected 'EURUSD'.",
+                )
+            if int(entry_candle.to_ts) != int(record.decision_timestamp):
+                return (
+                    None,
+                    AISignalRejectionReason.REFERENCE_CANDLE_MISMATCH,
+                    (
+                        f"Reference candle close ts {entry_candle.to_ts} "
+                        f"!= decision_timestamp {record.decision_timestamp}."
+                    ),
+                )
+            if int(entry_candle.to_ts) != int(record.candle_close_ts):
+                return (
+                    None,
+                    AISignalRejectionReason.REFERENCE_CANDLE_MISMATCH,
+                    (
+                        f"Reference candle to_ts {entry_candle.to_ts} "
+                        f"!= commitment candle_close_ts {record.candle_close_ts}."
+                    ),
+                )
+            if int(entry_candle.from_ts) != int(record.candle_open_ts):
+                return (
+                    None,
+                    AISignalRejectionReason.REFERENCE_CANDLE_MISMATCH,
+                    (
+                        f"Reference candle from_ts {entry_candle.from_ts} "
+                        f"!= commitment candle_open_ts {record.candle_open_ts}."
+                    ),
+                )
+            if (int(entry_candle.to_ts) - int(entry_candle.from_ts)) != int(
+                record.timeframe_seconds
+            ):
+                return (
+                    None,
+                    AISignalRejectionReason.REFERENCE_CANDLE_MISMATCH,
+                    (
+                        f"Reference candle duration {int(entry_candle.to_ts) - int(entry_candle.from_ts)}s "
+                        f"!= commitment timeframe {record.timeframe_seconds}s."
+                    ),
+                )
+            if abs(float(entry_candle.close) - float(record.reference_candle_price)) > 1e-4:
+                return (
+                    None,
+                    AISignalRejectionReason.REFERENCE_CANDLE_MISMATCH,
+                    (
+                        f"Reference candle close {entry_candle.close} diverges from commitment "
+                        f"reference_candle_price {record.reference_candle_price}."
+                    ),
+                )
+            if (
+                record.reference_candle_digest
+                and getattr(entry_candle, "raw", None)
+                and isinstance(entry_candle.raw, dict)
+            ):
+                raw_digest = entry_candle.raw.get("candle_digest")
+                if raw_digest and raw_digest != record.reference_candle_digest:
+                    return (
+                        None,
+                        AISignalRejectionReason.REFERENCE_CANDLE_MISMATCH,
+                        (
+                            f"Reference candle digest '{raw_digest}' != commitment digest "
+                            f"'{record.reference_candle_digest}'."
+                        ),
+                    )
+
+        # Persistent duplicate check across memory and SQLite journals
+        intent_id = compute_order_intent_id(record)
+        if intent_id in self._seen_intents or record.record_id in self._seen_record_ids:
+            return (
+                None,
+                AISignalRejectionReason.DUPLICATE_SIGNAL,
+                f"Duplicate commitment intent '{intent_id}' / record '{record.record_id}'.",
+            )
+        for eng in self.engines.values():
+            if eng.state_machine.get_order_by_signal(intent_id) is not None:
+                return (
+                    None,
+                    AISignalRejectionReason.DUPLICATE_SIGNAL,
+                    f"Duplicate commitment intent '{intent_id}' already registered in persistent journal.",
+                )
 
         cal_prob = max(float(record.prob_up), float(record.prob_down))
         raw_prob = (
@@ -596,6 +827,7 @@ class PaperBridgePortfolioCoordinator:
         validated, rej_reason, msg = self.validate_commitment(
             record,
             current_ts=now,
+            entry_candle=entry_candle,
             require_sealed_digest=require_sealed_digest,
         )
         intent_id = compute_order_intent_id(record)
@@ -790,8 +1022,15 @@ class PaperBridgePortfolioCoordinator:
             },
             "conflict_guarded_book": {
                 "total_trades": self.conflict_guarded_engine.portfolio.total_trades,
+                "accepted_orders": self.conflict_guarded_engine.portfolio.total_trades
+                + len(self.conflict_guarded_engine.open_orders),
+                "settled_orders": self.conflict_guarded_engine.portfolio.total_trades,
                 "open_orders": len(self.conflict_guarded_engine.open_orders),
+                "wins": self.conflict_guarded_engine.portfolio.winning_trades,
+                "losses": self.conflict_guarded_engine.portfolio.losing_trades,
+                "ties": self.conflict_guarded_engine.portfolio.flat_trades,
                 "simulated_pnl": self.conflict_guarded_engine.portfolio.total_pnl,
+                "total_pnl": self.conflict_guarded_engine.portfolio.total_pnl,
                 "conflicts_blocked": len(self._conflict_rejections),
             },
         }

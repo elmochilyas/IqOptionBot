@@ -144,6 +144,23 @@ BROKER_CAPABILITIES: tuple[BrokerOperation, ...] = (
         notes="Verified in Phase 1 and Phase 5.",
     ),
     BrokerOperation(
+        operation_id="account_passive_diagnostics",
+        product_type=None,
+        category=OperationCategory.ACCOUNT_DATA,
+        name="Passive Wallet Diagnostics",
+        description=(
+            "Pure read-only wallet inventory and profile inspection via get-profile and get-balances. "
+            "Never transmits state-mutating balance frames or modifies server account selection."
+        ),
+        status=BrokerCapabilityStatus.READ_ONLY_BROKER_VERIFIED,
+        protocol_frame_name="get-profile + get-balances",
+        verified_in_codebase=True,
+        live_broker_allowed=True,
+        risk_assessment="Zero risk; pure read-only introspection without state mutation.",
+        notes="Executed via 'practice-diagnostics --live' CLI command.",
+        evidence_level="SANITIZED_BROKER_READ_ONLY",
+    ),
+    BrokerOperation(
         operation_id="account_practice_verification",
         product_type=None,
         category=OperationCategory.ACCOUNT_DATA,
@@ -509,17 +526,24 @@ BROKER_CAPABILITIES: tuple[BrokerOperation, ...] = (
         operation_id="practice_balance_select_manual",
         product_type=None,
         category=OperationCategory.BALANCE_MANAGEMENT,
-        name="Explicit Operator Practice Session Selection",
+        name="Explicit Operator Practice Session Selection (State-Mutating)",
         description=(
-            "Explicit, operator-confirmed session balance selection strictly restricted "
-            "to PRACTICE accounts (type 4). Never selects REAL. Never runs automatically."
+            "Active state-mutating session balance selection transmitting the 'change_balance' wire "
+            "protocol frame. Strictly restricted to PRACTICE accounts (type 4). Never selects REAL. "
+            "Never runs automatically. This is an active state mutation, NOT a read-only diagnostic."
         ),
         status=BrokerCapabilityStatus.OFFLINE_TESTED,
         protocol_frame_name="change_balance",
         verified_in_codebase=True,
         live_broker_allowed=False,
-        risk_assessment="Requires explicit operator confirmation and corroborated broker ack.",
-        notes="Offline-tested; live balance switching requires interactive operator CLI flow.",
+        risk_assessment=(
+            "State-mutating frame transmission risk; requires explicit interactive operator confirmation, "
+            "valid operator auth token, and corroborated broker balance-changed push notification."
+        ),
+        notes=(
+            "Offline-tested; live balance switching transmits change_balance and is strictly gated "
+            "behind interactive operator CLI flow ('practice-select --live'). Not read-only."
+        ),
         evidence_level="MOCKED_OFFLINE",
         blockers=("requires_interactive_operator_confirmation",),
     ),

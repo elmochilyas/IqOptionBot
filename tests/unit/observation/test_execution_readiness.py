@@ -542,3 +542,252 @@ def test_supervised_test_gating_and_mock_rehearsal(tmp_path: Path) -> None:
     assert rehearsal["post_select_routing_verified"]
     assert rehearsal["ticket_id"] == "9100042"
     assert rehearsal["balance_reconciled"]
+
+
+def test_hardened_commitment_validation(tmp_path: Path) -> None:
+    from iqoption_research.execution.paper_bridge import (
+        AISignalRejectionReason,
+        PaperBridgePortfolioCoordinator,
+    )
+    from iqoption_research.phase48.artifacts import default_models_dir
+    from iqoption_research.phase48.evidence import PredictionCommitmentRecord
+
+    models_dir = default_models_dir(Path(__file__).resolve().parents[3])
+    cid = "p48_exp_cand_a_m1_h15_hgb_v1"
+    bundle_manifest_digest = ""
+    bundle_tau = 0.515474
+
+    coord = PaperBridgePortfolioCoordinator(
+        models_dir=models_dir,
+        output_dir=tmp_path / "paper_hardened",
+        initial_balance=10000.0,
+        fixed_stake=10.0,
+        max_signal_age_seconds=120.0,
+    )
+    if cid in coord.bundles:
+        bundle_manifest_digest = coord.bundles[cid].manifest.bundle_sha256
+        bundle_tau = coord.bundles[cid].manifest.frozen_confidence_threshold
+
+    base_ts = 1_795_800_000
+    c_ref = _make_candle(ts=base_ts, close_px=1.09500)
+
+    # Helper to build valid commitment record
+    def _make_record(**overrides: object) -> PredictionCommitmentRecord:
+        base_dict: dict[str, object] = {
+            "record_id": "test_rec",
+            "session_id": "test_sess",
+            "candidate_id": cid,
+            "candidate_artifact_digest": bundle_manifest_digest,
+            "campaign_contract_sha256": "c" * 64,
+            "timeframe_seconds": 60,
+            "horizon_bars": 15,
+            "candle_open_ts": base_ts - 60,
+            "candle_close_ts": base_ts,
+            "decision_timestamp": base_ts,
+            "feature_cutoff_ts": base_ts,
+            "feature_digest": "f" * 64,
+            "reference_candle_price": 1.09500,
+            "reference_candle_digest": "r" * 64,
+            "prob_up": 0.80,
+            "prob_down": 0.20,
+            "confidence_threshold": bundle_tau,
+            "decision": "UP",
+            "abstention_reason": "",
+            "maturity_timestamp": base_ts + 900,
+            "evidence_classification": "OFFLINE_SYNTHETIC_FIXTURE_ONLY",
+            "predicted_at_utc": "2026-11-27T12:00:00Z",
+            "committed_at_ts": base_ts,
+            "committed_at_utc": "2026-11-27T12:00:00Z",
+            "raw_prob_up": 0.75,
+            "confidence": 0.80,
+            "confidence_margin": 0.80 - bundle_tau,
+        }
+        base_dict.update(overrides)
+        return PredictionCommitmentRecord(**base_dict)  # type: ignore[arg-type]
+
+    # 1. Missing bundle rejection
+    dummy_rec = _make_record(
+        record_id="dummy_missing_bundle",
+        candidate_id="unknown_candidate_id",
+    )
+    val, reason, _ = coord.validate_commitment(dummy_rec, current_ts=float(base_ts))
+    assert val is None
+    assert reason == AISignalRejectionReason.UNRECOGNIZED_CANDIDATE
+
+    # 2. Inconsistent probability decision: prob_up > prob_down but decision is DOWN
+    inconsistent_rec = _make_record(
+        record_id="inconsistent_dec",
+        prob_up=0.80,
+        prob_down=0.20,
+        decision="DOWN",  # Inconsistent with prob_up=0.80
+    )
+    val, reason, _ = coord.validate_commitment(
+        inconsistent_rec, current_ts=float(base_ts), require_sealed_digest=False
+    )
+    assert val is None
+    assert reason == AISignalRejectionReason.INCONSISTENT_PROBABILITY_DECISION
+
+    # 3. Invalid expiration timestamp (maturity != decision_ts + tf * horizon)
+    bad_mat_rec = _make_record(
+        record_id="bad_maturity",
+        maturity_timestamp=base_ts + 600,  # Expected 900
+    )
+    val, reason, _ = coord.validate_commitment(
+        bad_mat_rec, current_ts=float(base_ts), require_sealed_digest=False
+    )
+    assert val is None
+    assert reason == AISignalRejectionReason.INVALID_EXPIRATION
+
+    # 4. Future-dated signal
+    future_rec = _make_record(
+        record_id="future_rec",
+        candle_open_ts=base_ts + 300,
+        candle_close_ts=base_ts + 360,
+        decision_timestamp=base_ts + 360,
+        feature_cutoff_ts=base_ts + 360,
+        maturity_timestamp=base_ts + 360 + 900,
+        committed_at_ts=base_ts + 360,
+    )
+    val, reason, _ = coord.validate_commitment(
+        future_rec, current_ts=float(base_ts), require_sealed_digest=False
+    )
+    assert val is None
+    assert reason == AISignalRejectionReason.FUTURE_DATED_SIGNAL
+
+    # 5. Stale signal (age 200s > max_signal_age 120s, but maturity still in future)
+    stale_rec = _make_record(
+        record_id="stale_rec",
+        candle_open_ts=base_ts - 260,
+        candle_close_ts=base_ts - 200,
+        decision_timestamp=base_ts - 200,
+        feature_cutoff_ts=base_ts - 200,
+        maturity_timestamp=base_ts - 200 + 900,  # = base_ts + 700 > base_ts
+        committed_at_ts=base_ts - 200,
+    )
+    val_stale, reason_stale, _ = coord.validate_commitment(
+        stale_rec, current_ts=float(base_ts), require_sealed_digest=False
+    )
+    assert val_stale is None
+    assert reason_stale == AISignalRejectionReason.STALE_SIGNAL
+
+    # 6. Already expired signal (within max age window 1200s, but maturity already passed)
+    coord_long_window = PaperBridgePortfolioCoordinator(
+        models_dir=models_dir,
+        output_dir=tmp_path / "paper_long",
+        initial_balance=10000.0,
+        fixed_stake=10.0,
+        max_signal_age_seconds=1200.0,
+    )
+    expired_rec = _make_record(
+        record_id="expired_rec",
+        candle_open_ts=base_ts - 960,
+        candle_close_ts=base_ts - 900,
+        decision_timestamp=base_ts - 900,
+        feature_cutoff_ts=base_ts - 900,
+        maturity_timestamp=base_ts - 900 + 900,  # = base_ts <= current_ts
+        committed_at_ts=base_ts - 900,
+    )
+    val_exp, reason_exp, _ = coord_long_window.validate_commitment(
+        expired_rec, current_ts=float(base_ts + 10.0), require_sealed_digest=False
+    )
+    assert val_exp is None
+    assert reason_exp == AISignalRejectionReason.EXPIRED_SIGNAL
+
+    # 7. Reference candle mismatch (price or boundary mismatch)
+    mismatch_rec = _make_record(record_id="mismatch_rec")
+    wrong_candle = _make_candle(ts=base_ts, close_px=1.09999)  # 50 pips off
+    val, reason, _ = coord.validate_commitment(
+        mismatch_rec,
+        current_ts=float(base_ts),
+        entry_candle=wrong_candle,
+        require_sealed_digest=False,
+    )
+    assert val is None
+    assert reason == AISignalRejectionReason.REFERENCE_CANDLE_MISMATCH
+
+    # 7. Persistent duplicate prevention across restarts
+    valid_rec = _make_record(record_id="valid_rec_1")
+    res = coord.submit_commitment(
+        valid_rec,
+        entry_candle=c_ref,
+        current_ts=float(base_ts),
+        require_sealed_digest=False,
+    )
+    assert res.accepted
+    assert res.order is not None
+
+    # Restart coordinator with same output directory
+    coord_restarted = PaperBridgePortfolioCoordinator(
+        models_dir=models_dir,
+        output_dir=tmp_path / "paper_hardened",
+        initial_balance=10000.0,
+        fixed_stake=10.0,
+        max_signal_age_seconds=120.0,
+    )
+    val_dup, reason_dup, _ = coord_restarted.validate_commitment(
+        valid_rec,
+        current_ts=float(base_ts),
+        entry_candle=c_ref,
+        require_sealed_digest=False,
+    )
+    assert val_dup is None
+    assert reason_dup == AISignalRejectionReason.DUPLICATE_SIGNAL
+    res_dup = coord_restarted.submit_commitment(
+        valid_rec,
+        entry_candle=c_ref,
+        current_ts=float(base_ts),
+        require_sealed_digest=False,
+    )
+    assert not res_dup.accepted
+    assert res_dup.rejection_reason == AISignalRejectionReason.DUPLICATE_SIGNAL
+
+
+def test_practice_balance_select_capability_reclassified() -> None:
+    matrix = BrokerCapabilityMatrix()
+    op_select = matrix.get_operation("practice_balance_select_manual")
+    assert op_select is not None
+    assert op_select.protocol_frame_name == "change_balance"
+    assert "State-Mutating" in op_select.name
+    assert "NOT a read-only diagnostic" in op_select.description
+    assert not op_select.live_broker_allowed
+    assert "requires_interactive_operator_confirmation" in op_select.blockers
+
+    op_diag = matrix.get_operation("account_passive_diagnostics")
+    assert op_diag is not None
+    assert op_diag.status == BrokerCapabilityStatus.READ_ONLY_BROKER_VERIFIED
+    assert op_diag.live_broker_allowed
+    assert "Pure read-only" in op_diag.description
+
+
+def test_binary_adapter_exact_maturity_boundary() -> None:
+    adapter = BinaryOptionsAdapter(execution_mode=ExecutionMode.PAPER, exact_maturity_only=True)
+    journal = ExecutionJournal()
+    cfg = ModularExecutionConfig(symbol="EURUSD", mode=ExecutionMode.PAPER)
+    engine = ModularExecutionEngine(cfg, journal=journal)
+
+    base_ts = 1_795_800_000
+    c_open = _make_candle(ts=base_ts, close_px=1.0950)
+    prop = engine.create_proposal(
+        symbol="EURUSD",
+        side=OrderSide.CALL,
+        stake=10.0,
+        candle_to_ts=float(base_ts),
+        signal_id="sig_test_boundary",
+    )
+    order, dec = engine.propose_and_validate(prop, current_ts=float(base_ts), is_replay=True)
+    assert dec.permitted
+    engine.submit_order(order, c_open)
+    order.expiry_ts = float(base_ts + 900)
+
+    # 1. Candle arriving before maturity does NOT settle
+    c_early = _make_candle(ts=base_ts + 600, close_px=1.0960)
+    assert not adapter.monitor_order(order, c_early)
+
+    # 2. Candle arriving at exact maturity boundary settles
+    c_exact = _make_candle(ts=base_ts + 900, close_px=1.0960)
+    assert adapter.monitor_order(order, c_exact)
+
+    # 3. Later candle arriving when exact candle was missing does NOT settle
+    c_late = _make_candle(ts=base_ts + 960, close_px=1.0970)
+    assert not adapter.monitor_order(order, c_late)
+    engine.close()

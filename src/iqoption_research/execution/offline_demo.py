@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +42,7 @@ from iqoption_research.execution.paper_bridge import (
     FrozenPhase48Scorer,
     PaperBridgePortfolioCoordinator,
     load_readonly_commitments,
+    make_close_price_only_candle,
 )
 from iqoption_research.execution.risk import RiskConfig
 from iqoption_research.execution.state_machine import ExecutionJournal
@@ -54,6 +56,10 @@ from iqoption_research.models.account import AccountType, Balance, Profile
 from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.phase48.artifacts import default_models_dir
 from iqoption_research.phase48.constants import PHASE48_SESSIONS_DIR
+from iqoption_research.phase48.evidence import (
+    PredictionCommitmentRecord,
+    verify_phase48_session_integrity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -370,73 +376,130 @@ class OfflineExecutionDemoController:
         try:
             if use_stage_b_readonly:
                 session_dir = self.repo_root / PHASE48_SESSIONS_DIR / "p48_gen_20261127_145740"
+                ok_integ, integ_errs = verify_phase48_session_integrity(session_dir)
+                if not ok_integ:
+                    raise RuntimeError(
+                        f"Stage B session integrity verification failed: {integ_errs}"
+                    )
                 pred_file = session_dir / "predictions.jsonl"
                 inputs_file = session_dir / "inputs.jsonl"
+                outcomes_file = session_dir / "outcomes.jsonl"
                 if pred_file.exists() and inputs_file.exists():
                     commitments = load_readonly_commitments(pred_file)
-                    candles_by_ts: dict[int, Candle] = {}
+
+                    # 1. Parse genuine input candles into close-price-only representations
+                    # Indexed strictly by (symbol, native_timeframe, close_timestamp)
+                    candles_by_key: dict[tuple[str, int, int], Candle] = {}
+                    inputs_by_ts: dict[int, dict[str, Any]] = {}
                     for line in inputs_file.read_text(encoding="utf-8").splitlines():
                         if not line.strip():
                             continue
                         row = json.loads(line)
-                        close_ts = int(row["candle_close_ts"])
-                        open_ts = int(row["candle_open_ts"])
+                        c_ts = int(row["candle_close_ts"])
+                        o_ts = int(row["candle_open_ts"])
+                        tf = int(row.get("timeframe_seconds", 60))
                         c_val = float(row["close"])
-                        candles_by_ts[close_ts] = Candle(
-                            active_id=1,
+                        c_digest = str(row.get("candle_digest", ""))
+                        inputs_by_ts[c_ts] = row
+                        candle_obj = make_close_price_only_candle(
                             symbol="EURUSD",
-                            size=CandleSize.MIN_1,
-                            from_ts=open_ts,
-                            to_ts=close_ts,
-                            at_ts=close_ts * 1_000_000_000,
-                            open=c_val,
-                            high=c_val + 0.00015,
-                            low=c_val - 0.00015,
+                            timeframe_seconds=tf,
+                            from_ts=o_ts,
+                            to_ts=c_ts,
                             close=c_val,
-                            volume=100.0,
-                            bid=round(c_val - 0.00004, 6),
-                            ask=round(c_val + 0.00004, 6),
-                            is_complete=True,
+                            candle_digest=c_digest,
+                            provenance="CLOSE_PRICE_ONLY_SIMULATION:stage_b_inputs",
                         )
-                    for rec in commitments:
-                        c = candles_by_ts.get(rec.decision_timestamp)
-                        if c is None:
-                            continue
-                        coord.submit_commitment(
-                            rec,
-                            entry_candle=c,
-                            current_ts=float(rec.decision_timestamp),
-                            require_sealed_digest=True,
-                        )
-                    # Replay maturity closes read-only from outcomes.jsonl if present
-                    outcomes_file = session_dir / "outcomes.jsonl"
+                        candles_by_key["EURUSD", tf, c_ts] = candle_obj
+
+                    # 2. Parse genuine outcomes for validation
+                    outcomes_by_id: dict[str, dict[str, Any]] = {}
+                    outcomes_by_mat_ts: dict[int, list[dict[str, Any]]] = defaultdict(list)
                     if outcomes_file.exists():
                         for line in outcomes_file.read_text(encoding="utf-8").splitlines():
                             if not line.strip():
                                 continue
                             out_row = json.loads(line)
-                            m_ts = int(out_row["maturity_timestamp"])
-                            m_close = float(out_row["outcome_candle_close"])
-                            coord.process_candle(
-                                Candle(
-                                    active_id=1,
-                                    symbol="EURUSD",
-                                    size=CandleSize.MIN_1,
-                                    from_ts=m_ts - 60,
-                                    to_ts=m_ts,
-                                    at_ts=m_ts * 1_000_000_000,
-                                    open=m_close,
-                                    high=m_close + 0.0001,
-                                    low=m_close - 0.0001,
-                                    close=m_close,
-                                    volume=100.0,
-                                    bid=round(m_close - 0.00004, 6),
-                                    ask=round(m_close + 0.00004, 6),
-                                    is_complete=True,
-                                )
-                            )
+                            outcomes_by_id[out_row["record_id"]] = out_row
+                            outcomes_by_mat_ts[int(out_row["maturity_timestamp"])].append(out_row)
+
+                    # 3. Build unified chronological timeline of discrete timestamps
+                    preds_by_decision_ts: dict[int, list[PredictionCommitmentRecord]] = defaultdict(
+                        list
+                    )
+                    for rec in commitments:
+                        preds_by_decision_ts[int(rec.decision_timestamp)].append(rec)
+
+                    all_ts = set(inputs_by_ts.keys())
+                    all_ts.update(preds_by_decision_ts.keys())
+                    all_ts.update(outcomes_by_mat_ts.keys())
+                    chronological_timeline = sorted(all_ts)
+
+                    # 4. Chronological interleaved event processing
+                    # Never submit all historical orders before processing corresponding outcomes
+                    for step_ts in chronological_timeline:
+                        # (A) Submit new commitments arriving at step_ts
+                        if step_ts in preds_by_decision_ts:
+                            for rec in preds_by_decision_ts[step_ts]:
+                                ref_candle = candles_by_key.get((
+                                    "EURUSD",
+                                    rec.timeframe_seconds,
+                                    rec.decision_timestamp,
+                                ))
+                                if ref_candle is not None:
+                                    coord.submit_commitment(
+                                        rec,
+                                        entry_candle=ref_candle,
+                                        current_ts=float(step_ts),
+                                        require_sealed_digest=True,
+                                        route_conflict_guarded_book=True,
+                                    )
+
+                        # (B) Advance market clock with genuine close-price-only candle and settle exact maturities
+                        m1_candle = candles_by_key.get(("EURUSD", 60, step_ts))
+                        if m1_candle is not None:
+                            coord.process_candle(m1_candle)
+
                     report = coord.summary_report()
                     report["replay_source"] = "GENUINE_STAGE_B_READ_ONLY"
+                    report["simulation_model"] = "CLOSE_PRICE_ONLY_SIMULATION"
+                    report["session_integrity_verified"] = True
+                    report["chronological_interleaved"] = True
+                    report["evaluation_breakdown"] = {
+                        "total_evaluations": sum(
+                            s.total_commitments for s in coord.candidate_stats.values()
+                        ),
+                        "candidate_a_evaluations": coord.candidate_stats[
+                            "p48_exp_cand_a_m1_h15_hgb_v1"
+                        ].total_commitments,
+                        "candidate_a_selected": coord.candidate_stats[
+                            "p48_exp_cand_a_m1_h15_hgb_v1"
+                        ].accepted_orders_count,
+                        "candidate_a_abstained": coord.candidate_stats[
+                            "p48_exp_cand_a_m1_h15_hgb_v1"
+                        ].abstained_count,
+                        "candidate_a_wins": coord.candidate_stats[
+                            "p48_exp_cand_a_m1_h15_hgb_v1"
+                        ].wins,
+                        "candidate_a_losses": coord.candidate_stats[
+                            "p48_exp_cand_a_m1_h15_hgb_v1"
+                        ].losses,
+                        "candidate_a_ties": coord.candidate_stats[
+                            "p48_exp_cand_a_m1_h15_hgb_v1"
+                        ].ties,
+                        "candidate_b_evaluations": coord.candidate_stats[
+                            "p48_exp_cand_b_m5_h6_hgb_v1"
+                        ].total_commitments,
+                        "candidate_b_abstained": coord.candidate_stats[
+                            "p48_exp_cand_b_m5_h6_hgb_v1"
+                        ].abstained_count,
+                        "candidate_c_evaluations": coord.candidate_stats[
+                            "p48_exp_cand_c_m15_h4_hgb_v1"
+                        ].total_commitments,
+                        "candidate_c_abstained": coord.candidate_stats[
+                            "p48_exp_cand_c_m15_h4_hgb_v1"
+                        ].abstained_count,
+                    }
                     self.last_ai_bridge_report = report
                     return report
 

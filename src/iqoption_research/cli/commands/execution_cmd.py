@@ -63,6 +63,10 @@ from iqoption_research.execution.practice_transport import (
     compute_binary_expiry,
 )
 from iqoption_research.execution.safety import AccountSelectionUnverifiedError
+from iqoption_research.execution.supervised_practice import (
+    SupervisedPracticeReadinessEvaluator,
+    SupervisedPracticeSpec,
+)
 from iqoption_research.models.account import AccountType, Balance, Profile
 from iqoption_research.models.market import Candle, CandleSize
 from iqoption_research.security.credentials import Credentials, redact_email
@@ -1828,6 +1832,51 @@ def practice_test_command(
                 f"({transport.active_balance_id} != {active_bal_id}) or lost practice "
                 "verification. Order blocked fail-closed.[/bold red]"
             )
+            raise typer.Exit(code=1)
+
+        # 8. Enforce Supervised Practice Readiness Gating
+        supervised_spec = SupervisedPracticeSpec(
+            symbol=symbol.upper(),
+            product_type=ProductType.BINARY,
+            side=norm_side,
+            stake=stake,
+            duration_minutes=1,
+            max_orders_permitted=1,
+            min_payout_rate=0.70,
+            ai_authorized=False,
+        )
+        readiness_eval = SupervisedPracticeReadinessEvaluator()
+        readiness_rep = readiness_eval.evaluate(
+            supervised_spec,
+            vault_account_id="selected_vault_account" if not offline_mock else "mock_vault_account",
+            profile=transport.profile,
+            balances=transport.balances,
+            active_balance_id=transport.active_balance_id,
+            has_authoritative_active_indicator=False,
+            selection_frame_transmitted=transport.selection_frame_transmitted,
+            selection_frame_acknowledged=transport.selection_frame_acknowledged,
+            balance_changed_event_received=transport.balance_changed_event_received,
+            last_verification_ts=getattr(transport, "verified_at", None),
+            current_ts=time.time(),
+            clock_is_fresh=True,
+            payout_rate=spec.payout_rate if spec else None,
+            uncertain_orders_count=0,
+            emergency_stop_active=False,
+            operator_authorized=True,
+        )
+        if not offline_mock and not readiness_rep.is_live_execution_permitted:
+            console.print(
+                Panel.fit(
+                    "[bold red]CRITICAL SAFETY BLOCK: Supervised Practice Readiness Gate Failed[/bold red]\n\n"
+                    f"• Boundary Status: {readiness_rep.boundary_status.value}\n"
+                    f"• Remaining Blockers: {', '.join(readiness_rep.blockers)}\n"
+                    "• Pre-transmission routing evidence cannot be resolved by placing a test order.\n"
+                    "• Invariant: Actual live broker orders remain BLOCKED fail-closed.\n"
+                    "• Zero orders were submitted to the broker.",
+                    border_style="red",
+                )
+            )
+            transport.close()
             raise typer.Exit(code=1)
 
         # 9. Engine Execution & Order Dispatch

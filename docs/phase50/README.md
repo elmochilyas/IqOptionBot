@@ -211,3 +211,71 @@ Launch Research Workstation V2 (`desktop` CLI or module) and select the **Execut
 ![Execution Center Capability Matrix](screenshots/execution_center_capability_matrix.png)
 
 ![Execution Center Protocol & Wallet Authority](screenshots/execution_center_protocol_authority.png)
+
+---
+
+## 10. Phase 50 — Focused Acceptance Corrections
+
+### 10.1 Hardened PAPER Commitment Validation (`execution/paper_bridge.py`)
+
+- **Bundle Availability Gate:** Rejects any commitment if the verified frozen model bundle is missing (`MISSING_FROZEN_MODEL_BUNDLE`). Never silently skips artifact verification.
+- **Manifest Alignment:** Recomputes and validates exact frozen bundle SHA-256 digest, threshold (`frozen_confidence_threshold`), timeframe, and horizon against the immutable frozen manifest.
+- **Probability & Decision Consistency:** Validates finite probabilities within `[0.0, 1.0]` and `prob_up + prob_down == 1.0` within `1e-4`. Independently recomputes expected decision using full-precision probabilities and the frozen manifest threshold $\tau$:
+  $$\text{conf} = \max(p_{\text{up}}, p_{\text{down}}), \quad \text{decision} = \begin{cases} \text{UP} & \text{if } \text{conf} \ge \tau \text{ and } p_{\text{up}} \ge 0.5 \\ \text{DOWN} & \text{if } \text{conf} \ge \tau \text{ and } p_{\text{down}} > 0.5 \\ \text{ABSTAIN} & \text{if } \text{conf} < \tau \end{cases}$$
+  Any commitment whose recorded decision contradicts this recomputed value is rejected fail-closed with `INCONSISTENT_PROBABILITY_DECISION`.
+- **Exact Expiration Maturity:** Enforces exact maturity:
+  $$\text{maturity\_timestamp} = \text{decision\_timestamp} + (\text{timeframe\_seconds} \times \text{horizon\_bars})$$
+  Any deviation is rejected with `INVALID_EXPIRATION`.
+- **Temporal Sequence Guarding:** Rejects future-dated commitments (`FUTURE_DATED_SIGNAL` when `decision_timestamp > current_ts + 1.0`), stale signals (`STALE_SIGNAL` when `current_ts - decision_timestamp > max_signal_age_seconds`), and already-expired signals (`EXPIRED_SIGNAL` when `maturity_timestamp <= current_ts`).
+- **Reference Candle Boundary & Price Validation:** Validates symbol (`EURUSD`), `to_ts == decision_timestamp == candle_close_ts`, `from_ts == candle_open_ts`, `duration == timeframe_seconds`, `close == reference_candle_price` within `1e-4`, and candle digest. Any mismatch is rejected with `REFERENCE_CANDLE_MISMATCH`.
+- **Persistent Duplicate Prevention:** Recovers all recorded order IDs and intent keys from SQLite journals upon coordinator initialization and validates against `eng.state_machine.get_order_by_signal(intent_id)`. Prevents duplicate order creation across restarts (`DUPLICATE_SIGNAL`).
+- **Fixture vs Genuine Segregation:** Keeps synthetic test fixtures (`OFFLINE_SYNTHETIC_FIXTURE_ONLY`) strictly distinguished from verified frozen prospective model replays.
+
+### 10.2 Actual Stage B Historical PAPER Replay Report
+
+The historical replay of Phase 48 Genuine Observation Stage B (`p48_gen_20261127_145740`) was executed using **chronological event interleaving** without pre-submitting orders or fabricating synthetic OHLC/spreads:
+
+- **Session Integrity:** Cryptographically verified before replay via `verify_phase48_session_integrity()` (`OK=True`, 0 errors).
+- **Simulation Model:** Explicitly labeled `CLOSE_PRICE_ONLY_SIMULATION` via `make_close_price_only_candle()`. Uses strictly recorded reference candle closes and maturity candle closes without fabricating synthetic high, low, volume, or fake bid/ask spreads.
+- **Chronological Interleaving:** Events are processed step-by-step in strictly ascending time order across 168 discrete timestamps (from `1795791480` to `1795801500`). New commitments are evaluated at `decision_timestamp`, and contracts are settled only when the exact maturity boundary candle (`to_ts == expiry_ts`) arrives. No later candle is ever substituted for a missing maturity boundary.
+- **Exact Sealed Outcome Breakdown (152 Evaluations):**
+
+| Candidate | Timeframe / Horizon | Total Evaluations | Selected | Abstained | Wins | Losses | Ties | Directional Accuracy |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Candidate A** (`p48_exp_cand_a_m1_h15_hgb_v1`) | M1 / H15 | 120 | 26 | 94 | 20 | 5 | 1 | **80.0%** (20/25 non-tie) |
+| **Candidate B** (`p48_exp_cand_b_m5_h6_hgb_v1`) | M5 / H6 | 24 | 0 | 24 | 0 | 0 | 0 | N/A (all abstained) |
+| **Candidate C** (`p48_exp_cand_c_m15_h4_hgb_v1`) | M15 / H4 | 8 | 0 | 8 | 0 | 0 | 0 | N/A (all abstained) |
+| **Total** | — | **152** | **26** | **126** | **20** | **5** | **1** | **80.0%** |
+
+- **Cross-Candidate Conflict-Guarded Book:**
+  - Accepted orders: 26 (all 26 selected Candidate A commitments were in the `DOWN` direction; zero opposing `UP` signals arrived, so 0 conflicts were blocked).
+  - Settled orders: 26.
+  - Wins: 20, Losses: 5, Ties: 1.
+  - Simulated PnL: `+$120.00` (under assumed fixed 85% binary payout model).
+  - Open orders at conclusion: 0.
+
+### 10.3 Corrected Practice Verification Workflow & Capability Matrix
+
+1. **Reclassification of `practice-select --live`:**
+   - The CLI command `practice-select --live` transmits the active wire protocol frame `change_balance`.
+   - In `capability_matrix.py`, `practice_balance_select_manual` is explicitly classified as an **active state mutation** under `OperationCategory.BALANCE_MANAGEMENT`, **NOT** a read-only diagnostic.
+   - It is gated behind interactive operator confirmation and prohibited from automated execution.
+2. **Four Strict Wallet Authority Layers:**
+   - **Passive Wallet Diagnostics:** Pure read-only profile and balance inventory inspection via `get-profile` and `get-balances` (`account_passive_diagnostics`, `READ_ONLY_BROKER_VERIFIED`).
+   - **Explicit Wallet Selection:** Operator-confirmed session balance mutation transmitting `change_balance` (`practice_balance_select_manual`, `OFFLINE_TESTED`, state-mutating).
+   - **Authoritative Session Practice Routing:** Verifying that the broker's active session is unambiguously bound to Practice (`AccountType.PRACTICE` / type 4) with zero `REAL` leakage (`account_practice_verification`).
+   - **Order-Specific Routing Evidence:** Per-order verification (`user_balance_id` correlation on `option-opened` receipts) proving virtual Practice wallet debit (`account_order_routing_authority`, **`BLOCKED`**).
+3. **CLI Execution Path Supervised Readiness Enforcement:**
+   - `practice_order_command` now evaluates `SupervisedPracticeReadinessEvaluator.evaluate_readiness()` before proposing or submitting any live order.
+   - Live orders are strictly blocked fail-closed when pre-transmission routing evidence is missing or ambiguous. Missing evidence is **never** resolved by placing a live test order.
+   - A fresh connection resets all session selection flags and never inherits verification from a disconnected session.
+
+### 10.4 Exact Read-Only Diagnostic Command
+
+To perform pure read-only passive wallet diagnostics without transmitting any state-mutating balance frame or order:
+
+```powershell
+.\.venv\Scripts\python.exe -m iqoption_research.cli.main execution practice-diagnostics --live
+```
+
+*(For offline simulated diagnostics: `.\.venv\Scripts\python.exe -m iqoption_research.cli.main execution practice-diagnostics --offline-mock`)*

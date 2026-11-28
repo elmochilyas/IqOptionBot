@@ -81,12 +81,14 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
         default_horizon_bars: int = 1,
         bar_duration_seconds: int = 60,
         simulated_slippage: float = 0.0,
+        exact_maturity_only: bool = False,
     ) -> None:
         super().__init__(ProductType.BINARY, execution_mode)
         self.default_payout_rate = default_payout_rate
         self.default_horizon_bars = default_horizon_bars
         self.bar_duration_seconds = bar_duration_seconds
         self.simulated_slippage = simulated_slippage
+        self.exact_maturity_only = exact_maturity_only
         self.payoff_model = BinaryPayoffModel(payout_rate=default_payout_rate)
         self.practice_transport = PracticeBinaryTransportAdapter(
             default_payout_rate=default_payout_rate
@@ -284,6 +286,8 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
             return False
         if order.expiry_ts is None:
             return False
+        if self.exact_maturity_only:
+            return abs(float(current_candle.to_ts) - order.expiry_ts) < 1e-4
         return float(current_candle.to_ts) >= order.expiry_ts
 
     def settle_or_close(

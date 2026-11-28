@@ -161,6 +161,12 @@ def test_offline_demo_isolated_run_directories(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_chronological_synthetic_replay_and_metrics(tmp_path: Path) -> None:
     """Verify chronological event interleaving, 51 settled vs 10 cutoff, and 114 abstention rejections."""
+    from iqoption_research.phase48.artifacts import default_models_dir
+
+    models_dir = default_models_dir(Path.cwd())
+    if not models_dir.exists():
+        pytest.skip("Frozen Phase 48 model artifacts not present in workspace (CI environment)")
+
     ctrl = OfflineExecutionDemoController(Path.cwd(), workspace_dir=tmp_path)
     try:
         report = ctrl.run_frozen_three_model_replay()

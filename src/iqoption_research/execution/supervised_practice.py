@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -57,6 +58,8 @@ from iqoption_research.execution.practice_transport import (
 )
 from iqoption_research.execution.safety import AccountSelectionUnverifiedError
 from iqoption_research.models.account import Balance, Profile
+
+logger = logging.getLogger(__name__)
 
 
 class SupervisedTestAuthorizationBoundary(StrEnum):
@@ -527,6 +530,7 @@ async def run_supervised_practice_mock_rehearsal(
         await asyncio.sleep(0)
         return ws
 
+    logger.info("MOCKED_OFFLINE: Starting supervised Practice mock rehearsal...")
     transport = IQOptionLivePracticeTransport(
         ssid="mock_rehearsal_ssid",
         config=IQOptionLivePracticeTransportConfig(request_timeout=2.0, settlement_timeout=2.0),
@@ -534,6 +538,7 @@ async def run_supervised_practice_mock_rehearsal(
     )
     try:
         # Step 1: Connect without auto-switching — initial profile defaults to REAL (200) -> blocked!
+        logger.info("MOCKED_OFFLINE: Step 1 connecting to simulated socket...")
         await transport.async_connect(require_practice=False)
         initial_audit = transport.get_routing_audit()
 
@@ -554,14 +559,20 @@ async def run_supervised_practice_mock_rehearsal(
             RealAccountExecutionBlockedError,
         ):
             blocked_unverified = True
+        logger.info(
+            "MOCKED_OFFLINE: Step 1 verified initial REAL profile fails closed: %s",
+            blocked_unverified,
+        )
 
         # Step 2: Explicit operator-confirmed Practice selection (mocked)
+        logger.info("MOCKED_OFFLINE: Step 2 selecting simulated Practice balance 101...")
         selected = await transport.async_select_practice_balance(
             operator_authorized=True,
             verification_timeout=1.0,
             retry_interval=0.05,
         )
         post_select_audit = transport.get_routing_audit()
+        logger.info("MOCKED_OFFLINE: Step 2 Practice selected and verified: %s", selected.id)
 
         # Step 3: Submit strictly 1 order (1.00 USD on EURUSD active_id=1)
         frame = {
@@ -580,10 +591,12 @@ async def run_supervised_practice_mock_rehearsal(
                 },
             },
         }
+        logger.info("MOCKED_OFFLINE: Step 3 submitting simulated order frame...")
         ack = await transport.async_send_order_frame(frame)
         ticket_id = transport.active_ticket_id
         if not ticket_id:
             raise PracticeAuthorizationError("Missing broker ticket ID in rehearsal order ack.")
+        logger.info("MOCKED_OFFLINE: Step 3 order ack received with ticket_id=%s", ticket_id)
         settlement = await transport.async_wait_for_settlement(
             ticket_id,
             stake=1.0,
@@ -591,7 +604,12 @@ async def run_supervised_practice_mock_rehearsal(
             symbol="EURUSD",
             side=OrderSide.CALL,
         )
+        logger.info(
+            "MOCKED_OFFLINE: Step 4 simulated settlement notification received: %s",
+            settlement.outcome,
+        )
         post_bal = await transport.async_get_practice_balance_amount(refresh=True)
+        logger.info("MOCKED_OFFLINE: Step 5 simulated balance reconciled to $%.2f", post_bal)
     finally:
         await transport.async_close()
 

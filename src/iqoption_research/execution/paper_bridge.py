@@ -23,7 +23,7 @@ import hashlib
 import json
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -369,9 +369,11 @@ class CandidatePaperMetrics:
     losses: int = 0
     ties: int = 0
     open_orders_count: int = 0
+    incomplete_simulation_outcomes: int = 0
     initial_balance: float = 10000.0
     final_balance: float = 10000.0
     simulated_pnl: float = 0.0
+    rejections_by_reason: dict[str, int] = field(default_factory=dict)
     execution_label: str = "PAPER/SIMULATED"
     contract_terms_assumption: str = SIMULATED_PAYOUT_ASSUMPTION
 
@@ -838,6 +840,9 @@ class PaperBridgePortfolioCoordinator:
                     stats.abstained_count += 1
                 else:
                     stats.rejected_count += 1
+                if rej_reason is not None:
+                    rk = rej_reason.value if hasattr(rej_reason, "value") else str(rej_reason)
+                    stats.rejections_by_reason[rk] = stats.rejections_by_reason.get(rk, 0) + 1
             res = AISignalEvaluationResult(
                 record_id=record.record_id,
                 candidate_id=record.candidate_id,
@@ -875,6 +880,10 @@ class PaperBridgePortfolioCoordinator:
         if not decision.permitted:
             if stats is not None:
                 stats.rejected_count += 1
+                stats.rejections_by_reason[AISignalRejectionReason.RISK_REJECTED.value] = (
+                    stats.rejections_by_reason.get(AISignalRejectionReason.RISK_REJECTED.value, 0)
+                    + 1
+                )
             res = AISignalEvaluationResult(
                 record_id=record.record_id,
                 candidate_id=validated.candidate_id,
@@ -970,6 +979,7 @@ class PaperBridgePortfolioCoordinator:
             if st.timeframe_seconds == candle_tf:
                 engine.process_candle(candle)
                 st.open_orders_count = len(engine.open_orders)
+                st.incomplete_simulation_outcomes = len(engine.open_orders)
                 st.settled_orders_count = engine.portfolio.total_trades
                 st.wins = engine.portfolio.winning_trades
                 st.losses = engine.portfolio.losing_trades
@@ -989,6 +999,15 @@ class PaperBridgePortfolioCoordinator:
 
     def summary_report(self) -> dict[str, Any]:
         """Build complete scientific/execution report distinguishing candle outcomes vs settlement."""
+        global_rejections: dict[str, int] = {}
+        for s in self.candidate_stats.values():
+            for rk, cnt in s.rejections_by_reason.items():
+                global_rejections[rk] = global_rejections.get(rk, 0) + cnt
+        for c_rej in self._conflict_rejections:
+            if c_rej.rejection_reason:
+                c_rk = c_rej.rejection_reason.value
+                global_rejections[c_rk] = global_rejections.get(c_rk, 0) + 1
+
         return {
             "schema_version": "phase50.ai_paper_bridge.v1",
             "execution_mode": ExecutionMode.PAPER.value,
@@ -999,8 +1018,11 @@ class PaperBridgePortfolioCoordinator:
             "contract_terms_assumption": SIMULATED_PAYOUT_ASSUMPTION,
             "settlement_distinction": (
                 "Simulated Binary outcomes evaluate candle close vs entry under a fixed "
-                "85% assumed payout. They are NOT broker-verified contract settlements."
+                "85% assumed payout. They are NOT broker-verified contract settlements. "
+                "Orders remaining open at the horizon cutoff represent incomplete simulation "
+                "outcomes, distinct from matured/settled contracts."
             ),
+            "rejections_by_reason": dict(global_rejections),
             "candidates": {
                 cid: {
                     "candidate_id": s.candidate_id,
@@ -1013,9 +1035,11 @@ class PaperBridgePortfolioCoordinator:
                     "accepted_orders_count": s.accepted_orders_count,
                     "settled_orders_count": s.settled_orders_count,
                     "open_orders_count": s.open_orders_count,
+                    "incomplete_simulation_outcomes": s.incomplete_simulation_outcomes,
                     "wins": s.wins,
                     "losses": s.losses,
                     "ties": s.ties,
+                    "rejections_by_reason": dict(s.rejections_by_reason),
                     "initial_balance": s.initial_balance,
                     "final_balance": s.final_balance,
                     "simulated_pnl": s.simulated_pnl,

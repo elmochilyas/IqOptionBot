@@ -608,9 +608,10 @@ class BrokerAccountDiagnostic:
         if has_conflicting_indicators:
             reasons = ", ".join(conflict_sources) or "conflicting_account_indicators"
             decision_steps = (
-                f"Profile reported default wallet ID '{prof_default_id}' (non-authoritative).",
+                f"Profile reported default wallet ID '{prof_default_id}' (profile metadata only; non-authoritative active-wallet proof).",
                 f"Balances inventory returned {len(effective_balances)} wallet(s).",
                 f"Conflict detector raised conflicting_account_indicators ({reasons}).",
+                "Cross-session wallet behavior is unverified without genuine evidence.",
                 "Live broker Practice authority cannot be established fail-closed.",
             )
             return AccountDiagnosticReport(
@@ -834,7 +835,12 @@ class BrokerAccountDiagnostic:
                 "balance_id": profile_bal_id,
                 "type": matched_prof.type.name if matched_prof else None,
                 "authoritative_for_routing": False,
+                "authoritative_active_wallet_proof": False,
                 "semantics": "PROFILE_REPORTED_IDENTITY_ONLY",
+                "description": (
+                    "Represents primary default registered profile metadata; does not "
+                    "constitute authoritative active-wallet proof for API session routing."
+                ),
             },
             locally_selected_wallet={
                 "balance_id": locally_selected_bal_id,
@@ -842,8 +848,12 @@ class BrokerAccountDiagnostic:
             },
             official_ui_selection={
                 "balance_id": browser_ui_bal_id,
-                "status": "OPERATOR_REPORTED" if browser_ui_bal_id else "NOT_OBSERVED",
+                "status": "OPERATOR_REPORTED" if browser_ui_bal_id else "UNVERIFIED_NOT_OBSERVED",
                 "authoritative_for_api_session": False,
+                "independent_observation": bool(browser_ui_bal_id),
+                "description": (
+                    "External browser UI state is not independently observable via WebSocket API."
+                ),
             },
             connection_scoped_authority={
                 "session_id": current_session_id,
@@ -852,6 +862,7 @@ class BrokerAccountDiagnostic:
                 "source": active_indicator_source,
                 "conflicting_indicators": list(conflicting_indicators),
                 "verification_age_seconds": verification_age_seconds,
+                "cross_session_inheritance": "UNVERIFIED_SESSION_SCOPED_ONLY",
             },
             order_specific_routing_authority={
                 "verified": bool(order_ledger_balance_id),

@@ -963,17 +963,19 @@ class PaperBridgePortfolioCoordinator:
             self.conflict_guarded_engine.journal.upsert_order(b_order)
 
     def process_candle(self, candle: Candle) -> None:
-        """Advance market candle across all independent candidate engines & shared book."""
+        """Advance market candle across matching native timeframe candidate engines & shared book."""
+        candle_tf = int(candle.to_ts - candle.from_ts)
         for cid, engine in self.engines.items():
-            engine.process_candle(candle)
             st = self.candidate_stats[cid]
-            st.open_orders_count = len(engine.open_orders)
-            st.settled_orders_count = engine.portfolio.total_trades
-            st.wins = engine.portfolio.winning_trades
-            st.losses = engine.portfolio.losing_trades
-            st.ties = engine.portfolio.flat_trades
-            st.final_balance = engine.portfolio.current_balance
-            st.simulated_pnl = engine.portfolio.total_pnl
+            if st.timeframe_seconds == candle_tf:
+                engine.process_candle(candle)
+                st.open_orders_count = len(engine.open_orders)
+                st.settled_orders_count = engine.portfolio.total_trades
+                st.wins = engine.portfolio.winning_trades
+                st.losses = engine.portfolio.losing_trades
+                st.ties = engine.portfolio.flat_trades
+                st.final_balance = engine.portfolio.current_balance
+                st.simulated_pnl = engine.portfolio.total_pnl
 
         self.conflict_guarded_engine.process_candle(candle)
 

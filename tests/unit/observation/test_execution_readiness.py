@@ -549,13 +549,15 @@ def test_hardened_commitment_validation(tmp_path: Path) -> None:
         AISignalRejectionReason,
         PaperBridgePortfolioCoordinator,
     )
-    from iqoption_research.phase48.artifacts import default_models_dir
     from iqoption_research.phase48.evidence import PredictionCommitmentRecord
+    from tests.support.models import create_synthetic_phase48_bundle
 
-    models_dir = default_models_dir(Path(__file__).resolve().parents[3])
-    cid = "p48_exp_cand_a_m1_h15_hgb_v1"
-    bundle_manifest_digest = ""
-    bundle_tau = 0.515474
+    models_dir = tmp_path / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    synth_manifest = create_synthetic_phase48_bundle(models_dir, slot_idx=0)
+    cid = synth_manifest.frozen_candidate_id
+    bundle_manifest_digest = synth_manifest.bundle_sha256
+    bundle_tau = synth_manifest.frozen_confidence_threshold
 
     coord = PaperBridgePortfolioCoordinator(
         models_dir=models_dir,
@@ -564,9 +566,6 @@ def test_hardened_commitment_validation(tmp_path: Path) -> None:
         fixed_stake=10.0,
         max_signal_age_seconds=120.0,
     )
-    if cid in coord.bundles:
-        bundle_manifest_digest = coord.bundles[cid].manifest.bundle_sha256
-        bundle_tau = coord.bundles[cid].manifest.frozen_confidence_threshold
 
     base_ts = 1_795_800_000
     c_ref = _make_candle(ts=base_ts, close_px=1.09500)

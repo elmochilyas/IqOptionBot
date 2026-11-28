@@ -237,24 +237,45 @@ The historical replay of Phase 48 Genuine Observation Stage B (`p48_gen_20261127
 
 - **Session Integrity:** Cryptographically verified before replay via `verify_phase48_session_integrity()` (`OK=True`, 0 errors).
 - **Simulation Model:** Explicitly labeled `CLOSE_PRICE_ONLY_SIMULATION` via `make_close_price_only_candle()`. Uses strictly recorded reference candle closes and maturity candle closes without fabricating synthetic high, low, volume, or fake bid/ask spreads.
-- **Chronological Interleaving:** Events are processed step-by-step in strictly ascending time order across 168 discrete timestamps (from `1795791480` to `1795801500`). New commitments are evaluated at `decision_timestamp`, and contracts are settled only when the exact maturity boundary candle (`to_ts == expiry_ts`) arrives. No later candle is ever substituted for a missing maturity boundary.
+- **Chronological Interleaving:** Events are processed step-by-step in strictly ascending time order across recorded candle acquisitions and commitment arrivals. New commitments are evaluated at actual commitment arrival time, and contracts are settled only when the exact maturity boundary candle (`to_ts == expiry_ts`) in the matching native timeframe arrives. No later candle is ever substituted for a missing maturity boundary.
 - **Exact Sealed Outcome Breakdown (152 Evaluations):**
 
-| Candidate | Timeframe / Horizon | Total Evaluations | Selected | Abstained | Wins | Losses | Ties | Directional Accuracy |
-|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Candidate A** (`p48_exp_cand_a_m1_h15_hgb_v1`) | M1 / H15 | 120 | 26 | 94 | 20 | 5 | 1 | **80.0%** (20/25 non-tie) |
-| **Candidate B** (`p48_exp_cand_b_m5_h6_hgb_v1`) | M5 / H6 | 24 | 0 | 24 | 0 | 0 | 0 | N/A (all abstained) |
-| **Candidate C** (`p48_exp_cand_c_m15_h4_hgb_v1`) | M15 / H4 | 8 | 0 | 8 | 0 | 0 | 0 | N/A (all abstained) |
-| **Total** | — | **152** | **26** | **126** | **20** | **5** | **1** | **80.0%** |
+| Candidate | Timeframe / Horizon | Total Evaluations | Selected | Non-Overlapping Selected | Abstained | Wins | Losses | Ties | Directional Accuracy |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Candidate A** (`p48_exp_cand_a_m1_h15_hgb_v1`) | M1 / 15m (H15) | 120 | 26 | 3 | 94 | 20 | 5 | 1 | **80.0%** (20/25 non-tie) |
+| **Candidate B** (`p48_exp_cand_b_m5_h6_hgb_v1`) | M5 / 30m (H6) | 24 | 0 | 0 | 24 | 0 | 0 | 0 | N/A (all abstained) |
+| **Candidate C** (`p48_exp_cand_c_m15_h4_hgb_v1`) | M15 / 60m (H4) | 8 | 0 | 0 | 8 | 0 | 0 | 0 | N/A (all abstained) |
+| **Total** | — | **152** | **26** | **3** | **126** | **20** | **5** | **1** | **80.0%** |
 
 - **Cross-Candidate Conflict-Guarded Book:**
   - Accepted orders: 26 (all 26 selected Candidate A commitments were in the `DOWN` direction; zero opposing `UP` signals arrived, so 0 conflicts were blocked).
+  - Non-overlapping selected orders: 3.
   - Settled orders: 26.
   - Wins: 20, Losses: 5, Ties: 1.
   - Simulated PnL: `+$120.00` (under assumed fixed 85% binary payout model).
   - Open orders at conclusion: 0.
 
-### 10.3 Corrected Practice Verification Workflow & Capability Matrix
+### 10.3 Supported CLI Stage B Replay Commands
+
+To execute the verified Stage B historical replay through the isolated PAPER execution bridge:
+
+```powershell
+# Dedicated replay command
+.\.venv\Scripts\python.exe -m iqoption_research.cli.main execution stage-b-replay --json
+
+# Or via offline-demo flag
+.\.venv\Scripts\python.exe -m iqoption_research.cli.main execution offline-demo --stage-b-readonly --json
+```
+
+Both commands:
+- Cryptographically verify the source session integrity (`verify_phase48_session_integrity`).
+- Verify all frozen model bundles before execution.
+- Interleave candles and commitments chronologically without lookahead bias.
+- Settle contracts strictly at exact native timeframe maturity boundaries.
+- Write isolated SQLite journals and JSON reports to a separate output directory.
+- Strictly prohibit broker network connection (`execution_authority="NONE"`).
+
+### 10.4 Corrected Practice Verification Workflow & Capability Matrix
 
 1. **Reclassification of `practice-select --live`:**
    - The CLI command `practice-select --live` transmits the active wire protocol frame `change_balance`.
@@ -270,7 +291,7 @@ The historical replay of Phase 48 Genuine Observation Stage B (`p48_gen_20261127
    - Live orders are strictly blocked fail-closed when pre-transmission routing evidence is missing or ambiguous. Missing evidence is **never** resolved by placing a live test order.
    - A fresh connection resets all session selection flags and never inherits verification from a disconnected session.
 
-### 10.4 Exact Read-Only Diagnostic Command
+### 10.5 Exact Read-Only Diagnostic Command
 
 To perform pure read-only passive wallet diagnostics without transmitting any state-mutating balance frame or order:
 

@@ -2661,11 +2661,63 @@ def offline_demo_command(
         "--json",
         help="Emit structured JSON summary.",
     ),
+    stage_b_readonly: bool = typer.Option(
+        False,
+        "--stage-b-readonly",
+        "--replay-stage-b",
+        help="Replay sealed Genuine Phase 48 Stage B observation session through isolated PAPER bridge.",
+    ),
+    session_id: str = typer.Option(
+        "p48_gen_20261127_145740",
+        "--session-id",
+        help="Stage B session ID to replay (defaults to p48_gen_20261127_145740).",
+    ),
 ) -> None:
     """Execute end-to-end offline execution demo across all products, Phase 48 models, and recovery."""
-    from iqoption_research.execution.offline_demo import run_weekend_offline_acceptance_demo
+    from iqoption_research.execution.offline_demo import (
+        OfflineExecutionDemoController,
+        run_weekend_offline_acceptance_demo,
+    )
 
     repo_root = Path.cwd()
+    if stage_b_readonly:
+        out_ws = output_dir or (
+            repo_root
+            / "reports"
+            / "phase50"
+            / "stage_b_replay"
+            / f"run_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+        )
+        out_ws.mkdir(parents=True, exist_ok=True)
+        ctrl = OfflineExecutionDemoController(repo_root, workspace_dir=out_ws)
+        summary = ctrl.run_frozen_three_model_replay(
+            use_stage_b_readonly=True,
+            session_id=session_id,
+        )
+        report_path = out_ws / "stage_b_replay_report.json"
+        report_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        if json_output:
+            console.print_json(json.dumps(summary))
+            return
+        console.print(
+            Panel(
+                f"[bold green]Stage B Historical Replay Completed[/bold green]\n"
+                f"Session: {summary.get('session_id', session_id)}\n"
+                f"Source: {summary.get('replay_source')}\n"
+                f"Simulation Model: {summary.get('simulation_model')}\n"
+                f"Integrity Verified: {summary.get('session_integrity_verified')}\n"
+                f"Evaluations: {summary.get('evaluation_breakdown', {}).get('total_evaluations')} total | "
+                f"Candidate A Selected: {summary.get('evaluation_breakdown', {}).get('candidate_a_selected')} "
+                f"(Non-overlapping: {summary.get('evaluation_breakdown', {}).get('candidate_a_non_overlapping_selected')})\n"
+                f"Wins: {summary.get('evaluation_breakdown', {}).get('candidate_a_wins')} | "
+                f"Losses: {summary.get('evaluation_breakdown', {}).get('candidate_a_losses')} | "
+                f"Ties: {summary.get('evaluation_breakdown', {}).get('candidate_a_ties')}\n"
+                f"Report Path: {report_path}",
+                title="Phase 48 Stage B PAPER Historical Replay",
+            )
+        )
+        return
+
     summary = run_weekend_offline_acceptance_demo(repo_root, output_dir=output_dir)
     if json_output:
         console.print_json(json.dumps(summary))
@@ -2681,5 +2733,67 @@ def offline_demo_command(
             f"Supervised Compatibility Boundary: {summary['supervised_boundary']}\n"
             f"Mock Rehearsal Reconciled: {summary['supervised_rehearsal_balance_reconciled']}",
             title="Phase 50 Weekend Offline Acceptance Demo",
+        )
+    )
+
+
+@execution_app.command(
+    "stage-b-replay",
+    help="Replay sealed Genuine Phase 48 Stage B observation session through isolated PAPER execution bridge.",
+)
+def stage_b_replay_command(
+    output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Optional directory for generated SQLite journal and replay report JSON.",
+    ),
+    session_id: str = typer.Option(
+        "p48_gen_20261127_145740",
+        "--session-id",
+        help="Stage B session directory name under data/phase48/sessions.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit structured JSON summary.",
+    ),
+) -> None:
+    """Execute Stage B historical observation replay with genuine chronology and native timeframes."""
+    from iqoption_research.execution.offline_demo import OfflineExecutionDemoController
+
+    repo_root = Path.cwd()
+    out_ws = output_dir or (
+        repo_root
+        / "reports"
+        / "phase50"
+        / "stage_b_replay"
+        / f"run_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+    )
+    out_ws.mkdir(parents=True, exist_ok=True)
+    ctrl = OfflineExecutionDemoController(repo_root, workspace_dir=out_ws)
+    summary = ctrl.run_frozen_three_model_replay(
+        use_stage_b_readonly=True,
+        session_id=session_id,
+    )
+    report_path = out_ws / "stage_b_replay_report.json"
+    report_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    if json_output:
+        console.print_json(json.dumps(summary))
+        return
+    console.print(
+        Panel(
+            f"[bold green]Stage B Historical Replay Completed[/bold green]\n"
+            f"Session: {summary.get('session_id', session_id)}\n"
+            f"Source: {summary.get('replay_source')}\n"
+            f"Simulation Model: {summary.get('simulation_model')}\n"
+            f"Integrity Verified: {summary.get('session_integrity_verified')}\n"
+            f"Evaluations: {summary.get('evaluation_breakdown', {}).get('total_evaluations')} total | "
+            f"Candidate A Selected: {summary.get('evaluation_breakdown', {}).get('candidate_a_selected')} "
+            f"(Non-overlapping: {summary.get('evaluation_breakdown', {}).get('candidate_a_non_overlapping_selected')})\n"
+            f"Wins: {summary.get('evaluation_breakdown', {}).get('candidate_a_wins')} | "
+            f"Losses: {summary.get('evaluation_breakdown', {}).get('candidate_a_losses')} | "
+            f"Ties: {summary.get('evaluation_breakdown', {}).get('candidate_a_ties')}\n"
+            f"Report Path: {report_path}",
+            title="Phase 48 Stage B PAPER Historical Replay",
         )
     )

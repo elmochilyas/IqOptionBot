@@ -624,8 +624,16 @@ def test_weekend_offline_demo_and_cli_command(tmp_path: Path) -> None:
 
 def test_stage_b_chronological_interleaved_paper_replay(tmp_path: Path) -> None:
     """Validate genuine Stage B historical replay using chronological interleaving."""
+    repo_root = _repo_root()
+    session_dir = repo_root / PHASE48_SESSIONS_DIR / "p48_gen_20261127_145740"
+    models_dir = default_models_dir(repo_root)
+    if not (session_dir.exists() and models_dir.exists()):
+        pytest.skip(
+            "Private operator Stage B genuine session or models directory unavailable in CI"
+        )
+
     ctrl = OfflineExecutionDemoController(
-        _repo_root(),
+        repo_root,
         workspace_dir=tmp_path / "stage_b_replay_ws",
         initial_balance=10000.0,
     )
@@ -640,15 +648,18 @@ def test_stage_b_chronological_interleaved_paper_replay(tmp_path: Path) -> None:
     assert breakdown["total_evaluations"] == 152
     assert breakdown["candidate_a_evaluations"] == 120
     assert breakdown["candidate_a_selected"] == 26
+    assert breakdown["candidate_a_non_overlapping_selected"] == 3
     assert breakdown["candidate_a_abstained"] == 94
     assert breakdown["candidate_a_wins"] == 20
     assert breakdown["candidate_a_losses"] == 5
     assert breakdown["candidate_a_ties"] == 1
 
     assert breakdown["candidate_b_evaluations"] == 24
+    assert breakdown["candidate_b_selected"] == 0
     assert breakdown["candidate_b_abstained"] == 24
 
     assert breakdown["candidate_c_evaluations"] == 8
+    assert breakdown["candidate_c_selected"] == 0
     assert breakdown["candidate_c_abstained"] == 8
 
     # Candidate A directional accuracy: 20 correct / 25 non-tie = 80.0%
@@ -666,3 +677,41 @@ def test_stage_b_chronological_interleaved_paper_replay(tmp_path: Path) -> None:
     assert cg_stats["losses"] == 5
     assert cg_stats["ties"] == 1
     assert cg_stats["total_pnl"] > 0.0
+
+
+def test_stage_b_cli_replay_command(tmp_path: Path) -> None:
+    """Validate execution stage-b-replay and offline-demo --stage-b-readonly CLI commands."""
+    repo_root = _repo_root()
+    session_dir = repo_root / PHASE48_SESSIONS_DIR / "p48_gen_20261127_145740"
+    models_dir = default_models_dir(repo_root)
+    if not (session_dir.exists() and models_dir.exists()):
+        pytest.skip(
+            "Private operator Stage B genuine session or models directory unavailable in CI"
+        )
+
+    runner = CliRunner()
+    res1 = runner.invoke(
+        cli_app,
+        ["execution", "stage-b-replay", "--output-dir", str(tmp_path / "cli_replay1"), "--json"],
+    )
+    assert res1.exit_code == 0, res1.output
+    payload1 = json.loads(res1.output[res1.output.index("{") :])
+    assert payload1["session_id"] == "p48_gen_20261127_145740"
+    assert payload1["evaluation_breakdown"]["candidate_a_selected"] == 26
+    assert payload1["evaluation_breakdown"]["candidate_a_non_overlapping_selected"] == 3
+
+    res2 = runner.invoke(
+        cli_app,
+        [
+            "execution",
+            "offline-demo",
+            "--stage-b-readonly",
+            "--output-dir",
+            str(tmp_path / "cli_replay2"),
+            "--json",
+        ],
+    )
+    assert res2.exit_code == 0, res2.output
+    payload2 = json.loads(res2.output[res2.output.index("{") :])
+    assert payload2["session_id"] == "p48_gen_20261127_145740"
+    assert payload2["evaluation_breakdown"]["candidate_a_selected"] == 26

@@ -83,12 +83,15 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
         simulated_slippage: float = 0.0,
         exact_maturity_only: bool = False,
     ) -> None:
-        super().__init__(ProductType.BINARY, execution_mode)
+        super().__init__(
+            ProductType.BINARY,
+            execution_mode,
+            exact_maturity_only=exact_maturity_only,
+        )
         self.default_payout_rate = default_payout_rate
         self.default_horizon_bars = default_horizon_bars
         self.bar_duration_seconds = bar_duration_seconds
         self.simulated_slippage = simulated_slippage
-        self.exact_maturity_only = exact_maturity_only
         self.payoff_model = BinaryPayoffModel(payout_rate=default_payout_rate)
         self.practice_transport = PracticeBinaryTransportAdapter(
             default_payout_rate=default_payout_rate
@@ -285,6 +288,10 @@ class BinaryOptionsAdapter(BaseExecutionAdapter):
         if not order.is_open:
             return False
         if order.expiry_ts is None:
+            return False
+        order_tf = order.metadata.get("timeframe_seconds")
+        candle_tf = int(current_candle.to_ts - current_candle.from_ts)
+        if order_tf is not None and int(order_tf) != candle_tf:
             return False
         if self.exact_maturity_only:
             return abs(float(current_candle.to_ts) - order.expiry_ts) < 1e-4
